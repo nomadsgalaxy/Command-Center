@@ -19,3 +19,9 @@ npx wrangler deploy /tmp/framecc.js --name framecc --compatibility-date 2026-10-
 
 The custom domain `framecc.nomadsgalaxy.com` is attached to the `framecc` Worker in Cloudflare.
 Redeploy whenever `index.html` or `install` changes.
+
+Who can change what people install: anyone with Workers edit rights on the Nomads Galaxy
+Cloudflare account (this Worker serves the script) and anyone who can push to or publish releases
+on the GitHub repo (the binaries). The checksums in `SHA256SUMS` catch a broken or swapped
+download, but not a swap of both the binary and its checksum; signing `SHA256SUMS` is the planned
+fix.
