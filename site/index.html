@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Command Center</title>
+<meta name="description" content="The Steam Frame's VR desktop: your own windows and your other computers' monitors as panels in the room, driven by one mouse and keyboard.">
+<meta property="og:title" content="Command Center">
+<meta property="og:description" content="Your computers, in the room with you. A VR desktop for the Steam Frame, all in Rust.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='%23E8ECFF' stroke='%2305060F' stroke-width='4'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #05060f;
+  --bg-2: #0b0d1c;
+  --line: #1c2036;
+  --text: #e8ecff;
+  --dim: #9aa1c4;
+  --violet: #a48bff;
+  --cyan: #7df9ff;
+  --radius: 14px;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 17px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+}
+a { color: var(--cyan); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+code, pre, .cmd { font-family: ui-monospace, "JetBrains Mono", "Noto Sans Mono", Menlo, monospace; }
+
+header { padding: 22px 0; }
+header .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: .2px; }
+.dot { width: 16px; height: 16px; border-radius: 50%; background: var(--text); box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px #2a2f4d; }
+nav a { color: var(--dim); margin-left: 20px; font-size: 15px; }
+
+.hero { padding: 64px 0 40px; position: relative; overflow: hidden; }
+.hero h1 { font-size: clamp(36px, 6vw, 62px); line-height: 1.05; margin: 0 0 18px; letter-spacing: -1px; }
+.hero h1 span { background: linear-gradient(90deg, var(--violet), var(--cyan)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.lede { font-size: clamp(18px, 2.2vw, 21px); color: var(--dim); max-width: 640px; margin: 0 0 32px; }
+
+/* panels floating in the room */
+.room { position: relative; height: 260px; margin: 8px 0 44px; perspective: 900px; }
+.panel {
+  position: absolute; border-radius: 10px; border: 1px solid rgba(232,236,255,.18);
+  background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.02));
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+.panel::before { content: attr(data-tag); position: absolute; top: -26px; left: 10px; font-size: 13px; color: var(--dim); white-space: nowrap; }
+.panel.remote { border-color: rgba(125,249,255,.45); }
+.panel.window { border-color: rgba(164,139,255,.5); }
+.panel .bar { position: absolute; left: 30%; right: 30%; bottom: -14px; height: 5px; border-radius: 3px; background: rgba(232,236,255,.35); }
+.p1 { left: 2%; top: 40px; width: 30%; height: 150px; transform: rotateY(24deg); }
+.p2 { left: 34%; top: 10px; width: 34%; height: 190px; }
+.p3 { left: 70%; top: 30px; width: 16%; height: 210px; transform: rotateY(-24deg); }
+.p4 { left: 87%; top: 70px; width: 13%; height: 110px; transform: rotateY(-34deg); }
+.panel .lines { position: absolute; inset: 18px; background: repeating-linear-gradient(180deg, rgba(232,236,255,.10) 0 3px, transparent 3px 13px); border-radius: 4px; mask-image: linear-gradient(90deg, #000 60%, transparent); }
+
+.install { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; max-width: 760px; }
+.install h2 { font-size: 15px; font-weight: 600; color: var(--dim); margin: 0 0 12px; text-transform: none; }
+.cmdrow { display: flex; gap: 10px; align-items: stretch; }
+.cmd { flex: 1; min-width: 0; background: #000; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; font-size: 15px; overflow-x: auto; white-space: nowrap; color: var(--text); }
+.cmd b { color: var(--cyan); font-weight: 500; }
+button.copy { flex: none; background: var(--text); color: var(--bg); border: 0; border-radius: 10px; padding: 0 18px; font: 600 15px system-ui, sans-serif; cursor: pointer; }
+button.copy:focus-visible { outline: 3px solid var(--cyan); outline-offset: 2px; }
+.install p { margin: 12px 0 0; color: var(--dim); font-size: 15px; }
+
+section { padding: 56px 0; border-top: 1px solid var(--line); }
+section h2 { font-size: clamp(24px, 3vw, 32px); margin: 0 0 8px; letter-spacing: -.4px; }
+section > .wrap > p.intro { color: var(--dim); max-width: 680px; margin: 0 0 28px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.card { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; }
+.card h3 { margin: 0 0 6px; font-size: 18px; }
+.card p { margin: 0; color: var(--dim); font-size: 15.5px; }
+.card .k { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
+.k.v { background: var(--violet); } .k.c { background: var(--cyan); } .k.w { background: var(--text); }
+
+.steps { counter-reset: s; list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; max-width: 760px; }
+.steps li { counter-increment: s; position: relative; padding: 16px 18px 16px 58px; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); color: var(--dim); }
+.steps li::before { content: counter(s); position: absolute; left: 18px; top: 14px; width: 26px; height: 26px; border-radius: 50%; background: var(--text); color: var(--bg); font-weight: 700; font-size: 14px; display: grid; place-items: center; }
+.steps li b { color: var(--text); font-weight: 600; }
+.steps code { color: var(--cyan); }
+
+table { border-collapse: collapse; width: 100%; max-width: 760px; font-size: 15.5px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--dim); font-weight: 600; }
+td:first-child { white-space: nowrap; }
+
+footer { border-top: 1px solid var(--line); padding: 32px 0 48px; color: var(--dim); font-size: 14.5px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 28px; justify-content: space-between; }
+
+@media (max-width: 640px) {
+  nav a:not(.gh) { display: none; }
+  .room { height: 180px; }
+  .panel::before { display: none; }
+  .p4 { display: none; }
+  .p3 { left: 74%; width: 22%; }
+  .cmdrow { flex-direction: column; }
+  button.copy { padding: 12px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .panel { animation: float 9s ease-in-out infinite; }
+  .p2 { animation-delay: -3s; } .p3 { animation-delay: -6s; } .p4 { animation-delay: -1.5s; }
+  @keyframes float { 50% { translate: 0 -6px; } }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand"><span class="dot" aria-hidden="true"></span>Command Center</div>
+    <nav><a href="#what">What it does</a><a href="#setup">Setup</a><a class="gh" href="https://github.com/nomadsgalaxy/Command-Center">GitHub</a></nav>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <div class="wrap">
+      <h1>Your computers,<br><span>in the room with you.</span></h1>
+      <p class="lede">Command Center is a VR desktop for the Steam Frame. The Frame's own windows and the monitors of your other computers become panels you can put anywhere, and one mouse and keyboard drive all of them.</p>
+
+      <div class="room" aria-hidden="true">
+        <div class="panel remote p1" data-tag="desktop · Monitor 1"><div class="lines"></div><div class="bar"></div></div>
+        <div class="panel remote p2" data-tag="desktop · Monitor 2"><div class="lines"></div><div class="bar"></div></div>
+        <div class="panel window p3" data-tag="Konsole"><div class="lines"></div><div class="bar"></div></div>
+        <div class="panel remote p4" data-tag="laptop"><div class="lines"></div><div class="bar"></div></div>
+      </div>
+
+      <div class="install" id="install">
+        <h2>Install it with one command, on the Frame and on each computer you want to see</h2>
+        <div class="cmdrow">
+          <div class="cmd" id="cmd"><b>curl</b> -fsSL https://framecc.nomadsgalaxy.com/install | sh</div>
+          <button class="copy" id="copy" type="button">Copy</button>
+        </div>
+        <p>The installer works out which machine it's on, checks every download against the release's checksums, and walks you through pairing. Run it again to update or remove.</p>
+      </div>
+    </div>
+  </div>
+
+  <section id="what">
+    <div class="wrap">
+      <h2>What it does</h2>
+      <p class="intro">Here's what it does today. It's all Rust, on the Frame and on your computers.</p>
+      <div class="grid">
+        <div class="card"><h3><span class="k c"></span>Your monitors, where they really are</h3><p>Align shows a few tags on each monitor and finds it with the headset's camera. Each panel lands on the real screen, usually within a few millimetres.</p></div>
+        <div class="card"><h3><span class="k v"></span>Every window is its own panel</h3><p>The Frame runs its own Plasma session, and each window gets a panel you can carry, resize and curve. Drag a browser tab from one window into another, like on a normal desk.</p></div>
+        <div class="card"><h3><span class="k w"></span>One mouse, one keyboard</h3><p>Point at a panel and you're driving that machine. Click a panel and your typing goes there. Drags carry across monitors of the same computer.</p></div>
+        <div class="card"><h3><span class="k c"></span>Workspaces that travel</h3><p>Each room keeps its own layout. Away from home, load your home setup in front of you, and your real home layout stays untouched.</p></div>
+        <div class="card"><h3><span class="k v"></span>Paired, not SSH'd</h3><p>A computer pairs with your Frame once, with a 6-digit key on its screen (or just look at it). After that it's TLS and a per-Frame login, and no SSH anywhere.</p></div>
+        <div class="card"><h3><span class="k w"></span>Close it and play</h3><p>Closing the Desktop saves which apps were open and frees its memory for a game. Open it again and they come back.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="setup">
+    <div class="wrap">
+      <h2>Setup</h2>
+      <p class="intro">It takes a few minutes per machine. The first build on the Frame is the slow part.</p>
+      <ol class="steps">
+        <li><b>On the Frame,</b> open Konsole in desktop mode and run the install command. When it's done, open <b>Desktop</b> from the SteamVR launcher.</li>
+        <li><b>On each computer,</b> run the same command. Tick the monitors the Frame should show.</li>
+        <li><b>Pair it.</b> Run <code>cc-share pair</code> on the computer, then on the Frame open Workspace, Machines, Add machine, and type the key or look at the screen.</li>
+        <li><b>Align it.</b> Press Align in the Machines window and move your head a little. The panels snap onto your real monitors.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>What you need</h2>
+      <table>
+        <tr><th>Machine</th><th>Requirements</th></tr>
+        <tr><td>Steam Frame</td><td>SteamOS with SteamVR. Command Center builds itself in a container there, so nothing gets installed into the system.</td></tr>
+        <tr><td>Computers</td><td>Linux with KDE Plasma 6 on Wayland and krdp, x86_64 or aarch64. macOS and Windows hosts are on the roadmap, once the Frame side is stable.</td></tr>
+        <tr><td>Network</td><td>The Frame and your computers on the same local network.</td></tr>
+      </table>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Command Center by Nomads Galaxy. Open Community License v1.1 with Software Attribution v1.</span>
+    <span><a href="https://github.com/nomadsgalaxy/Command-Center">Source on GitHub</a></span>
+  </div>
+</footer>
+
+<script>
+document.getElementById("copy").addEventListener("click", function () {
+  var text = document.getElementById("cmd").textContent.trim();
+  var b = this;
+  var done = function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy"; }, 1600); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, function () {});
+  } else {
+    var r = document.createRange(); r.selectNodeContents(document.getElementById("cmd"));
+    var s = getSelection(); s.removeAllRanges(); s.addRange(r);
+  }
+});
+</script>
+</body>
+</html>

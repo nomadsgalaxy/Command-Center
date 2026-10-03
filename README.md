@@ -16,7 +16,7 @@ Run this in a terminal on the Steam Frame (Konsole, or over SSH), and then on ea
 want to see from it:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/nomadsgalaxy/Command-Center/main/install | sh
+curl -fsSL https://framecc.nomadsgalaxy.com/install | sh
 ```
 
 It downloads the installer (`cc-install`) from the latest release, checks it against the

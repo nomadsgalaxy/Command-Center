@@ -4,7 +4,7 @@
 //! tested here.
 use std::path::{Path, PathBuf};
 
-pub const ONE_LINE: &str = "curl -fsSL https://raw.githubusercontent.com/nomadsgalaxy/Command-Center/main/install | sh";
+pub const ONE_LINE: &str = "curl -fsSL https://framecc.nomadsgalaxy.com/install | sh";
 const REPO: &str = "https://github.com/nomadsgalaxy/Command-Center.git";
 
 #[derive(Clone, Copy, Debug, PartialEq)]

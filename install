@@ -2,7 +2,7 @@
 # Command Center's installer, for the Steam Frame and for the computers it shows. Run it in a
 # terminal on either one (Konsole, or over SSH):
 #
-#   curl -fsSL https://raw.githubusercontent.com/nomadsgalaxy/Command-Center/main/install | sh
+#   curl -fsSL https://framecc.nomadsgalaxy.com/install | sh
 #
 # This gets the real installer (cc-install, a small terminal app in crates/cc-install) from the
 # latest GitHub release, checks it against the release's SHA256SUMS and runs it. cc-install
@@ -29,7 +29,7 @@ main() {
         command -v "$c" >/dev/null || fail "This needs $c, which isn't installed. Install it and run this again."
     done
     # CC_DL points it at another release (a folder or a file:// URL works too, for testing one)
-    dl=${CC_DL:-https://github.com/nomadsgalaxy/Command-Center/releases/latest/download}
+    dl=${CC_DL:-https://framecc.nomadsgalaxy.com/dl}
     work=$(mktemp -d) || fail "Couldn't make a folder to download into."
     trap 'rm -rf "$work"' EXIT
 
