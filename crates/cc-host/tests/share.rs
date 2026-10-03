@@ -1,8 +1,9 @@
 //! Tests cc-share's commands (cc-host, src/share.rs) against the bash cc-share they replaced. Its runs
 //! are recorded in tests/fixtures/share/, made from it once before it was removed. It's black-box on
 //! throwaway HOMEs, and the system's tools are shims that log every call (systemctl, kscreen-doctor
-//! with a two-monitor desk, loginctl, avahi-publish, notify-send, kbuildsycoca6, ufw, sudo, ss,
-//! krdpserver), so nothing on this machine changes. Each scenario's output, the tools it called and
+//! with a two-monitor desk, loginctl, avahi-publish, notify-send, kbuildsycoca6, ufw, firewall-cmd,
+//! sudo, ss, krdpserver), so nothing on this machine changes. firewall-cmd is always shimmed, so a
+//! run doesn't depend on whether the machine has it (the recording expects it there). Each scenario's output, the tools it called and
 //! the files it left have to match the recording. CC_RECORD=1 rewrites the recording from cc-host;
 //! after an intended change, review the diff. This was tests/share-cross (bash).
 use std::fs::{File, OpenOptions};
@@ -46,7 +47,7 @@ impl Run {
         let bin = self.dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let (log, work) = (self.dir.join("log"), &self.work);
-        for t in ["systemctl", "kscreen-doctor", "loginctl", "avahi-publish", "notify-send", "kbuildsycoca6", "ufw", "sudo", "ss", "krdpserver"] {
+        for t in ["systemctl", "kscreen-doctor", "loginctl", "avahi-publish", "notify-send", "kbuildsycoca6", "ufw", "firewall-cmd", "sudo", "ss", "krdpserver"] {
             let body = format!(r#"#!/bin/sh
 echo "{t} $*" >> "{log}"
 case "{t} $*" in
