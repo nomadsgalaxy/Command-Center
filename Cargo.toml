@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+license-file = "LICENSE"  # OCL v1.1 + SWAtt v1 (no SPDX id); see NOTICE.md
+authors = ["Nomads Galaxy"]
+
+[profile.release]
+opt-level = 3
+debug = 1

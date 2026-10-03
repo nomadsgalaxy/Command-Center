@@ -1,0 +1,10 @@
+-- cc-share announce status
+systemctl --user is-active -q control-center-announce.service
+-- cc-share announce on
+systemctl --user daemon-reload
+systemctl --user start control-center-announce.service
+systemctl --user enable control-center-announce.service
+-- cc-share announce off
+systemctl --user disable --now control-center-announce.service
+systemctl --user daemon-reload
+-- cc-share announce bogus

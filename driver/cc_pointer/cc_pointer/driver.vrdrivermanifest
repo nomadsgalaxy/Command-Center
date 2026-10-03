@@ -1,0 +1,7 @@
+{
+	"alwaysActivate": true,
+	"name": "cc_pointer",
+	"directory": "",
+	"resourceOnly": false,
+	"hmd_presence": []
+}

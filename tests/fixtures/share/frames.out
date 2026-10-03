@@ -1,0 +1,14 @@
+$ cc-share frames
+f1 slot=1 last-used=2026-10-01 16:34 sessions=monitor 1
+[exit 0]
+$ cc-share unpair ../x
+usage: cc-share unpair <frame>  (cc-share frames lists them)
+[exit 2]
+$ cc-share unpair nobody
+no paired Frame named nobody
+[exit 1]
+$ cc-share unpair f1
+unpaired f1: its login no longer works
+[exit 0]
+$ cc-share frames
+[exit 0]

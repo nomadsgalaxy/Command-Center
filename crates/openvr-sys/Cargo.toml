@@ -1,0 +1,10 @@
+[package]
+name = "openvr-sys"
+version = "0.1.0"
+description = "Bindings to OpenVR's C API (v2.15.6 header, pinned: the Frame's runtime supports IVRIPCResourceManagerClient)"
+edition.workspace = true
+license-file.workspace = true
+links = "openvr_api"
+
+[build-dependencies]
+bindgen = "0.72"

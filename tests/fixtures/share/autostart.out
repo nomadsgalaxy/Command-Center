@@ -1,0 +1,18 @@
+$ cc-share autostart status
+on
+[exit 0]
+$ cc-share autostart on
+starts when you log in
+[exit 0]
+$ cc-share autostart status
+on
+[exit 0]
+$ cc-share autostart off
+starts from the app menu / taskbar (Command Center Host); running now: until cc-share down or logout
+[exit 0]
+$ cc-share autostart status
+off
+[exit 0]
+$ cc-share autostart bogus
+usage: cc-share autostart on|off|status
+[exit 2]

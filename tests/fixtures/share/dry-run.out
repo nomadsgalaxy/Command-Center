@@ -1,0 +1,22 @@
+$ cc-share install 0 1 --dry-run
+cc-share install 0 1 would:
+  make the shared login's password in HOME/.config/control-center/password
+  make krdp's certificate in HOME/.config/control-center/cert.pem
+  write the units share@, frame@, agent, guard in HOME/.config/systemd/user, and enable: share@0 share@1 agent guard
+  restart the agent; restart the guard only if no viewer is connected (now: 0 connected)
+  announce: asked (or left as it is without a terminal)
+  start at login: asked (on without a terminal); the app menu gets Command Center Host either way
+and then check:
+  ok   krdpserver
+  ok   kscreen-doctor
+  ok   avahi-publish
+  ok   cc-host (cc-host VERSION): the agent, pairing and tag screens
+  need control-center-agent: systemctl --user status control-center-agent
+  need control-center-guard: systemctl --user status control-center-guard
+  need the agent on 3399: journalctl --user -u control-center-agent
+  need krdp's certificate: cc-share install
+  note host id: made at the first pairing
+  note not announcing: the Frame won't list this machine (cc-share announce on), its address can still be typed
+  ok   starts when you log in (cc-share autostart off: from the app menu / taskbar instead)
+  note linger off: the units run while you're logged in (loginctl enable-linger to run them without)
+[exit 0]

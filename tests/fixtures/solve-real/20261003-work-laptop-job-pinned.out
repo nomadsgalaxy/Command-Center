@@ -1,0 +1,11 @@
+# using the mirror camera the last good one
+# desk-portrait: tag 2 dropped as a misread (1.89 m away, others 1.13 m)
+# desk-portrait: tag 1 dropped as a misread (1.89 m away, others 1.13 m)
+# desk-portrait: tag 3 dropped as a misread (1.91 m away, others 1.13 m)
+# desk-portrait: tag 0 dropped as a misread (1.90 m away, others 1.13 m)
+# desk-portrait: tag 4 dropped as a misread (1.69 m away, others 1.13 m)
+# desk-portrait: tag 5 dropped as a misread (1.74 m away, others 1.13 m)
+# desk-portrait: tag 37 dropped as a misread (1.85 m away, others 1.13 m)
+# desk-portrait: 10 tag positions in 18 frames, 0.80 m away; rms px flat 134.86, v R 1.00 m 136.03 -> v R 1.00 m (radius pinned by viewers.conf)
+{"name": "desk-portrait", "screen": 2, "centre": [0.0671, 0.8139, -0.8263], "x": [0.3337, 0.15428, 0.92997], "y": [-0.5417, 0.83876, 0.05523], "z": [-0.77149, -0.52219, 0.36347], "width": 0.393, "height": 0.698, "axis": "v", "radius": 1.0, "rms": 136.03, "rms_mm": 100.7, "distance": 0.798}
+# desk-wide: only 0 tag position(s) seen through passthrough, need 3+

@@ -1,0 +1,5 @@
+-- cc-share frame-run bad
+-- cc-share frame-run ../x-0
+-- cc-share window-run f1-0-nope
+-- cc-share window-run f1-9-0123abcd-0000-4000-8000-000000000000
+-- cc-share windows on

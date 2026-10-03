@@ -1,0 +1,22 @@
+[package]
+name = "cc-panels"
+version = "0.2.0"
+description = "Command Center's VR panels: every remote monitor as a SteamVR overlay, one pointer and keyboard across them, one clipboard"
+edition.workspace = true
+license-file.workspace = true
+
+[dependencies]
+openvr-sys = { path = "../openvr-sys" }
+freerdp-sys = { path = "../freerdp-sys" }
+cc-proto = { path = "../cc-proto" } # the agent and pairing, in Rust (no cc-home run)
+base64 = "0.22" # a pairing's host key, as trusted-hosts keeps it
+libc = "0.2"
+fontdue = "0.9" # the border tags and glyphs (assets.rs), as cc-host draws its tag screens
+serde_json = "1"
+pipewire = { version = "0.9", features = ["v0_3_77"] }
+wayland-client = "0.31"
+wayland-scanner = "0.31"
+wayland-backend = "0.3" # the generated interfaces name it
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+async-io = "2" # the long poll's timer (zbus runs on it already)
+event-listener = "5" # the long poll's wake-up (zbus has it already)

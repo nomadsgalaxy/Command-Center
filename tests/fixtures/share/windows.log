@@ -1,0 +1,5 @@
+-- cc-share windows status
+-- cc-share windows on
+-- cc-share windows off
+systemctl --user stop control-center-window@*
+-- cc-share windows bogus

@@ -1,0 +1,64 @@
+diff -ruN b/src/PlasmaScreencastV1Session.cpp krdp-6.7.5/src/PlasmaScreencastV1Session.cpp
+--- a/src/PlasmaScreencastV1Session.cpp	2026-10-01 19:49:15.697667156 -0400
++++ b/src/PlasmaScreencastV1Session.cpp	2026-10-01 19:49:45.582318768 -0400
+@@ -4,7 +4,9 @@
+ 
+ #include "PlasmaScreencastV1Session.h"
+ 
++#include <KSystemClipboard>
+ #include <QGuiApplication>
++#include <QMimeData>
+ #include <QMouseEvent>
+ #include <QPointer>
+ #include <QScreen>
+@@ -159,6 +161,8 @@
+     FakeInput *remoteInterface = nullptr;
+     // The streamed output, to map pointer positions onto it.
+     QPointer<QScreen> screen;
++    // setClipboardData's own change, not to be sent back to the client (no ping-pong).
++    bool ignoreNextClipboardChange = false;
+ };
+ 
+ PlasmaScreencastV1Session::PlasmaScreencastV1Session()
+@@ -167,6 +171,27 @@
+ {
+     d->remoteInterface = new FakeInput();
+     d->remoteInterface->authenticate(QStringLiteral("krdpserver"), QString());
++
++    // The system clipboard, as PortalSession does it (the Plasma session had none): a copy
++    // here goes to the client; text only, since fetching other formats can block.
++    connect(KSystemClipboard::instance(), &KSystemClipboard::changed, this, [this](auto mode) {
++        if (mode != QClipboard::Clipboard) {
++            return;
++        }
++        if (d->ignoreNextClipboardChange) {
++            d->ignoreNextClipboardChange = false;
++            return;
++        }
++        auto data = KSystemClipboard::instance()->mimeData(mode);
++        if (!data) {
++            return;
++        }
++        auto newData = new QMimeData();
++        if (data->hasText()) {
++            newData->setText(data->text());
++        }
++        Q_EMIT clipboardDataChanged(newData);
++    });
+ }
+ 
+ PlasmaScreencastV1Session::~PlasmaScreencastV1Session()
+@@ -290,6 +315,12 @@
+ 
+ void PlasmaScreencastV1Session::setClipboardData(std::unique_ptr<QMimeData> data)
+ {
+-    Q_UNUSED(data);
++    // A paste from the client lands on the system clipboard (KSystemClipboard takes ownership).
++    d->ignoreNextClipboardChange = true;
++    if (data) {
++        KSystemClipboard::instance()->setMimeData(data.release(), QClipboard::Clipboard);
++    } else {
++        KSystemClipboard::instance()->clear(QClipboard::Clipboard);
++    }
+ }
+ }

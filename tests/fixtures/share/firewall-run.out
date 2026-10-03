@@ -1,0 +1,6 @@
+$ cc-share unpair f1 --firewall
+unpaired f1: its login no longer works
++ sudo ufw delete allow proto tcp from 10.0.0.0/8 to any port 3399:3449
++ sudo ufw delete allow proto tcp from 172.16.0.0/12 to any port 3399:3449
++ sudo ufw delete allow proto tcp from 192.168.0.0/16 to any port 3399:3449
+[exit 0]

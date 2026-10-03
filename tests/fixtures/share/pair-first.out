@@ -1,0 +1,3 @@
+$ cc-share pair
+run cc-share install first
+[exit 1]

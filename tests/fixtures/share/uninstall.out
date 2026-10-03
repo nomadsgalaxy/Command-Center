@@ -1,0 +1,28 @@
+$ cc-share install 0 --no-announce --autostart
+sharing as user tester on HOSTNAME: ports 3400 
+not announcing
+checklist:
+  ok   krdpserver
+  ok   kscreen-doctor
+  ok   avahi-publish
+  ok   cc-host (cc-host VERSION): the agent, pairing and tag screens
+  need control-center-agent: systemctl --user status control-center-agent
+  need control-center-guard: systemctl --user status control-center-guard
+  need the agent on 3399: journalctl --user -u control-center-agent
+  ok   krdp certificate
+  note host id: made at the first pairing
+  note not announcing: the Frame won't list this machine (cc-share announce on), its address can still be typed
+  ok   starts when you log in (cc-share autostart off: from the app menu / taskbar instead)
+  note linger off: the units run while you're logged in (loginctl enable-linger to run them without)
+  note shared login (slot 0) still active on monitor 0: anyone with its password can connect
+some items need you (above)
+
+Next, pair this machine with the Frame:
+  1. Here, run: cc-share pair
+     A 6-digit key fills the screen for 5 minutes.
+  2. On the Frame, open Workspace, then Machines, then Add machine. Pick HOSTNAME, press Pair,
+     and type the key, or press Pair by looking and look at this screen.
+  The Frame only lists this machine while it announces itself: cc-share announce on
+[exit 0]
+$ cc-share uninstall
+[exit 0]

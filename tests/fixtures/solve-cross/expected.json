@@ -1,0 +1,98 @@
+{
+ "monitors": [
+  [
+   "desk-wide",
+   [
+    1193.0,
+    336.0
+   ],
+   [
+    5120,
+    1440
+   ],
+   "h",
+   1.0,
+   [
+    0.0,
+    1.25,
+    -0.75
+   ],
+   [
+    0.0,
+    0.0,
+    0.0
+   ],
+   0
+  ],
+  [
+   "desk-portrait",
+   [
+    393.0,
+    698.0
+   ],
+   [
+    1440,
+    2560
+   ],
+   "v",
+   1.6,
+   [
+    0.85,
+    1.35,
+    -0.6
+   ],
+   [
+    0.0,
+    -0.6,
+    0.0
+   ],
+   50
+  ],
+  [
+   "laptop",
+   [
+    344.0,
+    194.0
+   ],
+   [
+    1920,
+    1080
+   ],
+   "flat",
+   0.0,
+   [
+    -0.1,
+    0.85,
+    -0.45
+   ],
+   [
+    -0.5,
+    0.0,
+    0.0
+   ],
+   100
+  ]
+ ],
+ "jobs": {
+  "still-pinned": {
+   "job": "still-pinned.json",
+   "python": "# using the mirror camera the last good one\n# desk-wide: 46 tag positions in 18 frames, 1.00 m away; rms px flat 24.40, h R 1.00 m 0.41 -> h R 1.00 m (radius pinned by viewers.conf)\n{\"name\": \"desk-wide\", \"screen\": 0, \"centre\": [0.0, 1.25, -0.75], \"x\": [1.0, 2e-05, 1e-05], \"y\": [-2e-05, 1.0, 0.0001], \"z\": [-1e-05, -0.0001, 1.0], \"width\": 1.193, \"height\": 0.336, \"axis\": \"h\", \"radius\": 1.0, \"rms\": 0.41, \"rms_mm\": 0.4, \"distance\": 0.997}\n# desk-portrait: 3 frame(s) over twice the median error dropped\n# desk-portrait: 25 tag positions in 15 frames, 1.17 m away; rms px flat 2.48, v R 1.60 m 0.41 -> v R 1.60 m (radius pinned by viewers.conf)\n{\"name\": \"desk-portrait\", \"screen\": 0, \"centre\": [0.85, 1.35, -0.6], \"x\": [0.82543, 4e-05, 0.56451], \"y\": [-8e-05, 1.0, 5e-05], \"z\": [-0.56451, -8e-05, 0.82543], \"width\": 0.393, \"height\": 0.698, \"axis\": \"v\", \"radius\": 1.6, \"rms\": 0.4, \"rms_mm\": 0.4, \"distance\": 1.165}\n# laptop: 3 frame(s) over twice the median error dropped\n# laptop: 6 tag positions in 15 frames, 0.95 m away; rms px flat 0.43 -> flat (as viewers.conf says)\n{\"name\": \"laptop\", \"screen\": 0, \"centre\": [-0.1, 0.85, -0.45], \"x\": [1.0, -0.00022, -0.00022], \"y\": [9e-05, 0.87735, -0.47986], \"z\": [0.0003, 0.47986, 0.87735], \"width\": 0.344, \"height\": 0.194, \"axis\": \"flat\", \"radius\": 0.0, \"rms\": 0.39, \"rms_mm\": 0.3, \"distance\": 0.952}\n"
+  },
+  "still-known": {
+   "job": "still-known.json",
+   "python": "# using the mirror camera the last good one\n# desk-wide: 46 tag positions in 18 frames, 1.00 m away; rms px flat 24.40, h R 1.00 m 0.41 -> h R 1.00 m (as viewers.conf says)\n{\"name\": \"desk-wide\", \"screen\": 0, \"centre\": [0.0, 1.25, -0.75], \"x\": [1.0, 2e-05, 2e-05], \"y\": [-2e-05, 1.0, 0.00019], \"z\": [-2e-05, -0.00019, 1.0], \"width\": 1.193, \"height\": 0.336, \"axis\": \"h\", \"radius\": 1.0, \"rms\": 0.41, \"rms_mm\": 0.4, \"distance\": 0.997}\n# desk-portrait: 3 frame(s) over twice the median error dropped\n# desk-portrait: 25 tag positions in 15 frames, 1.17 m away; rms px flat 2.48, v R 1.60 m 0.41 -> v R 1.60 m (as viewers.conf says)\n{\"name\": \"desk-portrait\", \"screen\": 0, \"centre\": [0.85, 1.35, -0.6], \"x\": [0.82544, 3e-05, 0.56449], \"y\": [-5e-05, 1.0, 2e-05], \"z\": [-0.56449, -4e-05, 0.82544], \"width\": 0.393, \"height\": 0.698, \"axis\": \"v\", \"radius\": 1.603, \"rms\": 0.4, \"rms_mm\": 0.4, \"distance\": 1.165}\n# laptop: 3 frame(s) over twice the median error dropped\n# laptop: 6 tag positions in 15 frames, 0.95 m away; rms px flat 0.43 -> flat (as viewers.conf says)\n{\"name\": \"laptop\", \"screen\": 0, \"centre\": [-0.1, 0.85, -0.45], \"x\": [1.0, -0.00022, -0.00022], \"y\": [9e-05, 0.87735, -0.47986], \"z\": [0.0003, 0.47986, 0.87735], \"width\": 0.344, \"height\": 0.194, \"axis\": \"flat\", \"radius\": 0.0, \"rms\": 0.39, \"rms_mm\": 0.3, \"distance\": 0.952}\n"
+  },
+  "still-unknown": {
+   "job": "still-unknown.json",
+   "python": "# using the mirror camera the last good one\n# desk-wide: 46 tag positions in 18 frames, 1.00 m away; rms px flat 24.40, h R 1.00 m 0.41, v R 0.47 m 23.84 -> h R 1.00 m\n{\"name\": \"desk-wide\", \"screen\": 0, \"centre\": [0.0, 1.25, -0.75], \"x\": [1.0, 2e-05, 2e-05], \"y\": [-2e-05, 1.0, 0.00019], \"z\": [-2e-05, -0.00019, 1.0], \"width\": 1.193, \"height\": 0.336, \"axis\": \"h\", \"radius\": 1.0, \"rms\": 0.41, \"rms_mm\": 0.4, \"distance\": 0.997}\n# desk-portrait: 3 frame(s) over twice the median error dropped\n# desk-portrait: 25 tag positions in 15 frames, 1.17 m away; rms px flat 2.48, h R 20.00 m 2.47, v R 1.60 m 0.41 -> v R 1.60 m\n{\"name\": \"desk-portrait\", \"screen\": 0, \"centre\": [0.85, 1.35, -0.6], \"x\": [0.82544, 3e-05, 0.56449], \"y\": [-5e-05, 1.0, 2e-05], \"z\": [-0.56449, -4e-05, 0.82544], \"width\": 0.393, \"height\": 0.698, \"axis\": \"v\", \"radius\": 1.603, \"rms\": 0.4, \"rms_mm\": 0.4, \"distance\": 1.165}\n# laptop: 3 frame(s) over twice the median error dropped\n# laptop: 6 tag positions in 15 frames, 0.95 m away; rms px flat 0.43, h R 20.00 m 0.44, v R 14.12 m 0.43 -> flat\n{\"name\": \"laptop\", \"screen\": 0, \"centre\": [-0.1, 0.85, -0.45], \"x\": [1.0, -0.00022, -0.00022], \"y\": [9e-05, 0.87735, -0.47986], \"z\": [0.0003, 0.47986, 0.87735], \"width\": 0.344, \"height\": 0.194, \"axis\": \"flat\", \"radius\": 0.0, \"rms\": 0.39, \"rms_mm\": 0.3, \"distance\": 0.952}\n"
+  },
+  "still-flat": {
+   "job": "still-flat.json",
+   "python": "# using the mirror camera the last good one\n# desk-wide: 46 tag positions in 18 frames, 0.95 m away; rms px flat 24.40 -> flat (as viewers.conf says)\n{\"name\": \"desk-wide\", \"screen\": 0, \"centre\": [-0.0032, 1.2505, -0.706], \"x\": [0.9993, 0.0024, 0.03736], \"y\": [-0.00231, 0.99999, -0.0025], \"z\": [-0.03736, 0.00242, 0.9993], \"width\": 1.193, \"height\": 0.336, \"axis\": \"flat\", \"radius\": 0.0, \"rms\": 24.4, \"rms_mm\": 21.6, \"distance\": 0.955}\n# desk-portrait: 3 frame(s) over twice the median error dropped\n# desk-portrait: 25 tag positions in 15 frames, 1.16 m away; rms px flat 2.48 -> flat (as viewers.conf says)\n{\"name\": \"desk-portrait\", \"screen\": 0, \"centre\": [0.8451, 1.3508, -0.5925], \"x\": [0.82657, -0.00432, 0.56282], \"y\": [0.02721, 0.99911, -0.03229], \"z\": [-0.56218, 0.04201, 0.82595], \"width\": 0.393, \"height\": 0.698, \"axis\": \"flat\", \"radius\": 0.0, \"rms\": 2.45, \"rms_mm\": 2.6, \"distance\": 1.157}\n# laptop: 3 frame(s) over twice the median error dropped\n# laptop: 6 tag positions in 15 frames, 0.95 m away; rms px flat 0.43 -> flat (as viewers.conf says)\n{\"name\": \"laptop\", \"screen\": 0, \"centre\": [-0.1, 0.85, -0.45], \"x\": [1.0, -0.00022, -0.00022], \"y\": [9e-05, 0.87735, -0.47986], \"z\": [0.0003, 0.47986, 0.87735], \"width\": 0.344, \"height\": 0.194, \"axis\": \"flat\", \"radius\": 0.0, \"rms\": 0.39, \"rms_mm\": 0.3, \"distance\": 0.952}\n"
+  },
+  "moving-known": {
+   "job": "moving-known.json",
+   "python": "# using the mirror camera the last good one\n#lag 0.040\n# mirror lag from the fit: 40 ms (scan.py measured -20 ms)\n# desk-wide: 46 tag positions in 18 frames, 1.00 m away; rms px flat 24.65, h R 1.00 m 0.40 -> h R 1.00 m (as viewers.conf says)\n{\"name\": \"desk-wide\", \"screen\": 0, \"centre\": [-0.0, 1.25, -0.7499], \"x\": [1.0, 3e-05, 9e-05], \"y\": [-3e-05, 1.0, 0.00019], \"z\": [-9e-05, -0.00019, 1.0], \"width\": 1.193, \"height\": 0.336, \"axis\": \"h\", \"radius\": 1.001, \"rms\": 0.4, \"rms_mm\": 0.4, \"distance\": 0.997}\n# desk-portrait: 25 tag positions in 18 frames, 1.17 m away; rms px flat 2.46, v R 1.60 m 0.40 -> v R 1.60 m (as viewers.conf says)\n{\"name\": \"desk-portrait\", \"screen\": 0, \"centre\": [0.85, 1.35, -0.6], \"x\": [0.82557, -4e-05, 0.5643], \"y\": [0.00012, 1.0, -0.00012], \"z\": [-0.5643, 0.00017, 0.82557], \"width\": 0.393, \"height\": 0.698, \"axis\": \"v\", \"radius\": 1.604, \"rms\": 0.4, \"rms_mm\": 0.4, \"distance\": 1.165}\n# laptop: 6 tag positions in 18 frames, 0.95 m away; rms px flat 0.39 -> flat (as viewers.conf says)\n{\"name\": \"laptop\", \"screen\": 0, \"centre\": [-0.1, 0.8499, -0.4501], \"x\": [1.0, -2e-05, 4e-05], \"y\": [4e-05, 0.87754, -0.4795], \"z\": [-2e-05, 0.4795, 0.87754], \"width\": 0.344, \"height\": 0.194, \"axis\": \"flat\", \"radius\": 0.0, \"rms\": 0.39, \"rms_mm\": 0.3, \"distance\": 0.949}\n"
+  }
+ }
+}

@@ -1,0 +1,13 @@
+{
+  "action_manifest_version": 0,
+  "controller_type": "frame_hmd",
+  "description": "Command Center: the headset's eye tracker picks the panel the pointer stays on",
+  "name": "Command Center gaze",
+  "bindings": {
+    "/actions/gaze": {
+      "eyetracking": [
+        { "path": "/user/head/eyetracking", "output": "/actions/gaze/in/gaze" }
+      ]
+    }
+  }
+}

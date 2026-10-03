@@ -1,0 +1,4 @@
+./.config/control-center/autostart 644: off|
+./.config/control-center/shared 644: 0|
+./.local/share/applications/command-center-host.desktop 644: [Desktop Entry]|Type=Application|Name=Command Center Host|Comment=Share this machine's monitors with the Steam Frame|Exec=HOME/.local/bin/cc-share up|Icon=video-display|Categories=Network;RemoteAccess;|Actions=stop;||[Desktop Action stop]|Name=Stop Command Center|Exec=HOME/.local/bin/cc-share down|
+./.local/share/control-center/cc-host 755

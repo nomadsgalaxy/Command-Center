@@ -1,0 +1,378 @@
+diff --git a/server/SessionController.cpp b/server/SessionController.cpp
+index b090fd6..7268afc 100644
+--- a/server/SessionController.cpp
++++ b/server/SessionController.cpp
+@@ -119,6 +119,11 @@ void SessionController::setMonitorIndex(const std::optional<int> &index)
+     m_monitorIndex = index;
+ }
+ 
++void SessionController::setWindow(const QString &uuid)
++{
++    m_window = uuid;
++}
++
+ void SessionController::setVirtualMonitor(const KRdp::VirtualMonitor &virtualMonitor)
+ {
+     m_virtualMonitor = virtualMonitor;
+@@ -132,7 +137,9 @@ void SessionController::setQuality(const std::optional<int> &quality)
+ void SessionController::onNewConnection(KRdp::RdpConnection *newConnection)
+ {
+     auto wrapper = std::make_unique<SessionWrapper>(newConnection, makeSession(), m_sni);
+-    if (m_virtualMonitor) {
++    if (!m_window.isEmpty()) {
++        wrapper->session->setWindow(m_window);
++    } else if (m_virtualMonitor) {
+         wrapper->session->setVirtualMonitor(*m_virtualMonitor);
+     } else if (m_monitorIndex) {
+         wrapper->session->setActiveStream(*m_monitorIndex);
+diff --git a/server/SessionController.h b/server/SessionController.h
+index 98f514d..982766b 100644
+--- a/server/SessionController.h
++++ b/server/SessionController.h
+@@ -33,6 +33,7 @@ public:
+ 
+     void setVirtualMonitor(const KRdp::VirtualMonitor &vm);
+     void setMonitorIndex(const std::optional<int> &index);
++    void setWindow(const QString &uuid);
+     void setQuality(const std::optional<int> &quality);
+     void setSNIStatus(const KRdp::RdpConnection::State state);
+     void stopFromSNI();
+@@ -44,6 +45,7 @@ private:
+     KRdp::Server *m_server = nullptr;
+     SessionType m_sessionType;
+     std::optional<int> m_monitorIndex;
++    QString m_window;
+     std::optional<int> m_quality;
+     std::optional<KRdp::VirtualMonitor> m_virtualMonitor;
+ 
+diff --git a/server/main.cpp b/server/main.cpp
+index 2317349..6248782 100644
+--- a/server/main.cpp
++++ b/server/main.cpp
+@@ -49,6 +49,7 @@ int main(int argc, char **argv)
+          u"Creates a new virtual output to connect to (WIDTHxHEIGHT@SCALE, e.g. 1920x1080@1). Incompatible with --monitor."_s,
+          u"data"_s,
+          u"1920x1080@1"_s},
++        {u"window"_s, u"Stream one window by its KWin uuid ({...}). Incompatible with --monitor and --virtual-monitor."_s, u"uuid"_s},
+         {u"quality"_s, u"Encoding quality of the stream, from 0 (lowest) to 100 (highest)"_s, u"quality"_s},
+ #ifdef WITH_PLASMA_SESSION
+         {u"plasma"_s, u"Use Plasma protocols instead of XDP"_s},
+@@ -127,7 +128,15 @@ int main(int argc, char **argv)
+     }
+ 
+     SessionController controller(&server, parser.isSet(u"plasma"_s) ? SessionController::SessionType::Plasma : SessionController::SessionType::Portal);
+-    if (parser.isSet(u"virtual-monitor"_s)) {
++    if (parser.isSet(u"window"_s)) {
++        // Command Center: a braced KWin uuid only (get_window_by_uuid matches the exact string)
++        const QString uuid = parser.value(u"window"_s);
++        if (!QRegularExpression(uR"(^\{[0-9a-f-]{36}\}$)"_s).match(uuid).hasMatch() || parser.isSet(u"monitor"_s) || parser.isSet(u"virtual-monitor"_s)) {
++            qWarning() << "--window takes a braced uuid ({...}), and not with --monitor or --virtual-monitor";
++            return 1;
++        }
++        controller.setWindow(uuid);
++    } else if (parser.isSet(u"virtual-monitor"_s)) {
+         const QString vmData = parser.value(u"virtual-monitor"_s);
+         const QRegularExpression rx(uR"((\d+)x(\d+)@([\d.]+))"_s);
+         const auto match = rx.match(vmData);
+diff --git a/src/AbstractSession.cpp b/src/AbstractSession.cpp
+index 566c92f..89800c8 100644
+--- a/src/AbstractSession.cpp
++++ b/src/AbstractSession.cpp
+@@ -13,6 +13,7 @@ class KRDP_NO_EXPORT AbstractSession::Private
+ public:
+     std::optional<int> activeStream;
+     std::optional<VirtualMonitor> virtualMonitor;
++    QString window;
+     bool started = false;
+     QSize size;
+     QSize logicalSize;
+@@ -43,6 +44,16 @@ std::optional<int> AbstractSession::activeStream() const
+     return d->activeStream;
+ }
+ 
++QString AbstractSession::window() const
++{
++    return d->window;
++}
++
++void AbstractSession::setWindow(const QString &uuid)
++{
++    d->window = uuid;
++}
++
+ std::optional<VirtualMonitor> AbstractSession::virtualMonitor() const
+ {
+     return d->virtualMonitor;
+diff --git a/src/AbstractSession.h b/src/AbstractSession.h
+index 98c3cf2..162910c 100644
+--- a/src/AbstractSession.h
++++ b/src/AbstractSession.h
+@@ -41,6 +41,8 @@ public:
+ 
+     void setActiveStream(int stream);
+     void setVirtualMonitor(const VirtualMonitor &vm);
++    /// Command Center: stream one window by its KWin uuid ({...}) instead of a monitor.
++    void setWindow(const QString &uuid);
+     quint32 nodeId() const;
+     int takePipeWireFd();
+ 
+@@ -75,6 +77,7 @@ protected:
+     QSize logicalSize() const;
+     std::optional<VirtualMonitor> virtualMonitor() const;
+     std::optional<int> activeStream() const;
++    QString window() const;
+ 
+     void setStarted(bool started);
+     void setLogicalSize(QSize size);
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 6f27519..33d86f5 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -9,6 +9,7 @@ if (BUILD_PLASMA_SESSION)
+         FILES
+             ${PLASMA_WAYLAND_PROTOCOLS_DIR}/zkde-screencast-unstable-v1.xml
+             ${PLASMA_WAYLAND_PROTOCOLS_DIR}/fake-input.xml
++            ${PLASMA_WAYLAND_PROTOCOLS_DIR}/plasma-window-management.xml
+             ${Wayland_DATADIR}/wayland.xml
+     )
+     target_sources(KRdp PRIVATE screencasting.cpp PlasmaScreencastV1Session.cpp)
+diff --git a/src/PlasmaScreencastV1Session.cpp b/src/PlasmaScreencastV1Session.cpp
+index fca2919..3fcbcd1 100644
+--- a/src/PlasmaScreencastV1Session.cpp
++++ b/src/PlasmaScreencastV1Session.cpp
+@@ -11,6 +11,8 @@
+ #include <QPointer>
+ #include <QScreen>
+ #include <QQueue>
++#include <QSet>
++#include <functional>
+ #include <QWaylandClientExtensionTemplate>
+ #include <qpa/qplatformnativeinterface.h>
+ 
+@@ -21,6 +23,8 @@
+ 
+ #include "krdp_logging.h"
+ #include "qwayland-fake-input.h"
++#include "qwayland-plasma-window-management.h"
++#include <QCoreApplication>
+ #include "qwayland-wayland.h"
+ #include "screencasting_p.h"
+ 
+@@ -38,6 +42,59 @@ public:
+     }
+ };
+ 
++// Command Center (--window): KWin's window management, for one window's geometry, its active state
++// and activating it. Granted only to the window server's own executable (its own .desktop file),
++// never to the monitor servers.
++class WindowManagement : public QWaylandClientExtensionTemplate<WindowManagement>, public QtWayland::org_kde_plasma_window_management
++{
++public:
++    // One for the whole process, never freed: KWin keeps sending it events (every window that
++    // opens), and a freed one crashed the server once its first session ended.
++    static WindowManagement *self()
++    {
++        static auto *wm = new WindowManagement();
++        return wm;
++    }
++
++private:
++    WindowManagement()
++        : QWaylandClientExtensionTemplate<WindowManagement>(16)
++    {
++        initialize();
++    }
++};
++
++class PlasmaWindow : public QtWayland::org_kde_plasma_window
++{
++public:
++    QRect geometry; // frame geometry, logical, integer (KWin sends toRect())
++    bool active = false;
++    std::function<void()> gone;
++
++    ~PlasmaWindow() override
++    {
++        if (isInitialized()) {
++            destroy(); // no more events for this handle once its session is gone
++        }
++    }
++
++protected:
++    void org_kde_plasma_window_geometry(int32_t x, int32_t y, uint32_t width, uint32_t height) override
++    {
++        geometry = QRect(x, y, int(width), int(height));
++    }
++    void org_kde_plasma_window_state_changed(uint32_t flags) override
++    {
++        active = flags & QtWayland::org_kde_plasma_window_management::state_active;
++    }
++    void org_kde_plasma_window_unmapped() override
++    {
++        if (gone) {
++            gone();
++        }
++    }
++};
++
+ namespace
+ {
+ struct XKBStateDeleter {
+@@ -163,6 +220,11 @@ public:
+     QPointer<QScreen> screen;
+     // setClipboardData's own change, not to be sent back to the client (no ping-pong).
+     bool ignoreNextClipboardChange = false;
++    // --window: the window, its geometry latched from a press to its release (a title-bar drag
++    // inside the stream moves the mapping area under the pointer), and presses swallowed to focus.
++    std::unique_ptr<PlasmaWindow> window;
++    QRect latched;
++    QSet<int> swallowed;
+ };
+ 
+ PlasmaScreencastV1Session::PlasmaScreencastV1Session()
+@@ -201,7 +263,26 @@ PlasmaScreencastV1Session::~PlasmaScreencastV1Session()
+ 
+ void PlasmaScreencastV1Session::start()
+ {
+-    if (auto vm = virtualMonitor()) {
++    if (!window().isEmpty()) {
++        // One window (Command Center pop-out): its own stream, its live geometry for input. When it
++        // closes the server ends (one window server per window: its port and memory go with it).
++        auto *wm = WindowManagement::self();
++        if (!wm->isActive()) {
++            qCWarning(KRDP) << "no org_kde_plasma_window_management: this executable's .desktop file must grant it";
++            Q_EMIT error();
++            return;
++        }
++        d->window = std::make_unique<PlasmaWindow>();
++        d->window->init(wm->get_window_by_uuid(window()));
++        d->window->gone = [] {
++            qCInfo(KRDP) << "the window closed";
++            QCoreApplication::exit(0);
++        };
++        d->request = d->m_screencasting.createWindowStream(window(), Screencasting::Metadata);
++        // its stream closing ends this connection (it also closes when the client leaves); only the
++        // window itself going (unmapped, above) ends the server
++        connect(d->request, &ScreencastingStream::closed, this, &PlasmaScreencastV1Session::error);
++    } else if (auto vm = virtualMonitor()) {
+         d->request = d->m_screencasting.createVirtualMonitorStream(vm->name, vm->size, vm->dpr, Screencasting::Metadata);
+     } else if (const auto streamIndex = activeStream()) {
+         if (*streamIndex >= qApp->screens().size()) {
+@@ -218,7 +299,7 @@ void PlasmaScreencastV1Session::start()
+     connect(d->request, &ScreencastingStream::created, this, [this](uint nodeId) {
+         qCDebug(KRDP) << "Started Plasma session";
+ 
+-        setLogicalSize(d->request->size());
++        setLogicalSize(d->window ? d->window->geometry.size() : d->request->size());
+         setNodeId(nodeId);
+         setStarted(true);
+     });
+@@ -230,6 +311,28 @@ void PlasmaScreencastV1Session::sendEvent(const std::shared_ptr<QEvent> &event)
+         return;
+     }
+ 
++    // --window: click to focus. While the window isn't active a press activates it and is swallowed
++    // (its release too), and keys and wheel go nowhere: fake_input lands on whatever is on top at a
++    // point, and keys on the focused window, so nothing reaches another app.
++    if (d->window) {
++        const auto type = event->type();
++        if (type == QEvent::MouseButtonPress && !d->window->active) {
++            d->window->set_state(QtWayland::org_kde_plasma_window_management::state_active,
++                                 QtWayland::org_kde_plasma_window_management::state_active);
++            d->swallowed.insert(int(std::static_pointer_cast<QMouseEvent>(event)->button()));
++            return;
++        }
++        if (type == QEvent::MouseButtonRelease && d->swallowed.remove(int(std::static_pointer_cast<QMouseEvent>(event)->button()))) {
++            return;
++        }
++        if ((type == QEvent::KeyPress || type == QEvent::KeyRelease || type == QEvent::Wheel) && !d->window->active) {
++            return;
++        }
++        if (type == QEvent::MouseButtonPress && d->latched.isNull()) {
++            d->latched = d->window->geometry;
++        }
++    }
++
+     switch (event->type()) {
+     case QEvent::MouseButtonPress:
+     case QEvent::MouseButtonRelease: {
+@@ -247,11 +350,27 @@ void PlasmaScreencastV1Session::sendEvent(const std::shared_ptr<QEvent> &event)
+         }
+         uint state = me->type() == QEvent::MouseButtonPress ? 1 : 0;
+         d->remoteInterface->button(button, state);
++        if (!state) {
++            d->latched = QRect(); // released: the mapping follows the window again
++        }
+         break;
+     }
+     case QEvent::MouseMove: {
+         auto me = std::static_pointer_cast<QMouseEvent>(event);
+         auto position = me->position();
++        if (d->window) {
++            // One window: the stream's pixels onto its frame geometry (latched while a button is
++            // held). ponytail: a popup left of/above the frame shifts the stream's origin, so clicks
++            // are off while it's open; to the right/below only grows the stream, which is fine.
++            const QRect g = d->latched.isNull() ? d->window->geometry : d->latched;
++            if (g.isEmpty() || size().isEmpty()) {
++                break;
++            }
++            const qreal k = qreal(g.width()) / size().width();
++            const QPointF at = QPointF(g.topLeft()) + position * k;
++            d->remoteInterface->pointer_motion_absolute(wl_fixed_from_double(at.x()), wl_fixed_from_double(at.y()));
++            break;
++        }
+         // A single output: map onto its own live geometry. The stream's logical size is the
+         // whole desktop's (screen->virtualSize()), and fake_input takes global coordinates.
+         const QRectF area = d->screen ? QRectF(d->screen->geometry()) : QRectF(QPointF{}, QSizeF(logicalSize()));
+diff --git a/src/VideoStream.cpp b/src/VideoStream.cpp
+index b7716cd..53c69a3 100644
+--- a/src/VideoStream.cpp
++++ b/src/VideoStream.cpp
+@@ -266,6 +266,16 @@ void VideoStream::setActiveEncodingMode(EncodingMode mode)
+ 
+         connect(d->encodedStream.get(), &PipeWireEncodedStream::newPacket, this, &VideoStream::onPacketReceived);
+         connect(d->encodedStream.get(), &PipeWireEncodedStream::sizeChanged, this, [this](const QSize &size) {
++            // Command Center: KPipeWire's H.264 encoder keeps the size it started with ("Changing video
++            // frame properties on the fly is not supported"), so its packets stay that size. Stamping
++            // them with a new size reset the client's graphics, its H.264 decoder with them, while the
++            // encoder went on with P-frames and no new keyframe: the picture turned white until the next
++            // scheduled keyframe (live: a window's context menu grew its stream by 1 px). The size is
++            // the encoder's: the first one.
++            if (d->size.isValid() && d->size != size) {
++                qCDebug(KRDP) << "stream size" << size << "kept at the encoder's" << d->size;
++                return;
++            }
+             d->setSize(this, size);
+         });
+         connect(d->encodedStream.get(), &PipeWireEncodedStream::cursorChanged, this, &VideoStream::cursorChanged);
+diff --git a/src/screencasting.cpp b/src/screencasting.cpp
+index ea9a4d8..d6df5fc 100644
+--- a/src/screencasting.cpp
++++ b/src/screencasting.cpp
+@@ -144,6 +144,14 @@ ScreencastingStream *Screencasting::createRegionStream(QRect g, qreal scale, Scr
+     return stream;
+ }
+ 
++ScreencastingStream *Screencasting::createWindowStream(const QString &uuid, Screencasting::CursorMode mode)
++{
++    // Command Center: one window's own stream (it follows the window; its size comes with frames)
++    auto stream = new ScreencastingStream(this);
++    stream->d->init(d->stream_window(uuid, mode));
++    return stream;
++}
++
+ ScreencastingStream *Screencasting::createVirtualMonitorStream(const QString &name, const QSize &resolution, qreal dpr, Screencasting::CursorMode mode)
+ {
+     auto stream = new ScreencastingStream(this);
+diff --git a/src/screencasting_p.h b/src/screencasting_p.h
+index d13f300..4f12aca 100644
+--- a/src/screencasting_p.h
++++ b/src/screencasting_p.h
+@@ -48,6 +48,7 @@ public:
+     ScreencastingStream *createOutputStream(QScreen *screen, CursorMode mode);
+     ScreencastingStream *createWorkspaceStream(CursorMode mode);
+     ScreencastingStream *createRegionStream(QRect g, qreal scale, CursorMode mode);
++    ScreencastingStream *createWindowStream(const QString &uuid, CursorMode mode);
+     ScreencastingStream *createVirtualMonitorStream(const QString &name, const QSize &resolution, qreal dpr, CursorMode mode);
+ 
+     void destroy();

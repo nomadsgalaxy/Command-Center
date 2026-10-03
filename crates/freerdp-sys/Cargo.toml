@@ -1,0 +1,10 @@
+[package]
+name = "freerdp-sys"
+version = "0.1.0"
+description = "Bindings to FreeRDP 3 (the client library built in panels/third_party with FFmpeg H.264)"
+edition.workspace = true
+license-file.workspace = true
+links = "freerdp3"
+
+[build-dependencies]
+bindgen = "0.72"

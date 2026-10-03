@@ -1,0 +1,22 @@
+[package]
+name = "cc-host"
+version = "0.1.0"
+edition.workspace = true
+license-file.workspace = true
+authors.workspace = true
+description = "Command Center's host side in one static binary: the agent, pairing, key and tag screens, install (docs/rust-host.md)"
+
+[dependencies]
+cc-proto = { path = "../cc-proto" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
+libc = "0.2"
+fontdue = "0.9"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }

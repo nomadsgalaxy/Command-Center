@@ -1,0 +1,6 @@
+# using the mirror camera the last good one
+#lag -0.010
+# mirror lag from the fit: -10 ms (scan.py measured 0 ms)
+# desk-portrait: 3 frame(s) over twice the median error dropped
+# desk-portrait: 34 tag positions in 28 frames, 0.82 m away; rms px flat 7.39, v R 1.00 m 5.76 -> v R 1.00 m (radius pinned by viewers.conf)
+{"name": "desk-portrait", "screen": 6, "centre": [0.6514, 1.286, -0.6114], "x": [0.69138, -0.0177, 0.72227], "y": [-0.01619, 0.99907, 0.03998], "z": [-0.72231, -0.03934, 0.69045], "width": 0.393, "height": 0.698, "axis": "v", "radius": 1.0, "rms": 5.72, "rms_mm": 4.3, "distance": 0.817}

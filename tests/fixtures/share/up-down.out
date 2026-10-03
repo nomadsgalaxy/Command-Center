@@ -1,0 +1,6 @@
+$ cc-share up
+Command Center is running on HOSTNAME
+[exit 0]
+$ cc-share down
+Command Center stopped on HOSTNAME
+[exit 0]

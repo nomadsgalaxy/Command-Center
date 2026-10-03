@@ -1,0 +1,19 @@
+[package]
+name = "cc-proto"
+version = "0.1.0"
+edition.workspace = true
+license-file.workspace = true
+authors.workspace = true
+description = "Command Center's Frame-host wire protocol: SPAKE2 pairing, the agent's TLS + Ed25519 challenge, messages (docs/pairing.md, docs/agent.md)"
+
+[dependencies]
+# pinned: paired Frames and hosts must agree byte for byte (it was cross-tested with python-spake2 0.9, now gone)
+spake2 = "=0.4.0"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+chacha20poly1305 = "0.10"

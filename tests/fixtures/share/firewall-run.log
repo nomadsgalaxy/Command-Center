@@ -1,0 +1,8 @@
+-- cc-share unpair f1 --firewall
+systemctl --user stop control-center-frame@f1-* control-center-window@f1-*
+systemctl --user kill -s HUP control-center-agent
+systemctl is-active -q firewalld
+systemctl is-active -q ufw
+sudo ufw delete allow proto tcp from 10.0.0.0/8 to any port 3399:3449
+sudo ufw delete allow proto tcp from 172.16.0.0/12 to any port 3399:3449
+sudo ufw delete allow proto tcp from 192.168.0.0/16 to any port 3399:3449

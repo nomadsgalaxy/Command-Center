@@ -1,0 +1,4 @@
+-- cc-share lock
+systemctl --user kill -s HUP control-center-agent
+-- cc-share unlock
+systemctl --user kill -s HUP control-center-agent

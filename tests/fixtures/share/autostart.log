@@ -1,0 +1,10 @@
+-- cc-share autostart status
+-- cc-share autostart on
+systemctl --user is-enabled -q control-center-announce.service
+systemctl --user enable control-center-share@0.service control-center-guard.service control-center-agent.service
+-- cc-share autostart status
+-- cc-share autostart off
+systemctl --user is-enabled -q control-center-announce.service
+systemctl --user disable control-center-share@0.service control-center-guard.service control-center-agent.service
+-- cc-share autostart status
+-- cc-share autostart bogus

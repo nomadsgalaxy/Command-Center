@@ -1,0 +1,127 @@
+[
+ {
+  "name": "two monitors placed, one moved since its last scan: reanchor offered",
+  "files": {
+   ".config/control-center/viewers.conf": "desk-wide       cc-frame@203.0.113.63:3410  5       5120x1440  machine=a7d2  curve=h  radius=1.0\ndesk-portrait   cc-frame@203.0.113.63:3411  6       1440x2560  machine=a7d2  curve=v\n",
+   ".config/control-center/mirror-camera.json": "[1078.2911645173851, 1075.2974390465752, 958.7035450492425, 537.0302171748745, 0.0014, -0.00066, 0.0004, -0.0319, 0.00116, 0.00035]",
+   ".config/control-center/home.json": "{\n  \"workspace\": \"work\",\n  \"workspaces\": {\n    \"work\": {\n      \"spots\": {\n        \"home\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          },\n          \"taskbar\": {\n            \"centre\": [\n              0,\n              1,\n              -1\n            ],\n            \"yaw\": 0,\n            \"pitch\": 0,\n            \"roll\": 0,\n            \"width\": 1.57\n          }\n        },\n        \"scanned\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          }\n        }\n      }\n    }\n  }\n}"
+  },
+  "lines": [
+   "#lag 0.063",
+   "# mirror camera from 120 virtual tags: f 1078/1075",
+   "# using the mirror camera the last good one",
+   "# desk-wide: 24 tag positions in 31 frames, 1.34 m away; rms px h R 1.00 m 1.62 -> h R 1.00 m (radius pinned by viewers.conf)",
+   "{\"name\": \"desk-wide\", \"screen\": 5, \"centre\": [-0.2513, 1.8044, -1.9032], \"x\": [0.99714, 0.0, 0.07558], \"y\": [0.00422, 0.99844, -0.05571], \"z\": [-0.07547, 0.05588, 0.99558], \"width\": 1.193, \"height\": 0.336, \"axis\": \"h\", \"radius\": 1.0, \"rms\": 1.62, \"rms_mm\": 3.4, \"distance\": 1.341}",
+   "{\"name\": \"desk-portrait\", \"screen\": 5, \"centre\": [0.85, 1.35, -0.6], \"x\": [0.99714, 0.0, 0.07558], \"y\": [0.00422, 0.99844, -0.05571], \"z\": [-0.07547, 0.05588, 0.99558], \"width\": 1.193, \"height\": 0.336, \"axis\": \"v\", \"radius\": 1.6, \"rms\": 1.62, \"rms_mm\": 5.25, \"distance\": 1.341}"
+  ],
+  "stdout": "@mode fast\n  mirror camera from 120 virtual tags: f 1078/1075\n  using the mirror camera the last good one\n  desk-wide: 24 tag positions in 31 frames, 1.34 m away; rms px h R 1.00 m 1.62 -> h R 1.00 m (radius pinned by viewers.conf)\n  desk-wide: moved 68 mm and 8.9 deg since its last scan; if the room moved (tracking re-anchored), cc-home reanchor desk-wide moves everything else with it\n@reanchor desk-wide mm=68 deg=8.9\n  desk-wide: placed on the real monitor (fit 3 mm) and saved in scanned\n@placed desk-wide mm=3 axis=h radius=1.0\n  desk-portrait: curved top to bottom (R 1.60 m)\n  desk-portrait: placed on the real monitor (fit 5 mm) and saved in scanned\n@placed desk-portrait mm=5 axis=v radius=1.6\n@done - total_s=0\ndone in 0 s ()\n",
+  "stderr": "",
+  "exit": 0,
+  "out": {
+   ".config/control-center/home.json": "{\n  \"workspace\": \"work\",\n  \"workspaces\": {\n    \"work\": {\n      \"spots\": {\n        \"home\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.2513,\n              1.8044,\n              -1.9032\n            ],\n            \"yaw\": -4.335,\n            \"pitch\": -3.203,\n            \"roll\": 0.0,\n            \"width\": 1.193,\n            \"height\": 0.336,\n            \"curve\": 1.0\n          },\n          \"taskbar\": {\n            \"centre\": [\n              0,\n              1,\n              -1\n            ],\n            \"yaw\": 0,\n            \"pitch\": 0,\n            \"roll\": 0,\n            \"width\": 1.57\n          },\n          \"desk-portrait\": {\n            \"centre\": [\n              0.85,\n              1.35,\n              -0.6\n            ],\n            \"yaw\": -4.335,\n            \"pitch\": -3.203,\n            \"roll\": 0.0,\n            \"width\": 1.193,\n            \"height\": 0.336,\n            \"curve\": 0,\n            \"vcurve\": 1.6\n          }\n        },\n        \"scanned\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.2513,\n              1.8044,\n              -1.9032\n            ],\n            \"yaw\": -4.335,\n            \"pitch\": -3.203,\n            \"roll\": 0.0,\n            \"width\": 1.193,\n            \"height\": 0.336,\n            \"curve\": 1.0\n          },\n          \"desk-portrait\": {\n            \"centre\": [\n              0.85,\n              1.35,\n              -0.6\n            ],\n            \"yaw\": -4.335,\n            \"pitch\": -3.203,\n            \"roll\": 0.0,\n            \"width\": 1.193,\n            \"height\": 0.336,\n            \"curve\": 0,\n            \"vcurve\": 1.6\n          }\n        },\n        \"before-align\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          }\n        },\n        \"previous\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          },\n          \"taskbar\": {\n            \"centre\": [\n              0,\n              1,\n              -1\n            ],\n            \"yaw\": 0,\n            \"pitch\": 0,\n            \"roll\": 0,\n            \"width\": 1.57\n          }\n        }\n      }\n    }\n  }\n}",
+   ".config/control-center/mirror-lag.json": "{\"lag_ms\": 63}",
+   ".config/control-center/mirror-camera.json": "[1078.2911645173851, 1075.2974390465752, 958.7035450492425, 537.0302171748745, 0.0014, -0.00066, 0.0004, -0.0319, 0.00116, 0.00035]",
+   ".config/control-center/viewers.conf": "desk-wide       cc-frame@203.0.113.63:3410  5       5120x1440  machine=a7d2  curve=h  radius=1.0\ndesk-portrait   cc-frame@203.0.113.63:3411  6       1440x2560  machine=a7d2  curve=v\n"
+  },
+  "asked": [
+   "panels",
+   "place desk-wide -0.2513 1.8044 -1.9032 -4.335 -3.203 0.000 1.1930 1.000 0.3360",
+   "place desk-portrait 0.8500 1.3500 -0.6000 -4.335 -3.203 0.000 1.1930 0.000 0.3360 1.600"
+  ]
+ },
+ {
+  "name": "the same place again: no reanchor",
+  "files": {
+   ".config/control-center/viewers.conf": "desk-wide       cc-frame@203.0.113.63:3410  5       5120x1440  machine=a7d2  curve=h  radius=1.0\ndesk-portrait   cc-frame@203.0.113.63:3411  6       1440x2560  machine=a7d2  curve=v\n",
+   ".config/control-center/mirror-camera.json": "[1078.2911645173851, 1075.2974390465752, 958.7035450492425, 537.0302171748745, 0.0014, -0.00066, 0.0004, -0.0319, 0.00116, 0.00035]",
+   ".config/control-center/home.json": "{\n  \"workspace\": \"work\",\n  \"workspaces\": {\n    \"work\": {\n      \"spots\": {\n        \"home\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          },\n          \"taskbar\": {\n            \"centre\": [\n              0,\n              1,\n              -1\n            ],\n            \"yaw\": 0,\n            \"pitch\": 0,\n            \"roll\": 0,\n            \"width\": 1.57\n          }\n        },\n        \"scanned\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          }\n        }\n      }\n    }\n  }\n}"
+  },
+  "lines": [
+   "{\"name\": \"desk-wide\", \"screen\": 5, \"centre\": [-0.3, 1.8, -1.95], \"x\": [0.99714, 0.0, 0.07558], \"y\": [0.00422, 0.99844, -0.05571], \"z\": [-0.07547, 0.05588, 0.99558], \"width\": 1.193, \"height\": 0.336, \"axis\": \"h\", \"radius\": 1.0, \"rms\": 1.62, \"rms_mm\": 3.4, \"distance\": 1.341}"
+  ],
+  "stdout": "@mode fast\n  desk-wide: moved 0 mm and 8.9 deg since its last scan; if the room moved (tracking re-anchored), cc-home reanchor desk-wide moves everything else with it\n@reanchor desk-wide mm=0 deg=8.9\n  desk-wide: placed on the real monitor (fit 3 mm) and saved in scanned\n@placed desk-wide mm=3 axis=h radius=1.0\n@done - total_s=0\ndone in 0 s ()\n",
+  "stderr": "",
+  "exit": 0,
+  "out": {
+   ".config/control-center/home.json": "{\n  \"workspace\": \"work\",\n  \"workspaces\": {\n    \"work\": {\n      \"spots\": {\n        \"home\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": -4.335,\n            \"pitch\": -3.203,\n            \"roll\": 0.0,\n            \"width\": 1.193,\n            \"height\": 0.336,\n            \"curve\": 1.0\n          },\n          \"taskbar\": {\n            \"centre\": [\n              0,\n              1,\n              -1\n            ],\n            \"yaw\": 0,\n            \"pitch\": 0,\n            \"roll\": 0,\n            \"width\": 1.57\n          }\n        },\n        \"scanned\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": -4.335,\n            \"pitch\": -3.203,\n            \"roll\": 0.0,\n            \"width\": 1.193,\n            \"height\": 0.336,\n            \"curve\": 1.0\n          }\n        },\n        \"before-align\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          }\n        },\n        \"previous\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          },\n          \"taskbar\": {\n            \"centre\": [\n              0,\n              1,\n              -1\n            ],\n            \"yaw\": 0,\n            \"pitch\": 0,\n            \"roll\": 0,\n            \"width\": 1.57\n          }\n        }\n      }\n    }\n  }\n}",
+   ".config/control-center/mirror-camera.json": "[1078.2911645173851, 1075.2974390465752, 958.7035450492425, 537.0302171748745, 0.0014, -0.00066, 0.0004, -0.0319, 0.00116, 0.00035]",
+   ".config/control-center/viewers.conf": "desk-wide       cc-frame@203.0.113.63:3410  5       5120x1440  machine=a7d2  curve=h  radius=1.0\ndesk-portrait   cc-frame@203.0.113.63:3411  6       1440x2560  machine=a7d2  curve=v\n"
+  },
+  "asked": [
+   "panels",
+   "place desk-wide -0.3000 1.8000 -1.9500 -4.335 -3.203 0.000 1.1930 1.000 0.3360"
+  ]
+ },
+ {
+  "name": "a fit too poor, a solve error, a new camera",
+  "files": {
+   ".config/control-center/viewers.conf": "desk-wide       cc-frame@203.0.113.63:3410  5       5120x1440  machine=a7d2  curve=h  radius=1.0\ndesk-portrait   cc-frame@203.0.113.63:3411  6       1440x2560  machine=a7d2  curve=v\n",
+   ".config/control-center/mirror-camera.json": "[1078.2911645173851, 1075.2974390465752, 958.7035450492425, 537.0302171748745, 0.0014, -0.00066, 0.0004, -0.0319, 0.00116, 0.00035]",
+   ".config/control-center/home.json": "{\n  \"workspace\": \"work\",\n  \"workspaces\": {\n    \"work\": {\n      \"spots\": {\n        \"home\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          },\n          \"taskbar\": {\n            \"centre\": [\n              0,\n              1,\n              -1\n            ],\n            \"yaw\": 0,\n            \"pitch\": 0,\n            \"roll\": 0,\n            \"width\": 1.57\n          }\n        },\n        \"scanned\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          }\n        }\n      }\n    }\n  }\n}"
+  },
+  "lines": [
+   "#camera [1078.0, 1075.0, 958.0, 537.0, 0.0, 0.0, 0.0, -0.032, 0.0, 0.0]",
+   "#error no mirror camera fit",
+   "{\"name\": \"desk-wide\", \"screen\": 5, \"centre\": [-0.2513, 1.8044, -1.9032], \"x\": [0.99714, 0.0, 0.07558], \"y\": [0.00422, 0.99844, -0.05571], \"z\": [-0.07547, 0.05588, 0.99558], \"width\": 1.193, \"height\": 0.336, \"axis\": \"h\", \"radius\": 1.0, \"rms\": 1.62, \"rms_mm\": 12.3, \"distance\": 1.341}",
+   "{\"name\": \"desk-portrait\", \"screen\": 5, \"centre\": [-0.2513, 1.8044, -1.9032], \"x\": [0.99714, 0.0, 0.07558], \"y\": [0.00422, 0.99844, -0.05571], \"z\": [-0.07547, 0.05588, 0.99558], \"width\": 1.193, \"height\": 0.336, \"axis\": \"flat\", \"radius\": 0.0, \"rms\": 1.62, \"rms_mm\": 2.0, \"distance\": 1.341}"
+  ],
+  "stdout": "@mode fast\n  solve: no mirror camera fit\n@failed desk-wide why=poor-fit mm=12\n  desk-wide: fit too poor (12 mm > 10 mm), not placed; scan again, moving your head more slowly\n  desk-portrait: placed on the real monitor (fit 2 mm) and saved in scanned\n@placed desk-portrait mm=2 axis=flat radius=0.0\n@done - total_s=0\ndone in 0 s ()\n",
+  "stderr": "",
+  "exit": 0,
+  "out": {
+   ".config/control-center/home.json": "{\n  \"workspace\": \"work\",\n  \"workspaces\": {\n    \"work\": {\n      \"spots\": {\n        \"home\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          },\n          \"taskbar\": {\n            \"centre\": [\n              0,\n              1,\n              -1\n            ],\n            \"yaw\": 0,\n            \"pitch\": 0,\n            \"roll\": 0,\n            \"width\": 1.57\n          },\n          \"desk-portrait\": {\n            \"centre\": [\n              -0.2513,\n              1.8044,\n              -1.9032\n            ],\n            \"yaw\": -4.335,\n            \"pitch\": -3.203,\n            \"roll\": 0.0,\n            \"width\": 1.193,\n            \"height\": 0.336,\n            \"curve\": 0\n          }\n        },\n        \"scanned\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          },\n          \"desk-portrait\": {\n            \"centre\": [\n              -0.2513,\n              1.8044,\n              -1.9032\n            ],\n            \"yaw\": -4.335,\n            \"pitch\": -3.203,\n            \"roll\": 0.0,\n            \"width\": 1.193,\n            \"height\": 0.336,\n            \"curve\": 0\n          }\n        },\n        \"previous\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          },\n          \"taskbar\": {\n            \"centre\": [\n              0,\n              1,\n              -1\n            ],\n            \"yaw\": 0,\n            \"pitch\": 0,\n            \"roll\": 0,\n            \"width\": 1.57\n          }\n        }\n      }\n    }\n  }\n}",
+   ".config/control-center/mirror-camera.json": "[1078.0, 1075.0, 958.0, 537.0, 0.0, 0.0, 0.0, -0.032, 0.0, 0.0]",
+   ".config/control-center/viewers.conf": "desk-wide       cc-frame@203.0.113.63:3410  5       5120x1440  machine=a7d2  curve=h  radius=1.0\ndesk-portrait   cc-frame@203.0.113.63:3411  6       1440x2560  machine=a7d2  curve=v\n"
+  },
+  "asked": [
+   "panels",
+   "place desk-portrait -0.2513 1.8044 -1.9032 -4.335 -3.203 0.000 1.1930 0.000 0.3360"
+  ]
+ },
+ {
+  "name": "a fresh Frame: no home.json yet",
+  "files": {
+   ".config/control-center/viewers.conf": "desk-wide       cc-frame@203.0.113.63:3410  5       5120x1440  machine=a7d2  curve=h  radius=1.0\ndesk-portrait   cc-frame@203.0.113.63:3411  6       1440x2560  machine=a7d2  curve=v\n",
+   ".config/control-center/mirror-camera.json": "[1078.2911645173851, 1075.2974390465752, 958.7035450492425, 537.0302171748745, 0.0014, -0.00066, 0.0004, -0.0319, 0.00116, 0.00035]"
+  },
+  "lines": [
+   "#lag -0.02",
+   "{\"name\": \"desk-wide\", \"screen\": 5, \"centre\": [-0.2513, 1.8044, -1.9032], \"x\": [0.99714, 0.0, 0.07558], \"y\": [0.00422, 0.99844, -0.05571], \"z\": [-0.07547, 0.05588, 0.99558], \"width\": 1.193, \"height\": 0.336, \"axis\": \"h\", \"radius\": 1.0, \"rms\": 1.62, \"rms_mm\": 3.4, \"distance\": 1.341}"
+  ],
+  "stdout": "@mode fast\n  desk-wide: placed on the real monitor (fit 3 mm) and saved in scanned\n@placed desk-wide mm=3 axis=h radius=1.0\n@done - total_s=0\ndone in 0 s ()\n",
+  "stderr": "",
+  "exit": 0,
+  "out": {
+   ".config/control-center/home.json": "{\n  \"workspace\": \"temporary\",\n  \"workspaces\": {\n    \"temporary\": {\n      \"spots\": {\n        \"scanned\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.2513,\n              1.8044,\n              -1.9032\n            ],\n            \"yaw\": -4.335,\n            \"pitch\": -3.203,\n            \"roll\": 0.0,\n            \"width\": 1.193,\n            \"height\": 0.336,\n            \"curve\": 1.0\n          }\n        },\n        \"previous\": {},\n        \"home\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.2513,\n              1.8044,\n              -1.9032\n            ],\n            \"yaw\": -4.335,\n            \"pitch\": -3.203,\n            \"roll\": 0.0,\n            \"width\": 1.193,\n            \"height\": 0.336,\n            \"curve\": 1.0\n          }\n        }\n      }\n    }\n  }\n}",
+   ".config/control-center/mirror-lag.json": "{\"lag_ms\": -20}",
+   ".config/control-center/mirror-camera.json": "[1078.2911645173851, 1075.2974390465752, 958.7035450492425, 537.0302171748745, 0.0014, -0.00066, 0.0004, -0.0319, 0.00116, 0.00035]",
+   ".config/control-center/viewers.conf": "desk-wide       cc-frame@203.0.113.63:3410  5       5120x1440  machine=a7d2  curve=h  radius=1.0\ndesk-portrait   cc-frame@203.0.113.63:3411  6       1440x2560  machine=a7d2  curve=v\n"
+  },
+  "asked": [
+   "panels",
+   "place desk-wide -0.2513 1.8044 -1.9032 -4.335 -3.203 0.000 1.1930 1.000 0.3360"
+  ]
+ },
+ {
+  "name": "nothing placed",
+  "files": {
+   ".config/control-center/viewers.conf": "desk-wide       cc-frame@203.0.113.63:3410  5       5120x1440  machine=a7d2  curve=h  radius=1.0\ndesk-portrait   cc-frame@203.0.113.63:3411  6       1440x2560  machine=a7d2  curve=v\n",
+   ".config/control-center/mirror-camera.json": "[1078.2911645173851, 1075.2974390465752, 958.7035450492425, 537.0302171748745, 0.0014, -0.00066, 0.0004, -0.0319, 0.00116, 0.00035]",
+   ".config/control-center/home.json": "{\n  \"workspace\": \"work\",\n  \"workspaces\": {\n    \"work\": {\n      \"spots\": {\n        \"home\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          },\n          \"taskbar\": {\n            \"centre\": [\n              0,\n              1,\n              -1\n            ],\n            \"yaw\": 0,\n            \"pitch\": 0,\n            \"roll\": 0,\n            \"width\": 1.57\n          }\n        },\n        \"scanned\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          }\n        }\n      }\n    }\n  }\n}"
+  },
+  "lines": [
+   "# desk-wide: only 2 tag position(s) seen through passthrough, need 3+"
+  ],
+  "stdout": "@mode fast\n  desk-wide: only 2 tag position(s) seen through passthrough, need 3+\n@done - total_s=0\ndone in 0 s ()\n",
+  "stderr": "",
+  "exit": 0,
+  "out": {
+   ".config/control-center/home.json": "{\n  \"workspace\": \"work\",\n  \"workspaces\": {\n    \"work\": {\n      \"spots\": {\n        \"home\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          },\n          \"taskbar\": {\n            \"centre\": [\n              0,\n              1,\n              -1\n            ],\n            \"yaw\": 0,\n            \"pitch\": 0,\n            \"roll\": 0,\n            \"width\": 1.57\n          }\n        },\n        \"scanned\": {\n          \"desk-wide\": {\n            \"centre\": [\n              -0.3,\n              1.8,\n              -1.95\n            ],\n            \"yaw\": 4.578,\n            \"pitch\": 4.267,\n            \"roll\": -0.463,\n            \"width\": 1.19,\n            \"height\": 0.33,\n            \"curve\": 1.0\n          }\n        }\n      }\n    }\n  }\n}",
+   ".config/control-center/mirror-camera.json": "[1078.2911645173851, 1075.2974390465752, 958.7035450492425, 537.0302171748745, 0.0014, -0.00066, 0.0004, -0.0319, 0.00116, 0.00035]",
+   ".config/control-center/viewers.conf": "desk-wide       cc-frame@203.0.113.63:3410  5       5120x1440  machine=a7d2  curve=h  radius=1.0\ndesk-portrait   cc-frame@203.0.113.63:3411  6       1440x2560  machine=a7d2  curve=v\n"
+  },
+  "asked": [
+   "panels"
+  ]
+ }
+]

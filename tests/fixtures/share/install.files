@@ -1,0 +1,14 @@
+./.config/control-center/announce 644: off|
+./.config/control-center/autostart 644: off|
+./.config/control-center/cert.pem 600
+./.config/control-center/key.pem 600
+./.config/control-center/password 600
+./.config/control-center/shared 644: 0|1|
+./.config/systemd/user/control-center-agent.service 644: [Unit]|Description=Command Center agent: paired Frames on port 3399 (docs/agent.md)|After=graphical-session.target network-online.target|PartOf=graphical-session.target||[Service]|ExecStart=%h/.local/share/control-center/cc-host serve|ExecReload=/bin/kill -HUP $MAINPID|Restart=on-failure|RestartSec=5|NoNewPrivileges=yes|PrivateTmp=yes|ProtectSystem=strict|ReadWritePaths=%h/.config/control-center %h/.cache %h/.config/systemd/user %t||[Install]|WantedBy=graphical-session.target|
+./.config/systemd/user/control-center-frame@.service 644: [Unit]|Description=Command Center share for paired Frame %i|After=graphical-session.target|PartOf=graphical-session.target||[Service]|ExecStart=%h/.local/share/control-center/cc-host frame-run %i|Restart=on-failure|RestartSec=5||[Install]|WantedBy=graphical-session.target|
+./.config/systemd/user/control-center-guard.service 644: [Unit]|Description=Command Center: keep shared monitors encodable while a viewer is connected|After=graphical-session.target|PartOf=graphical-session.target||[Service]|ExecStart=%h/.local/share/control-center/cc-host guard|TimeoutStopSec=20|Restart=on-failure|RestartSec=5||[Install]|WantedBy=graphical-session.target|
+./.config/systemd/user/control-center-share@.service 644: [Unit]|Description=Command Center share: monitor %i over RDP (port 3400+%i)|After=graphical-session.target|PartOf=graphical-session.target||[Service]|ExecStart=/bin/sh -c 'exec /usr/bin/krdpserver --plasma --monitor %i --port $((3400 + %i)) -u "$USER" -p "$(cat %h/.config/control-center/password)" --certificate %h/.config/control-center/cert.pem --certificate-key %h/.config/control-center/key.pem'|Restart=on-failure|RestartSec=5||[Install]|WantedBy=graphical-session.target|
+./.config/systemd/user/control-center-window@.service 644: [Unit]|Description=Command Center window stream for paired Frame %i|After=graphical-session.target|PartOf=graphical-session.target||[Service]|ExecStart=%h/.local/share/control-center/cc-host window-run %i|Restart=no|
+./.local/bin/cc-share 777 -> HOME/.local/share/control-center/cc-host
+./.local/share/applications/command-center-host.desktop 644: [Desktop Entry]|Type=Application|Name=Command Center Host|Comment=Share this machine's monitors with the Steam Frame|Exec=HOME/.local/bin/cc-share up|Icon=video-display|Categories=Network;RemoteAccess;|Actions=stop;||[Desktop Action stop]|Name=Stop Command Center|Exec=HOME/.local/bin/cc-share down|
+./.local/share/control-center/cc-host 755

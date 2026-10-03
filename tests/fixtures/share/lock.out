@@ -1,0 +1,6 @@
+$ cc-share lock
+agent locked: every Frame's commands are refused and its tag screens closed (cc-share unlock)
+[exit 0]
+$ cc-share unlock
+agent unlocked (and any Frame blocked from the tag screen is allowed again)
+[exit 0]

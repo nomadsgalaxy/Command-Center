@@ -1,0 +1,65 @@
+# A release for a v* tag: static musl builds of cc-install and cc-host for x86_64 and aarch64,
+# and cc-home for aarch64 (the Frame), with SHA256SUMS. The `install` script downloads from the
+# latest release. It's made as a draft, filled, then published, so `latest` never points at a
+# half-uploaded one. Each arch builds on its own runner (no cross toolchain needed), the same
+# way the Frame builds aarch64. Only actions/checkout is used, pinned; the rest is gh and cargo.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+env:
+  GH_TOKEN: ${{ github.token }}
+  TAG: ${{ github.ref_name }}
+  # the workspace keeps debug info in release builds (60+ MB each); the downloads don't need it
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
+  CARGO_PROFILE_RELEASE_STRIP: symbols
+
+jobs:
+  draft:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --title "Command Center $TAG" \
+            --notes "To install or update, run this in a terminal on the Steam Frame or on a computer it shows: curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/install | sh"
+
+  build:
+    needs: draft
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04, crates: "-p cc-install -p cc-host" }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, crates: "-p cc-install -p cc-host -p cc-home" }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # .cargo/config.toml: ring's C through clang and llvm-ar, linked with rust-lld (rustup's)
+      - run: sudo apt-get update -q && sudo apt-get install -yq clang llvm
+      - run: rustup toolchain install stable --profile minimal --target ${{ matrix.arch }}-unknown-linux-musl && rustup default stable
+      - run: cargo build --locked --release --target ${{ matrix.arch }}-unknown-linux-musl ${{ matrix.crates }}
+      - name: upload
+        run: |
+          set -eu
+          mkdir out
+          for c in cc-install cc-host cc-home; do
+            b=target/${{ matrix.arch }}-unknown-linux-musl/release/$c
+            [ -f "$b" ] || continue
+            file "$b" | grep -q "statically linked" || { echo "$c isn't static"; exit 1; }
+            cp "$b" "out/$c-${{ matrix.arch }}"
+          done
+          gh release upload "$TAG" out/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: SHA256SUMS, then publish
+        run: |
+          set -eu
+          mkdir out && cd out
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "cc-*"
+          sha256sum cc-* > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

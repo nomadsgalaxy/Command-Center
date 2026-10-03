@@ -1,0 +1,26 @@
+# Where the programs find their shared libraries at run time: the SteamVR runtime (linked in
+# at /opt/steamvr in the container), and our FreeRDP build, relative to target/<profile>/.
+# (A target's own rustflags below replace these for the musl host builds.)
+[build]
+rustflags = [
+  "-C", "link-arg=-Wl,-rpath,/opt/steamvr/bin/linuxarm64",
+  "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../panels/third_party/prefix/lib64",
+]
+
+# The host binary: static musl (x86_64 and aarch64), cross-built on the Frame (docs/rust-host.md). musl's C runtime is
+# Rust's own (no distro startup objects); ring's C/asm via clang; linked with Rust's lld.
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes", "-C", "target-feature=+crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes", "-C", "target-feature=+crt-static"]
+
+[env]
+CC_x86_64_unknown_linux_musl = "clang"
+CFLAGS_x86_64_unknown_linux_musl = "--target=x86_64-unknown-linux-musl"
+AR_x86_64_unknown_linux_musl = "llvm-ar"
+CC_aarch64_unknown_linux_musl = "clang"
+CFLAGS_aarch64_unknown_linux_musl = "--target=aarch64-unknown-linux-musl"
+AR_aarch64_unknown_linux_musl = "llvm-ar"

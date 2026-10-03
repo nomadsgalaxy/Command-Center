@@ -1,0 +1,6 @@
+-- cc-share up
+systemctl --user start control-center-share@0.service control-center-share@1.service control-center-guard.service control-center-agent.service control-center-announce.service
+notify-send -a Command Center Command Center sharing HOSTNAME: the Frame can connect
+-- cc-share down
+systemctl --user stop control-center-frame@* control-center-window@* control-center-share@0.service control-center-share@1.service control-center-guard.service control-center-agent.service control-center-announce.service
+notify-send -a Command Center Command Center stopped: the Frame can't connect until you start Command Center Host

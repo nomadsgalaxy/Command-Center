@@ -1,0 +1,23 @@
+-- cc-share install 0 1 --no-announce --no-autostart
+systemctl --user daemon-reload
+systemctl --user is-enabled -q control-center-announce.service
+systemctl --user start control-center-share@0.service control-center-share@1.service control-center-guard.service control-center-agent.service
+systemctl --user is-enabled -q control-center-announce.service
+systemctl --user disable control-center-share@0.service control-center-share@1.service control-center-guard.service control-center-agent.service
+systemctl --user restart control-center-agent.service
+systemctl --user restart control-center-guard.service
+systemctl is-active -q firewalld
+systemctl is-active -q ufw
+systemctl --user disable --now control-center-announce.service
+systemctl --user daemon-reload
+systemctl --user is-active -q control-center-agent
+systemctl --user is-active -q control-center-guard
+systemctl --user is-active -q control-center-announce.service
+loginctl show-user tester -p Linger --value
+systemctl --user is-active -q control-center-announce.service
+-- cc-share check
+systemctl --user is-active -q control-center-agent
+systemctl --user is-active -q control-center-guard
+systemctl --user is-active -q control-center-announce.service
+loginctl show-user tester -p Linger --value
+-- cc-share autostart status

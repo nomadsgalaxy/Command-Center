@@ -1,0 +1,7 @@
+#!/bin/bash
+# The final test's fit check (the review's gate), optional: the real scans kept in
+# ~/.cache/control-center/scan-regression-<name>/ (270+ MB each, not committed) solved again by
+# cc-scan and compared with solve.py's fit recorded in tests/fixtures/solve-real/<name>-<job>.out
+# (same shape, centres within 6 mm, radius within 5%). A scan that isn't there is skipped.
+# Runs in cc-box (cargo):  tests/solve-real
+cd "$(dirname "$(readlink -f "$0")")/.." && exec cargo test --release -p cc-scan --test cross solve_real -- --ignored --nocapture

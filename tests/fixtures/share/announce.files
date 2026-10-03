@@ -1,0 +1,3 @@
+./.config/control-center/announce 644: off|
+./.local/bin/cc-share 777 -> HOME/.local/share/control-center/cc-host
+./.local/share/control-center/cc-host 755

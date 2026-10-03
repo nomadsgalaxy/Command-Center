@@ -1,0 +1,7 @@
+-- cc-share install 0 1 --dry-run
+systemctl is-active -q firewalld
+systemctl is-active -q ufw
+systemctl --user is-active -q control-center-agent
+systemctl --user is-active -q control-center-guard
+systemctl --user is-active -q control-center-announce.service
+loginctl show-user tester -p Linger --value

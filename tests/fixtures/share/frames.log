@@ -1,0 +1,10 @@
+-- cc-share frames
+systemctl --user list-units --no-legend --state=running control-center-frame@f1-*
+-- cc-share unpair ../x
+-- cc-share unpair nobody
+-- cc-share unpair f1
+systemctl --user stop control-center-frame@f1-* control-center-window@f1-*
+systemctl --user kill -s HUP control-center-agent
+systemctl is-active -q firewalld
+systemctl is-active -q ufw
+-- cc-share frames

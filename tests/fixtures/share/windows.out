@@ -1,0 +1,12 @@
+$ cc-share windows status
+off
+[exit 0]
+$ cc-share windows on
+no window server built yet (docs/remote-windows.md step 0)
+[exit 1]
+$ cc-share windows off
+window streams off
+[exit 0]
+$ cc-share windows bogus
+usage: cc-share windows on|off|status
+[exit 2]

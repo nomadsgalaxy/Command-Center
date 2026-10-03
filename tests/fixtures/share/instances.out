@@ -1,0 +1,15 @@
+$ cc-share frame-run bad
+bad instance: bad
+[exit 2]
+$ cc-share frame-run ../x-0
+bad instance: ../x-0
+[exit 2]
+$ cc-share window-run f1-0-nope
+bad instance: f1-0-nope
+[exit 2]
+$ cc-share window-run f1-9-0123abcd-0000-4000-8000-000000000000
+bad instance: f1-9-0123abcd-0000-4000-8000-000000000000
+[exit 2]
+$ cc-share windows on
+no window server built yet (docs/remote-windows.md step 0)
+[exit 1]

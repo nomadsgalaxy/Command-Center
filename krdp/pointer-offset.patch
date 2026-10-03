@@ -1,0 +1,42 @@
+diff --git a/src/PlasmaScreencastV1Session.cpp b/src/PlasmaScreencastV1Session.cpp
+index c17af02..d0c7c37 100644
+--- a/src/PlasmaScreencastV1Session.cpp
++++ b/src/PlasmaScreencastV1Session.cpp
+@@ -6,6 +6,8 @@
+ 
+ #include <QGuiApplication>
+ #include <QMouseEvent>
++#include <QPointer>
++#include <QScreen>
+ #include <QQueue>
+ #include <QWaylandClientExtensionTemplate>
+ #include <qpa/qplatformnativeinterface.h>
+@@ -155,6 +157,8 @@ public:
+     Screencasting m_screencasting;
+     ScreencastingStream *request = nullptr;
+     FakeInput *remoteInterface = nullptr;
++    // The streamed output, to map pointer positions onto it.
++    QPointer<QScreen> screen;
+ };
+ 
+ PlasmaScreencastV1Session::PlasmaScreencastV1Session()
+@@ -180,6 +184,7 @@ void PlasmaScreencastV1Session::start()
+             return;
+         }
+         auto screen = qApp->screens().at(*streamIndex);
++        d->screen = screen;
+         d->request = d->m_screencasting.createOutputStream(screen, Screencasting::Metadata);
+     } else {
+         d->request = d->m_screencasting.createWorkspaceStream(Screencasting::Metadata);
+@@ -222,7 +227,10 @@ void PlasmaScreencastV1Session::sendEvent(const std::shared_ptr<QEvent> &event)
+     case QEvent::MouseMove: {
+         auto me = std::static_pointer_cast<QMouseEvent>(event);
+         auto position = me->position();
+-        auto logicalPosition = QPointF{(position.x() / size().width()) * logicalSize().width(), (position.y() / size().height()) * logicalSize().height()};
++        // A single output: map onto its own live geometry. The stream's logical size is the
++        // whole desktop's (screen->virtualSize()), and fake_input takes global coordinates.
++        const QRectF area = d->screen ? QRectF(d->screen->geometry()) : QRectF(QPointF{}, QSizeF(logicalSize()));
++        auto logicalPosition = area.topLeft() + QPointF{(position.x() / size().width()) * area.width(), (position.y() / size().height()) * area.height()};
+         d->remoteInterface->pointer_motion_absolute(wl_fixed_from_double(logicalPosition.x()), wl_fixed_from_double(logicalPosition.y()));
+         break;
+     }

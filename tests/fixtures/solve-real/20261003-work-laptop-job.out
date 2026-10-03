@@ -1,0 +1,7 @@
+# using the mirror camera the last good one
+# work-laptop: tag 9 dropped as a misread (0.21 m away, others 0.80 m)
+#lag -0.010
+# mirror lag from the fit: -10 ms (scan.py measured 0 ms)
+# work-laptop: 11 frame(s) over twice the median error dropped
+# work-laptop: 46 tag positions in 20 frames, 0.70 m away; rms px flat 2.31 -> flat (as viewers.conf says)
+{"name": "work-laptop", "screen": 4, "centre": [-0.0367, 0.9717, -0.8695], "x": [0.99996, -0.00684, 0.00492], "y": [0.00721, 0.99671, -0.08069], "z": [-0.00435, 0.08072, 0.99673], "width": 0.344, "height": 0.194, "axis": "flat", "radius": 0.0, "rms": 2.11, "rms_mm": 1.4, "distance": 0.698}

@@ -1,0 +1,64 @@
+# Arch's krdp with Command Center's pointer fix (pointer-offset.patch): krdpserver --monitor N
+# moved the pointer as if monitor N sat at the desktop's top-left, so on any other monitor
+# clicks landed in the wrong place or on the wrong monitor. Build and install on each machine
+# that runs cc-share:  makepkg -si   (a newer krdp from the repos replaces it; rebuild then)
+# clipboard.patch: the Plasma session (--plasma) had no clipboard at all (setClipboardData was
+# a stub, nothing watched the system clipboard); this gives it PortalSession's KSystemClipboard
+# handling, without echoing its own pastes back to the client.
+# Maintainer: Antonio Rojas <arojas@archlinux.org>
+
+pkgname=krdp
+pkgver=6.7.5
+_dirver=$(echo $pkgver | cut -d. -f1-3)
+pkgrel=1.11
+pkgdesc='Library and examples for creating an RDP server'
+arch=(x86_64)
+url='https://kde.org/plasma-desktop/'
+license=(LGPL-2.0-or-later)
+depends=(freerdp
+         glibc
+         kcmutils
+         kconfig
+         kcoreaddons
+         kcrash
+         kguiaddons
+         ki18n
+         kirigami-addons
+         kpipewire
+         kstatusnotifieritem
+         libstdc++
+         libxkbcommon
+         pam
+         qt6-base
+         qtkeychain-qt6
+         systemd-libs
+         wayland)
+makedepends=(extra-cmake-modules
+             plasma-wayland-protocols)
+groups=(plasma)
+source=(https://download.kde.org/stable/plasma/$_dirver/$pkgname-$pkgver.tar.xz{,.sig}
+        pointer-offset.patch
+        clipboard.patch)
+sha256sums=('483fb1d9ffd6954e7b12aa4321763a31726e5c0daac10e135cd13a503ced5330'
+            'SKIP'
+            'a60b385ebe460af414d0a6a0e773deb30b254d630561852b4c565a0af9e53964'
+            'a2b68935fc4228fe826471aed5c2bbe87c5d173843aae53456ff9ef8f827380a')
+validpgpkeys=('E0A3EB202F8E57528E13E72FD7574483BB57B18D'  # Jonathan Esk-Riddell <jr@jriddell.org>
+              '0AAC775BB6437A8D9AF7A3ACFE0784117FBCE11D'  # Bhushan Shah <bshah@kde.org>
+              'D07BD8662C56CB291B316EB2F5675605C74E02CF'  # David Edmundson <davidedmundson@kde.org>
+              '1FA881591C26B276D7A5518EEAAF29B42A678C20') # Marco Martin <notmart@gmail.com>
+
+prepare() {
+  patch -d $pkgname-$pkgver -p1 < pointer-offset.patch
+  patch -d $pkgname-$pkgver -p1 < clipboard.patch
+}
+
+build() {
+  cmake -B build  -S $pkgname-$pkgver \
+    -DBUILD_TESTING=OFF
+  cmake --build build
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install build
+}

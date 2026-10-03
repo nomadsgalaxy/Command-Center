@@ -1,0 +1,18 @@
+[package]
+name = "cc-scan"
+version = "0.1.0"
+edition.workspace = true
+license-file.workspace = true
+authors.workspace = true
+description = "Command Center's camera scan in pure Rust: the VR mirror's frames, ArUco 4x4 tags (OpenCV's detector, ported), the head pose, the tag layouts and the fit (docs/rust-host.md R9)"
+
+[dependencies]
+serde_json = "1"
+libc = "0.2"
+nalgebra = "0.33"
+rustfft = "6"
+fontdue = "0.9"
+jpeg-encoder = "0.6"
+
+[dev-dependencies]
+zune-jpeg = "0.4"

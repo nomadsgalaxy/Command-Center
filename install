@@ -1,0 +1,53 @@
+#!/bin/sh
+# Command Center's installer, for the Steam Frame and for the computers it shows. Run it in a
+# terminal on either one (Konsole, or over SSH):
+#
+#   curl -fsSL https://raw.githubusercontent.com/nomadsgalaxy/Command-Center/main/install | sh
+#
+# This gets the real installer (cc-install, a small terminal app in crates/cc-install) from the
+# latest GitHub release, checks it against the release's SHA256SUMS and runs it. cc-install
+# works out whether it's on the Frame or a computer, then installs, updates or removes Command
+# Center. Arguments go to it: `| sh -s -- --yes 0 1` installs without questions, sharing
+# monitors 0 and 1 on a computer; `| sh -s -- --help` lists the rest.
+#
+# Everything happens in main, called on the last line: sh has read the whole script by then,
+# so the installer can have the terminal instead of curl's pipe.
+
+fail() {
+    printf '%s\n' "$1" >&2
+    exit 1
+}
+
+main() {
+    case $(uname -m) in
+        x86_64 | amd64) arch=x86_64 ;;
+        aarch64 | arm64) arch=aarch64 ;;
+        *) fail "Command Center runs on x86_64 and aarch64 Linux, and this machine is $(uname -m)." ;;
+    esac
+    [ "$(uname -s)" = Linux ] || fail "Command Center runs on Linux for now, and this is $(uname -s)."
+    for c in curl sha256sum; do
+        command -v "$c" >/dev/null || fail "This needs $c, which isn't installed. Install it and run this again."
+    done
+    # CC_DL points it at another release (a folder or a file:// URL works too, for testing one)
+    dl=${CC_DL:-https://github.com/nomadsgalaxy/Command-Center/releases/latest/download}
+    work=$(mktemp -d) || fail "Couldn't make a folder to download into."
+    trap 'rm -rf "$work"' EXIT
+
+    echo "Getting the installer..."
+    curl -fL --progress-bar -o "$work/cc-install" "$dl/cc-install-$arch" &&
+        curl -fsSL -o "$work/SHA256SUMS" "$dl/SHA256SUMS" ||
+        fail "Couldn't download the installer. Is this machine online?"
+    want=$(grep " cc-install-$arch\$" "$work/SHA256SUMS" | cut -d' ' -f1)
+    [ -n "$want" ] || fail "The release has no checksum for cc-install-$arch, so I won't run it."
+    [ "$(sha256sum "$work/cc-install" | cut -d' ' -f1)" = "$want" ] ||
+        fail "The download doesn't match its checksum. Run this again; if it keeps failing, tell us."
+    chmod +x "$work/cc-install"
+    # cc-install checks the cc-host it downloads against the same SHA256SUMS
+    CC_DL=$dl CC_SUMS=$work/SHA256SUMS "$work/cc-install" "$@"
+}
+
+if [ -t 0 ] || ! (: </dev/tty) 2>/dev/null; then
+    main "$@"
+else
+    main "$@" </dev/tty
+fi

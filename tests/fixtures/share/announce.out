@@ -1,0 +1,12 @@
+$ cc-share announce status
+off
+[exit 0]
+$ cc-share announce on
+announcing HOSTNAME as _controlcenter._tcp (cc-share announce off stops it)
+[exit 0]
+$ cc-share announce off
+not announcing
+[exit 0]
+$ cc-share announce bogus
+usage: cc-share announce on|off|status
+[exit 2]

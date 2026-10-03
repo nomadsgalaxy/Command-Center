@@ -1,0 +1,4 @@
+$ cc-share list
+monitor 0: DP-1
+monitor 1: DP-3
+[exit 0]

@@ -1,0 +1,4 @@
+./.config/control-center/announce 644: off|
+./.config/control-center/cert.pem 600
+./.config/control-center/key.pem 600
+./.config/control-center/password 600
