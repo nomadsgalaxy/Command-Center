@@ -163,6 +163,16 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 28px; justify-content: 
   .cmdrow { flex-direction: column; }
   button.copy { padding: 12px; }
 }
+/* The WebGL version of the same scene (the module script at the bottom). It fades in over the CSS
+   stage once it has drawn a frame, so the stage stays as the fallback. */
+.scene canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; opacity: 0; transition: opacity .6s; cursor: none; touch-action: pan-y; }
+.scene.gl canvas { opacity: 1; }
+.xr { display: block; margin: -24px 0 40px; background: none; color: var(--text); border: 1px solid var(--violet); border-radius: 10px; padding: 10px 18px; font: 600 15px system-ui, sans-serif; cursor: pointer; }
+.xr:hover { background: rgba(164,139,255,.12); }
+.xr:focus-visible { outline: 3px solid var(--cyan); outline-offset: 2px; }
+.xr[hidden] { display: none; }
+.scene.gl::after { content: ""; position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 120px rgba(20,16,80,.5); }
+
 @media (prefers-reduced-motion: no-preference) {
   .stage .pn, .stage .ultra { animation: drift 10s ease-in-out infinite; }
   .stage .web, .stage .chat { animation-delay: -4s; } .stage .term { animation-delay: -7s; }
@@ -202,6 +212,7 @@ $ </pre></div>
         <div class="pn task"><i class="on"></i><i></i><i></i><i></i><span class="sp"></span><span>5:32</span></div>
         <div class="cursor"></div>
       </div></div>
+      <button class="xr" id="xr" type="button" hidden>Try it in your headset</button>
 
       <div class="install" id="install">
         <h2>Install it with one command, on the Frame and on each computer you want to see</h2>
@@ -281,6 +292,512 @@ document.getElementById("copy").addEventListener("click", function () {
     var s = getSelection(); s.removeAllRanges(); s.addRange(r);
   }
 });
+</script>
+<script type="module">
+// The hero again, in WebGL: the violet passthrough room is built from boxes and planes, and the
+// panels are planes (the ultrawide a slice of a cylinder) with their content drawn on 2D canvases.
+// Drag to look around, and the white dot is the mouse, like in the headset. Anything that goes
+// wrong here leaves the CSS stage in place. With reduced motion the page keeps the still CSS
+// stage, and the scene only loads if a headset can use it (the button below the scene).
+const box = document.getElementById("scene"), xrBtn = document.getElementById("xr");
+const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const probe = document.createElement("canvas").getContext("webgl2");
+if (probe) {
+  probe.getExtension("WEBGL_lose_context")?.loseContext();
+  const ready = still ? null : start(true).catch(() => null);
+  xrMode().then(async (mode) => {
+    if (!mode) return;
+    const api = await (ready || start(false).catch(() => null));
+    if (!api) return;
+    xrBtn.hidden = false;
+    xrBtn.addEventListener("click", () => api.enterXR(mode));   // a session needs the click itself
+  });
+}
+// Passthrough (immersive-ar) is the real thing; immersive-vr puts the violet room around you.
+async function xrMode() {
+  for (const m of ["immersive-ar", "immersive-vr"]) if (await navigator.xr?.isSessionSupported(m).catch(() => false)) return m;
+  return null;
+}
+
+async function start(onPage) {
+  const T = await import("https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js");
+  // Phones get a lower resolution, smaller textures, and no shadows or glows.
+  const small = matchMedia("(max-width: 640px)").matches;
+  const renderer = new T.WebGLRenderer({ antialias: !small, alpha: true, powerPreference: "low-power" });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, small ? 1.25 : 1.5));
+  renderer.xr.enabled = true;
+  const aniso = Math.min(4, renderer.capabilities.getMaxAnisotropy());
+  const PPM = small ? 560 : 1000;   // canvas pixels per metre of panel
+  const FOG = 0x5652c8;
+
+  const scene = new T.Scene();
+  scene.background = new T.Color(FOG);
+  scene.fog = new T.Fog(FOG, 5, 24);
+  const cam = new T.PerspectiveCamera(55, 2, 0.05, 40);
+  cam.position.set(0, 1.25, 0);
+  cam.rotation.order = "YXZ";
+
+  // A seeded random, so the room looks the same on every visit.
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+
+  function texture(w, h, draw) {
+    const c = document.createElement("canvas");
+    c.width = Math.round(w); c.height = Math.round(h);
+    const t = new T.CanvasTexture(c);
+    t.colorSpace = T.SRGBColorSpace;
+    t.anisotropy = aniso;
+    t.draw = (...a) => { const x = c.getContext("2d"); x.save(); draw(x, c.width, c.height, ...a); x.restore(); t.needsUpdate = true; };
+    t.draw();
+    return t;
+  }
+  // Room surfaces are drawn in metres, a little blurred like the Frame's passthrough.
+  function roomTex(wm, hm, ppm, draw) {
+    return texture(wm * ppm, hm * ppm, (c, w, h) => { c.filter = small ? "none" : "blur(1.5px)"; c.scale(w / wm, h / hm); draw(c, wm, hm); });
+  }
+  const basic = (o) => new T.MeshBasicMaterial(o);
+  const plane = (w, h, mat) => new T.Mesh(new T.PlaneGeometry(w, h), mat);
+  const rect = (c, x, y, w, h, f) => { c.fillStyle = f; c.fillRect(x, y, w, h); };
+
+  // ---- The passthrough room: a kitchen and living room, all in the Frame's violet.
+  function win(c, x, y, w, h) {
+    rect(c, x - .07, y - .07, w + .14, h + .14, "#3d39a4");
+    const g = c.createLinearGradient(0, y, 0, y + h);
+    g.addColorStop(0, "#e6e5ff"); g.addColorStop(1, "#aeaaf2");
+    rect(c, x, y, w, h, g);
+    c.save(); c.beginPath(); c.rect(x, y, w, h); c.clip();
+    for (let i = 0; i < 14; i++) {   // trees outside
+      c.fillStyle = `rgba(112,108,212,${.25 + rnd() * .35})`;
+      c.beginPath(); c.ellipse(x + rnd() * w, y + h * (.35 + rnd() * .7), .15 + rnd() * .35, .2 + rnd() * .5, 0, 0, 7); c.fill();
+    }
+    c.restore();
+    c.strokeStyle = "#4642b0"; c.lineWidth = .05;
+    c.beginPath();
+    c.moveTo(x + w / 2, y); c.lineTo(x + w / 2, y + h);
+    for (let yy = y + .42; yy < y + h; yy += .42) { c.moveTo(x, yy); c.lineTo(x + w, yy); }
+    c.stroke();
+  }
+  function doors(c, x, y, w, h, n, fill, line) {
+    rect(c, x, y, w, h, fill);
+    c.strokeStyle = line; c.lineWidth = .025;
+    for (let i = 0; i < n; i++) c.strokeRect(x + i * w / n + .04, y + .04, w / n - .08, h - .08);
+  }
+  const wallGrad = (c, h) => { const g = c.createLinearGradient(0, 0, 0, h); g.addColorStop(0, "#625ed9"); g.addColorStop(1, "#4642b2"); return g; };
+
+  const back = roomTex(13, 3.4, 80, (c, w, h) => {
+    rect(c, 0, 0, w, h, wallGrad(c, h));
+    win(c, .6, .35, 1.2, 2.5); win(c, 1.95, .35, 1.2, 2.5);
+    win(c, 9.85, .35, 1.2, 2.5); win(c, 11.2, .35, 1.2, 2.5);
+    doors(c, 3.7, .12, 5.6, 1.12, 8, "#6965db", "#8682ea");
+    rect(c, 5.7, .05, 1.6, 1.3, "#7a76e2");
+    const g = c.createLinearGradient(0, 1.24, 0, 1.9);
+    g.addColorStop(0, "rgba(236,234,255,.9)"); g.addColorStop(.15, "rgba(220,218,255,.45)"); g.addColorStop(1, "rgba(220,218,255,0)");
+    rect(c, 3.7, 1.24, 5.6, .66, g);
+    rect(c, 3.5, 2.28, 6, .08, "#c3c1ff");
+    doors(c, 3.5, 2.36, 6, 1.04, 8, "#4c48ba", "#6461cf");
+  });
+  const side = (left) => roomTex(8.5, 3.4, 70, (c, w, h) => {
+    rect(c, 0, 0, w, h, wallGrad(c, h));
+    if (left) {
+      rect(c, 1.2, .95, 1, 2.45, "#2e2b8e");                // a doorway
+      win(c, 2.9, .5, 1.1, 2.1);
+      doors(c, 5, .15, 3.4, 3.25, 4, "#6c68dd", "#8b88ec");   // tall pantry cabinets
+      for (let i = 0; i < 4; i++) rect(c, 5.32 + i * .85, 1.5, .03, .4, "#3e3aa6");
+    } else {
+      win(c, .4, .35, 1.2, 2.5); win(c, 1.75, .35, 1.2, 2.5); win(c, 3.1, .35, 1.2, 2.5);
+      rect(c, 5.6, .9, 1.1, 2.5, "#34319a");
+      rect(c, 6.9, 1.6, 1.4, .9, "#3a37a0");                 // a TV on the far wall
+    }
+  });
+  const floorT = roomTex(12, 9, 40, (c, w, h) => {
+    const g = c.createLinearGradient(0, 0, 0, h); g.addColorStop(0, "#625ed6"); g.addColorStop(1, "#3f3ba6");
+    rect(c, 0, 0, w, h, g);
+    c.strokeStyle = "rgba(40,36,140,.35)"; c.lineWidth = .02;
+    for (let x = 0; x < w; x += .22) { c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h); c.stroke(); }
+    c.fillStyle = "rgba(44,40,150,.45)"; c.beginPath(); c.roundRect(3.6, 3.2, 4.8, 3.4, .1); c.fill();   // a rug
+  });
+  const ceilT = roomTex(12, 9, 30, (c, w, h) => {
+    rect(c, 0, 0, w, h, "#6763dc");
+    for (let x = 1.5; x < w; x += 3) for (let y = 1.5; y < h; y += 2.5) { c.fillStyle = "#f0efff"; c.beginPath(); c.arc(x, y, .1, 0, 7); c.fill(); }
+  });
+
+  const world = new T.Group(), room = new T.Group();   // world shifts as a whole if the headset has no floor height
+  scene.add(world);
+  const B = plane(13, 3.4, basic({ map: back })); B.position.set(0, 1.7, -6.5); room.add(B);
+  const L = plane(8.5, 3.4, basic({ map: side(true) })); L.rotation.y = Math.PI / 2; L.position.set(-6.5, 1.7, -2.25); room.add(L);
+  const R = plane(8.5, 3.4, basic({ map: side(false) })); R.rotation.y = -Math.PI / 2; R.position.set(6.5, 1.7, -2.25); room.add(R);
+  const F = plane(13, 9, basic({ map: floorT })); F.rotation.x = -Math.PI / 2; F.position.set(0, 0, -2); room.add(F);
+  const C = plane(13, 9, basic({ map: ceilT })); C.rotation.x = Math.PI / 2; C.position.set(0, 3.4, -2); room.add(C);
+  // The kitchen island, its counter edge catching the light.
+  const islandFront = roomTex(3.2, .92, 90, (c, w, h) => doors(c, 0, 0, w, h, 5, "#4a46b6", "#615ecc"));
+  const dark = basic({ color: 0x4642b0 });
+  const island = new T.Mesh(new T.BoxGeometry(3.2, .92, 1.1), [dark, dark, basic({ color: 0x6c69d8 }), dark, basic({ map: islandFront }), dark]);
+  island.position.set(0, .46, -3.1); room.add(island);
+  const edge = new T.Mesh(new T.BoxGeometry(3.24, .025, .025), basic({ color: 0xa3a0ee })); edge.position.set(0, .92, -2.55); room.add(edge);
+  // Soft additive glows: the pendant bulbs and the light through the windows.
+  const glowT = texture(128, 128, (c, w) => {
+    const g = c.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2);
+    g.addColorStop(0, "rgba(255,255,255,1)"); g.addColorStop(.25, "rgba(220,220,255,.45)"); g.addColorStop(1, "rgba(200,200,255,0)");
+    rect(c, 0, 0, w, w, g);
+  });
+  const glow = (x, y, z, sx, sy, op) => {
+    if (small) return;
+    const s = new T.Sprite(new T.SpriteMaterial({ map: glowT, blending: T.AdditiveBlending, opacity: op, fog: false, depthWrite: false }));
+    s.position.set(x, y, z); s.scale.set(sx, sy, 1); room.add(s);
+  };
+  for (const x of [-1.25, 1.25]) {
+    const cord = new T.Mesh(new T.CylinderGeometry(.006, .006, 1.1, 4), basic({ color: 0x2e2b8c })); cord.position.set(x, 2.85, -3.3); room.add(cord);
+    const shade = new T.Mesh(new T.CylinderGeometry(.08, .17, .2, 20, 1, true), basic({ color: 0x3d3aa4, side: T.DoubleSide })); shade.position.set(x, 2.22, -3.3); room.add(shade);
+    const bulb = new T.Mesh(new T.SphereGeometry(.05, 12, 8), basic({ color: 0xffffff, fog: false })); bulb.position.set(x, 2.13, -3.3); room.add(bulb);
+    glow(x, 2.1, -3.25, .9, .9, .75);
+  }
+  glow(-4.6, 1.8, -6.2, 4, 3.6, .35); glow(4.6, 1.8, -6.2, 4, 3.6, .35);
+  glow(0, 2.1, -6.3, 6, .9, .3);   // under the cabinets
+  world.add(room);
+
+  // ---- The panels. Each one is drawn in a box 1000 units wide, whatever its size in metres.
+  const SANS = "system-ui, -apple-system, 'Segoe UI', sans-serif", MONO = "ui-monospace, 'Noto Sans Mono', Menlo, monospace";
+  const font = (c, px, w = 400, f = SANS) => (c.font = `${w} ${px}px ${f}`);
+  const txt = (c, s, x, y, col) => { c.fillStyle = col; c.fillText(s, x, y); };
+  const ln = (c, x, y, w, col = "rgba(214,220,255,.16)") => { c.fillStyle = col; c.beginPath(); c.roundRect(x, y, w, 10, 5); c.fill(); };
+  const dots = (c, x, y, n, col = "#3b3f55") => { c.fillStyle = col; for (let i = 0; i < n; i++) { c.beginPath(); c.arc(x + i * 24, y, 7, 0, 7); c.fill(); } };
+  function bar(c, w, label, right) {
+    rect(c, 0, 0, w, 40, "#1a1d28");
+    dots(c, 22, 20, 1); font(c, 17); txt(c, label, 42, 26, "#b9bdd6");
+    if (right) { c.textAlign = "right"; txt(c, right, w - 18, 26, "#b9bdd6"); c.textAlign = "left"; } else dots(c, w - 70, 20, 3);
+  }
+  const grad = (c, x0, y0, x1, y1, ...stops) => { const g = c.createLinearGradient(x0, y0, x1, y1); stops.forEach((s, i) => g.addColorStop(i / (stops.length - 1), s)); return g; };
+
+  const draws = {
+    video(c, w, h) {
+      bar(c, w, "Video");
+      rect(c, 0, 40, w, 420, grad(c, 0, 40, 0, 460, "#04121a", "#0b3343", "#0f4a5e"));
+      for (const [x, r] of [[300, 260], [720, 220]]) { const g = c.createRadialGradient(x, 60, 0, x, 60, r); g.addColorStop(0, "rgba(150,240,255,.45)"); g.addColorStop(1, "rgba(150,240,255,0)"); rect(c, 0, 40, w, 420, g); }
+      c.filter = "blur(4px)";
+      for (let i = 0; i < 11; i++) rect(c, 130 + i * 68, 300 + (i % 3) * 14, 30, 160, "rgba(0,0,0,.6)");
+      c.filter = "none";
+      rect(c, 24, 478, w - 48, 6, "rgba(255,255,255,.25)"); rect(c, 24, 478, (w - 48) * .38, 6, "#ff4b4b");
+      font(c, 30, 700); txt(c, "Live session, stage two", 24, 530, "#fff");
+      font(c, 19); txt(c, "Recorded last night  ·  1:12:40", 24, 562, "#9aa0bd");
+    },
+    web(c, w, h) {
+      const g = c.createRadialGradient(w * .8, h * .45, 0, w * .8, h * .45, w * .7); g.addColorStop(0, "#2a1f5e"); g.addColorStop(1, "#0c0b1c");
+      rect(c, 0, 0, w, h, g);
+      for (let i = 0; i < 60; i++) rect(c, rnd() * w, 40 + rnd() * h, 2, 2, "rgba(220,225,255,.5)");
+      bar(c, w, "example.com");
+      font(c, 66, 800); txt(c, "Welcome", 50, 170, "#fff");
+      c.fillStyle = grad(c, 50, 0, 330, 0, "#a48bff", "#7df9ff"); c.fillText("aboard.", 50, 240);
+      ln(c, 52, 278, 420); ln(c, 52, 302, 300);
+      [["5+", "years"], ["24", "builds"], ["1", "desk"]].forEach(([a, b], i) => {
+        c.strokeStyle = "rgba(214,220,255,.25)"; c.lineWidth = 2; c.beginPath(); c.roundRect(52 + i * 130, 350, 112, 100, 12); c.stroke();
+        font(c, 34, 700); c.textAlign = "center"; txt(c, a, 108 + i * 130, 400, "#e8ecff"); font(c, 16); txt(c, b, 108 + i * 130, 430, "#9aa0bd"); c.textAlign = "left";
+      });
+      const o = c.createRadialGradient(760, 270, 10, 790, 300, 170); o.addColorStop(0, "#8a7dff"); o.addColorStop(.6, "#2b2370"); o.addColorStop(1, "#120f33");
+      c.shadowColor = "rgba(125,249,255,.45)"; c.shadowBlur = 50;
+      c.fillStyle = o; c.beginPath(); c.arc(790, 300, 160, 0, 7); c.fill();
+      c.shadowBlur = 0; c.strokeStyle = "rgba(164,139,255,.5)"; c.lineWidth = 6; c.stroke();
+    },
+    term(c, w, h) {
+      bar(c, w, "New Tab    Split View", "Copy    Paste");
+      rect(c, 0, 40, w, 38, "#14161f"); rect(c, 10, 40, 150, 38, "#0e1017");
+      font(c, 17, 400, MONO); txt(c, "~ : build", 30, 65, "#e8ecff"); txt(c, "~ : cc-home", 190, 65, "#9aa0bd");
+      font(c, 21, 400, MONO);
+      const G = "#7ee787", C = "#7df9ff", V = "#a48bff", D = "#c9cde6";
+      [[["   Compiling", G], [" cc-proto v0.1.0", D]], [["   Compiling", G], [" cc-panels v0.1.0", D]],
+       [["    Finished", G], [" `release` profile in 41.2s", D]], [["$ ", D], ["cc-home", C], [" machine align desk", D]],
+       [["  desk: calibrating tag sizes", D]], [["  desk: capture ", D], ["100%", V], [" (20 samples)", D]],
+       [["  desk: placed on the real monitor (fit 4 mm)", D]], [["$ ", D]]].forEach((line, i) => {
+        let x = 22; for (const [s, col] of line) { txt(c, s, x, 120 + i * 32, col); x += c.measureText(s).width; }
+      });
+      rect(c, 50, 345, 13, 24, "#e8ecff");
+    },
+    chat(c, w, h) {
+      bar(c, w, "Chat");
+      rect(c, 0, 40, 150, h, "#0a0b12");
+      ["#2e3250", "#6c5ce7", "#2e3250", "#e17055", "#2e3250", "#18aab5"].forEach((col, i) => { c.fillStyle = col; c.beginPath(); c.arc(75, 120 + i * 120, 44, 0, 7); c.fill(); });
+      font(c, 34, 600);
+      ["# general", "# builds", "# desk-setups", "# music", "# off-topic"].forEach((s, i) => txt(c, s, 190, 130 + i * 70, i === 1 ? "#e8ecff" : "#9aa0bd"));
+      for (let i = 0; i < 9; i++) {
+        const y = 520 + i * 135;
+        c.fillStyle = ["#6c5ce7", "#18aab5", "#e17055"][i % 3]; c.beginPath(); c.arc(215, y + 25, 30, 0, 7); c.fill();
+        ln(c, 265, y + 5, 240, "rgba(214,220,255,.35)"); ln(c, 265, y + 35, 640 - (i % 3) * 120); ln(c, 265, y + 60, 400 + (i % 2) * 180);
+      }
+    },
+    games(c, w, h) {
+      rect(c, 0, 0, 70, h, "#0b0c13");
+      for (let i = 0; i < 6; i++) rect(c, 22, 90 + i * 80, 26, 26, i ? "#3b3f55" : "#7df9ff");
+      rect(c, 70, 0, w, 56, "#141620"); font(c, 20); txt(c, "←  Back      Search your library", 92, 36, "#9aa0bd");
+      c.save(); c.beginPath(); c.roundRect(90, 76, 560, 380, 14); c.clip();
+      rect(c, 90, 76, 560, 380, grad(c, 90, 76, 650, 456, "#1d2a3a", "#b3262e", "#f2c14e"));
+      c.filter = "blur(10px)"; c.fillStyle = "rgba(10,10,30,.6)"; c.beginPath(); c.ellipse(260, 300, 120, 170, -.3, 0, 7); c.fill(); c.filter = "none";
+      font(c, 64, 900); txt(c, "DRIFTWAKE", 300, 270, "#fff");
+      font(c, 20, 600); txt(c, "Last played 2 days ago", 112, 430, "#f3f3ff");
+      c.restore();
+      [["#3a2f7a", "#e17055"], ["#0e6b6b", "#f9d56e"], ["#6b1d1d", "#e84393"], ["#1e3c72", "#7df9ff"]].forEach(([a, b], i) => {
+        c.fillStyle = grad(c, 0, 76, 0, 310, a, b); c.beginPath(); c.roundRect(670 + (i % 2) * 160, 76 + (i >> 1) * 190, 148, 178, 10); c.fill();
+      });
+      font(c, 18, 600); ["What's new", "Friends", "Recommended"].forEach((s, i) => txt(c, s, 100 + i * 170, 510, i ? "#9aa0bd" : "#e8ecff"));
+      rect(c, 90, 540, 880, 170, grad(c, 90, 540, 970, 710, "#3b1f12", "#c76b1a", "#f5b041"));
+    },
+    ultra(c, w, h) {   // 3000 wide: an editor, a feed and a column of cards, across one curved monitor
+      rect(c, 0, 0, w, 34, "#0b0c13"); font(c, 17); txt(c, "Desk  ·  remote", 20, 23, "#9aa0bd");
+      c.textAlign = "right"; txt(c, "5:32", w - 20, 23, "#9aa0bd"); c.textAlign = "left";
+      rect(c, 0, h - 40, w, 40, "#10121b");
+      for (let i = 0; i < 9; i++) rect(c, w / 2 - 170 + i * 40, h - 30, 22, 22, i === 2 ? "#a48bff" : "#3b3f55");
+      // editor
+      rect(c, 0, 34, 230, h - 74, "#151824");
+      for (let i = 0; i < 16; i++) ln(c, 24 + (i % 4 ? 20 : 0), 60 + i * 34, 120 + (i * 37) % 70);
+      font(c, 21, 400, MONO);
+      const code = [["fn align(desk: &mut Desk, tags: &[Tag]) -> Fit {", "#e8ecff"], ["    let samples = capture(tags, 20);", "#c9cde6"], ["    let pose = solve(&samples)?;", "#c9cde6"],
+        ["    // snap the panel onto the real screen", "#6b7194"], ["    desk.place(pose);", "#a48bff"], ["    Fit::mm(pose.error())", "#7df9ff"], ["}", "#e8ecff"], ["", ""],
+        ["fn capture(tags: &[Tag], n: usize) -> Vec<Sample> {", "#e8ecff"], ["    (0..n).map(|_| camera::frame(tags)).collect()", "#c9cde6"], ["}", "#e8ecff"]];
+      code.forEach(([s, col], i) => { txt(c, String(i + 1).padStart(2), 250, 78 + i * 38, "#4b5072"); txt(c, s, 300, 78 + i * 38, col); });
+      rect(c, 999, 34, 2, h - 74, "#05060f"); rect(c, 1999, 34, 2, h - 74, "#05060f");
+      // feed
+      c.fillStyle = "#6c5ce7"; c.beginPath(); c.arc(1080, 90, 28, 0, 7); c.fill();
+      ln(c, 1125, 72, 220, "rgba(214,220,255,.4)"); ln(c, 1125, 98, 140);
+      c.fillStyle = grad(c, 1060, 140, 1940, 480, "#2b3a6b", "#6b4fd8", "#18aab5"); c.beginPath(); c.roundRect(1060, 140, 880, 300, 18); c.fill();
+      ln(c, 1060, 466, 780); ln(c, 1060, 494, 640); ln(c, 1060, 522, 700);
+      dots(c, 1072, 556, 4, "#3b3f55");
+      // cards
+      for (let i = 0; i < 4; i++) {
+        const y = 56 + i * 134;
+        c.fillStyle = "#171a26"; c.beginPath(); c.roundRect(2040, y, 920, 120, 14); c.fill();
+        c.fillStyle = grad(c, 2060, y, 2220, y + 110, ["#3a2f7a", "#0e6b6b", "#6b1d1d", "#1e3c72"][i], ["#e17055", "#f9d56e", "#e84393", "#7df9ff"][i]);
+        c.beginPath(); c.roundRect(2058, y + 16, 170, 96, 10); c.fill();
+        ln(c, 2252, y + 30, 560, "rgba(214,220,255,.38)"); ln(c, 2252, y + 60, 620); ln(c, 2252, y + 86, 380);
+      }
+    },
+    task(c, w, h) {
+      for (let i = 0; i < 5; i++) { c.fillStyle = i ? "#3b3f55" : "#a48bff"; c.beginPath(); c.roundRect(40 + i * 70, h / 2 - 22, 44, 44, 10); c.fill(); }
+      font(c, 40, 500); c.textAlign = "right"; txt(c, "5:32", w - 40, h / 2 + 14, "#c9cde6");
+    },
+  };
+
+  draws.exit = (c, w, h) => { rect(c, 0, 0, w, h, "#1a1d28"); font(c, 150, 700); c.textAlign = "center"; txt(c, "Exit", w / 2, h / 2 + 52, "#e8ecff"); };
+
+  const panels = [], P = {};
+  const shadowT = texture(128, 128, (c, w) => { c.filter = "blur(14px)"; c.fillStyle = "rgba(14,10,60,.75)"; c.beginPath(); c.roundRect(26, 26, w - 52, w - 52, 10); c.fill(); });
+  // The border says what the pointer is doing: resting, pointed at, or picked up.
+  const STROKE = ["rgba(214,220,255,.38)", "rgba(125,249,255,.95)", "#a48bff"];
+  function panel(name, wm, hm, normW, geo) {
+    const nh = normW * hm / wm, k = Math.min(1, 4096 / (wm * PPM));
+    const t = texture(wm * PPM * k, hm * PPM * k, (c, w, h, state = 0) => {
+      c.scale(w / normW, h / nh);
+      c.beginPath(); c.roundRect(1, 1, normW - 2, nh - 2, 16); c.save(); c.clip();
+      rect(c, 0, 0, normW, nh, "#0e1017");
+      draws[name](c, normW, nh); c.restore();
+      c.strokeStyle = STROKE[state]; c.lineWidth = state ? 7 : 3;
+      c.beginPath(); c.roundRect(2, 2, normW - 4, nh - 4, 16); c.stroke();
+    });
+    const mesh = new T.Mesh(geo || new T.PlaneGeometry(wm, hm), basic({ map: t, transparent: true, fog: false, side: geo ? T.BackSide : T.FrontSide }));
+    const g = new T.Group(); g.add(mesh);
+    if (!geo && !small) {
+      const s = plane(wm * 1.25, hm * 1.3, basic({ map: shadowT, transparent: true, depthWrite: false, fog: false }));
+      s.position.set(0, -.05, -.06); g.add(s);
+    }
+    const p = { mesh, g, t, state: 0, ph: rnd() * 6 };
+    mesh.userData.p = p; panels.push(p); world.add(g); P[name] = p;
+    return p;
+  }
+  // Put a panel at x, y, z, turned to face an eye at the given height, with a little roll.
+  function place(p, x, y, z, roll = 0, k = 1, eye = 1.25) {
+    p.g.position.set(x, y, z); p.g.rotation.set(0, 0, 0); p.g.scale.setScalar(k);
+    p.g.lookAt(world.localToWorld(new T.Vector3(0, eye, 0))); p.g.rotateZ(roll); p.base = p.g.position.clone();
+  }
+  for (const [n, w, h] of [["term", 1, .54], ["video", 1.05, .62], ["web", 1.05, .62], ["chat", .5, .9], ["games", .78, .57], ["task", .42, .06], ["exit", .3, .12]]) panel(n, w, h, 1000);
+  // The curved ultrawide is a slice of a cylinder around me, seen from inside. The page and the
+  // headset use different slices with the same proportions.
+  const curve = (r, span, h) => new T.CylinderGeometry(r, r, h, 64, 1, true, Math.PI - span / 2, span);
+  const pageCurve = curve(2.3, 1.15, .55), xrCurve = curve(1, 1.25, .26);
+  const ultra = panel("ultra", 2.8, .58, 3000, pageCurve);
+  ultra.t.wrapS = T.RepeatWrapping; ultra.t.repeat.x = -1; ultra.t.offset.x = 1;   // un-mirror it from inside
+  function curved(geo, y) { ultra.mesh.geometry = geo; ultra.g.position.set(0, y, 0); ultra.g.rotation.set(0, 0, 0); ultra.base = ultra.g.position.clone(); }
+
+  // On the page the camera is a seated eye at 1.25 m and everything is a bit bigger than life, so
+  // it reads in a small frame.
+  function layoutPage() {
+    world.position.y = 0;
+    curved(pageCurve, .66);
+    place(P.term, 0, 1.47, -1.95);
+    place(P.video, -1.3, 1.56, -2.35, -.06);
+    place(P.web, 1.3, 1.55, -2.4, .05);
+    place(P.chat, 1.7, 1.05, -2.05);
+    place(P.games, -1.75, 1.02, -2);
+    place(P.task, 0, .5, -1.55);
+    P.exit.g.visible = false;
+  }
+  // In the headset it's life size around someone standing (eyes at about 1.6 m): the ultrawide
+  // 1.25 m wide a metre ahead at desk height, the terminal above it, video and website angled in
+  // on either side, chat further right, games low left, the taskbar and Exit low in front.
+  function layoutXR() {
+    const E = 1.6;
+    curved(xrCurve, 1);
+    place(P.term, 0, 1.38, -1, 0, .55, E);
+    place(P.video, -.72, 1.42, -.85, -.05, .6, E);
+    place(P.web, .72, 1.4, -.85, .04, .6, E);
+    place(P.chat, 1.1, 1.15, -.4, 0, .7, E);
+    place(P.games, -1, .95, -.55, 0, .7, E);
+    place(P.task, 0, .8, -.7, 0, .8, E);
+    place(P.exit, -.3, .8, -.7, 0, .5, E);
+    P.exit.g.visible = true;
+  }
+  layoutPage();
+
+  // The pointer: a white dot with a dark rim, always on top. The page's stays the same size on
+  // screen; in the headset each controller gets one that sits in the room.
+  const dotT = texture(64, 64, (c) => { c.fillStyle = "#e8ecff"; c.strokeStyle = "#05060f"; c.lineWidth = 7; c.beginPath(); c.arc(32, 32, 24, 0, 7); c.fill(); c.stroke(); });
+  const sprite = (att, k) => { const s = new T.Sprite(new T.SpriteMaterial({ map: dotT, depthTest: false, sizeAttenuation: att, fog: false })); s.scale.set(k, k, 1); s.renderOrder = 9; scene.add(s); return s; };
+  const dot = sprite(false, .03);
+
+  const meshes = panels.map((p) => p.mesh), ray = new T.Raycaster();
+  const targets = () => meshes.filter((m) => m.parent.visible);
+  let active = null, session = null;
+  function paint(hits, hands = []) {
+    for (const p of panels) {
+      const s = p === active || hands.some((h) => h.held === p) ? 2 : hits.some((x) => x && x.object.userData.p === p) ? 1 : 0;
+      if (s !== p.state) { p.state = s; p.t.draw(s); }
+    }
+  }
+  function drift(t) {
+    for (const p of panels) if (p.g.visible && p.g.parent === world) p.g.position.y = p.base.y + Math.sin(t * .5 + p.ph) * (p === ultra ? .004 : .012) * p.g.scale.x;
+  }
+
+  // ---- On the page: drag to look around, point, click a panel to turn to it.
+  const look = { yaw: 0, pitch: -.06, fov: 1 }, aim = { ...look };
+  const ndc = new T.Vector2(.08, .3);
+  let drag = null, focused = null;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const cv = renderer.domElement;
+  const at = (e) => { const r = cv.getBoundingClientRect(); ndc.set((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1); };
+  cv.setAttribute("aria-hidden", "true");
+  cv.addEventListener("pointerdown", (e) => { at(e); drag = { x: e.clientX, y: e.clientY, moved: 0 }; cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener("pointermove", (e) => {
+    at(e); kick();
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY; drag.moved += Math.abs(dx) + Math.abs(dy);
+    const lim = focused ? 1 : .45;
+    aim.yaw = clamp(aim.yaw + dx * .004, -lim, lim);
+    if (e.pointerType === "mouse") aim.pitch = clamp(aim.pitch + dy * .003, -.35, .15);
+  });
+  cv.addEventListener("pointercancel", () => (drag = null));
+  cv.addEventListener("pointerup", () => {
+    if (drag && drag.moved < 6) {   // a click, not a drag: turn to that panel, or back
+      ray.setFromCamera(ndc, cam);
+      const hit = ray.intersectObjects(targets())[0], p = hit && hit.object.userData.p;
+      if (p && p !== focused) {
+        const d = (p === ultra ? hit.point : p.g.position).clone().sub(cam.position);
+        aim.yaw = Math.atan2(-d.x, -d.z); aim.pitch = Math.atan2(d.y, Math.hypot(d.x, d.z)); aim.fov = .72; focused = p;
+      } else { aim.yaw = 0; aim.pitch = -.06; aim.fov = 1; focused = null; }
+    }
+    drag = null; kick();
+  });
+
+  // Sizing, and only drawing while the scene is on screen and the tab is showing.
+  function size() {
+    const w = box.clientWidth, h = box.clientHeight || w / 2;
+    renderer.setSize(w, h, false);
+    cam.aspect = w / h;
+    const hfov = 84 * Math.PI / 180;
+    cam.userData.fov = 2 * Math.atan(Math.tan(hfov / 2) / cam.aspect) * 180 / Math.PI;
+  }
+  new ResizeObserver(size).observe(box); size();
+  let onScreen = true, raf = 0, last = 0, t = 0;
+  new IntersectionObserver(([e]) => { onScreen = e.isIntersecting; kick(); }).observe(box);
+  document.addEventListener("visibilitychange", kick);
+  function kick() { if (onPage && !session && !raf && onScreen && !document.hidden) { last = performance.now(); raf = requestAnimationFrame(frame); } }
+  function tick(now) { const dt = Math.max(0, Math.min(.05, (now - last) / 1000));   // a frame can be stamped before the kick that asked for it
+    last = now; t += dt; return dt; }
+  function frame(now) {
+    raf = 0;
+    if (session) return;
+    const e = 1 - Math.exp(-tick(now) * 5);
+    for (const k in look) look[k] += (aim[k] - look[k]) * e;
+    cam.rotation.set(look.pitch + Math.sin(t * .31) * .006, look.yaw + Math.sin(t * .23) * .012, 0);
+    cam.fov = cam.userData.fov * look.fov; cam.updateProjectionMatrix();
+    drift(t);
+    ray.setFromCamera(ndc, cam);
+    const hit = ray.intersectObjects(targets())[0];
+    dot.position.copy(hit ? hit.point : ray.ray.at(2.6, dot.position));
+    paint([hit]);
+    renderer.render(scene, cam);
+    if (!box.classList.contains("gl")) { box.appendChild(cv); box.classList.add("gl"); setTimeout(() => (document.getElementById("stage").style.visibility = "hidden"), 700); }
+    kick();
+  }
+
+  // ---- In a headset. Each controller (or hand, or transient pointer) casts a ray. Select on a
+  // panel picks it out; select on its bottom edge, or squeeze anywhere on it, carries it until
+  // you let go. Exit, or the headset's own button, ends the session and the page carries on.
+  const hands = [0, 1].map((i) => {
+    const c = renderer.xr.getController(i);
+    const line = new T.Line(new T.BufferGeometry().setFromPoints([new T.Vector3(), new T.Vector3(0, 0, -1)]), new T.LineBasicMaterial({ color: 0xe8ecff, transparent: true, opacity: .45 }));
+    c.add(line); scene.add(c);
+    const h = { c, line, d: sprite(true, .014), hit: null, held: null, down: false, pending: null };
+    h.d.visible = false;
+    const press = (squeeze) => { h.down = true; h.pending = { squeeze }; };
+    c.addEventListener("selectstart", () => press(false));
+    c.addEventListener("squeezestart", () => press(true));
+    c.addEventListener("selectend", () => drop(h));
+    c.addEventListener("squeezeend", () => drop(h));
+    return h;
+  });
+  function drop(h) {
+    h.down = false;
+    if (!h.held) return;
+    world.attach(h.held.g); h.held.base = h.held.g.position.clone(); h.held = null;
+  }
+  function xrFrame(now) {
+    tick(now); drift(t);
+    scene.updateMatrixWorld();
+    for (const h of hands) {
+      h.d.visible = false; h.hit = null;
+      if (!h.c.visible) { if (!h.down) h.pending = null; continue; }   // a transient pointer gets its pose a frame late
+      ray.setFromXRController(h.c);
+      h.hit = ray.intersectObjects(targets())[0] || null;
+      h.line.scale.z = h.hit ? h.hit.distance : 3;
+      if (h.hit) { h.d.position.copy(h.hit.point); h.d.visible = true; }
+      const p = h.hit && h.hit.object.userData.p;
+      if (h.pending) {   // handled here, where the ray is fresh, not in the event
+        if (p === P.exit) session.end().catch(() => {});
+        else if (p && h.down && (h.pending.squeeze || h.hit.uv.y < .15)) { h.held = p; h.c.attach(p.g); }
+        else if (p) active = active === p ? null : p;
+        h.pending = null;
+      }
+    }
+    paint(hands.map((h) => h.hit), hands);
+    renderer.render(scene, cam);
+  }
+  const bg = scene.background, fog = scene.fog;
+  async function enterXR(mode) {
+    if (session) return;
+    const s = await navigator.xr.requestSession(mode, { optionalFeatures: ["local-floor", "hand-tracking"] });
+    session = s;
+    s.addEventListener("end", () => {
+      renderer.setAnimationLoop(null);
+      hands.forEach((h) => { drop(h); h.d.visible = false; });
+      session = null; active = null;
+      room.visible = true; scene.background = bg; scene.fog = fog;
+      layoutPage(); dot.visible = true;
+      cam.position.set(0, 1.25, 0);
+      size(); kick();
+    });
+    if (raf) { cancelAnimationFrame(raf); raf = 0; }
+    try {
+      // Without a floor height, the origin is the headset, so the whole layout drops by 1.6 m.
+      const floor = await s.requestReferenceSpace("local-floor").then(() => true, () => false);
+      renderer.xr.setReferenceSpaceType(floor ? "local-floor" : "local");
+      await renderer.xr.setSession(s);
+      world.position.y = floor ? 0 : -1.6;
+    } catch (err) { s.end(); throw err; }
+    const ar = mode === "immersive-ar";   // passthrough: the real room replaces the violet one
+    room.visible = !ar; scene.background = ar ? null : bg; scene.fog = ar ? null : fog;
+    layoutXR(); dot.visible = false; active = null;
+    renderer.setAnimationLoop(xrFrame);
+  }
+
+  kick();
+  return { enterXR: (mode) => enterXR(mode).catch(() => {}) };
+}
 </script>
 </body>
 </html>
