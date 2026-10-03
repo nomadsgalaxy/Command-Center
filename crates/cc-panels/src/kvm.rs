@@ -2,8 +2,17 @@
 //! are ours and drive a 3D pointer across the panels. The pointer wakes on deliberate motion
 //! and sleeps when it's idle.
 //!
-//! While engaged, the keyboards type into the panel you clicked last. A clean Right Ctrl tap
-//! hands them to the Frame and back, and we watch for that tap either way.
+//! Typing is click to type. A click on a panel (a remote monitor, a Frame window, Plasma's bar)
+//! engages the keyboards and they type there. A click off our panels (empty space, or SteamVR's
+//! own UI through the laser), the dashboard opening, or the Desktop hidden or under a game
+//! gives them back to the Frame. A clean Right Ctrl tap still hands them over either way, and
+//! we watch for that tap either way too, but it's not needed: the Targus folding keyboard I use
+//! has no Right Ctrl at all.
+//!
+//! Two things don't give them back. The pointer sleeping doesn't, because it sleeps after 30 s
+//! without the mouse, and a long stretch of typing is exactly that. Looking away doesn't either,
+//! even with gaze lock on, because looking down at the keyboard to find a key is looking away,
+//! and typing would land on the Frame mid-word.
 use crate::config::Viewer;
 use crate::geometry::{Placement, angles, direction, norm, rotate};
 use crate::{QUIT, call, laser, panel, plasmabar, root, vr, windows};
@@ -151,7 +160,7 @@ pub struct Kvm {
     pub place: Vec<Placement>, // where each panel is (the pointer's geometry)
     pub ppd: Vec<f64>,         // each panel's pixels per degree from where the head is now
     devices: Vec<Device>,
-    pub engaged: bool, // keyboards are ours and type into a remote (a Right Ctrl tap toggles it)
+    pub engaged: bool, // keyboards are ours and type into a remote (click to type, or a Right Ctrl tap)
     pub awake: bool,   // the cursor shows (mouse motion wakes it, IDLE puts it to sleep)
     pub active: usize, // the panel the cursor is on, where mouse input goes
     pub kbd: usize,    // the panel you clicked last, where typing goes
@@ -410,9 +419,9 @@ impl Kvm {
     }
 
     /// Engaged means the keyboards are ours and typing goes to the panel you clicked last.
-    /// Released, they're the Frame's (unless a window's field has them). Only a Right Ctrl tap
-    /// changes it.
-    pub fn set_engaged(&mut self, on: bool) {
+    /// Released, they're the Frame's (unless a window's field has them). Clicks change it (click
+    /// to type, see the module doc), and so does a Right Ctrl tap. `why` goes in the log.
+    pub fn set_engaged(&mut self, on: bool, why: &str) {
         if on == self.engaged {
             return;
         }
@@ -421,7 +430,7 @@ impl Kvm {
         }
         self.engaged = on;
         self.grab_keyboards();
-        eprintln!("keyboard {} (Right Ctrl tap toggles)", if on { "to the remotes" } else { "to the Frame" });
+        eprintln!("keyboard {} ({why})", if on { "to the remotes" } else { "to the Frame" });
     }
 
     /// Whether panel i is taking your input right now: it's the cursor's (you used the mouse or
@@ -956,7 +965,7 @@ impl Kvm {
                     self.send_key(code, 0);
                     self.keys.retain(|&k| k != code);
                 }
-                self.set_engaged(!self.engaged);
+                self.set_engaged(!self.engaged, "Right Ctrl tap");
                 return;
             }
         }
@@ -1047,6 +1056,7 @@ impl Kvm {
             }
             if value == 1 && self.on_plasma {
                 self.type_to_shell(); // a click moves typing there (Kickoff's search)
+                self.set_engaged(true, "clicked Plasma's bar");
                 self.shell_buttons |= b;
                 self.clicks += 1;
                 // send it at the cursor's point, since something else may have moved the session's pointer
@@ -1062,6 +1072,10 @@ impl Kvm {
                 return;
             }
             if value == 1 && self.free.is_some() {
+                if !self.on_card && !self.on_extra {
+                    // off everything of ours: empty space, or SteamVR's UI through the laser
+                    self.set_engaged(false, "clicked off the panels");
+                }
                 let (f, a) = (self.free.unwrap(), self.anchor);
                 let depth = norm(&[f[0] - a[0], f[1] - a[1], f[2] - a[2]]);
                 if laser::HEALTHY.load(Relaxed) {
@@ -1086,6 +1100,9 @@ impl Kvm {
             }
             if value == 1 {
                 self.type_to(self.active); // a click moves typing to this panel
+                if !self.engaged {
+                    self.set_engaged(true, &format!("clicked {}", panel(self.active).v.name));
+                }
             }
             if value != 0 { self.buttons |= b } else { self.buttons &= !b }
             panel(self.active).mouse(b | if value != 0 { PTR_FLAGS_DOWN } else { 0 }, self.x, self.y);
@@ -1592,6 +1609,66 @@ mod tests {
         assert!(k.keys.is_empty() && k.keystrokes == 0, "a key held from the field: its repeats and release none of a remote's");
         k.key(super::KEY_LEFTSHIFT, 0, true);
         (k.engaged, k.kbd, k.kbd_shell) = (engaged, kbd, false);
+    }
+
+    #[test]
+    fn click_to_type() {
+        use super::*;
+        let mut k = KVM.lock().unwrap();
+        let saved = (k.engaged, k.kbd, k.kbd_shell, k.awake, k.free, k.on_plasma, k.on_card, k.on_extra, k.gaze_lock);
+        // kbd_shell sends keys to the session (none in tests), since a panel's need a live panel
+        (k.engaged, k.kbd_shell, k.awake) = (false, true, true);
+        (k.on_card, k.on_extra, k.on_bar) = (false, false, None); // (other tests' land() can leave them)
+        let click = |k: &mut Kvm| {
+            k.key(BTN_LEFT, 1, true);
+            k.key(BTN_LEFT, 0, true);
+            (std::mem::take(&mut k.card_mouse), std::mem::take(&mut k.extra_mouse))
+        };
+        // a key held on the Frame's keyboard while clicking: its release stays the Frame's
+        k.key(KEY_A, 1, false);
+        k.on_plasma = true;
+        click(&mut k);
+        assert!(k.engaged && k.kbd_shell, "a click on Plasma's bar engages, typing there");
+        k.key(KEY_A, 0, false);
+        assert!(k.keys.is_empty(), "nothing held on the remote side");
+        // engaged, a key held, then a click off our panels: let go, then the Frame's
+        k.key(KEY_A, 1, true);
+        assert_eq!(k.keys, [KEY_A]);
+        (k.on_plasma, k.free) = (false, Some([0.0, 1.0, -1.5]));
+        click(&mut k);
+        assert!(!k.engaged && k.keys.is_empty(), "a click on nothing gives it back, the held key let go");
+        k.key(KEY_A, 0, false); // its release, now the Frame's
+        assert!(k.keys.is_empty());
+        // a click on a card or the Machines/Preferences window is ours, so nothing changes
+        k.engaged = true;
+        k.on_card = true;
+        click(&mut k);
+        (k.on_card, k.on_extra) = (false, true);
+        click(&mut k);
+        k.on_extra = false;
+        assert!(k.engaged, "a card's or the Extra's click keeps it");
+        // the dashboard (main.rs) gives it back the same way
+        k.key(KEY_A, 1, true);
+        k.set_engaged(false, "dashboard opened");
+        assert!(!k.engaged && k.keys.is_empty());
+        k.key(KEY_A, 0, false);
+        // a Right Ctrl tap still toggles both ways: in from the Frame (its keyboard not grabbed)...
+        k.key(KEY_RIGHTCTRL, 1, false);
+        k.key(KEY_RIGHTCTRL, 0, false);
+        assert!(k.engaged, "tap: to the remotes");
+        // ...and out, with the remote's Right Ctrl let up
+        k.key(KEY_RIGHTCTRL, 1, true);
+        assert_eq!(k.keys, [KEY_RIGHTCTRL]);
+        k.key(KEY_RIGHTCTRL, 0, true);
+        assert!(!k.engaged && k.keys.is_empty(), "tap: to the Frame, nothing stuck");
+        // a chord isn't a tap
+        k.engaged = true;
+        k.key(KEY_RIGHTCTRL, 1, true);
+        k.key(KEY_G, 1, true);
+        k.key(KEY_G, 0, true);
+        k.key(KEY_RIGHTCTRL, 0, true);
+        assert!(k.engaged && k.keys.is_empty(), "Right Ctrl + G: still engaged");
+        (k.engaged, k.kbd, k.kbd_shell, k.awake, k.free, k.on_plasma, k.on_card, k.on_extra, k.gaze_lock) = saved;
     }
 
     #[test]

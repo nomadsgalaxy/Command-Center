@@ -8,7 +8,9 @@
 //!   cc-panels [--for MIN] [name ...]   the named viewers, or all of them, for MIN minutes
 //!                                      (default 2; 0 = until stopped). Right Ctrl + Esc ends it.
 //!   Moving the mouse wakes the pointer (straight ahead); 30 s without mouse use puts it to sleep.
-//!   A Right Ctrl tap hands the keyboards to the Frame, and another hands them back.
+//!   Typing is click to type: a click on a panel sends the keyboards there, and a click off our
+//!   panels, the dashboard opening, or a game gives them back to the Frame. A Right Ctrl tap
+//!   hands them over either way too.
 //!   Off our panels the mouse drives SteamVR's own laser (the cc_pointer driver, on whichever
 //!   hand is free) for the dashboard, Steam and the desktop. Right Ctrl + D opens the dashboard.
 //!   CC_GAZE=1 or Right Ctrl + G turns on gaze lock: the pointer stays on the panel you look at.
@@ -396,7 +398,11 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
             continue;
         }
         if window && e.eventType == sys::EVREventType_VREvent_MouseButtonDown {
-            KVM.lock().unwrap().type_to(p.index); // typing follows the laser's click too
+            let mut k = KVM.lock().unwrap();
+            k.type_to(p.index); // typing follows the laser's click too
+            if !k.engaged {
+                k.set_engaged(true, &format!("clicked {} with a controller", p.v.name));
+            }
         }
         worked |= matches!(
             e.eventType,
@@ -865,8 +871,7 @@ fn run() -> Result<(), String> {
         let (w, h) = panel(0).size();
         (k.x, k.y) = (w as f64 / 2.0, h as f64 / 2.0);
         if k.device_count() > 0 {
-            k.set_engaged(true);
-            k.set_awake(true);
+            k.set_awake(true); // the keyboards stay the Frame's until a click on a panel (click to type)
         } else {
             k.recenter();
         }
@@ -907,6 +912,7 @@ fn run() -> Result<(), String> {
     let _ = vr::MAIN.set(std::thread::current()); // vr::wake ends the wait between ticks
     let mut gaze_tried: Option<Instant> = None;
     let mut last_event = 0; // the last SteamVR event's type, for the loop's status line
+    let mut was_away = false; // hidden or under a game last tick
     while !QUIT.load(Relaxed) {
         let mut laps = Laps::new();
         ticks += 1;
@@ -977,6 +983,9 @@ fn run() -> Result<(), String> {
             if e.eventType == sys::EVREventType_VREvent_Quit {
                 close_desktop("SteamVR quit it"); // e.g. a game launched over the Desktop
             }
+            if e.eventType == sys::EVREventType_VREvent_DashboardActivated {
+                KVM.lock().unwrap().set_engaged(false, "dashboard opened"); // click to type: typing goes to it
+            }
             if e.eventType == sys::EVREventType_VREvent_ButtonPress && vr::is_real_controller(e.trackedDeviceIndex) {
                 controller_pressed(); // anywhere, not only on our panels
             }
@@ -1012,6 +1021,12 @@ fn run() -> Result<(), String> {
         let gaze_ray = gaze_seen.filter(|g| now - g.2 < kvm::GAZE_STALE).map(|g| (g.0, g.1));
         let seen = attention::Seen { hidden: HIDDEN.load(Relaxed), game: bar.game(), on_head, head, gaze: gaze_ray };
         attend(&mut att, &seen, &grab, now);
+        // click to type: the Desktop hidden or a game starting gives the keyboards back, once on the change
+        let away = seen.hidden || seen.game;
+        if away && !was_away {
+            KVM.lock().unwrap().set_engaged(false, if seen.hidden { "Desktop hidden" } else { "game running" });
+        }
+        was_away = away;
         laps.lap("attention");
         for (p, b) in panels().iter().zip(&mut buffers) {
             // A paused remote isn't asked to stop sending (Suppress Output), because krdp ignores
@@ -1137,7 +1152,7 @@ fn run() -> Result<(), String> {
         // give the devices back straight away, not after slow sessions have ended
         let mut k = KVM.lock().unwrap();
         k.set_awake(false);
-        k.set_engaged(false);
+        k.set_engaged(false, "closing");
         k.return_devices();
     }
     call!(ov, DestroyOverlay, cursor);
