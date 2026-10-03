@@ -29,7 +29,7 @@ main() {
         command -v "$c" >/dev/null || fail "This needs $c, which isn't installed. Install it and run this again."
     done
     # CC_DL points it at another release (a folder or a file:// URL works too, for testing one)
-    dl=${CC_DL:-https://framecc.nomadsgalaxy.com/dl}
+    dl=${CC_DL:-https://github.com/nomadsgalaxy/Command-Center/releases/latest/download}
     work=$(mktemp -d) || fail "Couldn't make a folder to download into."
     trap 'rm -rf "$work"' EXIT
 

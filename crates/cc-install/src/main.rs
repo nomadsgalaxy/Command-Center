@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-const DL: &str = "https://framecc.nomadsgalaxy.com/dl"; // forwards to the latest GitHub release (site/worker.js)
+const DL: &str = "https://github.com/nomadsgalaxy/Command-Center/releases/latest/download";
 
 /// Everything the steps print. The screens show it, it's saved to a file, and the plain mode
 /// echoes it.
