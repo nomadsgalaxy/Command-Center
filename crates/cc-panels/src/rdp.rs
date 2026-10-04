@@ -218,7 +218,13 @@ fn session(p: &Panel, start: bool) -> Result<u32, String> {
 /// Points libpulse at the Frame's PipeWire (its PulseAudio socket). The Desktop session has its own
 /// XDG_RUNTIME_DIR, where the session setup links that socket (session.rs), but a pinned
 /// PULSE_SERVER doesn't depend on that. Keeps one the user set. Called once, before any thread.
+/// With ~/.cache/control-center/audio-debug there, FreeRDP's rdpsnd logs every chunk it plays,
+/// drops ("Buffer overrun") or runs short of ("Buffer underrun") (docs/audio.md).
 pub fn audio_env() {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if std::env::var_os("WLOG_FILTER").is_none() && std::path::Path::new(&home).join(".cache/control-center/audio-debug").exists() {
+        unsafe { std::env::set_var("WLOG_FILTER", "com.freerdp.channels.rdpsnd.client:DEBUG") };
+    }
     if std::env::var_os("PULSE_SERVER").is_some() {
         return;
     }
