@@ -41,7 +41,9 @@ Command Center or removes it.
 - **Pairing** is the last step, and the installer walks you through it. Run `cc-share pair` on
   the computer and a 6-digit key fills its screen. On the Frame, open Workspace, then Machines,
   then Add machine, pick the computer and press Pair. Then type the key, or press Pair by
-  looking and look at the screen. If the computer isn't in the list, type its address instead.
+  looking and look at the screen. If the computer isn't in the list, press Pair by looking anyway:
+  the key screen shows the computer's address as tags too, so the Frame reads both. Typing the
+  address works as well.
   Esc, a click or a tap closes the key screen, so a Steam Deck with no keyboard can cancel too. **Align** (Machines, Align) then puts each panel on the real
   monitor it shows.
 
@@ -69,7 +71,7 @@ anywhere else doesn't match this one, don't trust it.
   as it was, which is off on a new install. It needs `avahi-daemon` running, and `cc-share check`
   says when it isn't. A Steam Deck has it off: `sudo systemctl enable --now avahi-daemon` turns it
   on. SteamOS also turns publishing off in `/etc/avahi/avahi-daemon.conf`, so a Deck still won't
-  be listed: type its address in Add machine instead.
+  be listed: use Pair by looking, or type its address in Add machine.
 - **The firewall rule** lets the private ranges (10/8, 172.16/12, 192.168/16) reach ports 3399-3449.
   That's wider than your subnet, so on a large private network or a VPN more machines can reach the
   door. Only paired Frames get past it. With firewalld, the rule goes into each active zone except
