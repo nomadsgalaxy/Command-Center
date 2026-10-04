@@ -25,7 +25,7 @@
 //!
 //! ponytail: an idle panel keeps the output's stream going until it next repaints (its clock,
 //! a hover), since KWin sends a window's stream nothing until it changes.
-use crate::geometry::{Mat, Placement};
+use crate::geometry::{Mat, Placement, V3, norm};
 use crate::kvm::KVM;
 use crate::session::{Output, Session, StreamEvent};
 use crate::{call, capture, session, taskbar, vr, windows};
@@ -50,8 +50,8 @@ pub static OPEN: AtomicBool = AtomicBool::new(false);
 /// A laser went up off the bar with a tooltip open (a task's preview with thumbnails, close and
 /// media controls; taskbar.rs). This overlay takes lasers until it closes or the laser leaves it.
 pub static TIP: AtomicBool = AtomicBool::new(false);
-/// What the overlay shows now (None: hidden), for input from any thread.
-static CROP: Mutex<Option<Rect>> = Mutex::new(None);
+/// What the overlay shows now and the panel in it (None: hidden), for input from any thread.
+static CROP: Mutex<Option<(Rect, Rect)>> = Mutex::new(None);
 /// The panel and every open plasmashell popup, shown here or not. They're above every window.
 static ABOVE: Mutex<Vec<Rect>> = Mutex::new(Vec::new());
 
@@ -93,7 +93,7 @@ fn bounds(crop: Rect, out: Rect) -> [f32; 4] {
 
 /// A point on the overlay (fractions right and up from its bottom left) mapped through the
 /// crop into the session's global coordinates, clamped to its last pixel.
-fn global(crop: Rect, fx: f64, fy: f64) -> (f64, f64) {
+pub(crate) fn global(crop: Rect, fx: f64, fy: f64) -> (f64, f64) {
     let (w, h) = ((crop[2] - 1).max(0) as f64, (crop[3] - 1).max(0) as f64);
     (crop[0] as f64 + fx.clamp(0.0, 1.0) * w, crop[1] as f64 + (1.0 - fy.clamp(0.0, 1.0)) * h)
 }
@@ -101,7 +101,31 @@ fn global(crop: Rect, fx: f64, fy: f64) -> (f64, f64) {
 /// The session point under the overlay at fractions right and up from its bottom left, for
 /// kvm.rs and the lasers. None while it's hidden.
 pub fn at(fx: f64, fy: f64) -> Option<(f64, f64)> {
-    CROP.lock().unwrap().map(|c| global(c, fx, fy))
+    CROP.lock().unwrap().map(|c| global(c.0, fx, fy))
+}
+
+/// Where a ray from `from` through `to` passes through the overlay (`pl`, as kvm.rs places
+/// it, showing `crop`), as fractions right and up of `panel`. None if that's off the panel.
+/// The mouse's ray lands on the overlay itself. A laser lands on the taskbar's frame 2 mm
+/// behind it (taskbar.rs FRONT), so the frame carries its hit on along the laser to here, and
+/// both end up on the bar you see the pointer on.
+pub(crate) fn panel_at(pl: &Placement, crop: Rect, panel: Rect, from: &V3, to: &V3) -> Option<(f64, f64)> {
+    let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    let n = norm(&d);
+    let (_, u, v) = pl.hit(from, &d.map(|x| x / n)).filter(|_| n > 1e-9)?;
+    // global's mapping without its clamp, then back through it for the panel
+    let x = crop[0] as f64 + (u / pl.width + 0.5) * (crop[2] - 1).max(0) as f64;
+    let y = crop[1] as f64 + (0.5 - v / pl.height) * (crop[3] - 1).max(0) as f64;
+    let (fx, fy) = ((x - panel[0] as f64) / (panel[2] - 1).max(1) as f64, 1.0 - (y - panel[1] as f64) / (panel[3] - 1).max(1) as f64);
+    ((0.0..=1.0).contains(&fx) && (0.0..=1.0).contains(&fy)).then_some((fx, fy))
+}
+
+/// `panel_at` for a laser from `from` that hit the taskbar's frame at `to`: Some(None) if it
+/// passes Plasma's bar by, None while the bar isn't showing.
+pub fn laser_on_panel(from: &V3, to: &V3) -> Option<Option<(f64, f64)>> {
+    let pl = KVM.lock().unwrap().plasma?;
+    let (crop, panel) = (*CROP.lock().unwrap())?;
+    Some(panel_at(&pl, crop, panel, from, to))
 }
 
 /// Is this session point under Plasma's panel or one of its open popups? windows.rs needs it
@@ -368,7 +392,7 @@ impl Plasma {
             }
             self.placed = placed;
         }
-        *CROP.lock().unwrap() = Some(c);
+        *CROP.lock().unwrap() = Some((c, p));
         KVM.lock().unwrap().plasma = Some(Placement::from_matrix(&world, width, c[3] as f64 / c[2].max(1) as f64, curve));
     }
 

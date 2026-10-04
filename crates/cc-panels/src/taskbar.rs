@@ -292,6 +292,14 @@ fn part_at(f: &Frame, x: f64, y: f64) -> Option<Part> {
     Some(grab::CORNER_SIGN.iter().position(|&c| c == (sx, sy)).map_or(Part::Edge, Part::Corner))
 }
 
+/// The point on the frame's surface (`bar`, kvm.rs's placement of it) under an overlay mouse
+/// event at (x, y), its units right and up from its bottom left. SteamVR's mouse runs along the
+/// curve, the way `Placement::hit` measures u.
+fn frame_point(bar: &Placement, f: &Frame, x: f64, y: f64) -> V3 {
+    let m = bar.on_surface((x / f.w - 0.5) * bar.width, (y / f.h - 0.5) * bar.height, 0.0);
+    [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64]
+}
+
 /// The frame's look: Carry while carried or resized, and Lit under a laser or the cursor, but
 /// only in fixed, where an edge carries it. Follow and wrist can't be carried, and lighting
 /// the frame means a full draw (20-120 ms on the main loop). As follow's bar slides under a
@@ -896,7 +904,22 @@ impl Taskbar {
         while call!(ov, PollNextOverlayEvent, self.ov, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
             let y = self.frame.h - m.y as f64; // its units, from the top
-            let part = part_at(&self.frame, m.x as f64, y);
+            let mut part = part_at(&self.frame, m.x as f64, y);
+            // Plasma's bar is 2 mm in front of us (FRONT), so a slanted laser goes through it a
+            // few pixels from where it hits our well, or over its edge while it hits our padding.
+            // On it and where goes by that, the way the mouse's ray sees it (plasmabar.rs).
+            let pointer = [sys::EVREventType_VREvent_MouseMove, sys::EVREventType_VREvent_MouseButtonDown, sys::EVREventType_VREvent_MouseButtonUp].contains(&e.eventType);
+            let bar = if pointer && self.frame.well.is_some() { KVM.lock().unwrap().bar } else { None }; // (unlocked again: laser_on_panel takes it)
+            if let Some(bar) = bar
+                && let Some(l) = vr::laser_pose(dev)
+                && let Some(on) = crate::plasmabar::laser_on_panel(&[l[0][3] as f64, l[1][3] as f64, l[2][3] as f64], &frame_point(&bar, &self.frame, m.x as f64, m.y as f64))
+            {
+                part = match (on, part) {
+                    (Some((fx, fy)), _) => Some(Part::Plasma(fx, fy)),
+                    (None, Some(Part::Plasma(..))) => Some(Part::Edge), // our well's rim, showing past the bar
+                    (None, p) => p,
+                };
+            }
             let was = matches!(self.hover, Some(Part::Plasma(..)));
             // on Plasma's bar, pass its events on (a scroll goes by where the laser last was)
             match (e.eventType, part, self.hover) {
@@ -1421,6 +1444,65 @@ mod tests {
             let off = r - (q[0][3] as f64).hypot(q[2][3] as f64 - r);
             assert!(off > 0.0 && off <= FRONT + 1e-5, "u {u}: {off}");
         }
+    }
+
+    #[test]
+    fn a_laser_on_the_frame_reaches_plasma_where_the_mouse_would() {
+        // Follow at taskbar_scale 0.713, flat and bent to 1.263 m, with the crop just the panel
+        // and grown up for a popup. SteamVR's laser hits our frame (mouse events in its units,
+        // along the curve), and the panel point we pass on has to be where the mouse's ray
+        // through the same spot lands on Plasma's overlay (kvm.rs: `plasmabar::at` of its hit).
+        use crate::plasmabar::{Rect, global, panel_at};
+        let panel = [818, 1390, 924, 50];
+        let f = frame(Some((924.0, 50.0)), &[(Chip::Panel(0), 150.0)]);
+        let well = f.well.unwrap();
+        let mpp = MPP * 0.713;
+        let m = panel_matrix(&follow_pose(10.0, -5.0, &[0.0, 1.6, 0.0]));
+        let (mut checked, mut worst_before, mut missed_before) = (0, 0.0f64, 0);
+        for crop in [panel, [818, 900, 924, 540]] {
+            let (dx, dy) = (0.0, (crop[3] - panel[3]) as f64 / 2.0 * mpp); // plasmabar.rs `shift`
+            for curve in [0.0, 1.263] {
+                let r = grab::curve_for_width(curve, f.w * mpp);
+                let bar = Placement::from_matrix(&m, f.w * mpp, f.h / f.w, r); // kvm.rs `bar`
+                let at = in_well(&m, r, dx, f.plasma_up() * mpp + dy);
+                let pl = Placement::from_matrix(&at, crop[2] as f64 * mpp, crop[3] as f64 / crop[2] as f64, r); // kvm.rs `plasma`
+                for hand in [[0.25, 1.15, -0.25], [-0.3, 1.3, -0.1], [0.0, 1.0, -0.45]] {
+                    // the laser aimed at points across the frame's well and a little past it
+                    for (a, b) in [(-0.02, 0.5), (0.03, 0.2), (0.3, 0.5), (0.5, 0.5), (0.7, 0.97), (0.97, 0.8), (0.5, -0.05), (0.5, 1.06)] {
+                        let p = frame_point(&bar, &f, well[0] + a * well[2], f.h - well[1] - (1.0 - b) * well[3]);
+                        let q = [p[0] - hand[0], p[1] - hand[1], p[2] - hand[2]];
+                        let d = q.map(|x| x / norm(&q));
+                        // the mouse: its ray on Plasma's overlay, if that's on the panel
+                        let unclamped = |c: Rect, fx: f64, fy: f64| (c[0] as f64 + fx * (c[2] - 1) as f64, c[1] as f64 + (1.0 - fy) * (c[3] - 1) as f64); // `global`
+                        let mouse = pl.hit(&hand, &d).map(|(_, u, v)| unclamped(crop, u / pl.width + 0.5, v / pl.height + 0.5));
+                        let mouse = mouse.filter(|&(x, y)| x >= panel[0] as f64 && x <= (panel[0] + panel[2] - 1) as f64 && y >= panel[1] as f64 && y <= (panel[1] + panel[3] - 1) as f64);
+                        // the laser: what SteamVR sends the frame, and what we make of it
+                        let (_, u, v) = bar.hit(&hand, &d).unwrap();
+                        let (x, y) = ((u / bar.width + 0.5) * f.w, (v / bar.height + 0.5) * f.h);
+                        let laser = panel_at(&pl, crop, panel, &hand, &frame_point(&bar, &f, x, y)).map(|(fx, fy)| global(panel, fx, fy));
+                        let at = format!("crop {crop:?} curve {curve} hand {hand:?} ({a}, {b})");
+                        match (laser, mouse) {
+                            (Some(l), Some(mo)) => assert!((l.0 - mo.0).hypot(l.1 - mo.1) < 0.01, "{at}: laser {l:?}, mouse {mo:?}"),
+                            (l, mo) => assert!(l.is_none() && mo.is_none(), "{at}: laser {l:?}, mouse {mo:?}"),
+                        }
+                        checked += mouse.is_some() as u32;
+                        // before: our well's own fractions, 2 mm behind
+                        match (part_at(&f, x, f.h - y), mouse) {
+                            (Some(Part::Plasma(fx, fy)), Some(mo)) => {
+                                let b = global(panel, fx, fy);
+                                worst_before = worst_before.max((b.0 - mo.0).hypot(b.1 - mo.1));
+                            }
+                            (Some(Part::Plasma(..)), None) | (_, Some(_)) => missed_before += 1,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked >= 60, "only {checked} landed on the bar");
+        // FRONT / mpp is 4.5 px here, times the laser's slant, and a steep laser near an edge
+        // went to the wrong overlay part
+        assert!(worst_before > 3.0 && missed_before > 0, "before: {worst_before} px, {missed_before} missed");
     }
 
     #[test]
