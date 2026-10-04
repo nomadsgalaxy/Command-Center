@@ -1,0 +1,73 @@
+# The Arch package (packaging/arch) for x86_64 and aarch64. A push that touches it, or a manual
+# run, only builds it. release.yml calls it with the tag, and then the signed package and database
+# go to that architecture's repo release, arch-repo-x86_64 or arch-repo-aarch64 (docs/packaging.md).
+# x86_64 builds in the archlinux:base-devel image. aarch64 builds on an arm64 runner in the official
+# Arch Linux ARM root, checked against its build key and imported into docker: no unofficial image
+# and no cross build.
+name: arch
+on:
+  push:
+    branches: [main]
+    paths: ["packaging/arch/**", "krdp/*.patch", "crates/cc-host/**", "crates/cc-proto/**", "Cargo.lock"]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag: { type: string, required: true }
+permissions:
+  contents: write
+env:
+  GH_TOKEN: ${{ github.token }}
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
+  CARGO_PROFILE_RELEASE_STRIP: symbols
+
+jobs:
+  package:
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: the build root
+        run: |
+          set -eu
+          if [ ${{ matrix.arch }} = x86_64 ]; then
+            docker pull -q archlinux:base-devel
+            docker tag archlinux:base-devel buildroot
+          else
+            # archlinuxarm.org serves no valid HTTPS, so the signature is what makes this safe.
+            curl -fsSL -o alarm.tar.gz http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz
+            curl -fsSL -o alarm.tar.gz.sig http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz.sig
+            export GNUPGHOME=$(mktemp -d)
+            gpg -q --import packaging/arch/archlinuxarm-builder.asc
+            gpg --status-fd 1 --verify alarm.tar.gz.sig alarm.tar.gz | grep -q '^\[GNUPG:\] VALIDSIG 68B3537F39A313B3E574D06777193F152BDBE6A6 '
+            docker import alarm.tar.gz buildroot
+          fi
+      - name: build
+        env:
+          # Only a release signs: a test build never sees the key.
+          CC_SIGNING_KEY: ${{ inputs.tag && secrets.CC_SIGNING_KEY || '' }}
+          CC_SIGNING_FPR: ${{ vars.CC_SIGNING_FPR }}
+        run: |
+          docker run --rm -e CC_SIGNING_KEY -e CC_SIGNING_FPR -e CARGO_PROFILE_RELEASE_DEBUG -e CARGO_PROFILE_RELEASE_STRIP \
+            -v "$PWD:/repo" buildroot /repo/packaging/arch/ci-build.sh /repo/out
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: command-center-host-${{ matrix.arch }}
+          path: out/
+      - name: publish to arch-repo-${{ matrix.arch }}
+        if: inputs.tag
+        run: |
+          set -eu
+          ls out/command-center.db.sig >/dev/null || { echo "unsigned (no CC_SIGNING_KEY secret): not publishing"; exit 1; }
+          r=arch-repo-${{ matrix.arch }}
+          gh release view "$r" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$r" --repo "$GITHUB_REPOSITORY" --latest=false --title "Arch repo (${{ matrix.arch }})" \
+              --notes "pacman repository for Command Center's host package. See docs/packaging.md; don't download from here by hand."
+          gh release upload "$r" out/* --repo "$GITHUB_REPOSITORY" --clobber
+          # Then drop the packages the new database no longer lists.
+          for a in $(gh release view "$r" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'); do
+            [ -e "out/$a" ] || gh release delete-asset "$r" "$a" --repo "$GITHUB_REPOSITORY" -y
+          done

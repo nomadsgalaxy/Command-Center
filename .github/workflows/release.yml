@@ -1,8 +1,8 @@
 # A release for a v* tag: static musl builds of cc-install and cc-host for x86_64 and aarch64,
-# and cc-home for aarch64 (the Frame), with SHA256SUMS. The `install` script downloads from the
-# latest release. It's made as a draft, filled, then published, so `latest` never points at a
-# half-uploaded one. Each arch builds on its own runner (no cross toolchain needed), the same
-# way the Frame builds aarch64. Only actions/checkout is used, pinned; the rest is gh and cargo.
+# and cc-home for aarch64 (the Frame), with SHA256SUMS (signed), plus the Arch package (arch.yml).
+# The `install` script downloads from the latest release. It's made as a draft, filled, then
+# published, so `latest` never points at a half-uploaded one. Each arch builds on its own runner
+# (no cross toolchain needed), the same way the Frame builds aarch64. Only actions/checkout is used, pinned; the rest is gh and cargo.
 name: release
 on:
   push:
@@ -50,16 +50,36 @@ jobs:
           done
           gh release upload "$TAG" out/* --repo "$GITHUB_REPOSITORY" --clobber
 
+  # The Arch package for both architectures, signed into the arch-repo-<arch> releases.
+  arch:
+    needs: draft
+    uses: ./.github/workflows/arch.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit
+
   publish:
-    needs: build
+    needs: [build, arch]
     runs-on: ubuntu-24.04
     steps:
-      - name: SHA256SUMS, then publish
+      - name: SHA256SUMS, signed, then publish
+        env:
+          CC_SIGNING_KEY: ${{ secrets.CC_SIGNING_KEY }}
+          CC_SIGNING_FPR: ${{ vars.CC_SIGNING_FPR }}
         run: |
           set -eu
           mkdir out && cd out
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "cc-*"
           sha256sum cc-* > SHA256SUMS
           cat SHA256SUMS
+          # The Command Center signing key (docs/packaging.md): SHA256SUMS.sig is what proves the checksums are ours.
+          if [ -n "$CC_SIGNING_KEY" ]; then
+            export GNUPGHOME=$(mktemp -d)
+            printf '%s\n' "$CC_SIGNING_KEY" | gpg --batch --quiet --import
+            gpg --batch --detach-sign -u "$CC_SIGNING_FPR" SHA256SUMS
+            gh release upload "$TAG" SHA256SUMS.sig --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            echo "::warning::no CC_SIGNING_KEY secret: SHA256SUMS is unsigned"
+          fi
           gh release upload "$TAG" SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
