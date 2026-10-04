@@ -3,7 +3,7 @@
 //! FFmpeg), placed at its saved spot (home.json) with its curve. The controllers' lasers, and
 //! anything else SteamVR sends overlay mouse events for, work it: moves, clicks and scrolling
 //! go to that machine. Our own keyboard and mouse drive every panel (kvm.rs), and there's one
-//! shared clipboard (rdp.rs).
+//! shared clipboard across them and the Frame's own windows (clipboard/).
 //!
 //!   cc-panels [--for MIN] [name ...]   the named viewers, or all of them, for MIN minutes
 //!                                      (default 2; 0 = until stopped). Right Ctrl + Esc ends it.
@@ -18,6 +18,7 @@ mod assets;
 mod attention;
 mod back;
 mod capture;
+mod clipboard;
 mod config;
 mod control;
 mod geometry;
@@ -831,6 +832,7 @@ fn run() -> Result<(), String> {
         list.push(Panel::new(list.len(), v, Source::Window(Mutex::new(None)), grab::VIOLET, None)?);
     }
     let _ = PANELS.set(list);
+    clipboard::start(); // the Frame session's clipboard; each RDP session brings its own channel
     {
         let mut k = KVM.lock().unwrap();
         k.place = vec![geometry::Placement::from_matrix(&[[0.0; 4]; 3], 1.0, 1.0, 0.0); panels().len()];
