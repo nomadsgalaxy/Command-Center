@@ -123,7 +123,7 @@ Decided since:
   `ubuntu-24.04-arm` runners in the official Arch Linux ARM root (its tarball through
   `docker import`), so there's no unofficial image and no cross build.
 - **One signing key.** A dedicated Command Center key signs the packages, the repo databases and
-  the release's SHA256SUMS (docs/ssh-free.md §2). It's kept in 1Password, and CI gets it as a
+  the release's SHA256SUMS. It's kept in 1Password, and CI gets it as a
   GitHub Actions secret. Nothing else ever holds it.
 
 ### Making the signing key (once, by hand)

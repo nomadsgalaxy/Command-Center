@@ -73,10 +73,8 @@ set|add|remove` itself and Align goes through `cc-home machine align`.
 
 - Auto-connect: cc-panels has to skip `autoconnect=no` machines at start and connect them on
   demand from the window.
-- When I wrote this, Align needed SSH to show the tags (D-014: dev-only) and the head pose from
-  `head`, and shipping it needed the Machine Agent's `show-image`. That's no longer true: the
-  scan now asks each machine's agent for its monitor and tags (`crates/cc-home/src/scan.rs`,
-  `ready`), and SSH is only used when you set `CC_SSH=1` for diagnosis.
+- Align takes the head pose from cc-panels' `head`. The scan asks each machine's agent for its
+  monitor and tags (`crates/cc-home/src/scan.rs`, `ready`).
 - I'd planned an Overlay UI Toolkit (Cairo + Pango) for the widgets, with the same operations as
   `cc-home machine add|set|list|align` commands in the meantime, so the window would only be a
   front end. The commands came first as planned. The windows themselves ended up drawn by

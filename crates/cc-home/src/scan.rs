@@ -10,7 +10,6 @@
 //! Output, progress lines and files match cc-home.py's.
 use super::{V3, cache, conf_dir, cross, degrees, die, dot, load, make_home, normalize, place, pose_from_axes, room_move, store, store_pose, target, viewers, Panels};
 use crate::machine::{self, Fail, args, py_text, truthy};
-use crate::ssh;
 use cc_proto::agent::Client;
 use cc_proto::conf::{Json, py_float, py_round};
 use cc_scan::scan::{Answer, Scan};
@@ -295,7 +294,6 @@ impl AgentView {
 
 enum View {
     Agent(AgentView),
-    Ssh(ssh::Viewer),
     None,
 }
 
@@ -355,15 +353,9 @@ impl Align<'_> {
                 continue;
             }
             let image = images.iter().find(|(n, _)| *n == m.name).map_or("wait.png", |x| x.1);
-            let mut params = m.tag_params(image);
+            let params = m.tag_params(image);
             match v {
                 View::Agent(a) => a.put(params),
-                View::Ssh(s) => {
-                    params["size"] = json!([m.size().0, m.size().1]); // cc-host tagscreen draws at the output's pixels (same as the agent's tags_show sends it)
-                    if !s.show(&params) {
-                        self.gone.add(&m.name, None); // gone or hung
-                    }
-                }
                 View::None => {}
             }
         }
@@ -640,9 +632,8 @@ fn write_job(work: &Path, camera: &Json, placed: &[&Mon]) -> Value {
 }
 
 /// Gets one monitor ready (machines run in parallel): its output and size from its machine's
-/// agent (docs/agent.md), or with CC_SSH=1, over SSH with the tag viewer copied there. None means
-/// it already said why.
-fn ready(v: &cc_proto::conf::Viewer, agent: &Result<Option<Arc<Mutex<Client>>>, machine::Fail>) -> Result<Option<Mon>, String> {
+/// agent (docs/agent.md). None means it already said why.
+fn ready(v: &cc_proto::conf::Viewer, agent: &Result<Arc<Mutex<Client>>, machine::Fail>) -> Result<Option<Mon>, String> {
     let name = &v.name;
     let index = (machine::port_of(v) - 3400).rem_euclid(10); // a paired Frame's slot k serves monitor m on 3400 + 10k + m
     progress("prepare", name, &[("step", "monitor".into())]);
@@ -657,7 +648,7 @@ fn ready(v: &cc_proto::conf::Viewer, agent: &Result<Option<Arc<Mutex<Client>>>, 
             progress("skipped", name, &[("why", e.state().into())]);
             Ok(None)
         }
-        Ok(Some(cl)) => {
+        Ok(cl) => {
             let r = cl.lock().unwrap().call("monitors", Map::new(), Duration::from_secs(10), |_| {}).map_err(|e| format!("{name}: its agent: {e}"))?;
             let Some(m) = r["monitors"].as_array().into_iter().flatten().find(|m| m["index"].as_i64() == Some(index)).cloned() else {
                 println!("{name}: its machine's agent shares no monitor {index}");
@@ -666,31 +657,6 @@ fn ready(v: &cc_proto::conf::Viewer, agent: &Result<Option<Arc<Mutex<Client>>>, 
             };
             (mon.mm, mon.output, mon.agent) = (m["mm"].clone(), py_text(&m["output"]), Some(cl.clone()));
             mon.draw = Some((m["width"].as_i64().unwrap_or(v.pixels.0), m["height"].as_i64().unwrap_or(v.pixels.1)));
-            Ok(Some(mon))
-        }
-        Ok(None) => {
-            // CC_SSH=1 is diagnostics over SSH. The machine's cc-host tagscreen draws the tags it's sent.
-            let user_host = ssh::login(v, &conf_dir());
-            progress("prepare", name, &[("step", "monitor".into())]);
-            let out = ssh::remote(&user_host, &format!("{}\n~/.local/bin/cc-share list", ssh::SESSION), "this", "");
-            let prefix = format!("monitor {index}:");
-            let Some(output) = out.stdout.lines().find(|l| l.starts_with(&prefix)).and_then(|l| l.split_whitespace().nth(2)).map(str::to_owned) else {
-                println!("{name}: can't find its monitor on {user_host} ({})", if out.stderr.trim().is_empty() { out.stdout.trim() } else { out.stderr.trim() });
-                progress("failed", name, &[("why", "no-monitor".into())]);
-                return Ok(None);
-            };
-            progress("prepare", name, &[("step", "viewer".into())]);
-            // Clear earlier tags, and get its size in mm from kscreen (the same way cc-host's agent reads it).
-            let info = ssh::remote(&user_host, &format!("{}\npkill -f '[c]c-host tagscreen' || true\ntest -x {} || {{ echo 'no cc-host there: cc-share install' >&2; exit 1; }}\nkscreen-doctor -j",
-                                                        ssh::SESSION, ssh::CC_HOST), "this", "");
-            let mm = (info.code == 0).then(|| serde_json::from_str::<Value>(&info.stdout).ok()).flatten()
-                .and_then(|v| v["outputs"].as_array()?.iter().find(|o| o["name"] == output.as_str()).map(ssh::output_mm));
-            let Some(mm) = mm else {
-                println!("{name}: can't show tags on {user_host} (needs cc-host and kscreen-doctor): {}", ssh::tail(info.stderr.trim(), 200));
-                progress("failed", name, &[("why", "no-cc-host".into())]);
-                return Ok(None);
-            };
-            (mon.mm, mon.host, mon.output) = (mm, user_host, output);
             Ok(Some(mon))
         }
     }
@@ -742,7 +708,7 @@ fn look(names: &[String], want: Mode, quick: Option<&Json>) -> (Vec<String>, Pan
     let got: Vec<Result<Option<Mon>, String>> = std::thread::scope(|s| {
         let todo = &todo;
         let hs: Vec<_> = machines.iter().map(|&m| s.spawn(move || {
-            let agent = machine::agent_for(m, "align").map(|c| c.map(|c| Arc::new(Mutex::new(c))));
+            let agent = machine::agent_for(m).map(|c| Arc::new(Mutex::new(c)));
             todo.iter().filter(|v| v.machine == m).map(|v| ready(v, &agent)).collect::<Vec<_>>()
         })).collect();
         hs.into_iter().flat_map(|h| h.join().unwrap_or_else(|_| vec![Err("getting a monitor ready failed".into())])).collect()
@@ -799,17 +765,7 @@ fn look(names: &[String], want: Mode, quick: Option<&Json>) -> (Vec<String>, Pan
                 let on: Vec<(String, i64)> = peers.iter().filter(|p| p.0.as_ref().is_some_and(|o| Arc::ptr_eq(o, &c))).map(|p| (p.1.clone(), p.2)).collect();
                 View::Agent(AgentView::start(&m.name, m.index, Arc::new(on), c, gone.clone()))
             }
-            None => {
-                let (g, n) = (gone.clone(), m.name.clone());
-                match ssh::Viewer::start(&m.host, &m.output, move || g.add(&n, None)) {
-                    Ok(v) => View::Ssh(v),
-                    Err(e) => {
-                        println!("{}: can't show tags on {} ({e})", m.name, m.host);
-                        gone.add(&m.name, Some("viewer-failed".into()));
-                        View::None
-                    }
-                }
-            }
+            None => View::None,
         });
     }
     let _ = sock.ask("hide", 10.0);
@@ -825,7 +781,6 @@ fn look(names: &[String], want: Mode, quick: Option<&Json>) -> (Vec<String>, Pan
     for v in views {
         match v {
             View::Agent(a) => a.close(),
-            View::Ssh(s) => s.close(),
             View::None => {}
         }
     }
@@ -1117,7 +1072,7 @@ pub fn refit() {
         }
     });
     let Some(new) = new else {
-        die(format!("the fit wasn't good enough (median 2 px or more); kept the old one{}", r.err().map_or(String::new(), |e| format!("\n{}", ssh::tail(&e, 300)))));
+        die(format!("the fit wasn't good enough (median 2 px or more); kept the old one{}", r.err().map_or(String::new(), |e| format!("\n{}", tail(&e, 300)))));
     };
     if old.is_some() {
         let _ = std::fs::rename(&cam_file, conf_dir().join("mirror-camera.json.bak"));
@@ -1451,7 +1406,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// selftest-nossh's tag screens, shown and hidden through a real agent (cc-host serve --fake on a
+    /// The agent selftest's tag screens, shown and hidden through a real agent (cc-host serve --fake on a
     /// port of its own, so build cc-host first or set CC_HOST_BIN=), with the keep-alive's poll in
     /// between and nothing gone.
     #[test]
@@ -1506,4 +1461,10 @@ mod tests {
     fn geometry() {
         super::super::selftest();
     }
+}
+
+/// The last `n` characters of s.
+fn tail(s: &str, n: usize) -> &str {
+    let k = s.chars().count();
+    s.char_indices().nth(k.saturating_sub(n)).map_or(s, |(i, _)| &s[i..])
 }

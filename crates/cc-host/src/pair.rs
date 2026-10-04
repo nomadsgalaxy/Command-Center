@@ -71,7 +71,6 @@ fn reply(conf: &Path, plat: &dyn Platform, test: bool, frame: &str) -> Result<Va
     const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
     let password: String = (0..24).map(|_| ALPHABET[below(ALPHABET.len() as u32) as usize] as char).collect();
     let cert = if test { "ab".repeat(32) } else { cert_sha256(conf).map_err(|e| { eprintln!("cc-host pair: {e}"); "no-cert".to_owned() })? };
-    // There's no login here because SSH is only for diagnostics (docs/ssh-free.md). The agent's version gives it there.
     Ok(json!({"user": format!("cc-{frame}"), "password": password, "slot": slot, "cert_sha256": cert, "monitors": mons, "id": host_id(conf)}))
 }
 

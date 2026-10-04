@@ -6,7 +6,6 @@
 //! Where things live:
 //! - machine.rs: the monitors, their agents and pairing
 //! - scan.rs: align, refit, calibrate and pairing by camera (cc-scan)
-//! - ssh.rs: SSH, for diagnosing only (CC_SSH=1)
 //! - hibernate.rs: the Desktop's open apps across a close
 //! - session.rs: the Desktop's launch (desktop, panels, rest, session, box). These were shell
 //!   scripts; their paths are now links to this binary, and it dispatches on argv[0].
@@ -19,7 +18,6 @@ mod install;
 mod machine;
 mod scan;
 mod session;
-mod ssh;
 
 use cc_proto::conf::{self, Json, Viewer, py_round};
 use std::os::linux::net::SocketAddrExt;

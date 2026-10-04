@@ -4130,8 +4130,7 @@
 "machine",
 "set",
 "work-laptop",
-"label=Lap top",
-"ssh=example@203.0.113.85"
+"label=Lap top"
 ],
 "env": {
 "NM_WIFI": "yes:Home\n",
@@ -4255,51 +4254,6 @@
 "asked": []
 },
 {
-"name": "set: a bad ssh",
-"files": {
-".config/control-center/viewers.conf": "@text:1",
-".config/control-center/home.json": "@text:2",
-".config/control-center/trusted-hosts/a7d2.json": "{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-".config/control-center/trusted-hosts/Example-CM.json": "{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}"
-},
-"argv": [
-"machine",
-"set",
-"desk-wide",
-"ssh=Root@h"
-],
-"env": {
-"NM_WIFI": "yes:Home\n",
-"NM_WIRED": ""
-},
-"stdin": "",
-"panels": null,
-"host": null,
-"hostconf": null,
-"stdout": "",
-"stderr": "ssh is user@host\n",
-"exit": 1,
-"out": {
-".config/control-center/home.json": [
-"@text:2",
-"0o644"
-],
-".config/control-center/viewers.conf": [
-"@text:1",
-"0o644"
-],
-".config/control-center/trusted-hosts/Example-CM.json": [
-"{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}",
-"0o644"
-],
-".config/control-center/trusted-hosts/a7d2.json": [
-"{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-"0o644"
-]
-},
-"asked": []
-},
-{
 "name": "set: a bad machine",
 "files": {
 ".config/control-center/viewers.conf": "@text:1",
@@ -4367,7 +4321,7 @@
 "host": null,
 "hostconf": null,
 "stdout": "",
-"stderr": "unknown option (known: curve, autoconnect, machine, radius, ssh, label, proto, tls, pin)\n",
+"stderr": "unknown option (known: curve, autoconnect, machine, radius, label, proto, tls, pin)\n",
 "exit": 1,
 "out": {
 ".config/control-center/home.json": [
@@ -5109,7 +5063,7 @@
 "host": null,
 "hostconf": null,
 "stdout": "@window Desk PC state=not-paired\n",
-"stderr": "a7d2 isn't paired: Pair it (Machines, or cc-home machine pair), or CC_SSH=1 to diagnose over SSH\n",
+"stderr": "a7d2 isn't paired: Pair it (Machines, or cc-home machine pair)\n",
 "exit": 1,
 "out": {
 ".config/control-center/home.json": [
@@ -5245,7 +5199,7 @@
 "host": null,
 "hostconf": null,
 "stdout": "@window work-laptop state=not-paired\n",
-"stderr": "Example-CM isn't paired: Pair it (Machines, or cc-home machine pair), or CC_SSH=1 to diagnose over SSH\n",
+"stderr": "Example-CM isn't paired: Pair it (Machines, or cc-home machine pair)\n",
 "exit": 1,
 "out": {
 ".config/control-center/home.json": [
@@ -5417,51 +5371,7 @@
 "host": null,
 "hostconf": null,
 "stdout": "",
-"stderr": "no paired machine nope: Pair it first (CC_SSH=1 and user@host to diagnose over SSH)\n",
-"exit": 1,
-"out": {
-".config/control-center/home.json": [
-"@text:2",
-"0o644"
-],
-".config/control-center/viewers.conf": [
-"@text:1",
-"0o644"
-],
-".config/control-center/trusted-hosts/Example-CM.json": [
-"{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}",
-"0o644"
-],
-".config/control-center/trusted-hosts/a7d2.json": [
-"{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-"0o644"
-]
-},
-"asked": []
-},
-{
-"name": "probe user@host without CC_SSH",
-"files": {
-".config/control-center/viewers.conf": "@text:1",
-".config/control-center/home.json": "@text:2",
-".config/control-center/trusted-hosts/a7d2.json": "{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-".config/control-center/trusted-hosts/Example-CM.json": "{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}"
-},
-"argv": [
-"machine",
-"probe",
-"u@10.0.0.9"
-],
-"env": {
-"NM_WIFI": "yes:Home\n",
-"NM_WIRED": ""
-},
-"stdin": "",
-"panels": null,
-"host": null,
-"hostconf": null,
-"stdout": "",
-"stderr": "probe over SSH would use SSH; that is diagnostics only (CC_SSH=1).\n",
+"stderr": "no paired machine nope: Pair it first\n",
 "exit": 1,
 "out": {
 ".config/control-center/home.json": [
@@ -5651,7 +5561,7 @@
 "host": null,
 "hostconf": null,
 "stdout": "",
-"stderr": "0fa1c2d3-1111-4222-8333-444455556666: agent not answering (unreachable ([Errno 111] Connection refused)): start Command Center on it (Command Center Host in its app menu, or cc-share up), or run cc-share install there; CC_SSH=1 to diagnose over SSH\n",
+"stderr": "0fa1c2d3-1111-4222-8333-444455556666: agent not answering (unreachable ([Errno 111] Connection refused)): start Command Center on it (Command Center Host in its app menu, or cc-share up), or run cc-share install there\n",
 "exit": 1,
 "out": {
 ".config/control-center/home.json": [
@@ -5701,7 +5611,7 @@
 "host": null,
 "hostconf": null,
 "stdout": "@session lap state=no-agent\n",
-"stderr": "0fa1c2d3-1111-4222-8333-444455556666: agent not answering (unreachable ([Errno 111] Connection refused)): start Command Center on it (Command Center Host in its app menu, or cc-share up), or run cc-share install there; CC_SSH=1 to diagnose over SSH\n",
+"stderr": "0fa1c2d3-1111-4222-8333-444455556666: agent not answering (unreachable ([Errno 111] Connection refused)): start Command Center on it (Command Center Host in its app menu, or cc-share up), or run cc-share install there\n",
 "exit": 1,
 "out": {
 ".config/control-center/home.json": [
@@ -5751,7 +5661,7 @@
 "host": null,
 "hostconf": null,
 "stdout": "@window lap state=no-agent\n",
-"stderr": "0fa1c2d3-1111-4222-8333-444455556666: agent not answering (unreachable ([Errno 111] Connection refused)): start Command Center on it (Command Center Host in its app menu, or cc-share up), or run cc-share install there; CC_SSH=1 to diagnose over SSH\n",
+"stderr": "0fa1c2d3-1111-4222-8333-444455556666: agent not answering (unreachable ([Errno 111] Connection refused)): start Command Center on it (Command Center Host in its app menu, or cc-share up), or run cc-share install there\n",
 "exit": 1,
 "out": {
 ".config/control-center/home.json": [
@@ -5799,7 +5709,7 @@
 "panels": null,
 "host": null,
 "hostconf": null,
-"stdout": "0fa1c2d3-1111-4222-8333-444455556666: agent not answering (unreachable ([Errno 111] Connection refused)): start Command Center on it (Command Center Host in its app menu, or cc-share up), or run cc-share install there; CC_SSH=1 to diagnose over SSH\nthe host still trusts this Frame: on fakehost: cc-share unpair steam-frame, or cc-home machine unpair 0fa1c2d3-1111-4222-8333-444455556666 again when it's reachable\nunpaired 0fa1c2d3-1111-4222-8333-444455556666\n",
+"stdout": "0fa1c2d3-1111-4222-8333-444455556666: agent not answering (unreachable ([Errno 111] Connection refused)): start Command Center on it (Command Center Host in its app menu, or cc-share up), or run cc-share install there\nthe host still trusts this Frame: on fakehost: cc-share unpair steam-frame, or cc-home machine unpair 0fa1c2d3-1111-4222-8333-444455556666 again when it's reachable\nunpaired 0fa1c2d3-1111-4222-8333-444455556666\n",
 "stderr": "",
 "exit": 0,
 "out": {
@@ -5845,7 +5755,7 @@
 "panels": null,
 "host": null,
 "hostconf": null,
-"stdout": "0fa1c2d3-1111-4222-8333-444455556666: agent not answering (unreachable ([Errno 111] Connection refused)): start Command Center on it (Command Center Host in its app menu, or cc-share up), or run cc-share install there; CC_SSH=1 to diagnose over SSH\nthe host still trusts this Frame: on fakehost: cc-share unpair steam-frame, or cc-home machine unpair 0fa1c2d3-1111-4222-8333-444455556666 again when it's reachable\nunpaired 0fa1c2d3-1111-4222-8333-444455556666\n",
+"stdout": "0fa1c2d3-1111-4222-8333-444455556666: agent not answering (unreachable ([Errno 111] Connection refused)): start Command Center on it (Command Center Host in its app menu, or cc-share up), or run cc-share install there\nthe host still trusts this Frame: on fakehost: cc-share unpair steam-frame, or cc-home machine unpair 0fa1c2d3-1111-4222-8333-444455556666 again when it's reachable\nunpaired 0fa1c2d3-1111-4222-8333-444455556666\n",
 "stderr": "",
 "exit": 0,
 "out": {
@@ -6278,483 +6188,6 @@
 ".config/control-center/trusted-hosts/a7d2.json": [
 "{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
 "0o644"
-]
-},
-"asked": []
-},
-{
-"name": "CC_SSH=1: unpair",
-"files": {
-".config/control-center/viewers.conf": "@text:1",
-".config/control-center/home.json": "@text:2",
-".config/control-center/trusted-hosts/a7d2.json": "{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-".config/control-center/trusted-hosts/Example-CM.json": "{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}"
-},
-"argv": [
-"machine",
-"unpair",
-"Desk PC"
-],
-"env": {
-"NM_WIFI": "yes:Home\n",
-"NM_WIRED": "",
-"CC_SSH": "1",
-"SSH_OUT": "monitor 0: DP-1 (primary)\\nmonitor 1: HDMI-A-1\\nmonitor 2: gone\\n@@\\nkscreen says: {\"outputs\": [{\"name\": \"DP-1\", \"size\": {\"width\": 3840, \"height\": 1080}}, {\"name\": \"HDMI-A-1\", \"size\": {}, \"currentModeId\": \"2\", \"rotation\": 2, \"modes\": [{\"id\": \"1\", \"size\": {\"width\": 1, \"height\": 1}}, {\"id\": \"2\", \"size\": {\"width\": 2560.0, \"height\": 1440}}]}]}"
-},
-"stdin": "",
-"panels": null,
-"host": null,
-"hostconf": null,
-"stdout": "unpaired a7d2\n",
-"stderr": "CC_SSH=1: unpair for a7d2 over SSH (diagnostics)\n",
-"exit": 0,
-"out": {
-".config/control-center/home.json": [
-"@text:2",
-"0o644"
-],
-".config/control-center/viewers.conf": [
-"@text:1",
-"0o644"
-],
-".config/control-center/trusted-hosts/Example-CM.json": [
-"{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}",
-"0o644"
-]
-},
-"asked": []
-},
-{
-"name": "CC_SSH=1: probe user@host",
-"files": {
-".config/control-center/viewers.conf": "@text:1",
-".config/control-center/home.json": "@text:2",
-".config/control-center/trusted-hosts/a7d2.json": "{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-".config/control-center/trusted-hosts/Example-CM.json": "{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}"
-},
-"argv": [
-"machine",
-"probe",
-"u@10.0.0.9"
-],
-"env": {
-"NM_WIFI": "yes:Home\n",
-"NM_WIRED": "",
-"CC_SSH": "1",
-"SSH_OUT": "monitor 0: DP-1 (primary)\\nmonitor 1: HDMI-A-1\\nmonitor 2: gone\\n@@\\nkscreen says: {\"outputs\": [{\"name\": \"DP-1\", \"size\": {\"width\": 3840, \"height\": 1080}}, {\"name\": \"HDMI-A-1\", \"size\": {}, \"currentModeId\": \"2\", \"rotation\": 2, \"modes\": [{\"id\": \"1\", \"size\": {\"width\": 1, \"height\": 1}}, {\"id\": \"2\", \"size\": {\"width\": 2560.0, \"height\": 1440}}]}]}"
-},
-"stdin": "",
-"panels": null,
-"host": null,
-"hostconf": null,
-"stdout": "monitor 0: DP-1 3840x1080\nmonitor 1: HDMI-A-1 1440x2560\n",
-"stderr": "",
-"exit": 0,
-"out": {
-".config/control-center/home.json": [
-"@text:2",
-"0o644"
-],
-".config/control-center/viewers.conf": [
-"@text:1",
-"0o644"
-],
-".config/control-center/trusted-hosts/Example-CM.json": [
-"{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}",
-"0o644"
-],
-".config/control-center/trusted-hosts/a7d2.json": [
-"{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-"0o644"
-]
-},
-"asked": []
-},
-{
-"name": "CC_SSH=1: probe user@host, ssh fails",
-"files": {
-".config/control-center/viewers.conf": "@text:1",
-".config/control-center/home.json": "@text:2",
-".config/control-center/trusted-hosts/a7d2.json": "{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-".config/control-center/trusted-hosts/Example-CM.json": "{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}"
-},
-"argv": [
-"machine",
-"probe",
-"u@10.0.0.9"
-],
-"env": {
-"NM_WIFI": "yes:Home\n",
-"NM_WIRED": "",
-"CC_SSH": "1",
-"SSH_OUT": "monitor 0: DP-1 (primary)\\nmonitor 1: HDMI-A-1\\nmonitor 2: gone\\n@@\\nkscreen says: {\"outputs\": [{\"name\": \"DP-1\", \"size\": {\"width\": 3840, \"height\": 1080}}, {\"name\": \"HDMI-A-1\", \"size\": {}, \"currentModeId\": \"2\", \"rotation\": 2, \"modes\": [{\"id\": \"1\", \"size\": {\"width\": 1, \"height\": 1}}, {\"id\": \"2\", \"size\": {\"width\": 2560.0, \"height\": 1440}}]}]}",
-"SSH_FAIL": "1"
-},
-"stdin": "",
-"panels": null,
-"host": null,
-"hostconf": null,
-"stdout": "",
-"stderr": "can't ask u@10.0.0.9: ssh: connect to host 10.0.0.9 port 22: Connection refused\n",
-"exit": 1,
-"out": {
-".config/control-center/home.json": [
-"@text:2",
-"0o644"
-],
-".config/control-center/viewers.conf": [
-"@text:1",
-"0o644"
-],
-".config/control-center/trusted-hosts/Example-CM.json": [
-"{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}",
-"0o644"
-],
-".config/control-center/trusted-hosts/a7d2.json": [
-"{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-"0o644"
-]
-},
-"asked": []
-},
-{
-"name": "CC_SSH=1: probe user@host, kscreen says nothing",
-"files": {
-".config/control-center/viewers.conf": "@text:1",
-".config/control-center/home.json": "@text:2",
-".config/control-center/trusted-hosts/a7d2.json": "{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-".config/control-center/trusted-hosts/Example-CM.json": "{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}"
-},
-"argv": [
-"machine",
-"probe",
-"u@10.0.0.9"
-],
-"env": {
-"NM_WIFI": "yes:Home\n",
-"NM_WIRED": "",
-"CC_SSH": "1",
-"SSH_OUT": ""
-},
-"stdin": "",
-"panels": null,
-"host": null,
-"hostconf": null,
-"stdout": "",
-"stderr": "u@10.0.0.9: kscreen-doctor -j said nothing usable\n",
-"exit": 1,
-"out": {
-".config/control-center/home.json": [
-"@text:2",
-"0o644"
-],
-".config/control-center/viewers.conf": [
-"@text:1",
-"0o644"
-],
-".config/control-center/trusted-hosts/Example-CM.json": [
-"{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}",
-"0o644"
-],
-".config/control-center/trusted-hosts/a7d2.json": [
-"{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-"0o644"
-]
-},
-"asked": []
-},
-{
-"name": "CC_SSH=1: probe a paired machine",
-"files": {
-".config/control-center/viewers.conf": "@text:19",
-".config/control-center/trusted-hosts/0fa1c2d3-1111-4222-8333-444455556666.json": "{\"id\": \"0fa1c2d3-1111-4222-8333-444455556666\", \"host\": \"fakehost\", \"addr\": \"127.0.0.1\", \"host_pk\": \"VLESgXqlxMAh0qLApDWhtRHk6yyveQFvTZWE8FV5o+U=\", \"frame\": \"steam-frame\", \"cert_sha256\": \"abababababababababababababababababababababababababababababababab\", \"label\": null, \"monitors\": {\"0\": \"eDP-1\"}}",
-".config/control-center/passwords/0fa1c2d3-1111-4222-8333-444455556666": "PPPPPPPPPPPPPPPPPPPPPPPP",
-".config/control-center/frame-key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJcS3maiKtJbgL+LpEzYUz8RPVH4Rm2vVrtjAs4hsNxZ\n-----END PRIVATE KEY-----\n",
-".config/control-center/home.json": "@text:20"
-},
-"argv": [
-"machine",
-"probe",
-"fakehost"
-],
-"env": {
-"NM_WIFI": "yes:Home\n",
-"NM_WIRED": "",
-"CC_SSH": "1",
-"SSH_OUT": "monitor 0: DP-1 (primary)\\nmonitor 1: HDMI-A-1\\nmonitor 2: gone\\n@@\\nkscreen says: {\"outputs\": [{\"name\": \"DP-1\", \"size\": {\"width\": 3840, \"height\": 1080}}, {\"name\": \"HDMI-A-1\", \"size\": {}, \"currentModeId\": \"2\", \"rotation\": 2, \"modes\": [{\"id\": \"1\", \"size\": {\"width\": 1, \"height\": 1}}, {\"id\": \"2\", \"size\": {\"width\": 2560.0, \"height\": 1440}}]}]}"
-},
-"stdin": "",
-"panels": null,
-"host": null,
-"hostconf": null,
-"stdout": "monitor 0: DP-1 3840x1080\nmonitor 1: HDMI-A-1 1440x2560\n",
-"stderr": "CC_SSH=1: probe for 0fa1c2d3-1111-4222-8333-444455556666 over SSH (diagnostics)\n",
-"exit": 0,
-"out": {
-".config/control-center/home.json": [
-"@text:20",
-"0o644"
-],
-".config/control-center/frame-key": [
-119,
-"0o644"
-],
-".config/control-center/viewers.conf": [
-"@text:19",
-"0o644"
-],
-".config/control-center/passwords/0fa1c2d3-1111-4222-8333-444455556666": [
-24,
-"0o644"
-],
-".config/control-center/trusted-hosts/0fa1c2d3-1111-4222-8333-444455556666.json": [
-"{\"id\": \"0fa1c2d3-1111-4222-8333-444455556666\", \"host\": \"fakehost\", \"addr\": \"127.0.0.1\", \"host_pk\": \"VLESgXqlxMAh0qLApDWhtRHk6yyveQFvTZWE8FV5o+U=\", \"frame\": \"steam-frame\", \"cert_sha256\": \"abababababababababababababababababababababababababababababababab\", \"label\": null, \"monitors\": {\"0\": \"eDP-1\"}}",
-"0o644"
-]
-},
-"asked": []
-},
-{
-"name": "CC_SSH=1: add, its size over SSH",
-"files": {
-".config/control-center/viewers.conf": "@text:1",
-".config/control-center/home.json": "@text:2",
-".config/control-center/trusted-hosts/a7d2.json": "{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-".config/control-center/trusted-hosts/Example-CM.json": "{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}"
-},
-"argv": [
-"machine",
-"add",
-"new",
-"u@10.0.0.9:3401"
-],
-"env": {
-"NM_WIFI": "yes:Home\n",
-"NM_WIRED": "",
-"CC_SSH": "1",
-"SSH_OUT": "monitor 0: DP-1 (primary)\\nmonitor 1: HDMI-A-1\\nmonitor 2: gone\\n@@\\nkscreen says: {\"outputs\": [{\"name\": \"DP-1\", \"size\": {\"width\": 3840, \"height\": 1080}}, {\"name\": \"HDMI-A-1\", \"size\": {}, \"currentModeId\": \"2\", \"rotation\": 2, \"modes\": [{\"id\": \"1\", \"size\": {\"width\": 1, \"height\": 1}}, {\"id\": \"2\", \"size\": {\"width\": 2560.0, \"height\": 1440}}]}]}"
-},
-"stdin": "",
-"panels": null,
-"host": null,
-"hostconf": null,
-"stdout": "",
-"stderr": "",
-"exit": 0,
-"out": {
-".config/control-center/viewers.conf": [
-"@text:28",
-"0o644"
-],
-".config/control-center/home.json": [
-"@text:2",
-"0o644"
-],
-".config/control-center/trusted-hosts/Example-CM.json": [
-"{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}",
-"0o644"
-],
-".config/control-center/trusted-hosts/a7d2.json": [
-"{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-"0o644"
-]
-},
-"asked": []
-},
-{
-"name": "CC_SSH=1: add, no such monitor over SSH",
-"files": {
-".config/control-center/viewers.conf": "@text:1",
-".config/control-center/home.json": "@text:2",
-".config/control-center/trusted-hosts/a7d2.json": "{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-".config/control-center/trusted-hosts/Example-CM.json": "{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}"
-},
-"argv": [
-"machine",
-"add",
-"new",
-"u@10.0.0.9:3405"
-],
-"env": {
-"NM_WIFI": "yes:Home\n",
-"NM_WIRED": "",
-"CC_SSH": "1",
-"SSH_OUT": "monitor 0: DP-1 (primary)\\nmonitor 1: HDMI-A-1\\nmonitor 2: gone\\n@@\\nkscreen says: {\"outputs\": [{\"name\": \"DP-1\", \"size\": {\"width\": 3840, \"height\": 1080}}, {\"name\": \"HDMI-A-1\", \"size\": {}, \"currentModeId\": \"2\", \"rotation\": 2, \"modes\": [{\"id\": \"1\", \"size\": {\"width\": 1, \"height\": 1}}, {\"id\": \"2\", \"size\": {\"width\": 2560.0, \"height\": 1440}}]}]}"
-},
-"stdin": "",
-"panels": null,
-"host": null,
-"hostconf": null,
-"stdout": "",
-"stderr": "no monitor 5 on u@10.0.0.9, or give WxH\n",
-"exit": 1,
-"out": {
-".config/control-center/home.json": [
-"@text:2",
-"0o644"
-],
-".config/control-center/viewers.conf": [
-"@text:1",
-"0o644"
-],
-".config/control-center/trusted-hosts/Example-CM.json": [
-"{\"addr\": \"203.0.113.85\", \"label\": \"Work laptop\"}",
-"0o644"
-],
-".config/control-center/trusted-hosts/a7d2.json": [
-"{\"id\": \"a7d2\", \"host\": \"example-desktop\", \"label\": \"Desk PC\", \"monitors\": {\"0\": \"DP-1\", \"1\": \"DP-3\"}}",
-"0o644"
-]
-},
-"asked": []
-},
-{
-"name": "CC_SSH=1: session of a paired monitor",
-"files": {
-".config/control-center/viewers.conf": "@text:19",
-".config/control-center/trusted-hosts/0fa1c2d3-1111-4222-8333-444455556666.json": "{\"id\": \"0fa1c2d3-1111-4222-8333-444455556666\", \"host\": \"fakehost\", \"addr\": \"127.0.0.1\", \"host_pk\": \"VLESgXqlxMAh0qLApDWhtRHk6yyveQFvTZWE8FV5o+U=\", \"frame\": \"steam-frame\", \"cert_sha256\": \"abababababababababababababababababababababababababababababababab\", \"label\": null, \"monitors\": {\"0\": \"eDP-1\"}}",
-".config/control-center/passwords/0fa1c2d3-1111-4222-8333-444455556666": "PPPPPPPPPPPPPPPPPPPPPPPP",
-".config/control-center/frame-key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJcS3maiKtJbgL+LpEzYUz8RPVH4Rm2vVrtjAs4hsNxZ\n-----END PRIVATE KEY-----\n",
-".config/control-center/home.json": "@text:20"
-},
-"argv": [
-"machine",
-"session",
-"start",
-"lap"
-],
-"env": {
-"NM_WIFI": "yes:Home\n",
-"NM_WIRED": "",
-"CC_SSH": "1",
-"SSH_OUT": "monitor 0: DP-1 (primary)\\nmonitor 1: HDMI-A-1\\nmonitor 2: gone\\n@@\\nkscreen says: {\"outputs\": [{\"name\": \"DP-1\", \"size\": {\"width\": 3840, \"height\": 1080}}, {\"name\": \"HDMI-A-1\", \"size\": {}, \"currentModeId\": \"2\", \"rotation\": 2, \"modes\": [{\"id\": \"1\", \"size\": {\"width\": 1, \"height\": 1}}, {\"id\": \"2\", \"size\": {\"width\": 2560.0, \"height\": 1440}}]}]}"
-},
-"stdin": "",
-"panels": null,
-"host": null,
-"hostconf": null,
-"stdout": "@session lap port=3410 ready=1\n",
-"stderr": "CC_SSH=1: session for 0fa1c2d3-1111-4222-8333-444455556666 over SSH (diagnostics)\n",
-"exit": 0,
-"out": {
-".config/control-center/home.json": [
-"@text:20",
-"0o644"
-],
-".config/control-center/frame-key": [
-119,
-"0o644"
-],
-".config/control-center/viewers.conf": [
-"@text:19",
-"0o644"
-],
-".config/control-center/passwords/0fa1c2d3-1111-4222-8333-444455556666": [
-24,
-"0o644"
-],
-".config/control-center/trusted-hosts/0fa1c2d3-1111-4222-8333-444455556666.json": [
-"{\"id\": \"0fa1c2d3-1111-4222-8333-444455556666\", \"host\": \"fakehost\", \"addr\": \"127.0.0.1\", \"host_pk\": \"VLESgXqlxMAh0qLApDWhtRHk6yyveQFvTZWE8FV5o+U=\", \"frame\": \"steam-frame\", \"cert_sha256\": \"abababababababababababababababababababababababababababababababab\", \"label\": null, \"monitors\": {\"0\": \"eDP-1\"}}",
-"0o644"
-]
-},
-"asked": []
-},
-{
-"name": "CC_SSH=1: window",
-"files": {
-".config/control-center/viewers.conf": "@text:19",
-".config/control-center/trusted-hosts/0fa1c2d3-1111-4222-8333-444455556666.json": "{\"id\": \"0fa1c2d3-1111-4222-8333-444455556666\", \"host\": \"fakehost\", \"addr\": \"127.0.0.1\", \"host_pk\": \"VLESgXqlxMAh0qLApDWhtRHk6yyveQFvTZWE8FV5o+U=\", \"frame\": \"steam-frame\", \"cert_sha256\": \"abababababababababababababababababababababababababababababababab\", \"label\": null, \"monitors\": {\"0\": \"eDP-1\"}}",
-".config/control-center/passwords/0fa1c2d3-1111-4222-8333-444455556666": "PPPPPPPPPPPPPPPPPPPPPPPP",
-".config/control-center/frame-key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJcS3maiKtJbgL+LpEzYUz8RPVH4Rm2vVrtjAs4hsNxZ\n-----END PRIVATE KEY-----\n",
-".config/control-center/home.json": "@text:20"
-},
-"argv": [
-"machine",
-"window",
-"list",
-"lap"
-],
-"env": {
-"NM_WIFI": "yes:Home\n",
-"NM_WIRED": "",
-"CC_SSH": "1",
-"SSH_OUT": "monitor 0: DP-1 (primary)\\nmonitor 1: HDMI-A-1\\nmonitor 2: gone\\n@@\\nkscreen says: {\"outputs\": [{\"name\": \"DP-1\", \"size\": {\"width\": 3840, \"height\": 1080}}, {\"name\": \"HDMI-A-1\", \"size\": {}, \"currentModeId\": \"2\", \"rotation\": 2, \"modes\": [{\"id\": \"1\", \"size\": {\"width\": 1, \"height\": 1}}, {\"id\": \"2\", \"size\": {\"width\": 2560.0, \"height\": 1440}}]}]}"
-},
-"stdin": "",
-"panels": null,
-"host": null,
-"hostconf": null,
-"stdout": "",
-"stderr": "CC_SSH=1: window for 0fa1c2d3-1111-4222-8333-444455556666 over SSH (diagnostics)\nwindow pop-out has no SSH path (CC_SSH=1 doesn't apply)\n",
-"exit": 1,
-"out": {
-".config/control-center/home.json": [
-"@text:20",
-"0o644"
-],
-".config/control-center/frame-key": [
-119,
-"0o644"
-],
-".config/control-center/viewers.conf": [
-"@text:19",
-"0o644"
-],
-".config/control-center/passwords/0fa1c2d3-1111-4222-8333-444455556666": [
-24,
-"0o644"
-],
-".config/control-center/trusted-hosts/0fa1c2d3-1111-4222-8333-444455556666.json": [
-"{\"id\": \"0fa1c2d3-1111-4222-8333-444455556666\", \"host\": \"fakehost\", \"addr\": \"127.0.0.1\", \"host_pk\": \"VLESgXqlxMAh0qLApDWhtRHk6yyveQFvTZWE8FV5o+U=\", \"frame\": \"steam-frame\", \"cert_sha256\": \"abababababababababababababababababababababababababababababababab\", \"label\": null, \"monitors\": {\"0\": \"eDP-1\"}}",
-"0o644"
-]
-},
-"asked": []
-},
-{
-"name": "CC_SSH=1: unpair a paired machine",
-"files": {
-".config/control-center/viewers.conf": "@text:19",
-".config/control-center/trusted-hosts/0fa1c2d3-1111-4222-8333-444455556666.json": "{\"id\": \"0fa1c2d3-1111-4222-8333-444455556666\", \"host\": \"fakehost\", \"addr\": \"127.0.0.1\", \"host_pk\": \"VLESgXqlxMAh0qLApDWhtRHk6yyveQFvTZWE8FV5o+U=\", \"frame\": \"steam-frame\", \"cert_sha256\": \"abababababababababababababababababababababababababababababababab\", \"label\": null, \"monitors\": {\"0\": \"eDP-1\"}}",
-".config/control-center/passwords/0fa1c2d3-1111-4222-8333-444455556666": "PPPPPPPPPPPPPPPPPPPPPPPP",
-".config/control-center/frame-key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJcS3maiKtJbgL+LpEzYUz8RPVH4Rm2vVrtjAs4hsNxZ\n-----END PRIVATE KEY-----\n",
-".config/control-center/home.json": "@text:20"
-},
-"argv": [
-"machine",
-"unpair",
-"0fa1c2d3-1111-4222-8333-444455556666"
-],
-"env": {
-"NM_WIFI": "yes:Home\n",
-"NM_WIRED": "",
-"CC_SSH": "1",
-"SSH_OUT": "monitor 0: DP-1 (primary)\\nmonitor 1: HDMI-A-1\\nmonitor 2: gone\\n@@\\nkscreen says: {\"outputs\": [{\"name\": \"DP-1\", \"size\": {\"width\": 3840, \"height\": 1080}}, {\"name\": \"HDMI-A-1\", \"size\": {}, \"currentModeId\": \"2\", \"rotation\": 2, \"modes\": [{\"id\": \"1\", \"size\": {\"width\": 1, \"height\": 1}}, {\"id\": \"2\", \"size\": {\"width\": 2560.0, \"height\": 1440}}]}]}"
-},
-"stdin": "",
-"panels": null,
-"host": null,
-"hostconf": null,
-"stdout": "the host still trusts this Frame: on fakehost: cc-share unpair steam-frame, or cc-home machine unpair 0fa1c2d3-1111-4222-8333-444455556666 again when it's reachable\nunpaired 0fa1c2d3-1111-4222-8333-444455556666\n",
-"stderr": "CC_SSH=1: unpair for 0fa1c2d3-1111-4222-8333-444455556666 over SSH (diagnostics)\n",
-"exit": 0,
-"out": {
-".config/control-center/home.json": [
-"@text:20",
-"0o644"
-],
-".config/control-center/frame-key": [
-119,
-"0o644"
-],
-".config/control-center/viewers.conf": [
-"@text:19",
-"0o644"
-],
-".config/control-center/pending-unpair/0fa1c2d3-1111-4222-8333-444455556666.json": [
-"{\"id\": \"0fa1c2d3-1111-4222-8333-444455556666\", \"host\": \"fakehost\", \"addr\": \"127.0.0.1\", \"host_pk\": \"VLESgXqlxMAh0qLApDWhtRHk6yyveQFvTZWE8FV5o+U=\", \"frame\": \"steam-frame\", \"cert_sha256\": \"abababababababababababababababababababababababababababababababab\", \"label\": null, \"monitors\": {\"0\": \"eDP-1\"}}",
-"0o600"
 ]
 },
 "asked": []
@@ -8407,8 +7840,7 @@
 "bin": {
 "nmcli": "#!/bin/bash\n[ -n \"${NM_FAIL:-}\" ] && { echo \"Error: NetworkManager is not running.\" >&2; exit 8; }\ncase \"$*\" in *wifi*) printf \"%b\" \"${NM_WIFI:-}\" ;; *connection*) printf \"%b\" \"${NM_WIRED:-}\" ;; esac\n",
 "avahi-browse": "#!/bin/bash\n[ -n \"${AVAHI_SLEEP:-}\" ] && sleep \"$AVAHI_SLEEP\"\nprintf \"%s\" \"${AVAHI_OUT:-}\"\n",
-"ip": "#!/bin/bash\necho \"1.1.1.1 via 203.0.113.1 dev wlan0 src 203.0.113.50 uid 1000\"\necho \"    cache\"\n",
-"ssh": "#!/bin/bash\ncat > /dev/null\n[ -n \"${SSH_FAIL:-}\" ] && { echo \"ssh: connect to host 10.0.0.9 port 22: Connection refused\" >&2; exit 255; }\nprintf \"%b\" \"${SSH_OUT:-}\"\n"
+"ip": "#!/bin/bash\necho \"1.1.1.1 via 203.0.113.1 dev wlan0 src 203.0.113.50 uid 1000\"\necho \"    cache\"\n"
 },
 "texts": [
 "# name  user@host:port  screen  size\ndesk-wide       cc-frame@203.0.113.63:3410  1       3840x1080  machine=abc  curve=h\nexample-cm-edp-1 cc-steam-frame@203.0.113.85:3410 2       1920x1080  machine=5f0e1c2a-1b2c-4d5e-8f90-a1b2c3d4e5f6\nexample-cm-hdmi-a-1 cc-steam-frame@203.0.113.85:3411 3       2560x1440  machine=5f0e1c2a-1b2c-4d5e-8f90-a1b2c3d4e5f6\n",
@@ -8437,7 +7869,7 @@
 "# name          user@host:port              screen  size        (see cc-view)\nwork-laptop      cc-frame@203.0.113.85:3410  3       1920x1080  machine=Example-CM  curve=flat  autoconnect=yes\ndesk-wide cc-frame@203.0.113.63:3410  4       3840x1080  machine=a7d2  autoconnect=yes  curve=v  radius=1.0\ndesk-portrait cc-frame@203.0.113.63:3411  5       1440x2560  machine=a7d2  autoconnect=no  label=Tall%20one\n",
 "# name          user@host:port              screen  size        (see cc-view)\nwork-laptop      cc-frame@203.0.113.85:3410  3       1920x1080  machine=Example-CM  curve=flat  autoconnect=yes\ndesk-wide cc-frame@203.0.113.63:3410  4       3840x1080  machine=a7d2  autoconnect=yes  curve=h  radius=1.0\ndesk-portrait cc-frame@203.0.113.63:3411  5       1440x2560  machine=a7d2  autoconnect=yes  label=Tall%20one  radius=1.5  curve=h\n",
 "# name          user@host:port              screen  size        (see cc-view)\nwork-laptop      cc-frame@203.0.113.85:3410  3       1920x1080  machine=Example-CM  curve=flat  autoconnect=yes\ndesk-wide cc-frame@203.0.113.63:3410  4       3840x1080  machine=a7d2  curve=h\ndesk-portrait cc-frame@203.0.113.63:3411  5       1440x2560  machine=a7d2  autoconnect=no  label=Tall%20one\n",
-"# name          user@host:port              screen  size        (see cc-view)\nwork-laptop      cc-frame@203.0.113.85:3410  3       1920x1080  machine=Example-CM  curve=flat  autoconnect=yes  label=Lap%20top  ssh=example@203.0.113.85\ndesk-wide cc-frame@203.0.113.63:3410  4       3840x1080  machine=a7d2  autoconnect=yes  curve=h  radius=1.0\ndesk-portrait cc-frame@203.0.113.63:3411  5       1440x2560  machine=a7d2  autoconnect=no  label=Tall%20one\n",
+"# name          user@host:port              screen  size        (see cc-view)\nwork-laptop      cc-frame@203.0.113.85:3410  3       1920x1080  machine=Example-CM  curve=flat  autoconnect=yes  label=Lap%20top\ndesk-wide cc-frame@203.0.113.63:3410  4       3840x1080  machine=a7d2  autoconnect=yes  curve=h  radius=1.0\ndesk-portrait cc-frame@203.0.113.63:3411  5       1440x2560  machine=a7d2  autoconnect=no  label=Tall%20one\n",
 "# name          user@host:port              screen  size        (see cc-view)\nwork-laptop      cc-frame@203.0.113.85:3410  3       1920x1080  machine=Example-CM  curve=flat  autoconnect=yes\ndesk-wide cc-frame@203.0.113.63:3410  4       3840x1080  machine=a7d2  autoconnect=yes  curve=h  radius=1.0\ndesk-portrait cc-frame@203.0.113.63:3411  5       1440x2560  machine=a7d2  autoconnect=no  label=Tall%20one\nnew-one         u@10.0.0.9:3400             6       2560x1440  curve=h  label=Hi%20there\n",
 "# name          user@host:port              screen  size        (see cc-view)\nwork-laptop      cc-frame@203.0.113.85:3410  3       1920x1080  machine=Example-CM  curve=flat  autoconnect=yes\ndesk-wide cc-frame@203.0.113.63:3410  4       3840x1080  machine=a7d2  autoconnect=yes  curve=h  radius=1.0\ndesk-portrait cc-frame@203.0.113.63:3411  5       1440x2560  machine=a7d2  autoconnect=no  label=Tall%20one\nnew             u@10.0.0.9:3401             6       1440x2560\n",
 "-----BEGIN CERTIFICATE-----\nMIHlMIGYoAMCAQICFGlEdOwTJvK6pxjFzbWqly9eb6iZMAUGAytlcDASMRAwDgYD\nVQQDDAdjYy1ob3N0MCAXDTAwMDEwMTAwMDAwMFoYDzk5OTkxMjMxMDAwMDAwWjAS\nMRAwDgYDVQQDDAdjYy1ob3N0MCowBQYDK2VwAyEAVLESgXqlxMAh0qLApDWhtRHk\n6yyveQFvTZWE8FV5o+UwBQYDK2VwA0EAaksiZn5tFOOFHJfgaey3XPFO0qZdmc/i\nVRigFZDCA8ezqBHGJX9ETNFPOhfwvmmTsHqh6mfk9wpX9BkS0+v8CQ==\n-----END CERTIFICATE-----\n",

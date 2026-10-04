@@ -117,8 +117,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `install.rs` | `cc-home install` (FreeRDP, libvncclient, cc-panels, the pointer driver, `~/.local/bin` links, the KWin grant `.desktop`), `install desktop`, `install remove`. |
 | `machine.rs` | `cc-home machine ...`: viewers.conf edits, discover (mDNS), `pair`, unpair, session/window commands through the agent. |
 | `scan.rs` | Everything with the camera: `scan` (align), `refit`, `calibrate`, `pair_scan`. |
-| `ssh.rs` | SSH, for `CC_SSH=1` diagnosis only (docs/ssh-free.md). |
-| `tests/cross.rs`, `tests/nossh.rs` | Byte-for-byte checks against the old Python's recorded output, and the no-SSH proof. |
+| `tests/cross.rs` | Byte-for-byte checks against the old Python's recorded output. |
 
 ### cc-host (`crates/cc-host/src`)
 
@@ -279,7 +278,7 @@ VNC is the same shape: `vnc.rs:run` → libvncclient update callbacks → `gpu::
    everywhere else and moves nothing until a paste asks (`Hub::want`). Machine text is fetched
    right away to tell echoes apart, since each monitor is its own krdpserver on one host clipboard.
 3. Files from a machine stay a descriptor until pasted, then get staged in
-   `~/.cache/control-center/clipboard/`. `tests/clipboard-check` is the manual check.
+   `~/.cache/control-center/clipboard/`.
 
 ### Installer and packaging
 
@@ -376,7 +375,7 @@ cc-scan) honour `CC_PANELS_SOCKET=<name>`. cc-panels itself always binds `@contr
 ## Other docs
 
 - Host side: [agent.md](agent.md), [pairing.md](pairing.md), [rust-host.md](rust-host.md),
-  [ssh-free.md](ssh-free.md), [privacy.md](privacy.md) (research),
+  [privacy.md](privacy.md) (research),
   [rust-rdp-server.md](rust-rdp-server.md) (feasibility only).
 - Frame UI: [window-panels-design2.md](window-panels-design2.md) (the window panels as built),
   [plasma-look-design.md](plasma-look-design.md), [panel-move-design.md](panel-move-design.md),

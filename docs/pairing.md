@@ -7,7 +7,7 @@
 > but the decisions and limits below still hold.
 
 This is how a Frame finds a host on the network and gets what it needs to show that host's
-monitors, without SSH (SSH stays a dev-only shortcut, D-014). My decisions (2026-10-02):
+monitors, with no login on the host beyond pairing. My decisions (2026-10-02):
 announcing is opt-in per host; pairing uses a key shown on the host's screen and typed on the
 Frame; each paired Frame gets its own krdp login; and libraries and the font are vendored in the
 repo.
@@ -20,7 +20,7 @@ repo.
 - type `_controlcenter._tcp`, port **3399** (the host agent's port; krdp uses 3400+)
 - TXT: `host=<hostname>` `monitors=<N>` `m<i>=<output>,<W>x<H>` per shared monitor (native
   pixels, rotated for a portrait output) `version=1` `pair=0|1`. There's no login name, because
-  pairing doesn't need it and SSH is dev-only (M2).
+  pairing doesn't need it (M2).
 - republished when any of it changes (checked every 2 s), with `pair=1` while a pairing screen is
   up
 
@@ -195,10 +195,9 @@ closes, and destroys the key. F prints `@pair <host> state=cancelled`.
 - **Host id:** each host makes a random UUID once, at first pairing
   (`~/.config/control-center/host-id`, 0600). It's never derived from its name or MAC, and a
   reinstall keeps the file. It's sent **only in the sealed reply** (`id`), never announced. The
-  reply also carries `login` (the host's account, for align's SSH until the agent shows tags,
-  docs/agent.md).
+  reply carries no account name.
 - **On the Frame,** the id keys everything kept for that host: `machine=<id>` on its viewers.conf
-  lines, `trusted-hosts/<id>.json` (`id, host, addr, host_pk, cert_sha256, login, label, monitors`
+  lines, `trusted-hosts/<id>.json` (`id, host, addr, host_pk, cert_sha256, label, monitors`
   {index: output}) and `passwords/<id>`. Renaming the host or a new address breaks nothing.
 - **Re-pairing** finds this machine's line for each monitor by (machine id, monitor index), then
   by name, then by a line added by hand on that host's 3400+m (which keeps its name, options and

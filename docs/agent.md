@@ -6,16 +6,10 @@
 > files it names (pair.py, agent.py, tagshow.py, third_party/spake2) were removed on 2026-10-03,
 > but the decisions and limits below still hold.
 
-I wrote on 2026-10-02: "we need to make sure the cc-share command sets everything it needs to,
-again, we shouldn't have to utilize ssh, but the app itself should be able to establish krdp or
-vnc connection (user preference) on it's own with the pairing method we set, then the frame
-should be able to control everything as needed."
-
-Today a paired Frame still uses SSH for three things: finding a monitor's output (probe and
-align), showing the align tags (tagshow.py, copied with scp), and anything else on the host. Its
-krdp servers also start at pairing and keep running whether the Frame is there or not. The agent
-replaces all of that with one authenticated channel, built on the keys pairing already exchanged.
-SSH stays as a developer fallback behind a flag (D-014).
+The Frame controls a paired computer through one authenticated channel, the agent, built on the
+keys pairing already exchanged. Through it the Frame finds a monitor's output (probe and align),
+shows the align tags, starts and stops sessions and unpairs. The app establishes the krdp (or VNC)
+connection itself, so nothing needs a login on the computer beyond pairing.
 
 ## 1. Shape
 
@@ -204,18 +198,22 @@ was done, was already in place, or what the user must run:
 7. **Self-check:** units active; the agent answering on localhost (a TLS handshake that it
    refuses, which proves it's listening and speaking TLS); kscreen outputs readable; krdp's
    certificate present. It prints one line per check: ✓, or what to fix.
+8. **Pairing:** the last thing it says is to run `cc-share pair` and enter the code on the Frame.
+   From there, discovery, pairing, connecting, align, refit, the camera, the guard, Esc and
+   unpair all run over avahi, pairing, the agent and krdp.
+
+cc-host installs itself: it copies itself to `~/.local/share/control-center`, links
+`~/.local/bin/cc-share` to that copy (swapped in with a rename), and makes the krdp certificate
+in Rust (`crates/cc-host/src/hostcert.rs`), so the host needs no `openssl`.
 
 ## 5. Frame side
 
 - **cc-home:**
   - `probe` uses `monitors`.
-  - Align's ready() uses `monitors` (output, mm) and `tags show/hide`. The per-monitor scp and
-    SSH calls go away, and so does the ssh= login (D-050's interim; pairing no longer sends a
-    login or writes ssh=, docs/ssh-free.md).
+  - Align's ready() uses `monitors` (output, mm) and `tags show/hide`.
   - `machine unpair` also sends `unpair`.
-  - None of these fall back to SSH on their own (docs/ssh-free.md). An unpaired machine is told to
-    Pair, and a host without a reachable agent is told to run `cc-share install`. SSH runs only
-    with `CC_SSH=1`, for diagnosing, through one gate (`ssh_argv()`).
+  - The agent is the only path. An unpaired machine is told to Pair, and a host without a
+    reachable agent is told to run `cc-share install`.
 - **cc-panels (stage 2):** before connecting a paired monitor, it asks for `session start` and
   uses the returned port and certificate. On disconnect, or after N minutes without a frame shown,
   it sends `session stop` (that's the M4 memory cost: about 800 MB per krdpserver). Autoconnect
@@ -268,7 +266,7 @@ about 150 ms (Python start plus the TLS handshake and challenge):
 - cc-panels calls `start` before connecting (at autoconnect and on Connect) and connects to the
   returned port. On Disconnect it calls `stop`, and the idle stop covers a crash or a lost network.
 - If no agent is reachable, the answer is `state=no-agent` with "run cc-share install on it", and
-  cc-panels shows it and doesn't connect (no SSH, no guessing). A session that doesn't come up
+  cc-panels shows it and doesn't connect. A session that doesn't come up
   answers `state=not-ready`.
 
 **Built (2026-10-02), with the review's notes:**
@@ -286,13 +284,13 @@ about 150 ms (Python start plus the TLS handshake and challenge):
 
 **Tests:** agenttest gets: start (the unit started, port waited for), start again (no second
 start), stop with a viewer (deferred), idle stop after the timeout (shortened), another Frame's
-index refused, and an agent restart adopting a running session. selftest-nossh gets start and stop
+index refused, and an agent restart adopting a running session. The selftest gets start and stop
 through cc-home.
 
 ## 6. Stages (each shippable)
 
 1. **Install checklist; the agent with version, monitors, tags, status and unpair; align and probe
-   without SSH.** There's no Frame certificate: the Frame signs with its pairing key (section 2).
+   through the agent.** There's no Frame certificate: the Frame signs with its pairing key (section 2).
    Units stay as they are (frame@ enabled at pairing). D-050's host id rides along: `version`
    returns it, so `machine migrate` can exist after all, over the authenticated channel.
 2. **Sessions on demand.** frame@ units are no longer enabled at pairing; `session start/stop`
@@ -308,7 +306,7 @@ through cc-home.
   have the host's `host_pk`, so there's no re-pairing. (Signing needs `cryptography`, which the
   Frame's own Python has, 42.0.5, so the client doesn't need the container.)
 - If a paired Frame's host has no agent yet, the connection fails and cc-home says the host needs
-  `cc-share install` (align: `@skipped why=no-agent`). There's no automatic SSH fallback.
+  `cc-share install` (align: `@skipped why=no-agent`).
 
 ## 8. Decisions (first review, 2026-10-02; the second one's pending)
 

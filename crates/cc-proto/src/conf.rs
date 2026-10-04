@@ -130,9 +130,9 @@ pub fn set_option(line: &str, k: &str, v: &str) -> String {
     parts.concat()
 }
 
-/// cc-home's OPTIONS: the viewers.conf options `machine set` takes, in its order. It's one string
-/// because cc-home's tests/nossh.rs looks for a quoted ssh as a command line.
-pub const OPTIONS: &str = "curve autoconnect machine radius ssh label proto tls pin";
+/// cc-home's OPTIONS: the viewers.conf options `machine set` takes, in its order. A line can carry
+/// other options (an older version's, say). They're kept as they are and nothing reads them.
+pub const OPTIONS: &str = "curve autoconnect machine radius label proto tls pin";
 
 /// urllib.parse.quote(s, safe=""): keeps RFC 3986's unreserved characters, every other byte is %XX.
 pub fn quote(s: &str) -> String {
@@ -150,21 +150,13 @@ pub fn set_options(line: &str, opts: &[(String, String)]) -> Result<String, Stri
     for (k, v) in opts {
         let mut v = v.clone();
         if !v.is_empty() {
-            match OPTIONS.split(' ').position(|o| o == k).unwrap_or(9) {
-                5 => {
+            match OPTIONS.split(' ').position(|o| o == k).unwrap_or(99) {
+                4 => {
                     // any text, percent-encoded, so the line still splits on whitespace
                     if v.chars().count() > 64 || v.chars().any(|c| (c as u32) < 32) {
                         return Err(format!("{k}: at most 64 characters, no control characters"));
                     }
                     v = quote(&v);
-                }
-                4 => {
-                    // the host's login, for align (user@host)
-                    let ok = v.split_once('@').is_some_and(|(u, h)| u.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
-                        && u.chars().count() <= 32 && word(u, ".-") && word(h, ".:-"));
-                    if !ok {
-                        return Err(format!("{k} is user@host"));
-                    }
                 }
                 3 => {
                     let (i, f) = v.split_once('.').unwrap_or((&v, "0"));
@@ -175,9 +167,9 @@ pub fn set_options(line: &str, opts: &[(String, String)]) -> Result<String, Stri
                 }
                 2 if !word(&v, ".-") => return Err(format!("bad {k} name")),
                 0 if !["h", "v", "flat"].contains(&v.as_str()) => return Err(format!("{k} is one of h, v, flat")),
-                1 | 7 if !["yes", "no"].contains(&v.as_str()) => return Err(format!("{k} is one of yes, no")),
-                6 if !["rdp", "vnc"].contains(&v.as_str()) => return Err(format!("{k} is one of rdp, vnc")),
-                8 if !(v.len() == 64 && v.bytes().all(|c| c.is_ascii_hexdigit())) => return Err(format!("{k} is a certificate's SHA-256, 64 hex digits")),
+                1 | 6 if !["yes", "no"].contains(&v.as_str()) => return Err(format!("{k} is one of yes, no")),
+                5 if !["rdp", "vnc"].contains(&v.as_str()) => return Err(format!("{k} is one of rdp, vnc")),
+                7 if !(v.len() == 64 && v.bytes().all(|c| c.is_ascii_hexdigit())) => return Err(format!("{k} is a certificate's SHA-256, 64 hex digits")),
                 _ => {}
             }
         }
@@ -1242,11 +1234,13 @@ mod tests {
         let o = |kv: &[&str]| kv.iter().map(|a| a.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())).unwrap()).collect::<Vec<_>>();
         let l = "a   u@h:3410   1   1920x1080  curve=h";
         assert_eq!(set_options(l, &o(&["label=Desk é/1", "curve="])).unwrap(), "a   u@h:3410   1   1920x1080  label=Desk%20%C3%A9%2F1");
-        assert_eq!(set_options(l, &o(&["radius=1.5", "ssh=user@10.0.0.2", "machine=m.1"])).unwrap(),
-                   "a   u@h:3410   1   1920x1080  curve=h  radius=1.5  ssh=user@10.0.0.2  machine=m.1");
+        assert_eq!(set_options(l, &o(&["radius=1.5", "machine=m.1"])).unwrap(),
+                   "a   u@h:3410   1   1920x1080  curve=h  radius=1.5  machine=m.1");
+        // an option nothing reads any more stays on its line
+        assert_eq!(set_options("a u@h:3410 1 1920x1080 old=x", &o(&["radius=2.0"])).unwrap(), "a u@h:3410 1 1920x1080 old=x  radius=2.0");
         for (kv, e) in [("curve=x", "curve is one of h, v, flat"), ("autoconnect=1", "autoconnect is one of yes, no"), ("radius=0.1", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"),
-                        ("radius=1.", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"), ("ssh=Root@h", "ssh is user@host"), ("machine=a b", "bad machine name"),
-                        ("label=a\tb", "label: at most 64 characters, no control characters"), ("proto=ssh", "proto is one of rdp, vnc"), ("tls=off", "tls is one of yes, no"),
+                        ("radius=1.", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"), ("machine=a b", "bad machine name"),
+                        ("label=a\tb", "label: at most 64 characters, no control characters"), ("proto=x", "proto is one of rdp, vnc"), ("tls=off", "tls is one of yes, no"),
                         ("pin=abc", "pin is a certificate's SHA-256, 64 hex digits")] {
             assert_eq!(set_options(l, &o(&[kv])).unwrap_err(), e);
         }
@@ -1264,7 +1258,7 @@ mod tests {
     fn viewers_as_cc_home_reads_them() {
         let d = std::env::temp_dir().join(format!("cc-conf-viewers-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("viewers.conf"), "# name user@host:port screen size\na  u@10.0.0.2:3411  1  1920x1080  label=Desk%20%C3%A9  curve=v\nb u@10.0.0.2:3410 2 bad\nc  u@h:3400 0 800x600 machine=  autoconnect=yes\n").unwrap();
+        std::fs::write(d.join("viewers.conf"), "# name user@host:port screen size\na  u@10.0.0.2:3411  1  1920x1080  label=Desk%20%C3%A9  curve=v\nb u@10.0.0.2:3410 2 bad\nc  u@h:3400 0 800x600 machine=  autoconnect=yes  old=x\n").unwrap();
         let v = viewers(&d);
         assert_eq!(v.iter().map(|x| (x.name.as_str(), x.screen, x.machine.as_str())).collect::<Vec<_>>(), [("a", 2, "10.0.0.2"), ("c", 1, "h")]);
         assert_eq!(v[0].label.as_deref(), Some("Desk é"));

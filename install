@@ -1,6 +1,6 @@
 #!/bin/sh
 # Command Center's installer, for the Steam Frame and for the computers it shows. Run it in a
-# terminal on either one (Konsole, or over SSH):
+# terminal on either one (Konsole):
 #
 #   curl -fsSL https://framecc.nomadsgalaxy.com/install | sh
 #

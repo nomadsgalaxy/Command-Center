@@ -2,9 +2,8 @@
 
 This is the Frame half of the live test; the host half is [final-test-host.md](final-test-host.md).
 Everything here was already built and cross-tested offline:
-- cc-home's `tests/cross.rs`: 177 command cases plus the align's, checked against what the Python
+- cc-home's `tests/cross.rs`: 165 command cases plus the align's, checked against what the Python
   tools did (recorded in tests/fixtures/, with the machine cases run against a real cc-host).
-- cc-home's `tests/nossh.rs` (`cargo test -p cc-home --test nossh`).
 - The cargo tests in cc-home, cc-proto, cc-scan and cc-panels.
 
 What's left can only run live. Do it in one sitting, with me in the headset, before or after
@@ -69,7 +68,7 @@ other spots (compare with the backup: `tar -xzOf ~/cc-test-backup/*.tgz control-
 ## 3. Machines (cc-home, stage 2)
 
 1. In the Machines window, list, rename a monitor and rename it back, and connect and disconnect one remote.
-2. `cc-home machine probe <host>` gives the agent's answer.
+2. `cc-home machine probe <machine>` gives the agent's answer.
 3. `cc-home machine window list <machine>` lists the host's windows.
 
 Pass when each one works as before, and viewers.conf/trusted-hosts only change as asked

@@ -1,9 +1,7 @@
 //! `cc-home machine ...`, ported from home/cc-home.py's machine(). It covers the monitors in
 //! viewers.conf, the machines they belong to (trusted-hosts), their agents (cc_proto::agent) and
 //! pairing (cc_proto::pair). align and pair --scan use the camera, so they live in scan.rs, and
-//! CC_SSH=1's diagnosis over SSH lives in ssh.rs.
 use super::{conf_dir, die, py_err, read_all, target, viewers, write_all};
-use crate::ssh;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use cc_proto::agent::{self, Client};
@@ -189,20 +187,15 @@ impl Fail {
     }
 }
 
-/// Connects to a paired machine's agent as this Frame. It never falls back to SSH on its own
-/// (docs/ssh-free.md): you get NotPaired or NoAgent, each saying what to do. It only returns None
-/// with CC_SSH=1 (diagnostics), and then the caller goes over SSH and says so.
-pub(crate) fn agent_for(m: &str, feature: &str) -> Result<Option<Client>, Fail> {
-    if ssh::on() {
-        eprintln!("CC_SSH=1: {feature} for {m} over SSH (diagnostics)");
-        return Ok(None);
-    }
+/// Connects to a paired machine's agent as this Frame (docs/agent.md). When it can't, you get
+/// NotPaired or NoAgent, each saying what to do.
+pub(crate) fn agent_for(m: &str) -> Result<Client, Fail> {
     if !truthy(&host(&hosts(), m)["host_pk"]) {
-        return Err(Fail::NotPaired(format!("{m} isn't paired: Pair it (Machines, or cc-home machine pair), or CC_SSH=1 to diagnose over SSH")));
+        return Err(Fail::NotPaired(format!("{m} isn't paired: Pair it (Machines, or cc-home machine pair)")));
     }
     let conf = conf_dir();
     let c = agent::trusted(&conf, m).and_then(|t| Client::connect(&t, &agent::frame_key_or_new(&conf)?, agent::PORT, Duration::from_secs(5)));
-    c.map(Some).map_err(|e| {
+    c.map_err(|e| {
         let why = match e {
             agent::Error::Unreachable(s) => format!("unreachable ({})", py_io(&s)),
             agent::Error::HostChanged => "host-changed".into(),
@@ -211,7 +204,7 @@ pub(crate) fn agent_for(m: &str, feature: &str) -> Result<Option<Client>, Fail> 
             e => format!("not-paired ({e})"),
         };
         Fail::NoAgent(format!("{m}: agent not answering ({why}): start Command Center on it (Command Center Host in its app menu, \
-                               or cc-share up), or run cc-share install there; CC_SSH=1 to diagnose over SSH"))
+                               or cc-share up), or run cc-share install there"))
     })
 }
 
@@ -220,13 +213,9 @@ pub(crate) fn args(v: Value) -> Map<String, Value> {
 }
 
 /// A paired machine's shared monitors, from its agent: (index, output, width, height), with the
-/// size in the native pixels the stream has. With CC_SSH=1 it goes over SSH from its login instead.
+/// size in the native pixels the stream has.
 fn probe(m: &str) -> Vec<(i64, String, i64, i64)> {
-    let Some(mut cl) = agent_for(m, "probe").unwrap_or_else(|e| die(e.msg())) else {
-        let t = host(&hosts(), m).clone();
-        let login = if truthy(&t["login"]) { py_text(&t["login"]) } else { std::env::var("USER").unwrap_or_default() };
-        return ssh::probe(&format!("{login}@{}", t["addr"].as_str().unwrap_or(m)));
-    };
+    let mut cl = agent_for(m).unwrap_or_else(|e| die(e.msg()));
     let r = cl.call("monitors", Map::new(), Duration::from_secs(10), |_| {}).unwrap_or_else(|e| die(format!("{m}: {e}")));
     r["monitors"].as_array().into_iter().flatten()
         .map(|x| (x["index"].as_i64().unwrap_or(-1), py_text(&x["output"]), x["width"].as_i64().unwrap_or(0), x["height"].as_i64().unwrap_or(0))).collect()
@@ -243,13 +232,10 @@ fn session(op: &str, name: &str) {
         println!("@session {name} {}", if op == "start" { format!("port={port} ready=1") } else { "stopped=0".into() });
         return;
     }
-    let Some(mut cl) = agent_for(&v.machine, "session").unwrap_or_else(|e| {
+    let mut cl = agent_for(&v.machine).unwrap_or_else(|e| {
         println!("@session {name} state={}", e.state());
         die(e.msg())
-    }) else {
-        println!("@session {name} port={port} ready=1"); // CC_SSH=1 doesn't ask an agent, and the server may well be running
-        return;
-    };
+    });
     let index = (port - 3400).rem_euclid(10);
     let r = cl.call("session", args(json!({"op": op, "index": index})), Duration::from_secs(15), |e| {
         if e["event"] == "session" && e["index"] == index {
@@ -299,12 +285,10 @@ fn window(op: &str, wh: &str, uuid: Option<&str>) {
         println!("@window {name} state=not-paired");
         die(format!("{name} is on the shared login, not paired: pair its machine to pop windows out"));
     }
-    let Some(mut cl) = agent_for(&machine, "window").unwrap_or_else(|e| {
+    let mut cl = agent_for(&machine).unwrap_or_else(|e| {
         println!("@window {name} state={}", e.state());
         die(e.msg())
-    }) else {
-        die("window pop-out has no SSH path (CC_SSH=1 doesn't apply)")
-    };
+    });
     if op == "list" {
         let r = cl.call("window", args(json!({"op": "list"})), Duration::from_secs(10), |_| {}).unwrap_or_else(|e| die(format!("{name}: {e}")));
         if !truthy(&r["ok"]) {
@@ -349,9 +333,8 @@ fn unpair(m: &str) {
     let frame = if truthy(&t["frame"]) { py_text(&t["frame"]) } else { std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_lowercase() };
     let step = format!("on {}: cc-share unpair {frame}", if truthy(&t["host"]) { py_text(&t["host"]) } else { m.into() });
     let mut told = false;
-    match agent_for(m, "unpair") {
-        Ok(None) => {}
-        Ok(Some(mut cl)) => match cl.call("unpair", Map::new(), Duration::from_secs(10), |_| {}) {
+    match agent_for(m) {
+        Ok(mut cl) => match cl.call("unpair", Map::new(), Duration::from_secs(10), |_| {}) {
             Ok(r) => {
                 told = truthy(&r["ok"]);
                 println!("{}", if told { "the host removed this Frame" } else { "the host refused to unpair" });
@@ -694,14 +677,10 @@ pub fn main(argv: &[&str]) {
             }
         }
         "probe" => {
-            // A machine's monitors. A paired one answers from its agent; user@host goes over SSH (CC_SSH=1).
-            let found = if rest[0].split_once('@').is_some_and(|(u, h)| word(u, ".-") && word(h, ".:-")) {
-                ssh::probe(&rest[0])
-            } else {
-                let m = conf::find_machine(&rest[0], vs, &hs).or_else(|| machine_at(&hs, &rest[0]))
-                    .unwrap_or_else(|| die(format!("no paired machine {}: Pair it first (CC_SSH=1 and user@host to diagnose over SSH)", rest[0])));
-                probe(&m)
-            };
+            // A machine's monitors, from its agent.
+            let m = conf::find_machine(&rest[0], vs, &hs).or_else(|| machine_at(&hs, &rest[0]))
+                .unwrap_or_else(|| die(format!("no paired machine {}: Pair it first", rest[0])));
+            let found = probe(&m);
             for (index, output, w, h) in found {
                 println!("monitor {index}: {output} {w}x{h}");
             }
@@ -721,13 +700,8 @@ pub fn main(argv: &[&str]) {
                 // Ask its agent for the real size, since the panel's size and mouse scale come from it.
                 let (h, p) = addr.rsplit_once(':').unwrap_or_default();
                 let m = machine_at(&hs, h.rsplit_once('@').map_or(h, |x| x.1));
-                if m.is_none() && !ssh::on() {
-                    die("give a size (WxH), or Pair it (Pair reads the size)");
-                }
-                let found = match m {
-                    Some(m) => probe(&m),
-                    None => ssh::probe(h),
-                };
+                let Some(m) = m else { die("give a size (WxH), or Pair it (Pair reads the size)") };
+                let found = probe(&m);
                 let index = (p.parse::<i64>().unwrap_or_else(|_| die("usage: machine add <name> <user@host:port>")) - 3400).rem_euclid(10);
                 found.iter().find(|x| x.0 == index).map(|x| format!("{}x{}", x.2, x.3))
                     .unwrap_or_else(|| die(format!("no monitor {index} on {h}, or give WxH")))

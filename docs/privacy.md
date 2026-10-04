@@ -2,7 +2,7 @@
 
 On 2026-10-02 I asked for this: "for privacy 6, we should blur/black out the hosts, but allow the frame to see everything. Sharing your view seems too complicated, we won't do 8." I ran a read-only research pass the same day. Nothing here is built yet.
 
-Both hosts, .63 and .85, run KWin 6.7.5 (checked over diagnostic SSH on 2026-10-02), which is above the 6.6 this needs.
+Both hosts, .63 and .85, run KWin 6.7.5 (checked on 2026-10-02), which is above the 6.6 this needs.
 
 ### Bottom line
 

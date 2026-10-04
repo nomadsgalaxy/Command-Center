@@ -1192,7 +1192,7 @@ fn announce_cmd(e: &Env, what: &str) -> i32 {
 }
 
 /// What the Frame's discover lists: the host, and each shared monitor's output and native size. It adds
-/// pair=1 while a pairing screen is up. There's no login name because SSH is dev-only.
+/// pair=1 while a pairing screen is up.
 pub fn txt(e: &Env) -> Vec<String> {
     let outs = outputs();
     let mut list = vec![];

@@ -16,8 +16,7 @@ This started on the `apriltag` branch, which is merged now.
   good, and keeps the old one as `mirror-camera.json.bak`.
 - **Curve:** panels only bend left to right (`curve`, in metres). A top-to-bottom curve is saved
   as `vcurve` in the spot, and isn't sent to `place`.
-- **Tags** are shown through each machine's agent (cc-host), not over SSH. SSH is only there for
-  diagnosing, with `CC_SSH=1`.
+- **Tags** are shown through each machine's agent (cc-host).
 
 ## Workspaces and the primary machine (my call, 2026-10-02)
 

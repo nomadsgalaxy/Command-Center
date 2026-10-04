@@ -326,7 +326,7 @@ pub fn look() -> Facts {
             }
             let bus = format!("/run/user/{}/bus", unsafe { libc::getuid() });
             if !Path::new(&bus).exists() {
-                miss("Your session's bus", "Run this in Konsole on the Frame's desktop, or over SSH as your own user.".into());
+                miss("Your session's bus", "Run this in Konsole on the Frame's desktop.".into());
             }
             if free_gb(&home) < 10 {
                 miss("10 GB of free space", "The build container and the build need about 10 GB. Free some space and run this again.".into());

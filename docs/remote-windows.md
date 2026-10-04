@@ -22,8 +22,7 @@ the Python originals, which aren't part of this repo.
 
 You grab a window's title bar inside a monitor's RDP panel and drag it past the panel's edge. When you
 let go, the window becomes its own floating panel with working input, the same way the Frame's local
-window panels work (windows.rs). No SSH (docs/ssh-free.md): all the host work goes through the paired
-agent.
+window panels work (windows.rs). All the host work goes through the paired agent.
 
 ## Chosen approach: krdp window streams (`--window <uuid>`)
 
@@ -366,7 +365,7 @@ Files I read for the facts above (these are the Python and bash originals; see t
 
 I read the krdp-6.7.5 and KWin-6.7.5 sources (scratch copies that weren't kept) and the repo files: home/agent.py, home/pair.py, cc-share,
 cc-home, rdp.rs, main.rs, kvm.rs, back.rs, gpu.rs, panels/cc-windows.js and docs/privacy.md. I also ran
-read-only checks over ssh on two hosts. I didn't edit, install or change anything.
+read-only checks on two hosts. I didn't edit, install or change anything.
 
 **Verdict:** the core approach holds. A per-window krdpserver on `stream_window`, mapped from
 `org_kde_plasma_window` geometry with a latch, is sound. But the input model, the security scope, the
@@ -632,7 +631,7 @@ fake_input Esc reaches MoveResizeFilter.
     settings.json, default 1024), as well as past `sessions_max`.
   - **W6:** agenttest covers windows staying off without the opt-in, each scope refusal, captions
     only with their opt-in, bad uuids, the same window twice, the memory floor, a third pop-out, the
-    rate limit, and unpair stopping window servers. selftest-nossh lists, starts and stops one through
+    rate limit, and unpair stopping window servers. The selftest lists, starts and stops one through
     cc-home.
   - **W7:** `list` and `start` together are limited to `window_asks_per_min` (default 20) per Frame.
 - **cc-share:** `window-run` checks its instance (Frame name, k, uuid) and the opt-in, then runs the

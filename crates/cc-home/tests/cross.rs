@@ -4,7 +4,7 @@
 //! requests to cc-panels.
 //!
 //! cc-panels is faked on a socket with its own name (CC_PANELS_SOCKET), so a running one is never
-//! asked. nmcli, ssh, avahi-browse and ip are faked on PATH. The machine cases run in a network
+//! asked. nmcli, avahi-browse and ip are faked on PATH. The machine cases run in a network
 //! namespace of their own (the test re-runs itself under unshare -rn) against a real cc-host on
 //! its loopback: `cc-host serve --fake` (the recordings' agent) and `cc-host pair --test` (key
 //! 123456). Never a real host.

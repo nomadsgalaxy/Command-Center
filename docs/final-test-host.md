@@ -5,7 +5,7 @@
 > before step 1 (below), or reinstalling the previous release.
 
 Everything here was built and cross-tested offline already: the unit tests, cc-host's
-`tests/conformance.rs`, `tests/pair.rs` and `tests/share.rs`, cc-home's `tests/nossh.rs`, and
+`tests/conformance.rs`, `tests/pair.rs` and `tests/share.rs`, and
 cc-scan's `tests/cross.rs`. What's left can only run live. I'll run it in order, in one sitting,
 at the desk, on two hosts: the desktop at .63 (monitors 0 1) and the laptop at .85 (monitor 0). Each
 step says what to run and what passing looks like. If a step fails, note it and keep going,
@@ -19,13 +19,11 @@ cargo build --release --target x86_64-unknown-linux-musl -p cc-host     # the ho
 cargo build --release -p cc-scan --example solve                         # step 9
 ```
 
-For a way back that doesn't depend on a bundle (review F1), take a tarball on each host of
+For a way back that doesn't depend on a bundle (review F1), take a tarball on each host (in a terminal there) of
 everything the install replaces, before step 1:
 
 ```sh
-for h in user@203.0.113.63 user@203.0.113.85; do
-  ssh $h 'tar czf ~/cc-host-before-$(date +%Y%m%d-%H%M).tgz -C ~ .local/share/control-center .local/bin/cc-share $(cd ~ && ls -d .config/systemd/user/control-center-*)'
-done
+tar czf ~/cc-host-before-$(date +%Y%m%d-%H%M).tgz -C ~ .local/share/control-center .local/bin/cc-share $(cd ~ && ls -d .config/systemd/user/control-center-*)
 ```
 
 To revert, unpack it over ~ (`tar xzf ~/cc-host-before-*.tgz -C ~`), then run `systemctl --user
@@ -34,8 +32,9 @@ daemon-reload` and restart the units. Reinstalling the previous release works to
 Restarting the guard or the agent while the Frame is streaming drops the viewers for a few
 seconds (review F3). Steps 1, 2 and 4 do that, so only run them when I'm ready for it.
 
-The install below is the developer path (ssh, scp). This list doesn't test the signed public
-release (D-052, docs/ssh-free.md §2): that stays untested until the repo is public (review F5).
+The install below copies a cc-host build onto the host by hand. This list doesn't test the signed
+public release (D-052, docs/packaging.md): that stays untested until the repo is public (review F5).
+Every command below runs in a terminal on the host it names.
 
 ## 1. An old-unit host goes through the cc-share link (.85, before reinstalling it)
 
@@ -43,11 +42,11 @@ Its units still call `~/.local/bin/cc-share guard|frame-run|announce-run`. Put t
 place, make cc-share a link to it (which is what install does), and restart the guard:
 
 ```sh
-scp target/x86_64-unknown-linux-musl/release/cc-host user@203.0.113.85:.local/share/control-center/cc-host.new
-ssh user@203.0.113.85 'cd ~/.local; mv share/control-center/cc-host.new share/control-center/cc-host;
-  ln -sfn ~/.local/share/control-center/cc-host bin/cc-share;
-  systemctl --user restart control-center-guard control-center-agent; sleep 2;
-  systemctl --user status control-center-guard | grep -E "Active|cc-host|cc-share"'
+# the new build is already at ~/.local/share/control-center/cc-host.new
+cd ~/.local; mv share/control-center/cc-host.new share/control-center/cc-host
+ln -sfn ~/.local/share/control-center/cc-host bin/cc-share
+systemctl --user restart control-center-guard control-center-agent; sleep 2
+systemctl --user status control-center-guard | grep -E "Active|cc-host|cc-share"
 ```
 
 Pass: the guard is `active (running)` and its process is `~/.local/bin/cc-share guard`, which is
@@ -60,12 +59,11 @@ It's just the binary now. It installs itself to ~/.local/share/control-center an
 ~/.local/bin/cc-share to it.
 
 ```sh
-for h in "user@203.0.113.63 0 1" "user@203.0.113.85 0"; do set -- $h; host=$1; shift
-  scp -q target/x86_64-unknown-linux-musl/release/cc-host $host:.cache/cc-host-install
-  ssh $host "export XDG_RUNTIME_DIR=/run/user/\$(id -u) WAYLAND_DISPLAY=wayland-0; chmod +x ~/.cache/cc-host-install;
-    ~/.cache/cc-host-install install $*; rm -f ~/.cache/cc-host-install;
-    ls -l ~/.local/bin/cc-share; grep -h ExecStart ~/.config/systemd/user/control-center-*.service"
-done
+# .63 shares monitors 0 and 1, .85 shares monitor 0
+chmod +x ~/.cache/cc-host-install
+~/.cache/cc-host-install install 0 1     # on .85: install 0
+rm -f ~/.cache/cc-host-install
+ls -l ~/.local/bin/cc-share; grep -h ExecStart ~/.config/systemd/user/control-center-*.service
 ```
 
 Pass: `~/.local/bin/cc-share -> ~/.local/share/control-center/cc-host`. The checklist shows `ok`
@@ -79,7 +77,7 @@ existing cert.pem is kept (RSA), so pairings keep working.
 Open the Desktop on the Frame. cc-panels starts the sessions through the agent.
 
 ```sh
-ssh user@203.0.113.63 'systemctl --user list-units "control-center-frame@*" --no-legend; ~/.local/bin/cc-share frames'
+systemctl --user list-units "control-center-frame@*" --no-legend; ~/.local/bin/cc-share frames
 ```
 
 Pass: `control-center-frame@frame-0` and `-1` are running, and desk-wide and desk-portrait are
@@ -92,15 +90,15 @@ First, check that DP-1 is really at its full mode. The stale-stream incident lef
 3840x1080 with no guard file (review F2):
 
 ```sh
-ssh user@203.0.113.63 'kscreen-doctor -o | sed "s/\x1b\[[0-9;]*m//g" | grep -A8 "DP-1"; ls ~/.config/control-center/guard-* 2>/dev/null'
+kscreen-doctor -o | sed "s/\x1b\[[0-9;]*m//g" | grep -A8 "DP-1"; ls ~/.config/control-center/guard-* 2>/dev/null
 # if DP-1 is lowered and there's no guard file: put it back by hand (the mode id of 5120x1440@120 from the list)
-ssh user@203.0.113.63 'kscreen-doctor output.DP-1.mode.<id>'
+kscreen-doctor output.DP-1.mode.<id>
 ```
 
 Then:
 
 ```sh
-ssh user@203.0.113.63 'journalctl --user -u control-center-guard -f -o cat'   # leave it running
+journalctl --user -u control-center-guard -f -o cat   # leave it running
 ```
 
 With the Desktop open (so a viewer is connected), pass looks like this: the journal says
@@ -122,7 +120,7 @@ from /proc/net/tcp, which is what's new here.
 ## 6. Announcing (avahi)
 
 ```sh
-ssh user@203.0.113.85 'cc-share announce status; cc-share announce on'
+cc-share announce status; cc-share announce on   # on .85
 avahi-browse -rpt _controlcenter._tcp | grep 203.0.113.85     # on the Frame
 ```
 

@@ -82,7 +82,7 @@ rust". So it's one portable core with a thin layer per platform:
   and the window-stream patch) is a spike with a go/no-go: capture, input, an H.264 encoder (C or
   hardware, which conflicts with a pure static musl binary), clipboard. krdp stays until it
   passes. The details are in docs/rust-rdp-server.md.
-- **R6:** a signed static binary per architecture (docs/ssh-free.md §2's release design).
+- **R6:** a signed static binary per architecture (the release design is in docs/packaging.md).
 - **R9:** later that same day I wrote: "I know python is powerful, but let's do what we can to
   port it over to rust". So nothing was meant to stay Python. After the host side, the order was
   cc-home (the Frame's CLI, which cc-panels already partly replaced by calling cc-proto directly),
@@ -103,15 +103,13 @@ rust". So it's one portable core with a thin layer per platform:
     cc-home links it (`cc_scan::scan::Scan`, `cc_scan::solve::solve`, `cc_scan::pattern`). The live
     parts (the camera, the HUD in the headset) get tested at the end, with me.
   - **cc-home is all Rust** (crates/cc-home, stage 3): align/scan, refit, calibrate (cc-panels'
-    `tip`; cc-tip and cc-roles are retired), pair --scan, and SSH's diagnosis paths (CC_SSH=1,
-    ssh.rs). The wrapper runs only the musl build.
+    `tip`; cc-tip and cc-roles are retired), and pair --scan. The wrapper runs only the musl build.
   - **The Frame-side Python is gone** (home/cc-home.py, scan.py, solve.py, pattern.py). What it
     printed and wrote was recorded in tests/fixtures/ first, and cargo test -p cc-home checks
-    against that: tests/cross.rs has 177 command cases (the CC_SSH ones against an ssh shim, the
-    machine ones against a real cc-host), the align's placing and saving, and the align's steps on
+    against that: tests/cross.rs has 165 command cases (the machine ones
+    against a real cc-host), the align's placing and saving, and the align's steps on
     a fake camera (tag screens through cc-host serve --fake, job.json byte for byte as Python's
-    write_job). tests/nossh.rs is the no-SSH check. The SSH align runs the host's cc-host
-    tagscreen. install.sh builds cc-home and puts no OpenCV, NumPy, SciPy or Pillow in the
+    write_job). install.sh builds cc-home and puts no OpenCV, NumPy, SciPy or Pillow in the
     container.
 - **R10:** an upgrade path with no re-pairing: the same keys, ids, ports and files.
 
