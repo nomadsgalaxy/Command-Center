@@ -122,6 +122,12 @@ pub struct Mode {
 // users swinging their heads around.
 const FAST: Mode = Mode { baseline: 0.06, samples: 20.0, coverage: 0.7, gate: 12.0, capture_for: 60.0 };
 const PRECISE: Mode = Mode { baseline: 0.25, samples: 40.0, coverage: 0.85, gate: 6.0, capture_for: 90.0 };
+// Entering a workspace (cc-home workspace enter): the four corner tags only, no calibrating, and done as
+// soon as one monitor has 12 frames over 2 cm of head travel. That's a few seconds of looking. In the
+// simulation in cc-scan's solve.rs (quick_corners_pin_the_desk) it puts a spot 1 m from the monitor
+// within a few mm of where the full grid does; one tag alone is several times worse, since its yaw
+// rests on a square a tenth of the monitor's width.
+const QUICK: Mode = Mode { baseline: 0.02, samples: 12.0, coverage: 1.0, gate: 12.0, capture_for: 30.0 };
 const MAX_MM: f64 = 10.0; // a monitor fit worse than this (millimetres at the monitor) gets reported, not used
 
 fn align_mode() -> &'static str {
@@ -297,6 +303,7 @@ struct Align<'a> {
     skip: bool,
     calibrate_for: f64,
     times: Vec<(&'static str, f64)>,
+    quick: bool, // entering a workspace: corner tags only, and the first monitor done ends it
 }
 
 impl Align<'_> {
@@ -367,6 +374,16 @@ impl Align<'_> {
             self.mons[k].dense = None;
         }
         out
+    }
+
+    /// Entering a workspace: each monitor shows just its four corner tags (big, so they read from
+    /// anywhere at a desk), and capture takes them as its "grid".
+    fn corners(&mut self) {
+        for m in self.mons.iter_mut() {
+            let ids: Vec<String> = (m.base..m.base + 4).map(|i| i.to_string()).collect();
+            let tags: Map<String, Value> = ids.iter().filter_map(|i| Some((i.clone(), m.frame["tags"].get(i)?.clone()))).collect();
+            (m.tags, m.order, m.dense_order, m.dense) = (Map::new(), vec![], ids, Some(json!({"tags": tags})));
+        }
     }
 
     /// Step 2, for every monitor at once: works out each one's grid size from the tags read in its
@@ -507,11 +524,12 @@ impl Align<'_> {
             (100.0 * 1f64.min(s.cov / want.coverage).min(s.base / want.baseline).min(s.at.len() as f64 / want.samples)) as i64
         };
         let (mut said, deadline) = (String::new(), Instant::now() + Duration::from_secs_f64(want.capture_for));
-        while Instant::now() < deadline && state.iter().any(|s| s.pct < 100) {
+        let quick = self.quick;
+        while Instant::now() < deadline && if quick { state.iter().all(|s| s.pct < 100) } else { state.iter().any(|s| s.pct < 100) } {
             let names: Vec<String> = state.iter().map(|s| self.mons[s.k].name.clone()).collect();
             let out = self.escaped(&names);
             state.retain(|s| !out.contains(&self.mons[s.k].name));
-            let text = format!("move your head a little side to side: {}",
+            let text = format!("{}: {}", if quick { "look at one of these monitors" } else { "move your head a little side to side" },
                                state.iter().map(|s| format!("{} {}%", self.mons[s.k].name, s.pct)).collect::<Vec<_>>().join(", "));
             if text != said {
                 self.say(&text, state.iter().filter(|s| s.pct < 100).flat_map(|s| s.ids.iter().copied()).collect());
@@ -559,8 +577,12 @@ impl Align<'_> {
     fn run(&mut self, work: &Path, camera: &Json) -> Result<Option<Vec<String>>, String> {
         self.eye.monitor(None); // shots span every monitor, and the solve splits them by tag ids
         let mut t = Instant::now();
-        self.calibrate()?;
-        self.times.push(("calibrate", secs(t)));
+        if self.quick {
+            self.corners();
+        } else {
+            self.calibrate()?;
+            self.times.push(("calibrate", secs(t)));
+        }
         t = Instant::now();
         if self.mons.iter().any(|m| m.dense.is_some()) {
             self.capture()?;
@@ -680,15 +702,23 @@ fn ready(v: &cc_proto::conf::Viewer) -> Result<Option<Mon>, String> {
 pub fn scan(names: &[String]) {
     let t0 = Instant::now();
     let mode = align_mode();
-    let want = if mode == "precise" { PRECISE } else { FAST };
     progress("mode", mode, &[]);
+    let (lines, sock, times) = look(names, if mode == "precise" { PRECISE } else { FAST }, None);
+    fit(&lines, &sock, &conf_dir().join("mirror-camera.json"), t0, &times)
+}
+
+/// The scan itself, up to the solve's lines (scan's steps 1-3 and its solve). `quick` is entering a
+/// workspace (corners only, the first monitor done ends it), with its saved poses, whose shape (flat,
+/// or curved and its radius) the solve takes as known. It dies when nothing got solved.
+fn look(names: &[String], want: Mode, quick: Option<&Json>) -> (Vec<String>, Panels, Vec<(&'static str, f64)>) {
+    let t0 = Instant::now();
     let work = PathBuf::from(cache("scan"));
     let _ = std::fs::create_dir_all(&work);
     let cam_file = conf_dir().join("mirror-camera.json");
     if let Ok(f) = std::env::var("CC_HOME_SOLVED") {
-        // For tests/cross.rs align_cross: it gives a solve's output, so no camera and no hosts.
+        // For tests/cross.rs: it gives a solve's output, so no camera and no hosts.
         let lines: Vec<String> = std::fs::read_to_string(&f).unwrap_or_else(|e| die(format!("{f}: {e}"))).lines().map(str::to_owned).collect();
-        return fit(&lines, &target(), &cam_file, t0, &[]);
+        return (lines, target(), vec![]);
     }
     // Show the HUD from the start. Getting the machines ready takes a while, and with nothing
     // showing it felt frozen to me.
@@ -714,7 +744,10 @@ pub fn scan(names: &[String]) {
         }
     }
     for (k, m) in mons.iter_mut().enumerate() {
-        m.base = 50 * k; // ids base..base+49 (DICT_4X4_250) don't overlap, so they can all show at once
+        m.base = 50 * k;
+        if let Some(saved) = quick.map(|q| q.at(&m.name)) {
+            (m.curve, m.radius) = saved_shape(saved);
+        } // ids base..base+49 (DICT_4X4_250) don't overlap, so they can all show at once
         progress("prepare", &m.name, &[("step", "tags".into())]);
         let (w, h) = m.size();
         let lay = cc_scan::pattern::frame(w, h, m.base); // corners + ladder in one image
@@ -761,7 +794,7 @@ pub fn scan(names: &[String]) {
         });
     }
     let _ = sock.ask("hide", 10.0);
-    let mut a = Align { eye: &mut cam, mons, views, gone, want, at: None, skip: false, calibrate_for: 90.0, times: vec![] };
+    let mut a = Align { eye: &mut cam, mons, views, gone, want, at: None, skip: false, calibrate_for: 90.0, times: vec![], quick: quick.is_some() };
     let r = a.run(&work, &camera);
     a.show(&[]);
     times.append(&mut a.times);
@@ -778,11 +811,21 @@ pub fn scan(names: &[String]) {
         }
     }
     match r.unwrap_or_else(|e| die(e)) {
-        Some(lines) => fit(&lines, &sock, &cam_file, t0, &times),
+        Some(lines) => (lines, sock, times),
         None => {
             done(t0, &times);
             die("no monitor finished its scan");
         }
+    }
+}
+
+/// A saved pose's shape the way viewers.conf gives it to the solve: (curve, radius).
+fn saved_shape(p: &Json) -> (Value, Value) {
+    let r = |k: &str| p.at(k).num().filter(|r| *r > 0.0);
+    match (r("vcurve"), r("curve")) {
+        (Some(v), _) => (json!("v"), json!(v)),
+        (None, Some(h)) => (json!("h"), json!(h)),
+        _ => (json!("flat"), Value::Null),
     }
 }
 
@@ -826,16 +869,9 @@ fn fit(lines: &[String], sock: &Panels, cam_file: &Path, t0: Instant, times: &[(
             println!("  {name}: fit too poor ({rms:.0} mm > {MAX_MM:.0} mm), not placed; scan again, moving your head more slowly");
             continue;
         }
-        let v3 = |k: &str| -> V3 {
-            let l = r.at(k).list();
-            [0, 1, 2].map(|i| l.get(i).and_then(Json::num).unwrap_or(0.0))
-        };
-        let mut pose = pose_from_axes(v3("centre"), v3("x"), v3("z"), r.at("width").num().unwrap_or(0.0), r.at("height").num().unwrap_or(0.0));
+        let pose = solved_pose(&r);
         let (axis, radius) = (r.at("axis").text(), r.at("radius").clone());
-        pose.set("curve", if axis == "h" { radius.clone() } else { Json::Num("0".into()) });
         if axis == "v" {
-            // top to bottom, since cc-panels shows it on the panel turned a quarter
-            pose.set("vcurve", radius.clone());
             println!("  {name}: curved top to bottom (R {:.2} m)", radius.num().unwrap_or(0.0));
         }
         let before = spots.at("scanned").at(&name).clone();
@@ -868,6 +904,98 @@ fn fit(lines: &[String], sock: &Panels, cam_file: &Path, t0: Instant, times: &[(
     store(spots);
     done(t0, times);
     println!("done in {:.0} s ({})", secs(t0), times.iter().map(|(k, v)| format!("{k} {v:.0} s")).collect::<Vec<_>>().join(", "));
+}
+
+/// A solve's line as a spot's pose.
+fn solved_pose(r: &Json) -> Json {
+    let v3 = |k: &str| -> V3 {
+        let l = r.at(k).list();
+        [0, 1, 2].map(|i| l.get(i).and_then(Json::num).unwrap_or(0.0))
+    };
+    let mut pose = pose_from_axes(v3("centre"), v3("x"), v3("z"), r.at("width").num().unwrap_or(0.0), r.at("height").num().unwrap_or(0.0));
+    let (axis, radius) = (r.at("axis").text(), r.at("radius").clone());
+    pose.set("curve", if axis == "h" { radius.clone() } else { Json::Num("0".into()) });
+    if axis == "v" {
+        pose.set("vcurve", radius); // top to bottom, since cc-panels shows it on the panel turned a quarter
+    }
+    pose
+}
+
+// ---- entering a workspace in a new room (docs/workspaces.md)
+
+/// `cc-home workspace enter <name> [monitor ...]`: you're back at workspace name, but SteamVR's room
+/// is new (the Frame rebuilt its map), so its spots are off. Each of its monitors given (by default
+/// every one with a saved scan there) shows its four corner tags, and whichever you look at first is
+/// found. If it's the same monitor (size, tilt) and any others found agree, every spot moves with it
+/// and this room is added to the workspace (conf::enter_workspace). Then it's the active one, live.
+pub fn enter(name: &str, monitors: &[&str]) {
+    let data = super::read_all();
+    if data.at("workspaces").get(name).is_none() || name == cc_proto::conf::TEMPORARY {
+        die(format!("no workspace {name} to enter (cc-home workspace)"));
+    }
+    let saved = data.at("workspaces").at(name).at("spots").at("scanned").clone();
+    let mut todo: Vec<String> = vec![];
+    for v in viewers() {
+        let asked = monitors.is_empty() || monitors.contains(&v.name.as_str());
+        if asked && saved.get(&v.name).is_some() && cc_proto::conf::is_member(&data, name, &v.machine) {
+            todo.push(v.name.clone());
+        } else if asked && !monitors.is_empty() {
+            die(format!("{}: no saved scan of it in {name} (align it there first)", v.name));
+        }
+    }
+    if todo.is_empty() {
+        die("Connect one of this workspace's machines first: it needs a monitor to find where you are");
+    }
+    let universe = super::panels_universe();
+    if cc_proto::conf::room(universe) == 0 {
+        die("SteamVR doesn't know this room yet (or cc-panels isn't running): wait until tracking settles, then try again");
+    }
+    let t0 = Instant::now();
+    progress("mode", "quick", &[]);
+    let (lines, sock, times) = look(&todo, QUICK, Some(&saved));
+    drop(sock); // its name is this process's, and panels_reload needs it at the end
+    // the monitors found, best fit first
+    let mut found: Vec<(f64, String, Json)> = vec![];
+    for line in &lines {
+        if line.starts_with('#') {
+            if let Some(t) = line.strip_prefix("# ") {
+                println!("  {t}");
+            }
+            continue;
+        }
+        let Some(r) = Json::parse(line) else { continue };
+        let (m, rms) = (r.at("name").text(), r.at("rms_mm").num().unwrap_or(f64::INFINITY));
+        if rms > MAX_MM {
+            println!("  {m}: fit too poor ({rms:.0} mm > {MAX_MM:.0} mm), not used");
+            progress("failed", &m, &[("why", "poor-fit".into()), ("mm", iround(rms).to_string())]);
+        } else if todo.contains(&m) {
+            found.push((rms, m, solved_pose(&r)));
+        }
+    }
+    found.sort_by(|a, b| a.0.total_cmp(&b.0));
+    done(t0, &times);
+    let Some((rms, root, pose)) = found.first().cloned() else { die(format!("none of {}'s monitors was found: look at one for a few seconds and try again", name)) };
+    for (_, m, p) in &found[1..] {
+        let off = cc_proto::conf::misfit_mm(saved.at(m), p, saved.at(&root), &pose);
+        if off > cc_proto::conf::SAME_DESK_MM {
+            progress("failed", name, &[("why", "not-same-desk".into())]);
+            die(format!("not {name}, or its desk changed: {m} is {off:.0} mm from where {root} puts it. Nothing changed; align its monitors there"));
+        }
+        println!("  {m} agrees with {root} ({off:.0} mm)");
+    }
+    let mut data = super::read_all(); // again, since cc-panels may have written it meanwhile
+    match cc_proto::conf::enter_workspace(&mut data, name, universe, saved.at(&root), &pose) {
+        Ok((mm, deg)) => {
+            super::write_all(&data);
+            progress("entered", name, &[("monitor", root.clone()), ("mm", iround(mm).to_string()), ("deg", py_float(py_round(deg, 1)))]);
+            println!("entered {name} by {root} (fit {rms:.0} mm): moved everything {mm:.0} mm and {deg:.1} deg; this room is {name}'s now too (cc-home apply previous undoes the move)");
+            super::panels_reload();
+        }
+        Err(e) => {
+            progress("failed", name, &[("why", "not-same-monitor".into())]);
+            die(format!("{root}: {e}. Not {name}, so nothing changed"));
+        }
+    }
 }
 
 // ---- refit
@@ -1188,7 +1316,7 @@ mod tests {
         let gone = Gone::default();
         gone.add("b", Some("tags-limit".into()));
         let mut al = Align { eye: &mut eye, mons: vec![a, b], views: vec![View::None, View::None], gone, want: FAST, at: None, skip: false,
-                             calibrate_for: 5.0, times: vec![] };
+                             calibrate_for: 5.0, times: vec![], quick: false };
         al.calibrate().unwrap();
         assert_eq!(al.mons[0].dense.as_ref().unwrap()["side_px"], dense["side_px"]);
         assert!(al.mons[1].dense.is_none(), "b's screen went");
@@ -1201,17 +1329,41 @@ mod tests {
         assert_eq!(skipped_why("tags-limit"), "that machine's tag-screen limit for this hour is used up");
     }
 
+    /// Entering a workspace: no calibrating, both monitors show only their four corner tags, and the
+    /// first one looked at for 12 frames over 2 cm ends it. The other, never seen, isn't solved.
+    #[test]
+    fn quick_corners_end_with_the_first_monitor() {
+        let (a, b) = (mon("a", 0), mon("b", 50));
+        let answers: VecDeque<Answer> = (0..30).map(|k| shot(Some([k as f64 * 0.002, 1.6, 0.0]), vec![50, 51, 52, 53, 54], false)).collect();
+        let said = Arc::new(Mutex::new(vec![]));
+        let mut eye = Fake { answers, said: said.clone() };
+        let mut al = Align { eye: &mut eye, mons: vec![a, b], views: vec![View::None, View::None], gone: Gone::default(), want: QUICK, at: None,
+                             skip: false, calibrate_for: 5.0, times: vec![], quick: true };
+        al.corners();
+        assert_eq!(al.mons[1].tag_params("dense.png")["tags"].as_array().unwrap().len(), 4, "corner tags only");
+        al.capture().unwrap();
+        assert!(al.mons[1].dense.is_some() && al.mons[0].dense.is_none(), "b looked at, a not");
+        assert_eq!(al.mons[1].order, ["50", "51", "52", "53"]);
+        drop(al);
+        assert_eq!(eye.answers.len(), 30 - 12, "done at 12 frames");
+        assert!(said.lock().unwrap().iter().any(|s| s.starts_with("look at one of these monitors: a 0%, b 0%")));
+        let p = |t: &str| Json::parse(t).unwrap();
+        assert_eq!(saved_shape(&p(r#"{"curve": 1.0}"#)), (json!("h"), json!(1.0)));
+        assert_eq!(saved_shape(&p(r#"{"curve": 0, "vcurve": 1.8}"#)), (json!("v"), json!(1.8)));
+        assert_eq!(saved_shape(&p(r#"{"curve": 0}"#)), (json!("flat"), Value::Null));
+    }
+
     /// The HUD clicked while calibrating: the monitors left get skipped, and there's nothing to solve.
     #[test]
     fn skip_while_calibrating() {
         let mut eye = Fake { answers: [shot(None, vec![], true)].into_iter().collect(), said: Default::default() };
         let mut al = Align { eye: &mut eye, mons: vec![mon("a", 0)], views: vec![View::None], gone: Gone::default(), want: FAST, at: None,
-                             skip: false, calibrate_for: 5.0, times: vec![] };
+                             skip: false, calibrate_for: 5.0, times: vec![], quick: false };
         assert_eq!(al.run(Path::new("/nonexistent"), &Json::Null).unwrap(), None);
         // a camera that stops is an error (the caller cleans up, then says it)
         let mut eye = Fake { answers: VecDeque::new(), said: Default::default() };
         let mut al = Align { eye: &mut eye, mons: vec![mon("a", 0)], views: vec![View::None], gone: Gone::default(), want: FAST, at: None,
-                             skip: false, calibrate_for: 5.0, times: vec![] };
+                             skip: false, calibrate_for: 5.0, times: vec![], quick: false };
         assert!(al.run(Path::new("/nonexistent"), &Json::Null).unwrap_err().contains("the camera stopped"));
     }
 

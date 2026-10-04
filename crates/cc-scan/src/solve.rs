@@ -679,4 +679,72 @@ mod tests {
             assert!(err < 0.8 * flat_err && (r - true_r).abs() < 0.1 * true_r && centre_err < 0.005, "{axis}: flat {flat_err} curved R {r} rms {err} centre off {centre_err}");
         }
     }
+    /// How well a few seconds of one monitor pins down where it is, for entering a workspace in a new
+    /// room (cc-home workspace enter): one tag, the four corner tags, and the full align's dense grid,
+    /// on the same simulated 600 x 340 mm monitor 0.7 m away. 12 frames over 2 cm of head travel, 0.5 px
+    /// of corner noise and 1 mm / 0.1 deg of head tracking noise per frame. What matters is the far end
+    /// of the desk: where a point 1 m to the side of the monitor lands (the error a spot there gets).
+    /// One tag's square is too small a lever for yaw, so it's out; the corners are close to the grid.
+    #[test]
+    fn quick_corners_pin_the_desk() {
+        let k = K { fx: 1070.0, fy: 1070.0, cx: 960.0, cy: 540.0 };
+        let (w, h) = (0.6, 0.34);
+        let lay = |l: crate::pattern::Layout| -> Vec<Vec<Uv>> {
+            l.json["tags"].as_object().unwrap().values().map(|c| fracs(c).iter().map(|f| frac_to_uv(f, (w, h))).collect()).collect()
+        };
+        let corners: Vec<Vec<Uv>> = lay(crate::pattern::frame(1920, 1080, 0)).into_iter().take(4).collect();
+        let one = vec![corners[0].clone()];
+        let grid = lay(crate::pattern::dense(1920, 1080, 0, 150));
+        let mut seed = 11u64;
+        let mut noise = |sd: f64| {
+            let mut s = 0.0;
+            for _ in 0..12 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s += (seed >> 11) as f64 / (1u64 << 53) as f64;
+            }
+            (s - 6.0) * sd
+        };
+        let mut worst = |tags: &Vec<Vec<Uv>>| -> f64 {
+            let mut worst: f64 = 0.0;
+            for trial in 0..8 {
+                let mut m2w = Matrix4::identity();
+                m2w.fixed_view_mut::<3, 3>(0, 0).copy_from(&rotmat(&Vector3::new(-0.08, 0.25 + 0.05 * trial as f64, 0.0)));
+                m2w.fixed_view_mut::<3, 1>(0, 3).copy_from(&Vector3::new(-0.2, 1.2, -0.7));
+                let mut frames = vec![];
+                for j in 0..12 {
+                    let mut head = Matrix4::identity();
+                    head.fixed_view_mut::<3, 3>(0, 0).copy_from(&rotmat(&Vector3::new(-0.1, 0.2, 0.0)));
+                    head.fixed_view_mut::<3, 1>(0, 3).copy_from(&Vector3::new(0.02 * j as f64 / 11.0, 1.5, 0.0));
+                    let seen = flip() * head.try_inverse().unwrap();
+                    // what tracking says the head was (off by a little), which the fit has to use
+                    let mut told = head;
+                    let jitter = rotmat(&Vector3::new(noise(0.1f64.to_radians()), noise(0.1f64.to_radians()), noise(0.1f64.to_radians())));
+                    told.fixed_view_mut::<3, 3>(0, 0).copy_from(&(jitter * head.fixed_view::<3, 3>(0, 0)));
+                    for i in 0..3 {
+                        told[(i, 3)] += noise(0.001);
+                    }
+                    let (mut uv, mut px) = (vec![], vec![]);
+                    for t in tags {
+                        for q in t {
+                            let p = project(k, &apply(&seen, &apply(&m2w, &Vector3::new(q[0], q[1], 0.0))));
+                            uv.push(*q);
+                            px.push([p[0] + noise(0.5), p[1] + noise(0.5)]);
+                        }
+                    }
+                    frames.push(Frame { w2c: flip() * told.try_inverse().unwrap(), uv, px });
+                }
+                let mon = Monitor { frames: &frames, k };
+                let (p, _) = mon.fit("flat", 0.0, &mon.initial());
+                let mut fit = Matrix4::identity();
+                fit.fixed_view_mut::<3, 3>(0, 0).copy_from(&rotmat(&Vector3::new(p[0], p[1], p[2])));
+                fit.fixed_view_mut::<3, 1>(0, 3).copy_from(&Vector3::new(p[3], p[4], p[5]));
+                let far = Vector3::new(1.0, 0.0, 0.0);
+                worst = worst.max((apply(&fit, &far) - apply(&m2w, &far)).norm() * 1000.0);
+            }
+            worst
+        };
+        let (one, corners, grid) = (worst(&one), worst(&corners), worst(&grid));
+        eprintln!("1 m from the monitor, worst of 8: one tag {one:.1} mm, four corner tags {corners:.1} mm, the full grid {grid:.1} mm");
+        assert!(corners < 10.0 && corners < one / 2.0, "one {one:.1} corners {corners:.1} grid {grid:.1}");
+    }
 }

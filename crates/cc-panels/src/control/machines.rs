@@ -988,7 +988,7 @@ fn cc_home(args: &[&str]) -> Command {
 
 /// cc-home on the host: Align's scan needs podman, discover needs avahi-browse, pair needs cc-box.
 /// A native cc-panels (the sysext image) is on the host already.
-fn on_host(args: &[&str]) -> Command {
+pub(super) fn on_host(args: &[&str]) -> Command {
     if !std::path::Path::new("/run/.containerenv").exists() {
         return cc_home(args);
     }

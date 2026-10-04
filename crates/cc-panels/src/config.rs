@@ -152,6 +152,7 @@ fn display_in(dir: &str, v: &Viewer, all: &[Viewer]) -> String {
 // was made in, so the right one gets picked by where you are. Temporary is for travelling. The
 // rules are in cc_proto::conf and docs/workspaces.md:
 //   {"workspace": "<active>", "workspaces": {"<name>": {"universe": "<id>", "spots": {...}, "machines": [...]}}}
+// A workspace entered in a second room also has "universes": [all of its rooms] (conf::rooms).
 // An older file with only "spots" becomes the workspace "default". cc-home reads it the same way.
 
 fn read_home() -> serde_json::Value {
