@@ -188,7 +188,7 @@ pub struct Mon {
     frame: Value,
     dense: Option<Value>,
     dense_order: Vec<String>,
-    agent: Option<Client>,
+    agent: Option<Arc<Mutex<Client>>>, // shared by the machine's monitors (AgentView)
 }
 
 impl Mon {
@@ -221,38 +221,44 @@ impl Mon {
 
 /// A monitor's tag screen through its machine's agent. It shows the screen, keeps it alive (a
 /// screen only lives 60 s unless it's shown again), and watches the agent's events for Esc.
+/// Monitors of one machine share its connection, since the agent keeps only a Frame's newest one
+/// (cc-host agent.rs), so `peers` is every (name, index) on it: whichever view polls an event
+/// marks the monitor it's for.
 struct AgentView {
     name: String,
     index: i64,
+    peers: Arc<Vec<(String, i64)>>,
     c: Arc<Mutex<Client>>,
     last: Arc<Mutex<Option<Value>>>,
     done: Arc<AtomicBool>,
     gone: Gone,
 }
 
-fn on_event(e: &Value, name: &str, index: i64, gone: &Gone) {
+fn on_event(e: &Value, peers: &[(String, i64)], gone: &Gone) {
     let ev = e["event"].as_str().unwrap_or("");
-    if (ev == "escaped" || ev == "blocked") && e.get("index").map_or(true, |i| i.as_i64() == Some(index)) {
-        gone.add(name, Some(ev.to_owned()));
+    for (name, index) in peers {
+        if (ev == "escaped" || ev == "blocked") && e.get("index").map_or(true, |i| i.as_i64() == Some(*index)) {
+            gone.add(name, Some(ev.to_owned()));
+        }
     }
 }
 
 impl AgentView {
-    fn start(name: &str, index: i64, c: Client, gone: Gone) -> AgentView {
-        let v = AgentView { name: name.into(), index, c: Arc::new(Mutex::new(c)), last: Default::default(), done: Default::default(), gone };
-        let (name, c, last, done, gone) = (v.name.clone(), v.c.clone(), v.last.clone(), v.done.clone(), v.gone.clone());
+    fn start(name: &str, index: i64, peers: Arc<Vec<(String, i64)>>, c: Arc<Mutex<Client>>, gone: Gone) -> AgentView {
+        let v = AgentView { name: name.into(), index, peers, c, last: Default::default(), done: Default::default(), gone };
+        let (name, peers, c, last, done, gone) = (v.name.clone(), v.peers.clone(), v.c.clone(), v.last.clone(), v.done.clone(), v.gone.clone());
         std::thread::spawn(move || {
             let mut beat = Instant::now();
             while !done.load(Relaxed) && !gone.has(&name) {
                 {
                     let mut c = c.lock().unwrap();
-                    if c.poll(Duration::from_millis(10), |e| on_event(e, &name, index, &gone)).is_err() {
+                    if c.poll(Duration::from_millis(10), |e| on_event(e, &peers, &gone)).is_err() {
                         gone.add(&name, None); // the agent went
                     }
                     let shown = last.lock().unwrap().clone();
                     if let Some(p) = shown.filter(|_| beat.elapsed().as_secs_f64() > 30.0) {
                         beat = Instant::now();
-                        let _ = c.call("tags", args(json!({"op": "show", "index": index, "params": p})), Duration::from_secs(10), |e| on_event(e, &name, index, &gone));
+                        let _ = c.call("tags", args(json!({"op": "show", "index": index, "params": p})), Duration::from_secs(10), |e| on_event(e, &peers, &gone));
                     }
                 }
                 std::thread::sleep(Duration::from_millis(200));
@@ -265,7 +271,7 @@ impl AgentView {
         *self.last.lock().unwrap() = Some(params.clone());
         for attempt in 0..2 {
             let r = self.c.lock().unwrap().call("tags", args(json!({"op": "show", "index": self.index, "params": params})), Duration::from_secs(10),
-                                                  |e| on_event(e, &self.name, self.index, &self.gone))
+                                                  |e| on_event(e, &self.peers, &self.gone))
                 .unwrap_or_else(|e| json!({"ok": false, "error": e.to_string()})); // the agent went
             if truthy(&r["ok"]) {
                 return;
@@ -633,10 +639,10 @@ fn write_job(work: &Path, camera: &Json, placed: &[&Mon]) -> Value {
     serde_json::from_str(&job).unwrap_or(Value::Null)
 }
 
-/// Gets one machine's monitor ready (these run in parallel): its output and size from its agent
-/// (docs/agent.md), or with CC_SSH=1, over SSH with the tag viewer copied there. None means it
-/// already said why.
-fn ready(v: &cc_proto::conf::Viewer) -> Result<Option<Mon>, String> {
+/// Gets one monitor ready (machines run in parallel): its output and size from its machine's
+/// agent (docs/agent.md), or with CC_SSH=1, over SSH with the tag viewer copied there. None means
+/// it already said why.
+fn ready(v: &cc_proto::conf::Viewer, agent: &Result<Option<Arc<Mutex<Client>>>, machine::Fail>) -> Result<Option<Mon>, String> {
     let name = &v.name;
     let index = (machine::port_of(v) - 3400).rem_euclid(10); // a paired Frame's slot k serves monitor m on 3400 + 10k + m
     progress("prepare", name, &[("step", "monitor".into())]);
@@ -645,20 +651,20 @@ fn ready(v: &cc_proto::conf::Viewer) -> Result<Option<Mon>, String> {
     let curve = v.opt("curve").map_or(Value::Null, |c| json!(c));
     let mut mon = Mon { name: name.clone(), screen: v.screen, mm: Value::Null, host: v.machine.clone(), output: String::new(), pixels: v.pixels, draw: None,
                         tags: Map::new(), order: vec![], curve, radius, index, base: 0, frame: Value::Null, dense: None, dense_order: vec![], agent: None };
-    match machine::agent_for(&v.machine, "align") {
+    match agent {
         Err(e) => {
             println!("{name}: {}", match &e { Fail::NotPaired(m) | Fail::NoAgent(m) => m });
             progress("skipped", name, &[("why", e.state().into())]);
             Ok(None)
         }
-        Ok(Some(mut cl)) => {
-            let r = cl.call("monitors", Map::new(), Duration::from_secs(10), |_| {}).map_err(|e| format!("{name}: its agent: {e}"))?;
+        Ok(Some(cl)) => {
+            let r = cl.lock().unwrap().call("monitors", Map::new(), Duration::from_secs(10), |_| {}).map_err(|e| format!("{name}: its agent: {e}"))?;
             let Some(m) = r["monitors"].as_array().into_iter().flatten().find(|m| m["index"].as_i64() == Some(index)).cloned() else {
                 println!("{name}: its machine's agent shares no monitor {index}");
                 progress("failed", name, &[("why", "no-monitor".into())]);
                 return Ok(None);
             };
-            (mon.mm, mon.output, mon.agent) = (m["mm"].clone(), py_text(&m["output"]), Some(cl));
+            (mon.mm, mon.output, mon.agent) = (m["mm"].clone(), py_text(&m["output"]), Some(cl.clone()));
             mon.draw = Some((m["width"].as_i64().unwrap_or(v.pixels.0), m["height"].as_i64().unwrap_or(v.pixels.1)));
             Ok(Some(mon))
         }
@@ -728,9 +734,18 @@ fn look(names: &[String], want: Mode, quick: Option<&Json>) -> (Vec<String>, Pan
     cam.say(&format!("getting {} monitor{} ready: {}", todo.len(), if todo.len() == 1 { "" } else { "s" },
                      todo.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(", ")));
     cam.want(vec![]);
+    // One connection per machine: its agent keeps only a Frame's newest one, so a second
+    // connection for another of its monitors would close the first.
+    let mut machines: Vec<&str> = todo.iter().map(|v| v.machine.as_str()).collect();
+    machines.sort_unstable();
+    machines.dedup();
     let got: Vec<Result<Option<Mon>, String>> = std::thread::scope(|s| {
-        let hs: Vec<_> = todo.iter().map(|v| s.spawn(move || ready(v))).collect();
-        hs.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("getting a monitor ready failed".into()))).collect()
+        let todo = &todo;
+        let hs: Vec<_> = machines.iter().map(|&m| s.spawn(move || {
+            let agent = machine::agent_for(m, "align").map(|c| c.map(|c| Arc::new(Mutex::new(c))));
+            todo.iter().filter(|v| v.machine == m).map(|v| ready(v, &agent)).collect::<Vec<_>>()
+        })).collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap_or_else(|_| vec![Err("getting a monitor ready failed".into())])).collect()
     });
     let mut mons = vec![];
     for g in got {
@@ -777,9 +792,13 @@ fn look(names: &[String], want: Mode, quick: Option<&Json>) -> (Vec<String>, Pan
     let sock = target();
     let gone = Gone::default();
     let mut views = vec![];
+    let peers: Vec<(Option<Arc<Mutex<Client>>>, String, i64)> = mons.iter().map(|m| (m.agent.clone(), m.name.clone(), m.index)).collect();
     for m in mons.iter_mut() {
         views.push(match m.agent.take() {
-            Some(c) => View::Agent(AgentView::start(&m.name, m.index, c, gone.clone())),
+            Some(c) => {
+                let on: Vec<(String, i64)> = peers.iter().filter(|p| p.0.as_ref().is_some_and(|o| Arc::ptr_eq(o, &c))).map(|p| (p.1.clone(), p.2)).collect();
+                View::Agent(AgentView::start(&m.name, m.index, Arc::new(on), c, gone.clone()))
+            }
             None => {
                 let (g, n) = (gone.clone(), m.name.clone());
                 match ssh::Viewer::start(&m.host, &m.output, move || g.add(&n, None)) {
@@ -1442,12 +1461,19 @@ mod tests {
         let mut m = mon("a", 0);
         m.draw = Some((1920, 1080));
         let gone = Gone::default();
-        let v = AgentView::start("a", 0, c, gone.clone());
+        // two views on the machine's one connection (a second connection would close the first);
+        // the fake host has one monitor, so both show it
+        let (c, peers) = (Arc::new(Mutex::new(c)), Arc::new(vec![("a".to_owned(), 0), ("b".to_owned(), 0)]));
+        let v = AgentView::start("a", 0, peers.clone(), c.clone(), gone.clone());
+        let w = AgentView::start("b", 0, peers, c, gone.clone());
         v.put(m.tag_params("frame.png"));
-        std::thread::sleep(Duration::from_millis(500)); // the watch polls meanwhile
+        w.put(m.tag_params("frame.png"));
+        std::thread::sleep(Duration::from_millis(500)); // the watches poll meanwhile
         v.put(m.tag_params("wait.png"));
-        assert!(!gone.has("a"), "{}", gone.why("a"));
+        w.put(m.tag_params("wait.png"));
+        assert!(!gone.has("a") && !gone.has("b"), "{} / {}", gone.why("a"), gone.why("b"));
         v.close();
+        w.close();
         let _ = fake.kill();
         let _ = std::fs::remove_dir_all(dir);
     }
