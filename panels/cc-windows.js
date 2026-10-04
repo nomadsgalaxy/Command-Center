@@ -20,18 +20,25 @@ function id(w) {
 
 const adopted = {}; // uuid -> window
 const shells = {};  // uuid -> "panel" or "popup", plasmashell's windows as reported
+const popups = {};  // uuid -> parent window, an app's menus as reported (never adopted, KWin places them)
 let heard = Date.now(); // last Next() reply, and cc-panels answers within 10 s
 
 // Never shown as panels: the shell, and cc-view's own (paused) RDP viewers (R-3). Their class is
 // cc-view-<name> (cc-view's /wm-class) in the Flatpak com.freerdp.FreeRDP.
 const IGNORED = ["plasmashell", "org.kde.plasmashell", "krunner", "org.kde.krunner"];
 
-// "window", "dialog", or null for one we leave alone. Popups, menus and tooltips come later (S3b).
+// "window", "dialog", "popup", or null for one we leave alone. A popup is an app's menu or drop-down
+// (an xdg_popup, or an X11 menu): KWin's window stream on 6.2.5 draws only the window itself, so
+// cc-panels shows each popup on a panel of its own, on its parent's. Tooltips are left alone.
 function kind(w) {
     const cls = (w.resourceClass || "").toLowerCase();
     const app = (w.desktopFileName || "").toLowerCase();
-    if (!w.managed || w.deleted || IGNORED.includes(cls) || cls.startsWith("cc-view-") || cls.startsWith("xfreerdp")
+    if (w.deleted || IGNORED.includes(cls) || cls.startsWith("cc-view-") || cls.startsWith("xfreerdp")
         || app === "com.freerdp.freerdp" || app.startsWith("xfreerdp"))
+        return null;
+    if (w.popupWindow && !w.tooltip && !w.notification && !w.onScreenDisplay)
+        return "popup"; // a popup isn't managed (KWin doesn't place it), so this comes before that check
+    if (!w.managed)
         return null;
     if (w.desktopWindow || w.dock || w.notification || w.onScreenDisplay || w.popupWindow || w.splash)
         return null;
@@ -64,10 +71,27 @@ function place(w, cw, ch) {
     w.frameGeometry = {x: a.x, y: a.y, width: Math.min(W, a.width), height: Math.min(H, a.height)};
 }
 
+// The window a popup opened from. An X11 menu has no transientFor, so it's the window it opened
+// over: the active one if it's there, else any of ours.
+function popupParent(w) {
+    if (w.transientFor)
+        return w.transientFor;
+    const g = w.frameGeometry;
+    const over = a => {
+        const f = a.frameGeometry;
+        return g.x >= f.x && g.x < f.x + f.width && g.y >= f.y && g.y < f.y + f.height;
+    };
+    const act = workspace.activeWindow;
+    if (act && adopted[id(act)] && over(act))
+        return act;
+    return Object.values(adopted).find(over) || null;
+}
+
 function report(w, e) {
     const g = w.clientGeometry;
+    const parent = popups[id(w)] || w.transientFor;
     send({e: e, uuid: id(w), kind: kind(w), app: w.desktopFileName || w.resourceClass, caption: w.caption,
-          parent: w.transientFor ? id(w.transientFor) : "", x: g.x, y: g.y, w: g.width, h: g.height,
+          parent: parent ? id(parent) : "", x: g.x, y: g.y, w: g.width, h: g.height,
           minimized: w.minimized});
 }
 
@@ -104,6 +128,16 @@ function adopt(w) {
     if (!k || Date.now() - heard > 12000)
         return;
     const u = id(w);
+    if (k === "popup") {
+        // Reported, never adopted: nothing here moves it, and it closes on its own.
+        const parent = popupParent(w);
+        if (!parent || popups[u])
+            return;
+        popups[u] = parent;
+        w.clientGeometryChanged.connect(() => report(w, "geom"));
+        report(w, "add");
+        return;
+    }
     if (!adopted[u]) {
         const f = w.frameGeometry;
         send({e: "saved", uuid: u, s: {noBorder: w.noBorder, x: f.x, y: f.y, w: f.width, h: f.height,
@@ -171,8 +205,9 @@ workspace.windowRemoved.connect(w => {
         shellReport(w, false);
         delete shells[u];
     }
-    if (adopted[u]) {
+    if (adopted[u] || popups[u]) {
         delete adopted[u];
+        delete popups[u];
         send({e: "remove", uuid: u});
     }
 });

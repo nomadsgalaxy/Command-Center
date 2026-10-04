@@ -1103,7 +1103,7 @@ impl Taskbar {
         for p in panels() {
             let slotted = match &p.src {
                 Source::Rdp => p.used() && crate::config::member(&p.v), // (not a spare or removed, machines.rs, and in this workspace)
-                Source::Window(w) => w.lock().unwrap().is_some(),
+                Source::Window(w) => w.lock().unwrap().as_ref().is_some_and(|w| !w.popup()), // a menu gets no chip
             };
             if slotted {
                 chips.push(Chip::Panel(p.index));

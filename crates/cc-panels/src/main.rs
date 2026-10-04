@@ -298,7 +298,8 @@ impl Panel {
     /// mode. It catches no lasers and the mouse can't land on it.
     pub fn away(&self) -> bool {
         let theater = THEATER.load(Relaxed);
-        self.minimized() || (theater != usize::MAX && theater != self.index)
+        // a menu of the theater panel's window stays with it
+        self.minimized() || (theater != usize::MAX && theater != self.index && windows::root(self.index) != theater)
     }
 
     pub fn level(&self) -> attention::Level {

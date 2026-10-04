@@ -354,6 +354,7 @@ impl Kvm {
 
     /// Typing goes to panel i from now on (you clicked it), and keys held elsewhere get let go.
     pub fn type_to(&mut self, i: usize) {
+        let i = windows::root(i); // a click on a menu types to its window's panel
         self.leave_field();
         if self.kbd != i || self.kbd_shell {
             self.release_keys();
