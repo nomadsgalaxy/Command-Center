@@ -353,19 +353,17 @@ pub fn run(p: &'static Panel) {
             // the one session per machine that carries them. FreeRDP's default backend is PulseAudio.
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_AudioPlayback, audio);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_AudioCapture, audio);
-            if audio {
-                // With no latency, rdpsnd drops any chunk that arrives behind more than two others
-                // ("Buffer overrun ... dropping"), and sound waits behind the picture on this thread,
-                // so it came in bursts and chopped. 200 ms is its room, and PulseAudio's buffer.
-                let args: Vec<CString> = ["rdpsnd", "sys:pulse", "latency:200"].iter().map(|a| cstr(a)).collect();
-                let argv: Vec<*const std::os::raw::c_char> = args.iter().map(|a| a.as_ptr()).collect();
-                freerdp_client_add_static_channel(s, argv.len(), argv.as_ptr());
-                freerdp_client_add_dynamic_channel(s, argv.len(), argv.as_ptr());
-            } else {
-                // Otherwise FreeRDP adds rdpsnd with its fake player whenever device redirection is
-                // on, and krdp streams the machine's sound to it too, which doubled the traffic.
-                b(FreeRDP_Settings_Keys_Bool_FreeRDP_DeviceRedirection, false);
-            }
+            // With no latency, rdpsnd drops any chunk that arrives behind more than two others
+            // ("Buffer overrun ... dropping"), and sound waits behind the picture on this thread, so
+            // it came in bursts and chopped. 200 ms is its room, and PulseAudio's buffer. A session
+            // without sound still gets rdpsnd, since network auto-detect turns device redirection on
+            // and FreeRDP then adds its fake player, so that player only takes 8 kHz: krdp sends 48 kHz
+            // or nothing, and this way it sends nothing (it streamed every session's copy before).
+            let snd: &[&str] = if audio { &["rdpsnd", "sys:pulse", "latency:200"] } else { &["rdpsnd", "sys:fake", "rate:8000"] };
+            let args: Vec<CString> = snd.iter().map(|a| cstr(a)).collect();
+            let argv: Vec<*const std::os::raw::c_char> = args.iter().map(|a| a.as_ptr()).collect();
+            freerdp_client_add_static_channel(s, argv.len(), argv.as_ptr());
+            freerdp_client_add_dynamic_channel(s, argv.len(), argv.as_ptr());
             // Static channels (the clipboard) on this thread. H.264's colour conversion ignores
             // this flag, so install.sh patches FreeRDP's h264.c to run it here too instead of on
             // WinPR's 8-thread pool (3.5-4 ms less CPU a 3840x1080 frame, ~5 ms more latency; efficiency-plan.md 2a)
