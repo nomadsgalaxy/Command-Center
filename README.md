@@ -14,6 +14,9 @@ Here's what runs where:
 
 ## Install
 
+For now the Frame needs a Bluetooth mouse and keyboard paired with it, since that's what drives
+the panels.
+
 Run this in a terminal on the Steam Frame (Konsole, or over SSH), and then on each computer you
 want to see from it:
 
@@ -34,10 +37,12 @@ Command Center or removes it.
 - **On a computer** (KDE Plasma on Wayland, with krdp), it lists your monitors with their names
   and sizes, all ticked, so you choose which ones the Frame shows. It installs `cc-host`, one
   static binary for x86_64 or aarch64, and tells you what still needs you, such as a firewall rule.
+  A Steam Deck in desktop mode counts as a computer: SteamOS 3.8 comes with krdp.
 - **Pairing** is the last step, and the installer walks you through it. Run `cc-share pair` on
   the computer and a 6-digit key fills its screen. On the Frame, open Workspace, then Machines,
   then Add machine, pick the computer and press Pair. Then type the key, or press Pair by
-  looking and look at the screen. **Align** (Machines, Align) then puts each panel on the real
+  looking and look at the screen. If the computer isn't in the list, type its address instead.
+  Esc, a click or a tap closes the key screen, so a Steam Deck with no keyboard can cancel too. **Align** (Machines, Align) then puts each panel on the real
   monitor it shows.
 
 If there's no terminal to answer questions on, pass the answers instead: `| sh -s -- --yes` installs or
@@ -61,10 +66,16 @@ anywhere else doesn't match this one, don't trust it.
 - **Announcing** broadcasts the computer's name and its monitors' outputs and sizes to the local
   network (mDNS), so the Frame can list it. There's no login in it and no address beyond what mDNS
   already shows. It's ticked in the installer, so untick it if you'd rather not. `--yes` leaves it
-  as it was, which is off on a new install.
+  as it was, which is off on a new install. It needs `avahi-daemon` running, and `cc-share check`
+  says when it isn't. A Steam Deck has it off: `sudo systemctl enable --now avahi-daemon` turns it
+  on.
 - **The firewall rule** lets the private ranges (10/8, 172.16/12, 192.168/16) reach ports 3399-3449.
   That's wider than your subnet, so on a large private network or a VPN more machines can reach the
-  door. Only paired Frames get past it.
+  door. Only paired Frames get past it. With firewalld, the rule goes into each active zone except
+  public, external, dmz, block and drop, since a network in one of those isn't one you trust. If
+  your home network is in one of them, the installer opens nothing and says how to move it to the
+  home zone (`sudo firewall-cmd --permanent --zone=home --change-interface=<interface>`). With ufw
+  there are no zones, so it's the one rule.
 - **The shared login (slot 0)** from before pairing stays on (ports 3400+), and anyone with its
   password can connect. `cc-share check` and `cc-share frames` remind you while it's there. Once
   every monitor you use is paired, you can retire it, and the Machines window will offer to.
