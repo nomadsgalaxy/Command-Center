@@ -140,7 +140,7 @@ rust". So it's one portable core with a thin layer per platform:
    tested there, because kscreen-doctor can't set a scale in that session.
 5. **Install, units and checks** (cc-share's job), then retiring pair.py, agent.py and tagshow.py
    on the hosts. **Done:** cc-share's commands are cc-host subcommands (`src/share.rs`: install,
-   uninstall, check, up, down, autostart, announce, pair's firewall check, unpair, frames, lock,
+   uninstall, check, fix, up, down, autostart, announce, pair's firewall check, unpair, frames, lock,
    windows, guard, frame-run, and so on), using kscreen-doctor's JSON through serde and sockets
    from /proc, with no bash, jq, ss or pkill. `cc-share` is now a link to cc-host (it acts on
    argv[0]), the units start cc-host directly, `check` is the checklist and `check --agent` is the

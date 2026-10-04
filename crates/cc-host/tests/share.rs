@@ -30,6 +30,9 @@ enum Step {
     Frame,
     Announce,
     Ufw(bool),
+    AvahiOff(bool),
+    Conf(&'static str),
+    Backup(&'static str),
 }
 
 struct Run {
@@ -50,7 +53,7 @@ impl Run {
         for t in ["systemctl", "kscreen-doctor", "loginctl", "avahi-publish", "notify-send", "kbuildsycoca6", "ufw", "firewall-cmd", "sudo", "ss", "krdpserver"] {
             // avahi-daemon is running, as on a usual host; the recorded bash never asked, so it isn't logged
             let body = format!(r#"#!/bin/sh
-[ "{t} $*" = "systemctl is-active -q avahi-daemon" ] && exit 0
+[ "{t} $*" = "systemctl is-active -q avahi-daemon" ] && {{ [ -e "{work}/avahi-off" ] && exit 3; exit 0; }}
 echo "{t} $*" >> "{log}"
 case "{t} $*" in
   "kscreen-doctor -j") cat "{work}/desk.json" ;;
@@ -91,6 +94,12 @@ esac
                 let f = self.work.join("ufw-on");
                 if *on { std::fs::write(f, "").unwrap() } else { let _ = std::fs::remove_file(f); }
             }
+            Step::AvahiOff(on) => {
+                let f = self.work.join("avahi-off");
+                if *on { std::fs::write(f, "").unwrap() } else { let _ = std::fs::remove_file(f); }
+            }
+            Step::Conf(text) => std::fs::write(self.home().join("avahi-daemon.conf"), text).unwrap(),
+            Step::Backup(text) => std::fs::write(self.home().join("avahi-daemon.conf.before-command-center"), text).unwrap(),
             Step::Cmd(_) => unreachable!(),
         }
     }
@@ -102,7 +111,7 @@ esac
         writeln!(append(&log), "-- cc-share {line}").unwrap();
         let o = append(&out);
         let status = Command::new(self.home().join(".local/share/control-center/cc-host")).args(line.split_whitespace())
-            .env_clear().env("HOME", self.home()).env("USER", "tester").env("TZ", "UTC").env("CC_PASSWORD", "sekrit")
+            .env_clear().env("HOME", self.home()).env("USER", "tester").env("TZ", "UTC").env("CC_PASSWORD", "sekrit").env("CC_AVAHI_CONF", self.home().join("avahi-daemon.conf"))
             .env("PATH", format!("{}:/usr/bin:/bin", self.dir.join("bin").display()))
             .stdin(Stdio::null()).stdout(o.try_clone().unwrap()).stderr(o).status().unwrap();
         writeln!(append(&out), "[exit {}]", status.code().unwrap_or(-1)).unwrap();
@@ -202,6 +211,36 @@ fn scenario(work: &Path, name: &str, steps: &[Step], fixtures: &Path, record: bo
     fails
 }
 
+/// SteamOS's avahi-daemon.conf, short, and the same with publishing turned on.
+const STEAMOS: &str = "[server]\nuse-ipv4=yes\n\n[publish]\ndisable-publishing=yes\ndisable-user-service-publishing=yes\n";
+const STEAMOS_ON: &str = "[server]\nuse-ipv4=yes\n\n[publish]\ndisable-publishing=no\ndisable-user-service-publishing=no\n";
+
+/// announce-run reaps a dying avahi-publish and starts it again, instead of leaving it defunct.
+#[test]
+fn announce_run_restarts_a_dying_publisher() {
+    let dir = std::env::temp_dir().join(format!("cc-host-announce-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (bin, home) = (dir.join("bin"), dir.join("home"));
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    for (t, body) in [("avahi-publish", format!("echo run >> {}/runs\nexit 1", dir.display())), ("kscreen-doctor", "echo '{\"outputs\": []}'".into())] {
+        let p = bin.join(t);
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut c = Command::new(env!("CARGO_BIN_EXE_cc-host")).arg("announce-run").env_clear().env("HOME", &home)
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display())).stdin(Stdio::null()).stdout(Stdio::null())
+        .stderr(File::create(dir.join("err")).unwrap()).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(12)); // starts at 0, 4 and 10 s (it checks every 2 s)
+    c.kill().unwrap();
+    let _ = c.wait();
+    let runs = std::fs::read_to_string(dir.join("runs")).unwrap_or_default().lines().count();
+    let err = std::fs::read_to_string(dir.join("err")).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(runs >= 3, "started {runs} times: {err}");
+    assert!(err.contains("avahi-publish stopped") && err.contains("again in 4 s"), "{err}");
+}
+
 #[test]
 fn share_commands_match_the_recorded_bash() {
     use Step::*;
@@ -225,6 +264,13 @@ fn share_commands_match_the_recorded_bash() {
         ("firewall-run", vec![Frame, Ufw(true), Cmd("unpair f1 --firewall"), Ufw(false)]),
         ("pair-first", vec![Cmd("pair")]),
         ("instances", vec![Cmd("frame-run bad"), Cmd("frame-run ../x-0"), Cmd("window-run f1-0-nope"), Cmd("window-run f1-9-0123abcd-0000-4000-8000-000000000000"), Cmd("windows on")]),
+        // the Steam Deck's three problems: avahi off, publishing off, and the fixes run (--yes), declined or left alone
+        ("fix-avahi", vec![Dir, Announce, AvahiOff(true), Conf(STEAMOS), Cmd("check"), Cmd("fix --yes"), AvahiOff(false)]),
+        ("fix-print", vec![Dir, Announce, Conf(STEAMOS), Cmd("fix"), Cmd("announce on")]),
+        ("fix-announce-flag", vec![Dir, AvahiOff(true), Conf(STEAMOS), Cmd("announce on"), Cmd("fix --announce --yes"), AvahiOff(false)]),
+        ("fix-not-announcing", vec![Dir, AvahiOff(true), Conf(STEAMOS), Cmd("fix"), Cmd("check"), AvahiOff(false)]),
+        ("fix-restore", vec![Dir, Backup(STEAMOS), Conf(STEAMOS_ON), Cmd("uninstall --yes")]),
+        ("fix-restore-changed", vec![Dir, Backup(STEAMOS), Conf("[publish]\nmine=1\n"), Cmd("uninstall")]),
         ("uninstall", vec![Cmd("install 0 --no-announce --autostart"), Frame, Cmd("uninstall")]),
     ];
     let mut fails = vec![];

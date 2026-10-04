@@ -1,0 +1,7 @@
+$ cc-share uninstall --yes
+avahi: to put HOME/avahi-daemon.conf back the way it was before Command Center changed it:
++ sudo cp -p HOME/avahi-daemon.conf.before-command-center HOME/avahi-daemon.conf
++ sudo rm HOME/avahi-daemon.conf.before-command-center
++ sudo systemctl restart avahi-daemon
+avahi: the config is back as it was. I left avahi-daemon enabled and running, because other things may use it (to turn it off: sudo systemctl disable --now avahi-daemon)
+[exit 0]

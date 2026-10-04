@@ -30,7 +30,7 @@ fn main() {
     let as_share = args.first().and_then(|a| std::path::Path::new(a).file_name()).is_some_and(|n| n == "cc-share");
     if as_share && matches!(args.get(1).map(String::as_str), None | Some("help" | "--help" | "-h")) {
         eprintln!("usage: cc-share list | install <monitor> ... [--firewall] [--announce|--no-announce] [--autostart|--no-autostart] [--dry-run]\n       \
-                   cc-share uninstall | status | check | up | down | autostart on|off|status | announce on|off|status\n       \
+                   cc-share uninstall | status | check | fix [--yes] [--announce] | up | down | autostart on|off|status | announce on|off|status\n       \
                    cc-share pair [--firewall] | unpair <frame> | frames | stop | lock | unlock | windows on|off|status\n\
                    (cc-share is cc-host: docs/rust-host.md. The shared password the first time: CC_PASSWORD=... cc-share install 0)");
         std::process::exit(2);
@@ -100,7 +100,7 @@ fn main() {
         Some(other) => match share::main(other, &args[2..]) {
             Some(code) => std::process::exit(code),
             None => {
-                eprintln!("cc-host: unknown command {other} (serve, pair, tagscreen, render, cert, check, version, and cc-share's: list install uninstall status up down autostart announce unpair frames stop lock unlock windows guard)");
+                eprintln!("cc-host: unknown command {other} (serve, pair, tagscreen, render, cert, check, version, and cc-share's: list install uninstall fix status up down autostart announce unpair frames stop lock unlock windows guard)");
                 std::process::exit(2);
             }
         },

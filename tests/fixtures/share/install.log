@@ -10,12 +10,16 @@ systemctl is-active -q firewalld
 systemctl is-active -q ufw
 systemctl --user disable --now control-center-announce.service
 systemctl --user daemon-reload
+systemctl is-active -q firewalld
+systemctl is-active -q ufw
 systemctl --user is-active -q control-center-agent
 systemctl --user is-active -q control-center-guard
 systemctl --user is-active -q control-center-announce.service
 loginctl show-user tester -p Linger --value
 systemctl --user is-active -q control-center-announce.service
 -- cc-share check
+systemctl is-active -q firewalld
+systemctl is-active -q ufw
 systemctl --user is-active -q control-center-agent
 systemctl --user is-active -q control-center-guard
 systemctl --user is-active -q control-center-announce.service

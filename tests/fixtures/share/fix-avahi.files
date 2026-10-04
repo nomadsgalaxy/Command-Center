@@ -1,0 +1,3 @@
+./.config/control-center/announce 644: on|
+./.local/share/control-center/cc-host 755
+./avahi-daemon.conf 644: [server]|use-ipv4=yes||[publish]|disable-publishing=yes|disable-user-service-publishing=yes|

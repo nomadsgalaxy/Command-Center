@@ -1,0 +1,9 @@
+-- cc-share announce on
+-- cc-share fix --announce --yes
+systemctl is-active -q firewalld
+systemctl is-active -q ufw
+sudo -v
+sudo systemctl enable --now avahi-daemon
+sudo cp -p HOME/avahi-daemon.conf HOME/avahi-daemon.conf.before-command-center
+sudo install -m 644 HOME/.config/control-center/avahi-daemon.conf.new HOME/avahi-daemon.conf
+sudo systemctl restart avahi-daemon

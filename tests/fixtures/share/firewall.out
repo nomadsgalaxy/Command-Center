@@ -7,16 +7,16 @@ firewall: to remove the pairing and paired-Frame ports, run (or pass --firewall)
 [exit 0]
 $ cc-share install 0 --no-announce --no-autostart
 sharing as user tester on HOSTNAME: ports 3400 
-a firewall is active here, and the Frame can't reach this machine until these ports are open:
+firewall: to open the pairing and paired-Frame ports (3399-3449) for your private networks, so the Frame can reach this machine, run these (or pass --yes):
   sudo ufw allow proto tcp from 10.0.0.0/8 to any port 3399:3449 comment 'Command Center'
   sudo ufw allow proto tcp from 172.16.0.0/12 to any port 3399:3449 comment 'Command Center'
   sudo ufw allow proto tcp from 192.168.0.0/16 to any port 3399:3449 comment 'Command Center'
-rerun as cc-share pair --firewall (sudo asks), or run them yourself and touch HOME/.config/control-center/firewall-open
 not announcing
 checklist:
   ok   krdpserver
   ok   kscreen-doctor
   ok   avahi-publish
+  need the firewall to let the Frame in (ports 3399-3449, private ranges only): cc-share fix
   ok   cc-host (cc-host VERSION): the agent, pairing and tag screens
   need control-center-agent: systemctl --user status control-center-agent
   need control-center-guard: systemctl --user status control-center-guard

@@ -1,0 +1,7 @@
+-- cc-share uninstall
+systemctl is-active -q firewalld
+systemctl is-active -q ufw
+systemctl --user disable --now control-center-announce.service
+systemctl --user disable --now control-center-agent.service
+systemctl --user stop control-center-share@* control-center-guard.service
+systemctl --user daemon-reload

@@ -169,12 +169,12 @@ pub fn plan(f: &Facts, action: Action, share: &[usize], announce: bool, work: &P
 }
 
 /// The lines of cc-host install's output that need you to do something: its checklist's "need"
-/// items and the firewall commands.
+/// items, and the firewall and avahi fixes it offered but didn't run (their commands).
 pub fn needs_you(log: &[String]) -> Vec<String> {
     let mut out = vec![];
     let mut fw = false;
     for l in log {
-        if l.starts_with("firewall:") || l.starts_with("a firewall is active") {
+        if l.starts_with("firewall:") || l.starts_with("avahi:") || l.starts_with("a firewall is active") {
             fw = true;
             out.push(l.clone());
         } else if fw && (l.starts_with("  ") || l.starts_with("rerun as")) && !l.starts_with("  ok") && !l.starts_with("  need") && !l.starts_with("  note") {
@@ -228,6 +228,12 @@ pub fn done(f: &Facts, action: Action, share: &[usize], announce: bool, log: &[S
         }
         (Kind::Host, Action::Remove) => {
             v.push(format!("Command Center is removed from {}. Your pairings and keys stay in ~/.config/control-center.", f.host));
+            let need = needs_you(log);
+            if !need.is_empty() {
+                v.push(String::new());
+                v.push("These changes to the system are still in place. Run them to undo them (cc-install --remove --yes does it for you):".into());
+                v.extend(need);
+            }
         }
         (Kind::Host, a) => {
             v.push(format!("Command Center is {} on {}, sharing {}.", if a == Action::Install { "installed" } else { "updated" }, f.host, monitor_list(share)));

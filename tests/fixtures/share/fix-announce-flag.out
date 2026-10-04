@@ -1,0 +1,13 @@
+$ cc-share announce on
+avahi-daemon isn't running, so the Frame can't find this machine. Run cc-share fix --announce (or sudo systemctl enable --now avahi-daemon), then this again.
+[exit 1]
+$ cc-share fix --announce --yes
+avahi: to start avahi-daemon now and at every boot, because the Frame lists this machine through it:
++ sudo systemctl enable --now avahi-daemon
+avahi: avahi-daemon is running and starts at boot
+avahi: to turn publishing on in HOME/avahi-daemon.conf (only disable-publishing and disable-user-service-publishing in [publish]; the original is kept as HOME/avahi-daemon.conf.before-command-center):
++ sudo cp -p HOME/avahi-daemon.conf HOME/avahi-daemon.conf.before-command-center
++ sudo install -m 644 HOME/.config/control-center/avahi-daemon.conf.new HOME/avahi-daemon.conf
++ sudo systemctl restart avahi-daemon
+avahi: publishing is on, and avahi-daemon restarted. The original is in HOME/avahi-daemon.conf.before-command-center; cc-install --remove puts it back
+[exit 0]

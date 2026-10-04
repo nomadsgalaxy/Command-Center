@@ -1,0 +1,3 @@
+$ cc-share uninstall
+avahi: HOME/avahi-daemon.conf has changed since Command Center edited it, so I left it alone. The original is in HOME/avahi-daemon.conf.before-command-center.
+[exit 0]

@@ -1,0 +1,26 @@
+$ cc-share check
+  ok   krdpserver
+  ok   kscreen-doctor
+  ok   avahi-publish
+  need avahi-daemon isn't running, so the Frame can't find this machine: cc-share fix (or sudo systemctl enable --now avahi-daemon)
+  need avahi's config turns publishing off (HOME/avahi-daemon.conf), so the Frame won't list this machine: cc-share fix (backs it up first)
+  ok   cc-host (cc-host VERSION): the agent, pairing and tag screens
+  need control-center-agent: systemctl --user status control-center-agent
+  need control-center-guard: systemctl --user status control-center-guard
+  need the agent on 3399: journalctl --user -u control-center-agent
+  need krdp's certificate: cc-share install
+  note host id: made at the first pairing
+  note not announcing: the Frame won't list this machine (cc-share announce on), its address can still be typed
+  ok   starts when you log in (cc-share autostart off: from the app menu / taskbar instead)
+  note linger off: the units run while you're logged in (loginctl enable-linger to run them without)
+[exit 1]
+$ cc-share fix --yes
+avahi: to start avahi-daemon now and at every boot, because the Frame lists this machine through it:
++ sudo systemctl enable --now avahi-daemon
+avahi: avahi-daemon is running and starts at boot
+avahi: to turn publishing on in HOME/avahi-daemon.conf (only disable-publishing and disable-user-service-publishing in [publish]; the original is kept as HOME/avahi-daemon.conf.before-command-center):
++ sudo cp -p HOME/avahi-daemon.conf HOME/avahi-daemon.conf.before-command-center
++ sudo install -m 644 HOME/.config/control-center/avahi-daemon.conf.new HOME/avahi-daemon.conf
++ sudo systemctl restart avahi-daemon
+avahi: publishing is on, and avahi-daemon restarted. The original is in HOME/avahi-daemon.conf.before-command-center; cc-install --remove puts it back
+[exit 0]

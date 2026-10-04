@@ -1,6 +1,7 @@
--- cc-share install 0 1 --dry-run
+-- cc-share fix
 systemctl is-active -q firewalld
 systemctl is-active -q ufw
+-- cc-share check
 systemctl is-active -q firewalld
 systemctl is-active -q ufw
 systemctl --user is-active -q control-center-agent

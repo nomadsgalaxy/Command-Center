@@ -1,16 +1,12 @@
-$ cc-share install 0 1 --dry-run
-cc-share install 0 1 would:
-  make the shared login's password in HOME/.config/control-center/password
-  make krdp's certificate in HOME/.config/control-center/cert.pem
-  write the units share@, frame@, agent, guard in HOME/.config/systemd/user, and enable: share@0 share@1 agent guard
-  restart the agent; restart the guard only if no viewer is connected (now: 0 connected)
-  with sudo, if you say yes (or --yes), fix: nothing, as far as I can see
-  announce: asked (or left as it is without a terminal)
-  start at login: asked (on without a terminal); the app menu gets Command Center Host either way
-and then check:
+$ cc-share fix
+nothing to fix
+[exit 0]
+$ cc-share check
   ok   krdpserver
   ok   kscreen-doctor
   ok   avahi-publish
+  note avahi-daemon isn't running, so the Frame can't find this machine: cc-share fix --announce (only if you announce this machine) (or sudo systemctl enable --now avahi-daemon)
+  note avahi's config turns publishing off (HOME/avahi-daemon.conf), so the Frame won't list this machine: cc-share fix --announce (only if you announce this machine) (backs it up first)
   ok   cc-host (cc-host VERSION): the agent, pairing and tag screens
   need control-center-agent: systemctl --user status control-center-agent
   need control-center-guard: systemctl --user status control-center-guard
@@ -20,4 +16,4 @@ and then check:
   note not announcing: the Frame won't list this machine (cc-share announce on), its address can still be typed
   ok   starts when you log in (cc-share autostart off: from the app menu / taskbar instead)
   note linger off: the units run while you're logged in (loginctl enable-linger to run them without)
-[exit 0]
+[exit 1]

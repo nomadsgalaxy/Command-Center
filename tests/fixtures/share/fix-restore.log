@@ -1,0 +1,11 @@
+-- cc-share uninstall --yes
+systemctl is-active -q firewalld
+systemctl is-active -q ufw
+sudo -v
+sudo cp -p HOME/avahi-daemon.conf.before-command-center HOME/avahi-daemon.conf
+sudo rm HOME/avahi-daemon.conf.before-command-center
+sudo systemctl restart avahi-daemon
+systemctl --user disable --now control-center-announce.service
+systemctl --user disable --now control-center-agent.service
+systemctl --user stop control-center-share@* control-center-guard.service
+systemctl --user daemon-reload

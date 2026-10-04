@@ -1,0 +1,9 @@
+$ cc-share fix
+avahi: to turn publishing on in HOME/avahi-daemon.conf (only disable-publishing and disable-user-service-publishing in [publish]; the original is kept as HOME/avahi-daemon.conf.before-command-center), run these (or pass --yes):
+  sudo cp -p HOME/avahi-daemon.conf HOME/avahi-daemon.conf.before-command-center
+  sudo install -m 644 HOME/.config/control-center/avahi-daemon.conf.new HOME/avahi-daemon.conf
+  sudo systemctl restart avahi-daemon
+[exit 1]
+$ cc-share announce on
+avahi's config turns publishing off (HOME/avahi-daemon.conf), so avahi-publish would be refused. Run cc-share fix --announce, then this again.
+[exit 1]

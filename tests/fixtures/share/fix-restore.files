@@ -1,0 +1,2 @@
+./avahi-daemon.conf 644: [server]|use-ipv4=yes||[publish]|disable-publishing=no|disable-user-service-publishing=no|
+./avahi-daemon.conf.before-command-center 644: [server]|use-ipv4=yes||[publish]|disable-publishing=yes|disable-user-service-publishing=yes|

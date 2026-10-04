@@ -326,7 +326,9 @@ fn firewalld_cmds(action: &str, zones: &[(String, Vec<String>)], ours: impl Fn(&
     for (z, ifaces) in zones {
         let bad = UNTRUSTED.contains(&z.as_str());
         if action == "add" && !bad {
-            cmds.extend(rules(z, "add"));
+            if !ours(z) {
+                cmds.extend(rules(z, "add")); // Already there means nothing to do, so an update stays quiet.
+            }
         } else if ours(z) {
             cmds.extend(rules(z, "remove"));
         }
@@ -336,11 +338,11 @@ fn firewalld_cmds(action: &str, zones: &[(String, Vec<String>)], ours: impl Fn(&
     }
     let note = (action == "add" && zones.iter().all(|(z, _)| UNTRUSTED.contains(&z.as_str()))).then(|| {
         let ifaces = if closed.is_empty() { "<interface>".to_owned() } else { closed.join(" ") };
-        let mut l = vec![format!("firewalld has this network ({ifaces}) in an untrusted zone ({}), and Command Center doesn't open ports there.",
+        let mut l = vec![format!("firewall: firewalld has this network ({ifaces}) in an untrusted zone ({}), and Command Center doesn't open ports there.",
                                  zones.iter().map(|z| z.0.as_str()).collect::<Vec<_>>().join(", ")),
-                         "If it's your home network, move it to the home zone, then run this again:".to_owned()];
-        l.extend(closed.iter().map(|i| format!("  sudo firewall-cmd --permanent --zone=home --change-interface={i}")));
-        l.push("  sudo firewall-cmd --reload".into());
+                         "  If it's your home network, move it to the home zone, then run cc-share fix again:".to_owned()];
+        l.extend(closed.iter().map(|i| format!("    sudo firewall-cmd --permanent --zone=home --change-interface={i}")));
+        l.push("    sudo firewall-cmd --reload".into());
         l
     });
     if !cmds.is_empty() {
@@ -367,11 +369,6 @@ fn active_zones(out: &str) -> Vec<(String, Vec<String>)> {
 /// Shows a command as the shell line it is, quoting any word that has spaces.
 fn shown(c: &[String]) -> String {
     c.iter().map(|w| if w.contains(' ') { if let Some((a, b)) = w.split_once('=') && a.starts_with("--") { format!("{a}='{b}'") } else { format!("'{w}'") } } else { w.clone() }).collect::<Vec<_>>().join(" ")
-}
-
-/// What firewall() says without --firewall, as (lines, whether the ports are closed for a pairing).
-fn firewall_lines(e: &Env, action: &str, _flag: &str) -> Vec<String> {
-    firewall_said(e, action).0
 }
 
 fn firewall_said(e: &Env, action: &str) -> (Vec<String>, bool) {
@@ -430,11 +427,162 @@ fn firewall(e: &Env, action: &str, flag: &str) -> Fw {
     if closed { Fw::Closed } else { Fw::Ok }
 }
 
-/// install --dry-run's look at the firewall. It prints what firewall add would say, each line as "  firewall: ...".
-fn firewall_preview(e: &Env, flag: &str) {
-    for line in firewall_lines(e, "add", flag) {
-        println!("  firewall: {line}");
+// ---------------------------------------------------------------- fixes
+
+/// One thing the installer can fix with sudo: what it is, the exact commands and what they change.
+struct Fix {
+    kind: &'static str,
+    what: String,
+    /// a file written first, as (path, text), that the commands copy into place
+    write: Option<(PathBuf, String)>,
+    cmds: Vec<Vec<String>>,
+    changed: String,
+    /// the firewall-open marker: Some(true) makes it, Some(false) removes it
+    mark: Option<bool>,
+}
+
+/// What the system looks like, gathered once so that the decisions below are plain data.
+struct Seen {
+    /// the firewall's commands and note, for adding (install, fix) or removing (uninstall)
+    fw: (Vec<Vec<String>>, Option<Vec<String>>),
+    avahi_installed: bool,
+    avahi_running: bool,
+    conf: Option<String>,
+    conf_path: PathBuf,
+    backup: Option<String>,
+    backup_path: PathBuf,
+    /// where the edited copy is written before sudo puts it in place
+    tmp: PathBuf,
+    announce: bool,
+}
+
+fn seen(e: &Env, action: &str, announce: bool) -> Seen {
+    let mut fw = fw_cmds(action);
+    // ufw can't be asked without root whether its rule is there, so its answer is the marker.
+    if fw.0.first().is_some_and(|c| c[1] == "ufw") && e.dir.join("firewall-open").exists() == (action == "add") {
+        fw.0.clear();
     }
+    Seen { fw, avahi_installed: have("avahi-publish"), avahi_running: avahi_running(), conf: read(&avahi_conf()), conf_path: avahi_conf(),
+           backup: read(&avahi_backup()), backup_path: avahi_backup(), tmp: e.dir.join("avahi-daemon.conf.new"), announce }
+}
+
+fn sudo(c: &[&str]) -> Vec<String> {
+    std::iter::once("sudo").chain(c.iter().copied()).map(str::to_owned).collect()
+}
+
+/// Which fixes to offer after an install, and the notes for what can't be fixed. avahi is only
+/// touched when announcing is on, because that's the one thing that needs it.
+fn fixes(s: &Seen) -> (Vec<Fix>, Vec<String>) {
+    let mut v = vec![];
+    if !s.fw.0.is_empty() {
+        v.push(Fix { kind: "firewall", what: "to open the pairing and paired-Frame ports (3399-3449) for your private networks, so the Frame can reach this machine".into(),
+                     write: None, cmds: s.fw.0.clone(), changed: "firewall: ports 3399-3449 are open for the private ranges (10/8, 172.16/12, 192.168/16) only, and saved for the next boot".into(), mark: Some(true) });
+    }
+    if s.announce && s.avahi_installed && !s.avahi_running {
+        v.push(Fix { kind: "avahi", what: "to start avahi-daemon now and at every boot, because the Frame lists this machine through it".into(), write: None,
+                     cmds: vec![sudo(&["systemctl", "enable", "--now", "avahi-daemon"])], changed: "avahi: avahi-daemon is running and starts at boot".into(), mark: None });
+    }
+    if let Some(conf) = s.conf.as_ref().filter(|c| s.announce && s.avahi_installed && avahi_publishing_off(c)) {
+        let (conf_path, backup) = (s.conf_path.display().to_string(), s.backup_path.display().to_string());
+        let mut cmds = vec![];
+        if s.backup.is_none() {
+            cmds.push(sudo(&["cp", "-p", &conf_path, &backup]));
+        }
+        cmds.push(sudo(&["install", "-m", "644", &s.tmp.display().to_string(), &conf_path]));
+        cmds.push(sudo(&["systemctl", "restart", "avahi-daemon"]));
+        v.push(Fix { kind: "avahi", what: format!("to turn publishing on in {conf_path} (only disable-publishing and disable-user-service-publishing in [publish]; the original is kept as {backup})"),
+                     write: Some((s.tmp.clone(), avahi_publishing_on(conf))), cmds,
+                     changed: format!("avahi: publishing is on, and avahi-daemon restarted. The original is in {backup}; cc-install --remove puts it back"), mark: None });
+    }
+    (v, s.fw.1.clone().unwrap_or_default())
+}
+
+/// What to offer to undo on removal: the firewall rules, and avahi's config if it's still as we
+/// left it. avahi-daemon itself stays enabled, because other things may use it.
+fn undo(s: &Seen) -> (Vec<Fix>, Vec<String>) {
+    let mut v = vec![];
+    if !s.fw.0.is_empty() {
+        v.push(Fix { kind: "firewall", what: "to close the pairing and paired-Frame ports (3399-3449) again".into(), write: None, cmds: s.fw.0.clone(),
+                     changed: "firewall: Command Center's rules are gone".into(), mark: Some(false) });
+    }
+    let mut notes = vec![];
+    if let (Some(b), Some(c)) = (&s.backup, &s.conf) && c != b {
+        let (conf_path, backup) = (s.conf_path.display().to_string(), s.backup_path.display().to_string());
+        if *c == avahi_publishing_on(b) {
+            let mut cmds = vec![sudo(&["cp", "-p", &backup, &conf_path]), sudo(&["rm", &backup])];
+            if s.avahi_running {
+                cmds.push(sudo(&["systemctl", "restart", "avahi-daemon"]));
+            }
+            v.push(Fix { kind: "avahi", what: format!("to put {conf_path} back the way it was before Command Center changed it"), write: None, cmds,
+                         changed: "avahi: the config is back as it was. I left avahi-daemon enabled and running, because other things may use it (to turn it off: sudo systemctl disable --now avahi-daemon)".into(), mark: None });
+        } else {
+            notes.push(format!("avahi: {conf_path} has changed since Command Center edited it, so I left it alone. The original is in {backup}."));
+        }
+    }
+    (v, notes)
+}
+
+/// Shows each fix with its exact commands and runs it with sudo only if the user says yes: `yes`
+/// (--yes) covers all of them, `fw_yes` (--firewall) the firewall's. With no terminal and no yes it
+/// prints the commands instead. Returns whether everything went through.
+fn offer(e: &Env, (fixes, notes): (Vec<Fix>, Vec<String>), yes: bool, fw_yes: bool) -> bool {
+    notes.iter().for_each(|n| eprintln!("{n}"));
+    let (mut all, mut sudo_ok) = (notes.is_empty(), None);
+    for f in fixes {
+        let go = yes || (fw_yes && f.kind == "firewall");
+        println!("{}: {}{}", f.kind, f.what, if go || is_tty() { ":" } else { ", run these (or pass --yes):" });
+        if !go {
+            f.cmds.iter().for_each(|c| println!("  {}", shown(c)));
+            if !is_tty() {
+                all = false;
+                continue;
+            }
+            if ask("Run these with sudo now? [Y/n] ").starts_with(['n', 'N']) {
+                println!("skipped");
+                all = false;
+                continue;
+            }
+        }
+        if !*sudo_ok.get_or_insert_with(|| Command::new("sudo").arg("-v").status().is_ok_and(|s| s.success())) {
+            eprintln!("sudo didn't accept that. If this account has no password yet, run passwd first, then run cc-share fix.");
+            return false;
+        }
+        if let Some((p, text)) = &f.write && let Err(x) = std::fs::write(p, text) {
+            eprintln!("{}: {x}", p.display());
+            all = false;
+            continue;
+        }
+        let ok = f.cmds.iter().all(|c| {
+            println!("+ {}", shown(c));
+            Command::new(&c[0]).args(&c[1..]).status().is_ok_and(|s| s.success()) || { eprintln!("that failed, so I stopped there"); false }
+        });
+        if let Some((p, _)) = &f.write {
+            let _ = std::fs::remove_file(p);
+        }
+        if ok {
+            match f.mark {
+                Some(true) => drop(std::fs::write(e.dir.join("firewall-open"), b"")),
+                Some(false) => drop(std::fs::remove_file(e.dir.join("firewall-open"))),
+                None => {}
+            }
+            println!("{}", f.changed);
+        }
+        all &= ok;
+    }
+    all
+}
+
+/// cc-share fix [--yes] [--announce]: the same offers as install, for a machine that's already
+/// installed. --announce is for before `announce on`, which needs avahi fixed first.
+fn fix_cmd(e: &Env, args: &[String]) -> i32 {
+    let yes = args.iter().any(|a| a == "--yes") || std::env::var_os("CC_ASSUME_YES").is_some();
+    let announce = args.iter().any(|a| a == "--announce") || read(&e.dir.join("announce")).is_some_and(|a| a.trim() == "on");
+    let (f, n) = fixes(&seen(e, "add", announce));
+    if f.is_empty() && n.is_empty() {
+        println!("nothing to fix");
+        return 0;
+    }
+    i32::from(!offer(e, (f, n), yes, false))
 }
 
 // ---------------------------------------------------------------- check
@@ -452,6 +600,37 @@ fn avahi_publishing_off(conf: &str) -> bool {
         }
         publish && matches!(l.split_once('=').map(|(k, v)| (k.trim(), v.trim())), Some(("disable-publishing" | "disable-user-service-publishing", "yes")))
     })
+}
+
+/// avahi-daemon.conf's path. CC_AVAHI_CONF is for tests, so they never look at the real one.
+fn avahi_conf() -> PathBuf {
+    std::env::var_os("CC_AVAHI_CONF").map_or(PathBuf::from("/etc/avahi/avahi-daemon.conf"), PathBuf::from)
+}
+
+/// Where the fix keeps the original, next to it.
+fn avahi_backup() -> PathBuf {
+    let mut p = avahi_conf().into_os_string();
+    p.push(".before-command-center");
+    p.into()
+}
+
+/// avahi-daemon.conf with publishing turned on: disable-publishing and
+/// disable-user-service-publishing in [publish] go from yes to no, and nothing else changes, not
+/// the comments, the other sections, the spacing or the line endings.
+fn avahi_publishing_on(conf: &str) -> String {
+    let mut publish = false;
+    conf.split_inclusive('\n').map(|raw| {
+        let l = raw.trim();
+        if l.starts_with('[') {
+            publish = l == "[publish]";
+        } else if publish && !l.starts_with('#') && !l.starts_with(';') {
+            if let Some((k, v)) = l.split_once('=') && matches!(k.trim(), "disable-publishing" | "disable-user-service-publishing") && v.trim() == "yes" {
+                let end = &raw[raw.trim_end().len()..];
+                return format!("{}{}=no{end}", &raw[..raw.len() - raw.trim_start().len()], k.trim());
+            }
+        }
+        raw.to_owned()
+    }).collect()
 }
 
 fn avahi_running() -> bool {
@@ -484,15 +663,24 @@ fn check(e: &Env) -> bool {
             bad = true;
         }
     }
-    // avahi-publish needs the daemon: without it, it dies at once and the Frame never lists this
-    // machine (seen on a Steam Deck, where avahi-daemon is off).
+    // avahi-publish needs the daemon and publishing turned on: without them it dies at once and the
+    // Frame never lists this machine (seen on a Steam Deck, where both are off).
     let on = std::fs::read_to_string(e.dir.join("announce")).is_ok_and(|a| a.trim() == "on");
+    let kind = if on { "need" } else { "note" };
+    let fix = if on { "cc-share fix" } else { "cc-share fix --announce (only if you announce this machine)" };
     if have("avahi-publish") && !avahi_running() {
-        println!("  {} avahi-daemon isn't running, so the Frame can't find this machine: {AVAHI_ON}", if on { "need" } else { "note" });
+        println!("  {kind} avahi-daemon isn't running, so the Frame can't find this machine: {fix} (or {AVAHI_ON})");
         bad |= on;
-    } else if avahi_publishing_off(&std::fs::read_to_string("/etc/avahi/avahi-daemon.conf").unwrap_or_default()) {
-        // SteamOS ships it this way. Changing the system's avahi config is the user's call, so it's a note.
-        println!("  note avahi's config turns publishing off (/etc/avahi/avahi-daemon.conf), so the Frame won't list this machine: type its address in Add machine");
+    }
+    if avahi_publishing_off(&std::fs::read_to_string(avahi_conf()).unwrap_or_default()) {
+        println!("  {kind} avahi's config turns publishing off ({}), so the Frame won't list this machine: {fix} (backs it up first)", avahi_conf().display());
+        bad |= on;
+    }
+    let (fw, fw_note) = fw_cmds("add");
+    let fw = if e.dir.join("firewall-open").exists() && fw.first().is_some_and(|c| c[1] == "ufw") { vec![] } else { fw };
+    if fw_note.is_some() || !fw.is_empty() {
+        println!("  need the firewall to let the Frame in (ports 3399-3449, private ranges only): cc-share fix");
+        bad = true;
     }
     println!("  ok   cc-host (cc-host {}): the agent, pairing and tag screens", env!("CARGO_PKG_VERSION"));
     for u in ["control-center-agent", "control-center-guard"] {
@@ -615,10 +803,12 @@ fn migrate_user_install(e: &Env) {
 
 fn install(e: &Env, args: &[String]) -> i32 {
     let (mut flag, mut announce, mut dry, mut autostart) = ("", None, false, None);
+    let mut yes = std::env::var_os("CC_ASSUME_YES").is_some(); // cc-install --yes sets it
     let mut mons: Vec<String> = vec![];
     for a in args {
         match a.as_str() {
             "--firewall" => flag = "--firewall",
+            "--yes" | "-y" => yes = true,
             "--announce" => announce = Some("on"),
             "--no-announce" => announce = Some("off"),
             "--dry-run" => dry = true,
@@ -658,7 +848,8 @@ fn install(e: &Env, args: &[String]) -> i32 {
         if wants_frames(e) {
             println!("  stop starting paired Frames' servers at login (the agent starts them on connect)");
         }
-        firewall_preview(e, flag);
+        let (f, _) = fixes(&seen(e, "add", announce.map_or_else(|| read(&e.dir.join("announce")).is_some_and(|a| a.trim() == "on"), |a| a == "on")));
+        println!("  with sudo, if you say yes (or --yes), fix: {}", if f.is_empty() { "nothing, as far as I can see".into() } else { f.iter().map(|f| f.kind).collect::<Vec<_>>().join(" and ") });
         println!("  announce: {}", announce.unwrap_or("asked (or left as it is without a terminal)"));
         let at = read(&e.dir.join("autostart")).unwrap_or_else(|| "asked (on without a terminal)".into());
         println!("  start at login: {}; the app menu gets Command Center Host either way", autostart.as_deref().unwrap_or(&at));
@@ -747,13 +938,16 @@ fn install(e: &Env, args: &[String]) -> i32 {
         println!("the guard keeps running as it was: it has lowered a monitor for a connected viewer (restart it later: systemctl --user restart control-center-guard)");
     }
     println!("sharing as user {} on {}: ports {}", user(), hostname(), mons.iter().filter_map(|m| m.parse::<u32>().ok()).map(|m| format!("{} ", 3400 + m)).collect::<String>());
-    let _ = firewall(e, "add", flag); // Printed, or run with --firewall. Install keeps going either way.
     // I wanted announcing to be opt-in per machine. It's asked here, or set with --announce / --no-announce.
     let mut announce = announce.map(str::to_owned);
     if announce.is_none() && is_tty() && !sysq(&["is-active", "-q", "control-center-announce.service"]) {
         let a = ask("announce this machine on the network so the Frame can find it? [Y/n] ");
         announce = Some(if a.starts_with(['n', 'N']) { "off" } else { "on" }.into());
     }
+    // The firewall and avahi come after the announce question, because avahi is only touched when
+    // announcing is on. Install keeps going whatever they answer.
+    let announcing = announce.as_deref().map_or_else(|| read(&e.dir.join("announce")).is_some_and(|a| a.trim() == "on"), |a| a == "on");
+    let _ = offer(e, fixes(&seen(e, "add", announcing)), yes, flag == "--firewall");
     if let Some(a) = announce {
         announce_cmd(e, &a);
     }
@@ -958,7 +1152,11 @@ fn announce_cmd(e: &Env, what: &str) -> i32 {
                 return 1;
             }
             if !avahi_running() {
-                eprintln!("avahi-daemon isn't running, so the Frame can't find this machine. Start it, then run this again: {AVAHI_ON}");
+                eprintln!("avahi-daemon isn't running, so the Frame can't find this machine. Run cc-share fix --announce (or {AVAHI_ON}), then this again.");
+                return 1;
+            }
+            if avahi_publishing_off(&std::fs::read_to_string(avahi_conf()).unwrap_or_default()) {
+                eprintln!("avahi's config turns publishing off ({}), so avahi-publish would be refused. Run cc-share fix --announce, then this again.", avahi_conf().display());
                 return 1;
             }
             if !packaged() {
@@ -1010,19 +1208,54 @@ pub fn txt(e: &Env) -> Vec<String> {
     out
 }
 
+/// Runs avahi-publish and keeps it running. It dies at once when avahi-daemon is off or publishing
+/// is disabled, and without a wait() it stays a defunct process while the unit still says
+/// "active". So each tick reaps it, says why in the journal and starts it again after a wait that
+/// doubles from 2 s to 60 s, and goes back to 2 s once it has stayed up for 30 s.
 fn announce_run(e: &Env) -> i32 {
+    use std::time::{Duration, Instant};
     stop_on_signals();
-    let mut child: Option<std::process::Child> = None;
-    let mut last: Vec<String> = vec![];
+    let (mut child, mut last): (Option<std::process::Child>, Vec<String>) = (None, vec![]);
+    let (mut started, mut wait, mut retry_at) = (Instant::now(), 2u64, None::<Instant>);
     loop {
-        let now = txt(e);
-        if now != last {
-            if let Some(mut c) = child.take() {
-                let _ = c.kill();
-                let _ = c.wait();
+        let mut gone = None;
+        if let Some(c) = child.as_mut() {
+            match c.try_wait() {
+                Ok(Some(st)) => gone = Some(st.to_string()),
+                Ok(None) => {}
+                Err(x) => gone = Some(x.to_string()),
             }
-            child = Command::new("avahi-publish").arg("-s").arg(hostname()).arg("_controlcenter._tcp").arg("3399").args(&now).spawn().ok();
+        }
+        if let Some(why) = gone {
+            child = None;
+            let up = started.elapsed();
+            if up >= Duration::from_secs(30) {
+                wait = 2;
+            }
+            eprintln!("announce: avahi-publish stopped ({why}) after {} s, so the Frame can't see this machine. Is avahi-daemon running with publishing on? cc-share check says. Starting it again in {wait} s.", up.as_secs());
+            retry_at = Some(Instant::now() + Duration::from_secs(wait));
+            wait = (wait * 2).min(60);
+        }
+        let now = txt(e);
+        if now != last && let Some(mut c) = child.take() {
+            let _ = c.kill(); // The txt changed (a pairing screen, a monitor), so it starts again with the new one at once.
+            let _ = c.wait();
+            retry_at = None;
+        }
+        if child.is_none() && retry_at.is_none_or(|t| Instant::now() >= t) {
+            match Command::new("avahi-publish").arg("-s").arg(hostname()).arg("_controlcenter._tcp").arg("3399").args(&now).spawn() {
+                Ok(c) => child = Some(c),
+                Err(x) => {
+                    eprintln!("announce: can't run avahi-publish ({x}). Starting it again in {wait} s.");
+                    retry_at = Some(Instant::now() + Duration::from_secs(wait));
+                    wait = (wait * 2).min(60);
+                }
+            }
+            started = Instant::now();
             last = now;
+            if child.is_some() {
+                retry_at = None;
+            }
         }
         for _ in 0..20 {
             if STOP.load(Relaxed) {
@@ -1032,7 +1265,7 @@ fn announce_run(e: &Env) -> i32 {
                 }
                 return 0;
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 }
@@ -1217,7 +1450,11 @@ fn stop_cmd() -> i32 {
     0
 }
 
-fn uninstall(e: &Env) -> i32 {
+fn uninstall(e: &Env, args: &[String]) -> i32 {
+    // First, while cc-host is still here to run it: what I changed on the system, which is the
+    // firewall and avahi's config. It asks, or takes --yes.
+    let yes = args.iter().any(|a| a == "--yes") || std::env::var_os("CC_ASSUME_YES").is_some();
+    let _ = offer(e, undo(&seen(e, "remove", false)), yes, false);
     sysq(&["disable", "--now", "control-center-announce.service"]);
     let _ = std::fs::remove_file(e.units.join("control-center-announce.service"));
     for f in e.frames() {
@@ -1349,7 +1586,8 @@ pub fn main(cmd: &str, args: &[String]) -> Option<i32> {
         "unpair" => unpair(&e, arg(0), arg(1)),
         "frames" => frames_cmd(&e),
         "stop" => stop_cmd(),
-        "uninstall" => uninstall(&e),
+        "uninstall" => uninstall(&e, args),
+        "fix" => fix_cmd(&e, args),
         "status" => i32::from(!sys(&["list-units", "--all", "--no-pager", "control-center-*"])),
         _ => return None,
     })
@@ -1367,6 +1605,73 @@ mod tests {
         assert!(!avahi_publishing_off("[server]\ndisable-publishing=yes\n"), "only [publish]'s");
     }
 
+    const STEAMOS: &str = "# avahi\n[server]\nuse-ipv4=yes\ndisable-publishing=yes\n\n[publish]\n#disable-publishing=yes\ndisable-publishing=yes\n disable-user-service-publishing = yes\r\npublish-addresses=no\n\n[reflector]\ndisable-publishing=yes\n";
+
+    #[test]
+    fn avahi_edit_changes_only_the_two_publish_keys() {
+        let on = avahi_publishing_on(STEAMOS);
+        assert_eq!(on, "# avahi\n[server]\nuse-ipv4=yes\ndisable-publishing=yes\n\n[publish]\n#disable-publishing=yes\ndisable-publishing=no\n disable-user-service-publishing=no\r\npublish-addresses=no\n\n[reflector]\ndisable-publishing=yes\n");
+        assert!(!avahi_publishing_off(&on));
+        assert_eq!(avahi_publishing_on(&on), on, "doing it twice changes nothing");
+        assert_eq!(avahi_publishing_on("[publish]\ndisable-publishing=no"), "[publish]\ndisable-publishing=no", "no newline at the end stays so");
+        assert_eq!(avahi_publishing_on(""), "");
+    }
+
+    fn seen_with(announce: bool, running: bool, conf: Option<&str>) -> Seen {
+        Seen { fw: (vec![], None), avahi_installed: true, avahi_running: running, conf: conf.map(str::to_owned), conf_path: "/etc/avahi/avahi-daemon.conf".into(),
+               backup: None, backup_path: "/etc/avahi/avahi-daemon.conf.before-command-center".into(), tmp: "/h/avahi-daemon.conf.new".into(), announce }
+    }
+
+    fn lines(f: &Fix) -> Vec<String> {
+        f.cmds.iter().map(|c| shown(c)).collect()
+    }
+
+    #[test]
+    fn fixes_offered_for_a_steam_deck() {
+        let mut s = seen_with(true, false, Some(STEAMOS));
+        s.fw = (vec![sudo(&["firewall-cmd", "--reload"])], None);
+        let (f, notes) = fixes(&s);
+        assert!(notes.is_empty());
+        assert_eq!(f.iter().map(|f| f.kind).collect::<Vec<_>>(), ["firewall", "avahi", "avahi"]);
+        assert_eq!(lines(&f[1]), ["sudo systemctl enable --now avahi-daemon"]);
+        assert_eq!(lines(&f[2]), ["sudo cp -p /etc/avahi/avahi-daemon.conf /etc/avahi/avahi-daemon.conf.before-command-center",
+                                  "sudo install -m 644 /h/avahi-daemon.conf.new /etc/avahi/avahi-daemon.conf", "sudo systemctl restart avahi-daemon"]);
+        assert_eq!(f[2].write.as_ref().unwrap().1, avahi_publishing_on(STEAMOS));
+        // the backup already there is kept, not copied over
+        s.backup = Some("older".into());
+        assert!(!lines(&fixes(&s).0[2]).iter().any(|l| l.contains(" cp ")));
+    }
+
+    #[test]
+    fn avahi_is_left_alone_unless_announcing() {
+        assert!(fixes(&seen_with(false, false, Some(STEAMOS))).0.is_empty());
+        assert!(fixes(&seen_with(true, true, Some("[publish]\npublish-addresses=no\n"))).0.is_empty(), "running and publishing: nothing to fix");
+        let mut s = seen_with(true, false, Some(STEAMOS));
+        s.avahi_installed = false;
+        assert!(fixes(&s).0.is_empty(), "no avahi-publish: the checklist says to install avahi");
+        // the firewall's note (network in an untrusted zone) comes through, with no fix
+        let mut s = seen_with(false, true, None);
+        s.fw = (vec![], Some(vec!["firewall: x".into()]));
+        let (f, n) = fixes(&s);
+        assert!(f.is_empty());
+        assert_eq!(n, ["firewall: x"]);
+    }
+
+    #[test]
+    fn removal_restores_avahi_only_while_it_is_unchanged() {
+        let mut s = seen_with(false, true, Some(&avahi_publishing_on(STEAMOS)));
+        s.backup = Some(STEAMOS.into());
+        let (f, notes) = undo(&s);
+        assert!(notes.is_empty());
+        assert_eq!(lines(&f[0]), ["sudo cp -p /etc/avahi/avahi-daemon.conf.before-command-center /etc/avahi/avahi-daemon.conf", "sudo rm /etc/avahi/avahi-daemon.conf.before-command-center", "sudo systemctl restart avahi-daemon"]);
+        assert!(f[0].changed.contains("left avahi-daemon enabled"));
+        s.conf = Some(format!("{}# mine\n", avahi_publishing_on(STEAMOS)));
+        let (f, notes) = undo(&s);
+        assert!(f.is_empty() && notes[0].contains("changed since"), "{notes:?}");
+        s.conf = Some(STEAMOS.into());
+        assert!(undo(&s).0.is_empty() && undo(&s).1.is_empty(), "already back as it was");
+    }
+
     #[test]
     fn firewalld_opens_trusted_zones_only() {
         // a Steam Deck's, word for word
@@ -1381,6 +1686,9 @@ mod tests {
         assert!(adds.len() == NETS.len() && adds.iter().all(|z| z == "home"), "{adds:?}");
         assert!(removes.len() == NETS.len() && removes.iter().all(|z| z == "public"), "{removes:?}");
         assert_eq!(c.last().unwrap(), &["sudo", "firewall-cmd", "--reload"]);
+        // already open in home: nothing to add there, and public's old rules still come out
+        let (c, _) = firewalld_cmds("add", &deck, |_| true);
+        assert!(c.iter().filter_map(|c| zone(c)).all(|z| z == "public"), "{c:?}");
         // the network only in public: nothing opened, and a note saying how to move it
         let (c, note) = firewalld_cmds("add", &active_zones("public (default)\n  interfaces: eth0\n"), |_| false);
         assert!(c.is_empty());

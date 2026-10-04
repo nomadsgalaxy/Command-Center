@@ -36,8 +36,16 @@ Command Center or removes it.
   time you open it.
 - **On a computer** (KDE Plasma on Wayland, with krdp), it lists your monitors with their names
   and sizes, all ticked, so you choose which ones the Frame shows. It installs `cc-host`, one
-  static binary for x86_64 or aarch64, and tells you what still needs you, such as a firewall rule.
-  A Steam Deck in desktop mode counts as a computer: SteamOS 3.8 comes with krdp.
+  static binary for x86_64 or aarch64. Then it looks at the computer for the things that stop the
+  Frame from finding or reaching it, and offers to fix each one (see below). A Steam Deck in
+  desktop mode counts as a computer: SteamOS 3.8 comes with krdp.
+- **The fixes** need `sudo`, so the installer shows the exact commands and asks before it runs
+  any of them. `--yes` counts as yes. With no terminal and no `--yes` it only prints them. It
+  offers three: opening the firewall in the right zones, starting `avahi-daemon`, and turning
+  publishing on in `avahi-daemon.conf`. The last two only come up if announcing is ticked. If
+  `sudo` says no, this account probably has no password yet (a fresh Steam Deck doesn't), so run
+  `passwd` first and then `cc-share fix` (`cc-share fix --announce` before you turn announcing on). `cc-share check` lists anything still wrong, each with
+  its fix.
 - **Pairing** is the last step, and the installer walks you through it. Run `cc-share pair` on
   the computer and a 6-digit key fills its screen. On the Frame, open Workspace, then Machines,
   then Add machine, pick the computer and press Pair. Then type the key, or press Pair by
@@ -49,7 +57,8 @@ Command Center or removes it.
 
 If there's no terminal to answer questions on, pass the answers instead: `| sh -s -- --yes` installs or
 updates, `| sh -s -- --yes 0 1` shares monitors 0 and 1, `| sh -s -- --remove --yes` removes
-it, and `| sh -s -- --dry-run` only says what it would do. To build a checkout by hand, run
+it, and `| sh -s -- --dry-run` only says what it would do. `--yes` is also your yes to the fixes
+above, so it runs them with sudo (and `--remove --yes` undoes them). To build a checkout by hand, run
 `./install.sh` in it.
 
 Nothing between the Frame and a computer uses SSH. It all goes through pairing, the computer's
@@ -68,23 +77,34 @@ anywhere else doesn't match this one, don't trust it.
 - **Announcing** broadcasts the computer's name and its monitors' outputs and sizes to the local
   network (mDNS), so the Frame can list it. There's no login in it and no address beyond what mDNS
   already shows. It's ticked in the installer, so untick it if you'd rather not. `--yes` leaves it
-  as it was, which is off on a new install. It needs `avahi-daemon` running, and `cc-share check`
-  says when it isn't. A Steam Deck has it off: `sudo systemctl enable --now avahi-daemon` turns it
-  on. SteamOS also turns publishing off in `/etc/avahi/avahi-daemon.conf`, so a Deck still won't
-  be listed: use Pair by looking, or type its address in Add machine.
+  as it was, which is off on a new install. It needs `avahi-daemon` running with publishing on.
+  A Steam Deck has neither: the daemon is off, and SteamOS sets `disable-publishing=yes` and
+  `disable-user-service-publishing=yes` in `/etc/avahi/avahi-daemon.conf`, so `avahi-publish` gets
+  "Not permitted". If announcing is on, the installer offers to fix both. It starts the daemon
+  (`sudo systemctl enable --now avahi-daemon`), copies the config to
+  `avahi-daemon.conf.before-command-center`, changes only those two keys in `[publish]` to `no`
+  and restarts the daemon. If you unticked announcing, it doesn't touch avahi. Removing Command
+  Center puts the config back from the copy, as long as nothing has changed it since, and leaves
+  `avahi-daemon` running because other things may use it. The announce service also notices when
+  `avahi-publish` dies, says why in its journal (`journalctl --user -u control-center-announce`)
+  and starts it again, waiting 2 s and doubling up to 60 s. If you'd rather not fix avahi, use Pair by looking, or type the address in Add machine.
 - **The firewall rule** lets the private ranges (10/8, 172.16/12, 192.168/16) reach ports 3399-3449.
   That's wider than your subnet, so on a large private network or a VPN more machines can reach the
-  door. Only paired Frames get past it. With firewalld, the rule goes into each active zone except
-  public, external, dmz, block and drop, since a network in one of those isn't one you trust. If
-  your home network is in one of them, the installer opens nothing and says how to move it to the
-  home zone (`sudo firewall-cmd --permanent --zone=home --change-interface=<interface>`). With ufw
-  there are no zones, so it's the one rule.
+  door. Only paired Frames get past it. With firewalld, the installer opens it in each active zone except
+  public, external, dmz, block and drop, since a network in one of those isn't one you trust (a
+  Steam Deck's Wi-Fi is in `home` while `public` is the default, so a rule without `--zone`
+  would never apply). It shows the `sudo firewall-cmd --permanent --zone=<zone> ...` commands
+  and asks, and it takes our rules back out of an untrusted zone if an older version put them
+  there. If your home network is only in an untrusted zone, it opens nothing and says how to move
+  it to the home zone (`sudo firewall-cmd --permanent --zone=home --change-interface=<interface>`).
+  With ufw there are no zones, so it's the one rule. Removing Command Center offers to close it
+  again.
 - **The shared login (slot 0)** from before pairing stays on (ports 3400+), and anyone with its
   password can connect. `cc-share check` and `cc-share frames` remind you while it's there. Once
   every monitor you use is paired, you can retire it, and the Machines window will offer to.
 
 On the computer, `cc-share check` runs the checklist again (`cc-share install … --dry-run` shows what
-an install would change), `cc-share frames` lists paired Frames, `cc-share unpair <frame>` revokes
+an install would change), `cc-share fix [--yes]` offers the fixes again, `cc-share frames` lists paired Frames, `cc-share unpair <frame>` revokes
 one, and `cc-share lock` / `unlock` pauses the agent.
 
 **Diagnosing with SSH:** SSH is never used by default. With `CC_SSH=1`, cc-home may use it (align's

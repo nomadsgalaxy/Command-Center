@@ -1,0 +1,4 @@
+-- cc-share fix
+systemctl is-active -q firewalld
+systemctl is-active -q ufw
+-- cc-share announce on

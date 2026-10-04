@@ -67,7 +67,7 @@ per-user step after it, because a package runs as root and can't set up someone'
 
 - It picks the shared monitors (asking if none are given), makes the password and krdp's
   certificate under ~/.config/control-center, enables and starts the user units, prints the
-  firewall hint, and ends with the pairing walkthrough, as it does now.
+  offers the host fixes below, and ends with the pairing walkthrough, as it does now.
 - It no longer copies binaries or writes unit files. On a machine installed the old way, it
   removes ~/.local/share/control-center/cc-host, the old unit files in ~/.config/systemd/user (they
   would shadow the packaged ones) and the old ~/.local/bin/cc-share. Pairings, keys and the host
@@ -93,6 +93,11 @@ per-user step after it, because a package runs as root and can't set up someone'
   (pairings, keys, settings) and the unit links in ~/.config/systemd/user. Running
   `cc-share uninstall` first stops the services, unpairs the Frames and removes those links;
   deleting ~/.config/control-center removes the rest.
+- `cc-share uninstall` (or `cc-install --remove`) also offers to undo what the fixes changed:
+  close the firewall rules, and put `/etc/avahi/avahi-daemon.conf` back from
+  `avahi-daemon.conf.before-command-center`, but only if the file is still what our edit made it.
+  It leaves `avahi-daemon` enabled, because other things may use it. A package removal can't do
+  this, since it can't ask for sudo in someone's session, so run `cc-share uninstall` first.
 - A package can't reach into user sessions, so the running services keep going until logout,
   using files that are already gone. The removal script says that too.
 
@@ -150,6 +155,38 @@ the website. The installer adds the key with `pacman-key --add` and `pacman-key 
 
 If the key ever leaks, make a new one the same way, replace the secret, and ship the new public key
 in a package signed by the old one before revoking it.
+
+## Host fixes: what the installer finds and fixes
+
+A fresh machine often has something that stops the Frame from finding or reaching it. A Steam
+Deck had all three of these, so `cc-host install` (also run by `cc-install`) and `cc-share fix`
+look for them, show the exact commands and ask. Nothing runs under `sudo` without a yes: `--yes`
+(or cc-install's `--yes`, which passes it on as `CC_ASSUME_YES`) counts as one. With no terminal
+and no `--yes`, it prints the commands instead. Code: `fixes`, `undo` and `offer` in
+`crates/cc-host/src/share.rs`.
+
+| Found | Fix (sudo) | Only when |
+|---|---|---|
+| firewalld or ufw is active and 3399-3449 isn't open for the private ranges | add the rich rules to each active zone that isn't public, external, dmz, block or drop (and take ours out of those); `firewall-cmd --reload`. ufw gets its three rules | always. A network only in an untrusted zone gets a note on moving it to `home`, and nothing opened |
+| `avahi-daemon` isn't running | `systemctl enable --now avahi-daemon` | announcing is on |
+| `[publish]` in `avahi-daemon.conf` has `disable-publishing=yes` or `disable-user-service-publishing=yes` (SteamOS ships it so) | copy the file to `avahi-daemon.conf.before-command-center` (kept if it's there already), install the edited text, restart avahi-daemon | announcing is on |
+
+The edit is one pure function, `avahi_publishing_on`: only those two keys in `[publish]` go from
+`yes` to `no`, and comments, other sections and line endings stay. If `sudo` doesn't accept a
+password, the account most likely has none yet (a fresh Steam Deck), so it says to run `passwd`
+first. In the cc-install terminal app the screens can't take sudo's password, so the install only
+prints the commands, and `cc-share fix` runs after the screens close, on the real terminal. There
+a removal can only print its undo commands (`cc-install --remove --yes` runs them).
+`cc-share check` reports each of these with its one-line fix.
+
+`cc-share announce on` refuses while the daemon is off or publishing is disabled, and the announce
+service (`cc-host announce-run`) reaps a dying `avahi-publish`, logs why and starts it again after
+2 s, doubling to 60 s (back to 2 s once it has stayed up 30 s). Otherwise the unit stays "active"
+with a defunct child and publishes nothing.
+
+Tests: `tests/share.rs` runs `fix`, `check` and `uninstall` against shims (`CC_AVAHI_CONF` points
+at a throwaway config), and `announce_run_restarts_a_dying_publisher` runs announce-run with a
+publisher that exits at once.
 
 ## SteamOS hosts
 

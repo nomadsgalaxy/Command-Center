@@ -4,7 +4,10 @@
 //! a second copy of them. On the Frame that's install.sh's stages and `cc-home install`
 //! (crates/cc-home/src/install.rs), built from source in the container. On a host it's the
 //! release's cc-host, checked against SHA256SUMS, then `cc-host install`. It never restarts
-//! anything unless you type yes here.
+//! anything unless you type yes here. The host's fixes (firewall zones, avahi-daemon and its
+//! config) are cc-host's (share.rs `fixes`/`offer`): with --yes it runs them under sudo, in the
+//! terminal app it runs `cc-share fix` after the install so sudo can ask for its password on the
+//! real terminal, and otherwise it prints the commands.
 //! ponytail: the Frame builds from source, which is about 10 GB and a long first run. A prebuilt
 //! Frame release would need cc-panels linked against what the container provides now (FFmpeg with
 //! H.264 from RPM Fusion, GBM, libdrm, PipeWire, json-c and the rest of FreeRDP's dependencies)
@@ -12,7 +15,8 @@
 //! or bundled with the binary and an rpath, built on an aarch64 runner.
 //!   cc-install                 the terminal app
 //!   cc-install --yes [N ...]   no questions: install, or update what's there; on a host, share
-//!                              monitors N (default: the ones shared now, else all)
+//!                              monitors N (default: the ones shared now, else all). --yes also
+//!                              lets cc-host fix the firewall and avahi with sudo (CC_ASSUME_YES)
 //!   cc-install --remove --yes  remove, no questions
 //!   cc-install --dry-run       say what it found and what it would do, change nothing
 //! Environment:
@@ -81,6 +85,8 @@ pub enum Ev {
 
 /// The running step's process, kept so quitting can stop it.
 static CHILD: AtomicI32 = AtomicI32::new(0);
+/// --yes was given, so the steps may run sudo for the host's fixes without asking again.
+static YES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Runs a command to the end and puts its output (both streams, line by line) in the log.
 fn run(cmd: &[String], frame: bool, log: &Arc<Log>) -> Result<(), String> {
@@ -92,6 +98,9 @@ fn run(cmd: &[String], frame: bool, log: &Arc<Log>) -> Result<(), String> {
         c.env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={rt}/bus")).env("XDG_RUNTIME_DIR", rt);
     }
     c.env("CC_INSTALLER", "1"); // so cc-host install leaves the next step to us
+    if YES.load(Relaxed) {
+        c.env("CC_ASSUME_YES", "1"); // cc-host's fixes (firewall, avahi) run with sudo, since --yes was said
+    }
     log.push(format!("$ {}", cmd.join(" ")));
     let mut child = c.spawn().map_err(|e| format!("{}: {e}", cmd[0]))?;
     CHILD.store(child.id() as i32, Relaxed);
@@ -191,7 +200,10 @@ fn main() {
     let (mut yes, mut remove, mut dry, mut mons) = (false, false, false, vec![]);
     for a in std::env::args().skip(1) {
         match a.as_str() {
-            "--yes" | "-y" => yes = true,
+            "--yes" | "-y" => {
+                yes = true;
+                YES.store(true, Relaxed);
+            }
             "--remove" => remove = true,
             "--dry-run" => dry = true,
             "--help" | "-h" => usage(),
@@ -335,8 +347,20 @@ fn tui(f: Facts, log: Arc<Log>, work_dir: PathBuf) -> i32 {
                 println!("Stopped. Run the installer again to pick up where it stopped.");
                 return 1;
             }
+            let mut lines = log.lines();
+            if app.screen == ui::Screen::Done && app.f.kind == Kind::Host && app.action != Action::Remove {
+                // The install could only print the fixes: no terminal for sudo's password inside the screens.
+                // Now there is one, so cc-share fix shows them and asks, then the checklist is read again.
+                let host = app.f.home.join(".local/share/control-center/cc-host");
+                if lines.iter().any(|l| l.starts_with("firewall:") || l.starts_with("avahi:") || l.starts_with("  need ")) {
+                    let _ = Command::new(&host).arg("fix").status();
+                    if let Ok(o) = Command::new(&host).arg("check").stdin(Stdio::null()).output() {
+                        lines = String::from_utf8_lossy(&o.stdout).lines().map(str::to_owned).collect();
+                    }
+                }
+            }
             if app.screen == ui::Screen::Done {
-                for l in plan::done(&app.f, app.action, &app.share(), app.announce, &log.lines(), app.restart) {
+                for l in plan::done(&app.f, app.action, &app.share(), app.announce, &lines, app.restart) {
                     println!("{l}"); // stays on the terminal after the screen closes
                 }
             }
