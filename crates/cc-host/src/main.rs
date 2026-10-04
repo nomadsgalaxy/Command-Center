@@ -6,6 +6,7 @@
 //!   cc-host tagscreen <output> [--ask <text>]   the align's tag screen (tagshow.py --params / --ask)
 //!   cc-host cert                                krdp's certificate (cert.pem, key.pem), made once
 //!   cc-host check --agent [--port N]            the agent answers TLS with this host's key
+//!   cc-host units <dir> [--bin P] [--krdp P]    writes the user units, for a package build
 //!   cc-host <cc-share's commands>               install, up, down, check, ... (src/share.rs; cc-share execs this)
 //!   cc-host version
 //! The config directory is ~/.config/control-center, or $CC_CONF.
@@ -84,6 +85,16 @@ fn main() {
                 std::process::exit(1);
             }
             println!("agent answering on {port}");
+        }
+        Some("units") if args.len() > 2 => {
+            // For a package build: cc-host units <dir> --bin /usr/bin/cc-host --krdp /usr/lib/command-center/krdpserver
+            let opt = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
+            let (bin, krdp) = (opt("--bin").unwrap_or("/usr/bin/cc-host".into()), opt("--krdp").unwrap_or("/usr/lib/command-center/krdpserver".into()));
+            let dir = PathBuf::from(&args[2]);
+            std::fs::create_dir_all(&dir).expect("units dir");
+            for (name, body) in share::unit_files(&bin, &krdp).into_iter().chain([("control-center-announce.service", share::announce_unit(&bin))]) {
+                std::fs::write(dir.join(name), body).expect("unit");
+            }
         }
         Some("version") | None => println!("cc-host {}", env!("CARGO_PKG_VERSION")),
         Some(other) => match share::main(other, &args[2..]) {

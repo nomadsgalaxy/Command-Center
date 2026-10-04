@@ -1,9 +1,15 @@
-# Packaging the host (design, not built yet)
+# Packaging the host
 
 I want Command Center managed the way the rest of a system is: installed, updated and removed by
 the system's package manager, and easy for anyone to uninstall. On the host that means real distro
 packages. Arch comes first, then Fedora and Debian/Ubuntu with the same layout. The Frame (SteamOS)
 gets a systemd-sysext image, which cc-dev is designing separately.
+
+> **Built so far:** the Arch package (`packaging/arch/PKGBUILD`, `makepkg -si` from the repo) and
+> cc-host's packaged mode: it finds the package's krdp, leaves the units, launcher and grants to the
+> package, moves an old user install out of the way, restarts itself after an update, and `check`
+> and `uninstall` know about the package. `cc-host units <dir>` writes the units for a package
+> build. The rest of this page is still the plan.
 
 ## What's wrong with how it installs today
 
@@ -91,7 +97,7 @@ per-user step after it, because a package runs as root and can't set up someone'
 | Option | How it works | For | Against |
 | --- | --- | --- | --- |
 | **AUR** (`command-center-host`) | a PKGBUILD on aur.archlinux.org; an AUR helper builds it on the user's machine | the place Arch users look first; no hosting | everyone compiles krdp and cc-host themselves (base-devel, Rust, a few minutes); updates only with an AUR helper; not usable on SteamOS |
-| **Our own pacman repo** on GitHub Releases | CI (GitHub Actions, in an archlinux container) builds the package and a signed repo database on every release, and uploads them to a fixed release (`arch-repo`). Users add a `[command-center]` section with `Server = https://github.com/nomadsgalaxy/Command-Center/releases/download/arch-repo` and our signing key | prebuilt binaries; plain `pacman -Syu` updates; signed packages and database; free hosting | a one-time step to add the repo and trust our key; we own the signing key and the CI |
+| **Our own pacman repo** on GitHub Releases | CI (GitHub Actions, in an archlinux container) builds the package and a signed repo database on every release, and uploads them to a fixed release per architecture (`arch-repo-x86_64`, `arch-repo-aarch64`). Users add a `[command-center]` section with that release as its `Server` and our signing key | prebuilt binaries; plain `pacman -Syu` updates; signed packages and database; free hosting | a one-time step to add the repo and trust our key; we own the signing key and the CI |
 | **Our own repo on the framecc Pages site** | the same files, served from GitHub Pages | a nicer URL | Pages has size limits and slower publishing than release assets |
 
 **My recommendation:** our own signed pacman repo on GitHub Releases as the main channel, so updates
@@ -99,13 +105,47 @@ arrive with the normal `pacman -Syu`. Alongside it, an AUR package (`command-cen
 that just installs the release's prebuilt package, so people searching the AUR find it. The
 one-line installer (`install` script) adds the repo and the key, then installs the package.
 
-Two things to decide:
+Decided since:
 
-- **The signing key.** A dedicated GPG key for packages, kept in 1Password, used only by CI
-  through a GitHub Actions secret. It's separate from the release-signing key in docs/ssh-free.md
-  §2, or the same one if we want a single key to trust.
-- **aarch64.** Arch Linux ARM hosts need the package built for aarch64 too. GitHub's arm64
-  runners can do it in the same workflow.
+- **aarch64 from the start.** Every release builds x86_64 and aarch64 (Arch Linux ARM). Each
+  architecture gets its own release, `arch-repo-x86_64` and `arch-repo-aarch64`, so the
+  `[command-center]` section uses `Server = https://github.com/nomadsgalaxy/Command-Center/releases/download/arch-repo-$arch`.
+  x86_64 builds in an `archlinux:base-devel` container. aarch64 builds on GitHub's
+  `ubuntu-24.04-arm` runners in the official Arch Linux ARM root (its tarball through
+  `docker import`), so there's no unofficial image and no cross build.
+- **One signing key.** A dedicated Command Center key signs the packages, the repo databases and
+  the release's SHA256SUMS (docs/ssh-free.md §2). It's kept in 1Password, and CI gets it as a
+  GitHub Actions secret. Nothing else ever holds it.
+
+### Making the signing key (once, by hand)
+
+This runs on a trusted machine with `gpg`, `op` (signed in) and `gh` (logged in). The key never
+touches a command line or the disk outside a throwaway GPG home, and it has no passphrase,
+because CI signs unattended. 1Password and GitHub's secret store are what protect it.
+
+```sh
+export GNUPGHOME="$(mktemp -d)"
+gpg --batch --passphrase '' --quick-gen-key 'Command Center Signing Key' ed25519 sign never
+FPR=$(gpg --list-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')
+
+# The private key: into 1Password, then into the repo's Actions secrets. Both read it from stdin.
+gpg --armor --export-secret-keys "$FPR" | op document create - --title 'Command Center signing key' --file-name command-center-signing.asc --vault <vault>
+gpg --armor --export-secret-keys "$FPR" | gh secret set CC_SIGNING_KEY --repo nomadsgalaxy/Command-Center
+
+# The public half and the fingerprint aren't secret: they go in the repo and the README.
+gh variable set CC_SIGNING_FPR --body "$FPR" --repo nomadsgalaxy/Command-Center
+gpg --armor --export "$FPR" > packaging/command-center.asc
+echo "$FPR"
+
+rm -rf "$GNUPGHOME"; unset GNUPGHOME
+```
+
+Then commit `packaging/command-center.asc`, put the fingerprint in the README, and publish both on
+the website. The installer adds the key with `pacman-key --add` and `pacman-key --lsign-key
+<fingerprint>`, so a user trusts this one key only, and only for our repo's packages.
+
+If the key ever leaks, make a new one the same way, replace the secret, and ship the new public key
+in a package signed by the old one before revoking it.
 
 ## SteamOS hosts
 
@@ -221,7 +261,7 @@ unit names.
 
 The package repository stays the source of truth. The app only checks and hands off:
 
-- **It checks** our repo's metadata (the `arch-repo` release, or COPR's or the apt repo's), at
+- **It checks** our repo's metadata (the `arch-repo-$arch` release, or COPR's or the apt repo's), at
   most once a day, and shows **Update available (0.4.1)** with what's new from the release
   notes.
 - **Update** goes through **PackageKit**, the same D-Bus service Discover and GNOME Software use,
@@ -269,7 +309,7 @@ clipboard.patch unchanged and ships with the next package.
 2. The Arch package: a PKGBUILD in `packaging/arch/`, cc-host changes (the install step, the
    krdp path lookup, the self-restart on update, the migration from the old layout), and the
    uninstall messages.
-3. CI: build the package and the signed repo on release, upload to `arch-repo`, and the installer
+3. CI: build the package and the signed repo on release, upload to `arch-repo-$arch`, and the installer
    adds the repo.
 4. The clipboard patch, built and tested in the package.
 5. The host app (Slint): status, monitors, pairing, Frames, settings, diagnostics, then updates
