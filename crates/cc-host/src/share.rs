@@ -281,28 +281,25 @@ enum Fw {
     Closed,
 }
 
+/// firewalld zones Command Center never opens its ports in, even for the private ranges: a
+/// network in one of these isn't one the user trusts.
+const UNTRUSTED: [&str; 5] = ["public", "external", "dmz", "block", "drop"];
+
 /// The commands that open (add) or close (remove) the pairing and paired-Frame ports (3399-3449) for
 /// the private ranges, for whichever firewall is active. There are none if no firewall is active.
-fn fw_cmds(action: &str) -> Vec<Vec<String>> {
-    let mut cmds: Vec<Vec<String>> = vec![];
+/// The note is set when the ports can't be opened here: firewalld has the network in an untrusted zone.
+fn fw_cmds(action: &str) -> (Vec<Vec<String>>, Option<Vec<String>>) {
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     if have("firewall-cmd") && run("systemctl", &["is-active", "-q", "firewalld"]).0 {
-        // Every active zone, not just the default one: on a Steam Deck the Wi-Fi is in "home"
-        // while "public" is the default, so rules without --zone never applied to it.
         let out = Command::new("firewall-cmd").arg("--get-active-zones").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-        let zones = active_zones(&out);
-        for z in &zones {
-            for n in NETS {
-                let mut c = s(&["sudo", "firewall-cmd", "--permanent"]);
-                if !z.is_empty() {
-                    c.push(format!("--zone={z}"));
-                }
-                c.push(format!("--{action}-rich-rule=rule family=ipv4 source address={n} port port=3399-3449 protocol=tcp accept"));
-                cmds.push(c);
-            }
-        }
-        cmds.push(s(&["sudo", "firewall-cmd", "--reload"]));
-    } else if have("ufw") && run("systemctl", &["is-active", "-q", "ufw"]).0 {
+        let ours = |z: &str| {
+            Command::new("firewall-cmd").args(["--permanent", &format!("--zone={z}"), "--list-rich-rules"]).output()
+                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("3399-3449"))
+        };
+        return firewalld_cmds(action, &active_zones(&out), ours);
+    }
+    let mut cmds = vec![];
+    if have("ufw") && run("systemctl", &["is-active", "-q", "ufw"]).0 {
         for n in NETS {
             if action == "add" {
                 cmds.push(s(&["sudo", "ufw", "allow", "proto", "tcp", "from", n, "to", "any", "port", "3399:3449", "comment", "Command Center"]));
@@ -311,15 +308,60 @@ fn fw_cmds(action: &str) -> Vec<Vec<String>> {
             }
         }
     }
-    cmds
+    (cmds, None)
 }
 
-/// The zones in `firewall-cmd --get-active-zones` output: its unindented lines, without a
-/// " (default)" note. With none, one empty name, which means the default zone.
-fn active_zones(out: &str) -> Vec<String> {
-    let z: Vec<String> = out.lines().filter(|l| !l.is_empty() && !l.starts_with(char::is_whitespace))
-        .filter_map(|l| l.split_whitespace().next()).map(str::to_owned).collect();
-    if z.is_empty() { vec![String::new()] } else { z }
+/// firewalld's half of fw_cmds, given the active zones and their interfaces, and whether a zone
+/// already has our rules. Adding goes into each active zone that isn't UNTRUSTED (on a Steam Deck
+/// the Wi-Fi is in "home" while "public" is the default, so rules without --zone never applied),
+/// and takes ours out of the untrusted ones, where an older cc-host put them. Removing takes them
+/// out of every zone that has them.
+fn firewalld_cmds(action: &str, zones: &[(String, Vec<String>)], ours: impl Fn(&str) -> bool) -> (Vec<Vec<String>>, Option<Vec<String>>) {
+    let rules = |z: &str, act: &str| -> Vec<Vec<String>> {
+        NETS.iter().map(|n| vec!["sudo".into(), "firewall-cmd".into(), "--permanent".into(), format!("--zone={z}"),
+                                  format!("--{act}-rich-rule=rule family=ipv4 source address={n} port port=3399-3449 protocol=tcp accept")]).collect()
+    };
+    let mut cmds = vec![];
+    let mut closed = vec![];
+    for (z, ifaces) in zones {
+        let bad = UNTRUSTED.contains(&z.as_str());
+        if action == "add" && !bad {
+            cmds.extend(rules(z, "add"));
+        } else if ours(z) {
+            cmds.extend(rules(z, "remove"));
+        }
+        if bad {
+            closed.extend(ifaces.iter().cloned());
+        }
+    }
+    let note = (action == "add" && zones.iter().all(|(z, _)| UNTRUSTED.contains(&z.as_str()))).then(|| {
+        let ifaces = if closed.is_empty() { "<interface>".to_owned() } else { closed.join(" ") };
+        let mut l = vec![format!("firewalld has this network ({ifaces}) in an untrusted zone ({}), and Command Center doesn't open ports there.",
+                                 zones.iter().map(|z| z.0.as_str()).collect::<Vec<_>>().join(", ")),
+                         "If it's your home network, move it to the home zone, then run this again:".to_owned()];
+        l.extend(closed.iter().map(|i| format!("  sudo firewall-cmd --permanent --zone=home --change-interface={i}")));
+        l.push("  sudo firewall-cmd --reload".into());
+        l
+    });
+    if !cmds.is_empty() {
+        cmds.push(vec!["sudo".into(), "firewall-cmd".into(), "--reload".into()]);
+    }
+    (cmds, note)
+}
+
+/// The zones in `firewall-cmd --get-active-zones` output and their interfaces: a zone is an
+/// unindented line (without its " (default)" note), its "  interfaces:" line follows. With none
+/// listed, the default zone.
+fn active_zones(out: &str) -> Vec<(String, Vec<String>)> {
+    let mut z: Vec<(String, Vec<String>)> = vec![];
+    for l in out.lines().filter(|l| !l.trim().is_empty()) {
+        if !l.starts_with(char::is_whitespace) {
+            z.push((l.split_whitespace().next().unwrap_or_default().to_owned(), vec![]));
+        } else if let (Some(last), Some(i)) = (z.last_mut(), l.trim().strip_prefix("interfaces:")) {
+            last.1.extend(i.split_whitespace().map(str::to_owned));
+        }
+    }
+    if z.is_empty() { vec![("public".into(), vec![])] } else { z }
 }
 
 /// Shows a command as the shell line it is, quoting any word that has spaces.
@@ -333,7 +375,14 @@ fn firewall_lines(e: &Env, action: &str, _flag: &str) -> Vec<String> {
 }
 
 fn firewall_said(e: &Env, action: &str) -> (Vec<String>, bool) {
-    let cmds = fw_cmds(action);
+    let (cmds, note) = fw_cmds(action);
+    if let Some(mut l) = note {
+        if !cmds.is_empty() {
+            l.push("and take Command Center's rules out of the untrusted zone:".into());
+            l.extend(cmds.iter().map(|c| format!("  {}", shown(c))));
+        }
+        return (l, true);
+    }
     if cmds.is_empty() {
         return (vec![], false);
     }
@@ -354,13 +403,17 @@ fn firewall_said(e: &Env, action: &str) -> (Vec<String>, bool) {
 /// Prints the ports' commands, or runs them with --firewall (sudo asks).
 fn firewall(e: &Env, action: &str, flag: &str) -> Fw {
     if flag == "--firewall" {
-        let cmds = fw_cmds(action);
-        if cmds.is_empty() {
-            return Fw::Ok;
-        }
+        let (cmds, note) = fw_cmds(action);
         for c in &cmds {
             println!("+ {}", shown(c));
             let _ = Command::new(&c[0]).args(&c[1..]).status();
+        }
+        if let Some(l) = note {
+            l.iter().for_each(|l| eprintln!("{l}"));
+            return Fw::Closed;
+        }
+        if cmds.is_empty() {
+            return Fw::Ok;
         }
         let open = e.dir.join("firewall-open");
         if action == "add" {
@@ -1274,10 +1327,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_active_firewalld_zone() {
+    fn firewalld_opens_trusted_zones_only() {
         // a Steam Deck's, word for word
-        assert_eq!(active_zones("home\n  interfaces: wlan0\npublic (default)\n"), ["home", "public"]);
-        assert_eq!(active_zones(""), [""], "none listed: the default zone");
+        let deck = active_zones("home\n  interfaces: wlan0\npublic (default)\n");
+        assert_eq!(deck, [("home".to_owned(), vec!["wlan0".to_owned()]), ("public".to_owned(), vec![])]);
+        let zone = |c: &[String]| c.iter().find_map(|w| w.strip_prefix("--zone=")).map(str::to_owned);
+        // add: into home only, and an older cc-host's rules come out of public
+        let (c, note) = firewalld_cmds("add", &deck, |z| z == "public");
+        assert!(note.is_none());
+        let adds: Vec<_> = c.iter().filter(|c| c.iter().any(|w| w.starts_with("--add"))).filter_map(|c| zone(c)).collect();
+        let removes: Vec<_> = c.iter().filter(|c| c.iter().any(|w| w.starts_with("--remove"))).filter_map(|c| zone(c)).collect();
+        assert!(adds.len() == NETS.len() && adds.iter().all(|z| z == "home"), "{adds:?}");
+        assert!(removes.len() == NETS.len() && removes.iter().all(|z| z == "public"), "{removes:?}");
+        assert_eq!(c.last().unwrap(), &["sudo", "firewall-cmd", "--reload"]);
+        // the network only in public: nothing opened, and a note saying how to move it
+        let (c, note) = firewalld_cmds("add", &active_zones("public (default)\n  interfaces: eth0\n"), |_| false);
+        assert!(c.is_empty());
+        assert!(note.unwrap().iter().any(|l| l.contains("--zone=home --change-interface=eth0")));
+        // remove: wherever ours are
+        let (c, _) = firewalld_cmds("remove", &deck, |z| z == "home");
+        assert!(c.iter().filter_map(|c| zone(c)).all(|z| z == "home") && c.len() == NETS.len() + 1);
+        assert_eq!(active_zones(""), [("public".to_owned(), vec![])], "none listed: treated as the default, public");
     }
 
     #[test]
