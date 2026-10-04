@@ -1,3 +1,5 @@
+<img src="packaging/command-center.png" alt="" width="96">
+
 # Command Center
 
 Command Center is the Steam Frame's VR desktop. It puts the windows of the Frame's own Plasma session and the monitors of your other computers in the room with you as panels, each one where you want it. The Frame's mouse and keyboard drive whichever panel you point at, so one set of hands works every machine. It's all Rust. More at [framecc.nomadsgalaxy.com](https://framecc.nomadsgalaxy.com).

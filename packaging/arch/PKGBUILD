@@ -82,8 +82,11 @@ package() {
     "$_lib/krdpserver" > "$apps/com.commandcenter.krdpserver.desktop"
   printf '[Desktop Entry]\nType=Application\nName=Command Center window server\nExec=%s\nNoDisplay=true\nX-KDE-Wayland-Interfaces=org_kde_kwin_fake_input,zkde_screencast_unstable_v1,org_kde_plasma_window_management\n' \
     "$_lib/krdpserver-window" > "$apps/com.commandcenter.krdpserver-window.desktop"
-  printf '[Desktop Entry]\nType=Application\nName=Command Center Host\nComment=Share this machine'"'"'s monitors with the Steam Frame\nExec=/usr/bin/cc-share up\nIcon=video-display\nCategories=Network;RemoteAccess;\nActions=stop;\n\n[Desktop Action stop]\nName=Stop Command Center\nExec=/usr/bin/cc-share down\n' \
+  printf '[Desktop Entry]\nType=Application\nName=Command Center Host\nComment=Share this machine'"'"'s monitors with the Steam Frame\nExec=/usr/bin/cc-share up\nIcon=command-center\nCategories=Network;RemoteAccess;\nActions=stop;\n\n[Desktop Action stop]\nName=Stop Command Center\nExec=/usr/bin/cc-share down\n' \
     > "$apps/command-center-host.desktop"
+
+  install -Dm644 "$_repo/packaging/command-center.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/command-center.svg"
+  install -Dm644 "$_repo/packaging/command-center.png" "$pkgdir/usr/share/icons/hicolor/512x512/apps/command-center.png"
 
   "$pkgdir/usr/bin/cc-host" units "$pkgdir/usr/lib/systemd/user" --bin /usr/bin/cc-host --krdp "$_lib/krdpserver"
 
