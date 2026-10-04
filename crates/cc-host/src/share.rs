@@ -287,8 +287,19 @@ fn fw_cmds(action: &str) -> Vec<Vec<String>> {
     let mut cmds: Vec<Vec<String>> = vec![];
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     if have("firewall-cmd") && run("systemctl", &["is-active", "-q", "firewalld"]).0 {
-        for n in NETS {
-            cmds.push(s(&["sudo", "firewall-cmd", "--permanent", &format!("--{action}-rich-rule=rule family=ipv4 source address={n} port port=3399-3449 protocol=tcp accept")]));
+        // Every active zone, not just the default one: on a Steam Deck the Wi-Fi is in "home"
+        // while "public" is the default, so rules without --zone never applied to it.
+        let out = Command::new("firewall-cmd").arg("--get-active-zones").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        let zones = active_zones(&out);
+        for z in &zones {
+            for n in NETS {
+                let mut c = s(&["sudo", "firewall-cmd", "--permanent"]);
+                if !z.is_empty() {
+                    c.push(format!("--zone={z}"));
+                }
+                c.push(format!("--{action}-rich-rule=rule family=ipv4 source address={n} port port=3399-3449 protocol=tcp accept"));
+                cmds.push(c);
+            }
         }
         cmds.push(s(&["sudo", "firewall-cmd", "--reload"]));
     } else if have("ufw") && run("systemctl", &["is-active", "-q", "ufw"]).0 {
@@ -301,6 +312,14 @@ fn fw_cmds(action: &str) -> Vec<Vec<String>> {
         }
     }
     cmds
+}
+
+/// The zones in `firewall-cmd --get-active-zones` output: its unindented lines, without a
+/// " (default)" note. With none, one empty name, which means the default zone.
+fn active_zones(out: &str) -> Vec<String> {
+    let z: Vec<String> = out.lines().filter(|l| !l.is_empty() && !l.starts_with(char::is_whitespace))
+        .filter_map(|l| l.split_whitespace().next()).map(str::to_owned).collect();
+    if z.is_empty() { vec![String::new()] } else { z }
 }
 
 /// Shows a command as the shell line it is, quoting any word that has spaces.
@@ -1253,6 +1272,13 @@ pub fn main(cmd: &str, args: &[String]) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_active_firewalld_zone() {
+        // a Steam Deck's, word for word
+        assert_eq!(active_zones("home\n  interfaces: wlan0\npublic (default)\n"), ["home", "public"]);
+        assert_eq!(active_zones(""), [""], "none listed: the default zone");
+    }
 
     #[test]
     fn sockets_from_proc() {
