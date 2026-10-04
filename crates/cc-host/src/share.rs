@@ -439,6 +439,12 @@ fn firewall_preview(e: &Env, flag: &str) {
 
 // ---------------------------------------------------------------- check
 
+const AVAHI_ON: &str = "sudo systemctl enable --now avahi-daemon";
+
+fn avahi_running() -> bool {
+    run("systemctl", &["is-active", "-q", "avahi-daemon"]).0
+}
+
 fn check(e: &Env) -> bool {
     let mut bad = false;
     let mut tools = vec![("kscreen-doctor", "libkscreen"), ("avahi-publish", "avahi")];
@@ -464,6 +470,13 @@ fn check(e: &Env) -> bool {
             println!("  need {c}: {}", need(pkg));
             bad = true;
         }
+    }
+    // avahi-publish needs the daemon: without it, it dies at once and the Frame never lists this
+    // machine (seen on a Steam Deck, where avahi-daemon is off).
+    if have("avahi-publish") && !avahi_running() {
+        let on = std::fs::read_to_string(e.dir.join("announce")).is_ok_and(|a| a.trim() == "on");
+        println!("  {} avahi-daemon isn't running, so the Frame can't find this machine: {AVAHI_ON}", if on { "need" } else { "note" });
+        bad |= on;
     }
     println!("  ok   cc-host (cc-host {}): the agent, pairing and tag screens", env!("CARGO_PKG_VERSION"));
     for u in ["control-center-agent", "control-center-guard"] {
@@ -926,6 +939,10 @@ fn announce_cmd(e: &Env, what: &str) -> i32 {
         "on" => {
             if !have("avahi-publish") {
                 eprintln!("avahi-publish not found (install avahi)");
+                return 1;
+            }
+            if !avahi_running() {
+                eprintln!("avahi-daemon isn't running, so the Frame can't find this machine. Start it, then run this again: {AVAHI_ON}");
                 return 1;
             }
             if !packaged() {

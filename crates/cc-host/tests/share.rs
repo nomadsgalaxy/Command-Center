@@ -48,7 +48,9 @@ impl Run {
         std::fs::create_dir_all(&bin).unwrap();
         let (log, work) = (self.dir.join("log"), &self.work);
         for t in ["systemctl", "kscreen-doctor", "loginctl", "avahi-publish", "notify-send", "kbuildsycoca6", "ufw", "firewall-cmd", "sudo", "ss", "krdpserver"] {
+            // avahi-daemon is running, as on a usual host; the recorded bash never asked, so it isn't logged
             let body = format!(r#"#!/bin/sh
+[ "{t} $*" = "systemctl is-active -q avahi-daemon" ] && exit 0
 echo "{t} $*" >> "{log}"
 case "{t} $*" in
   "kscreen-doctor -j") cat "{work}/desk.json" ;;
