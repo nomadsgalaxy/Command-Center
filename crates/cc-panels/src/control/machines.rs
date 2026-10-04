@@ -101,7 +101,7 @@ const NAME: f64 = PAD + 24.0; // the name's column, with the dot before it
 const HOST: f64 = 172.0; // the host's column, up to the buttons; also a form field's box
 const BUTTONS: [f64; 4] = [104.0, 130.0, 120.0, 28.0]; // Connect, Auto-connect, Align, x (remove)
 const NEW: f64 = 150.0; // [Add machine]
-const FOOT: [f64; 3] = [104.0, 104.0, 130.0]; // the form's Cancel, Add (or Pair, Replace), and pairing's Pair by looking
+const FOOT: [f64; 3] = [104.0, 104.0, 130.0]; // the form's Cancel, Add (or Pair, Replace), and Pair by looking
 const PRECISE: f64 = 140.0; // the title bar's Fast/Precise switch
 const OFFER: f64 = 180.0; // [Move everything with it], at the foot's right
 const FIELDS: usize = 4; // the form's fields: Address, Monitor, Size, Name
@@ -155,7 +155,7 @@ enum Hit {
     Key,      // pairing's key field
     Pair,     // pairing's [Pair]
     Replace,  // pairing's [Replace] (the host changed)
-    Look,     // pairing's [Pair by looking]: the camera reads the key off the host's screen
+    Look,     // [Pair by looking]: the camera reads the key (and, from the host list, the address) off the host's screen
     Name(usize),         // a row's name: click to rename it
     Label(usize),        // a renamed row's field
     Scope(usize, usize), // its Machine (0) / This monitor (1)
@@ -176,9 +176,9 @@ fn foot(n: usize, s: Shape) -> usize {
     }
 }
 
-/// The foot's button widths: Cancel and the submit, then pairing's Look.
-fn foot_w(s: Shape) -> &'static [f64] {
-    if matches!(s, Shape::Pairing(_)) { &FOOT } else { &FOOT[..2] }
+/// The foot's button widths: Cancel and the submit, then Look (from the host list too, where it reads the host's address off its screen).
+fn foot_w(_: Shape) -> &'static [f64] {
+    &FOOT
 }
 
 /// Its height in units with n rows and the form in shape s.
@@ -300,8 +300,8 @@ fn held(was: Option<Hit>, n: usize, s: Shape, offer: bool, x: f64, y: f64) -> Op
         Hit::Connect(i) | Hit::Auto(i) | Hit::Align(i) | Hit::Remove(i) | Hit::Name(i) | Hit::Member(i) => i < n, // rows gone: act() would index past them
         Hit::Host(k) => k < found(s),
         Hit::Field(_) | Hit::Refresh => matches!(s, Shape::Hosts(_)),
-        Hit::Key | Hit::Look => matches!(s, Shape::Pairing(_)),
-        Hit::Cancel => s != Shape::Closed,
+        Hit::Key => matches!(s, Shape::Pairing(_)),
+        Hit::Cancel | Hit::Look => s != Shape::Closed,
         Hit::Add | Hit::Pair | Hit::Replace => s != Shape::Closed && a == submit(s),
         _ => true,
     };
@@ -482,6 +482,7 @@ fn scan_status(state: &str, host: &str) -> String {
         "read" => "key read".into(),
         "cancelled" => "cancelled".into(),
         "timeout" => "timed out: look closer, or type the key".into(),
+        "refused" => "its address isn't a private one: not pairing".into(),
         _ => format!("looking: {state}"),
     }
 }
@@ -1575,10 +1576,15 @@ impl Machines {
             // the key read off the host's screen (cc-panels' HUD, the camera): nothing typed, no stdin
             Hit::Look => {
                 // its text is kept: typing stays the fallback
-                let Some((host, replace)) = self.form.as_mut().and_then(|f| f.pairing.as_mut()) else { return };
-                let (name, addr, r) = (host.name.clone(), host.addr.clone(), *replace); // kept till the host is reached, which a cancelled or timed-out scan never does
-                eprintln!("machines: pair {name} ({addr}) by looking{}", if r { ", replacing" } else { "" });
-                let mut args = vec!["machine", "pair", "--scan", &addr];
+                let Some(f) = self.form.as_ref() else { return };
+                // From the host list there's no host to name: cc-home reads its address off the key screen's tags.
+                let (name, addr, r) = match &f.pairing {
+                    Some((host, replace)) => (host.name.clone(), Some(host.addr.clone()), *replace), // kept till the host is reached, which a cancelled or timed-out scan never does
+                    None => ("the host".to_owned(), None, false),
+                };
+                eprintln!("machines: pair {name} ({}) by looking{}", addr.as_deref().unwrap_or("address from its screen"), if r { ", replacing" } else { "" });
+                let mut args = vec!["machine", "pair", "--scan"];
+                args.extend(addr.as_deref());
                 if r {
                     args.push("--replace");
                 }
@@ -1928,7 +1934,7 @@ mod tests {
         assert_eq!(height(3, Shape::Hosts(2)), TITLE + 11.0 * ROW + PAD, "and a row a found host");
         assert_eq!(height(3, Shape::Pairing(false)), TITLE + 7.0 * ROW + PAD, "pairing: two lines and the key");
         let (f, p) = (foot_w(Shape::Hosts(0)), foot_w(Shape::Pairing(false)));
-        assert!(right(f, 1).1 == W - PAD && right(f, 0).1 + GAP == right(f, 1).0);
+        assert!(right(f, 2).1 == W - PAD && right(f, 1).1 + GAP == right(f, 2).0, "the host list: Cancel, Add, Look");
         assert!(right(p, 2).1 == W - PAD && right(p, 1).1 + GAP == right(p, 2).0, "pairing: Cancel, Pair, Look");
         assert!(PAD + NEW < right(f, 0).0, "the status between");
         assert!(PAD + 4.0 + 39.0 * 9.6 <= right(p, 0).0 - GAP, "room for pairing's status (39 chars, its longest)");
@@ -2004,7 +2010,8 @@ mod tests {
         assert_eq!(hit(1, s, false, HOST + 1.0, row_y(4)), Some(Hit::Field(0)), "the fields under them");
         assert_eq!(hit(1, s, false, HOST + 1.0, row_y(7)), Some(Hit::Field(3)));
         assert_eq!(hit(1, s, false, foot(s, 1), row_y(8)), Some(Hit::Add));
-        assert_eq!(hit(1, s, false, mid(right(&FOOT, 2)), row_y(8)), Some(Hit::Add), "no Look: Add rightmost");
+        assert_eq!(hit(1, s, false, mid(right(&FOOT, 2)), row_y(8)), Some(Hit::Look), "Look from Add machine, with or without found hosts");
+        assert_eq!(hit(1, Shape::Hosts(0), false, mid(right(&FOOT, 2)), row_y(6)), Some(Hit::Look), "none found");
         assert_eq!(rect(1, s, Hit::Field(0)).1, row_y(4) - ROW / 2.0, "rect agrees");
         let p = Shape::Pairing(false);
         assert_eq!(hit(1, p, false, W / 2.0, row_y(1)), None, "the instruction");
@@ -2022,7 +2029,8 @@ mod tests {
         assert_eq!(held(Some(Hit::Host(1)), 1, Shape::Hosts(1), false, b, row_y(3) + BTN_H / 2.0 + 2.0), None, "that host gone");
         assert_eq!(held(Some(Hit::Pair), 1, Shape::Pairing(true), false, foot(p, 1), row_y(4) + BTN_H / 2.0 + 2.0), None, "Replace now");
         assert_eq!(held(Some(Hit::Look), 1, p, false, foot(p, 2), row_y(4) + BTN_H / 2.0 + 2.0), Some(Hit::Look));
-        assert_eq!(held(Some(Hit::Look), 1, s, false, foot(p, 2), row_y(8) + BTN_H / 2.0 + 2.0), None, "back to the list");
+        assert_eq!(held(Some(Hit::Look), 1, s, false, foot(p, 2), row_y(8) + BTN_H / 2.0 + 2.0), Some(Hit::Look), "and from the list");
+        assert_eq!(held(Some(Hit::Look), 1, Shape::Closed, false, foot(p, 2), row_y(8) + BTN_H / 2.0 + 2.0), None, "not once the form's gone");
     }
 
     #[test]
@@ -2050,6 +2058,7 @@ mod tests {
         assert_eq!(pairscan_line("@pair 10.0.0.2 host=desk state=scanning"), None);
         assert_eq!(pair_line("@pairscan state=read"), None);
         assert_eq!(scan_status("looking", "desk"), "look at desk's screen");
+        assert_eq!(scan_status("refused", "desk"), "its address isn't a private one: not pairing");
         assert_eq!(pair_status("scan-timeout", Some("exit status: 1")), "timed out: look closer, or type the key", "the scan's end");
         assert_eq!(pair_status("scan-cancelled", Some("exit status: 1")), "cancelled");
         for st in ["waiting", "ok", "bad-key", "locked", "expired", "cancelled", "host-changed", "bad-name", "name-taken", "full", "scan-cancelled", "scan-timeout"] {

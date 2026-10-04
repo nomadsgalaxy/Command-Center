@@ -533,7 +533,12 @@ impl Found {
 /// Command Center hosts announcing themselves over mDNS (_controlcenter._tcp, opt-in per host).
 /// When a host shows up more than once, I take its address on the default route's interface (IPv4).
 pub(crate) fn discover(wait: f64) -> Vec<Found> {
-    let out = run_timeout(&["avahi-browse", "-rpt", "_controlcenter._tcp"], wait + 5.0).unwrap_or_else(|e| die(format!("can't browse the network (avahi-browse): {e}")));
+    try_discover(wait).unwrap_or_else(|e| die(e))
+}
+
+/// discover, but says why it couldn't browse instead of dying (a pairing scan can read the address off the host's screen instead).
+pub(crate) fn try_discover(wait: f64) -> Result<Vec<Found>, String> {
+    let out = run_timeout(&["avahi-browse", "-rpt", "_controlcenter._tcp"], wait + 5.0).map_err(|e| format!("can't browse the network (avahi-browse): {e}"))?;
     let route = std::process::Command::new("ip").args(["-4", "route", "get", "1.1.1.1"]).stdin(std::process::Stdio::null()).output();
     let route = route.map(|r| String::from_utf8_lossy(&r.stdout).into_owned()).unwrap_or_default();
     let route: Vec<&str> = route.split_whitespace().collect();
@@ -555,7 +560,7 @@ pub(crate) fn discover(wait: f64) -> Vec<Found> {
             None => hosts.push(h),
         }
     }
-    hosts
+    Ok(hosts)
 }
 
 fn discover_cmd(rest: &[String]) {

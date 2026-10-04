@@ -127,7 +127,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `main.rs` | Subcommand dispatch (`serve`, `pair`, `tagscreen`, `cert`, `check`, `units`, cc-share's commands). Config dir is `~/.config/control-center` or `$CC_CONF`. |
 | `agent.rs` | The agent: the two doors on 3399 (`{` = pairing, `0x16` = TLS), host key/id/cert, login, JSON-lines `command`. |
 | `work.rs` | What Frames ask for: monitor sessions (`session_start/stop`, idle stop, adoption), window streams, tag screens (`tags`, `check_tags`). |
-| `pair.rs` | `cc-host pair`: the 6-digit key, slots (max 4 Frames), lockout, `reply`. |
+| `pair.rs` | `cc-host pair`: the 6-digit key (and the address tags beside it), slots (max 4 Frames), lockout, `reply`. |
 | `share.rs` | Everything cc-share was: `install`, `up`/`down`, `check`, `guard`, `announce`, firewall, `frames`, `unpair`, `uninstall`, units. |
 | `platform.rs` | The per-platform layer (`Linux` = KDE + systemd user units, `Fake` for tests). |
 | `draw.rs`, `aruco.rs`, `screen.rs` | Tag/key screens drawn into a buffer, the ArUco bit table, and the pure-Rust Wayland layer-shell that shows them. |
@@ -137,7 +137,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 
 - `cc-proto/src/agent.rs`: the agent client (TLS 1.3, Ed25519 pin, `call_once`, `Client`),
   Frame key, `trusted`. `server.rs`: the host half of the login. `pair.rs`: SPAKE2 pairing
-  (`frame_pair`, `host_one`). `conf.rs`: viewers.conf editing, `write_pairing`, unpairing,
+  (`frame_pair`, `host_one`). `lan.rs`: the host's route-source address and the private-address check. `conf.rs`: viewers.conf editing, `write_pairing`, unpairing,
   home.json (`read_home`, `write_home`), workspaces (`choose_workspace`, `load_workspace`,
   `TEMPORARY`), a Python-compatible `Json`.
 - `cc-scan/src`: `camera.rs` (/dev/video99, the VR mirror), `aruco.rs` + `contours.rs` +
@@ -231,7 +231,8 @@ VNC is the same shape: `vnc.rs:run` → libvncclient update callbacks → `gpu::
 ### Pairing (docs/pairing.md)
 
 1. On the host, `cc-share pair` (`cc-host pair.rs:main`) shows a 6-digit key and hands the agent's
-   `{` door to its socket.
+   `{` door to its socket. The key screen (`draw.rs:key_screen`) also shows the host's LAN address
+   as four tags, one per octet (`cc_proto::lan::route_source`).
 2. On the Frame, the Machines window's Pair (`control/machines.rs:pair`, in-process) or
    `cc-home machine pair <addr> <key>` (`machine.rs:pair`) connects to 3399 and runs
    `cc_proto::pair::frame_pair`: SPAKE2 on the key, a transcript, HKDF keys, mutual confirmation,
@@ -239,7 +240,10 @@ VNC is the same shape: `vnc.rs:run` → libvncclient update callbacks → `gpu::
 3. `cc_proto::conf::write_pairing` writes `trusted-hosts/<id>.json`, `passwords/<id>` and the
    viewers.conf lines. The host keeps `trusted-frames/<frame>.pub` and `frames/<frame>.json`.
 4. "Pair by looking" runs `cc-home machine pair --scan` on the host side (`scan.rs:pair_scan`),
-   which reads the key off the host's screen with the camera.
+   which reads the key off the host's screen with the camera. With no address and no single host
+   announcing, it reads the address off the screen's tags too (`cc_scan::read_addr`) and refuses
+   anything that isn't a private IPv4 address. The Machines window offers it from Add machine,
+   found hosts or not.
 
 ### Align and scan (docs/apriltag-mapping.md)
 

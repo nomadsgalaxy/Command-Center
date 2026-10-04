@@ -7,7 +7,7 @@ use crate::hud::{self, Hud};
 use crate::lag::Lag;
 use crate::panels::{self, HeadTrack};
 use crate::solve::round;
-use crate::{Tag, detect, dict, read_key};
+use crate::{Tag, detect, dict, read_addr, read_key};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -170,10 +170,11 @@ impl Scan {
         Ok(Answer { at, skip: self.take_skip(), found })
     }
 
-    /// Takes one shot for the pairing key's tags. Returns (the key if three were read, whether the shot was usable, skip).
-    pub fn keyread(&mut self) -> Result<(Option<String>, bool, bool), String> {
+    /// Takes one shot for the pairing key's tags and the host's address tags. Returns (the key if three were read,
+    /// the address if four were, whether the shot was usable, skip).
+    pub fn keyread(&mut self) -> Result<(Option<String>, Option<[u8; 4]>, bool, bool), String> {
         let (_, s, tags) = self.shot(&dict::DICT_4X4_1000)?;
-        Ok((read_key(&tags), s["still"] == json!(true), self.take_skip()))
+        Ok((read_key(&tags), read_addr(&tags), s["still"] == json!(true), self.take_skip()))
     }
 
     /// Saves the shots and the head's poses over the scan (<path>-head.json, each [time, 12 numbers]).
