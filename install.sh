@@ -43,6 +43,7 @@ packages=(
   mesa-libgbm-devel libdrm-devel                                                             # GPU buffers
   rust cargo clang-devel llvm                                                                # the Rust workspace (bindgen; ring for musl)
   pipewire-devel plasma-wayland-protocols wayland-devel                                       # Frame windows as panels (capture.rs, session.rs)
+  libjpeg-turbo-devel                                                                        # VNC panels' Tight/JPEG (libvncclient, vnc.rs)
 )
 inbox bash -s "${packages[@]}" <<'EOF'
 set -euo pipefail

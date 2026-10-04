@@ -1,13 +1,145 @@
-# VNC support: research and design (D-049; not built)
+# VNC support (D-049)
 
-I asked: "let's also look into supporting vnc protocols too". This came out of a research-only
+I asked: "let's also look into supporting vnc protocols too". This started as a research-only
 workflow on 2026-10-02: a design first, then an adversarial review checked against the code and
 LibVNCServer master. Where the two disagree, the review wins, because it checked the sources.
 
-It's research and design only. Nothing was edited, installed, run or committed. The line references
-are to the code as it was then. Back then cc-home and cc-share were scripts; they're Rust now
+The client side got built on 2026-10-03 (branch vnc), and the next section says what's there and how
+to test it. Everything after it is the original design and review, kept as it was. Its line
+references are to the code back then, when cc-home and cc-share were scripts; they're Rust now
 (`crates/cc-home`, and cc-share is a link to `crates/cc-host`), so references like cc-home:575 or
 cc-share:183 point at the old scripts, which aren't part of this repo.
+
+## What's built
+
+**The library.** `tools/build-libvncclient.sh <prefix> [<source dir>]` builds libvncclient from
+LibVNCServer master at 42494999 (2026-07-06, after the Tight fix, review B1), static and client
+only, with OpenSSL, libjpeg-turbo and zlib, and one patch: a `ccPacedRequests` flag that stops it
+asking for the next update by itself (review A3). The commit, the patch and the cmake options only
+live in that script, so the Fedora container and a SteamOS-native build run the same thing. It takes
+the compiler and cmake settings from the environment, and it skips the build when the library is
+newer than the patched source.
+- Inputs: the prefix, an optional source dir (default `<prefix>/../libvncserver`), and git, cmake,
+  a C compiler and the OpenSSL, libjpeg and zlib headers.
+- Outputs: `<prefix>/lib64/libvncclient.a` and `<prefix>/include/rfb/*.h`.
+- `cc-home install` runs it into `panels/third_party/vnc-prefix`, and install.sh adds
+  `libjpeg-turbo-devel` to the container. `crates/vncclient-sys` binds the patched header with
+  bindgen, and `VNC_PREFIX` points it somewhere else. Because it's static, cc-panels' RUNPATH
+  doesn't change; it only gains libssl, libcrypto, libjpeg and libz as NEEDED.
+
+**The panel source** (`crates/cc-panels/src/vnc.rs`), next to rdp.rs and in its shape:
+- one session thread per panel, nice 10, reconnecting every 5 s, logging each failure once;
+- encodings `tight zrle copyrect` (JPEG quality 7) and nothing else (B4), plus the cursor
+  pseudo-encodings: the server sends the shape and I draw it into the framebuffer at the pointer
+  (a soft cursor, with the pixels under it kept and put back);
+- 32 bpp BGRX, the GPU buffers' XRGB8888, so no conversion. The rects libvncclient reports grow
+  `p.stale` and feed D-045's `change`, and `gpu::write_frame` copies only that region, the same as
+  RDP's (`gpu::write` is now a wrapper around it);
+- **the pull model:** the next FramebufferUpdateRequest only goes out once the last picture is on
+  its way to the GPU and the panel isn't Paused, away or hidden. So a Peripheral panel gets
+  pictures at attention.rs's rate, and a Paused one gets none, and the host encodes nothing for it;
+- input from kvm.rs, queued for the session thread because libvncclient isn't thread-safe: the
+  button mask (RDP's left/right/middle to RFB's bits), the wheel as whole button 4/5/6/7 clicks
+  with the fractions kept, and keys as QEMU extended keys when the server has them (KBDEXT
+  converted to `0x80|sc`, A5), else US-layout X keysyms that follow Shift. A key comes up as the
+  keysym it went down as;
+- the pointer arrives in 0..1 of the panel, so a framebuffer that isn't the viewers.conf size
+  still gets the right pixel (and the log says so);
+- the poll loop checks libvncclient's buffer and `SSL_pending` before polling (C1).
+
+**Security** (B2, B3):
+- Without `tls=no` the only type offered is VeNCrypt. The password only goes out when TLS is up
+  and the sub-type is X509VNC or X509Plain, whatever the server picked, and after connecting I
+  check that again.
+- The certificate has to match its pin: `pin=` on the line, or the paired machine's
+  `cert_sha256`, the same pin format RDP uses. An unpinned one is trust on first use, like an
+  unpaired RDP machine, and the log prints the `pin=` to add.
+- A session that didn't ask for a password is refused, since a fake desktop would get every
+  keystroke.
+- `tls=no` also allows VNC's own password check and Apple's (ARD, type 30). macOS and TightVNC
+  need that until there's a TLS forwarder.
+
+**Config:** `proto=vnc` (default port 5900), `tls=yes|no` and `pin=<64 hex>` on a viewers.conf
+line. cc-proto's OPTIONS knows them, so `cc-home machine add … proto=vnc` and `machine set` work.
+The password comes from `passwords/<machine>`, the same store RDP uses. The card's tag shows
+`host,port` as it does for RDP.
+
+**Shared files I touched** (the rest is new): main.rs (`mod vnc`, and a VNC branch in `connect`,
+`Panel::mouse`, `key`, `wheel`, `takes_input`), config.rs (`Viewer.vnc`), kvm.rs (`vnc: None` in
+two test literals), gpu.rs (`write_frame`), cc-proto conf.rs (OPTIONS), cc-home install.rs,
+install.sh.
+
+**Not done yet:** `rect=` crops for a whole-desktop server (macOS, TightVNC), the clipboard
+(ClientCutText), the client TLS proxy for macOS/TightVNC, and the Machines window's Add machine
+(it still writes RDP lines). And cc-home's `port - 3400` maths still runs on a VNC line, which is
+harmless but meaningless.
+
+### Testing it
+
+`tools/vnc-test-server.sh` runs TigerVNC's Xvnc inside the control-center container on
+127.0.0.1:5901 (VeNCrypt X509 with a self-signed certificate, VNC password `cc-test1`), with a blue
+background, xev's window logging clicks and keys at 100,100, and an xterm. It needs
+`tigervnc-server-minimal xterm xsetroot xev` from dnf (test only, not in install.sh).
+- `vnc-test-server.sh test` connects to it with no headset and no panel. It checks that a wrong pin
+  and a server without TLS get refused, gets a picture and checks its pixels, changes the
+  background and checks nothing arrives until we ask, then clicks, types Shift+A and turns the
+  wheel in xev's window, and reads xev's log.
+- `vnc-test-server.sh start` leaves it running and prints the viewers.conf line, with the
+  certificate's pin.
+
+### The plan for real hosts
+
+- **macOS (Screen Sharing).** System Settings > General > Sharing > Screen Sharing on, then (i):
+  "VNC viewers may control screen with password", with a password of 8 characters at most (it's
+  DES). The kickstart line can set the password but not control (A7), so I'll tick that by hand.
+  macOS has no VeNCrypt, so for now it's `tls=no` on the LAN, which sends the password with VNC's
+  weak challenge (or ARD's DH with an account password, which I'd rather not use). The proper fix
+  is the TLS forwarder below. One framebuffer covers every display, so a second monitor needs
+  `rect=`. Things I can only check on a real Mac: rect-limited requests, Retina scaling, and
+  whether it takes QEMU keys (likely not, so the keysym table matters).
+- **Windows Home (TightVNC 2.8 or UltraVNC).** TightVNC: Server > Configuration > Server: accept
+  RFB connections on 5900, set the primary password, turn off the web access and file transfers,
+  and under Access Control allow only the Frame's address (or loopback once there's a forwarder).
+  UltraVNC: the same, plus MSLogon off. Both are `tls=no` for now, and one framebuffer for every
+  monitor, so `rect=` again. Windows Pro stays RDP, with the one-session caveat in C5.
+- **wlroots (Sway, Hyprland, labwc, Raspberry Pi OS).** One wayvnc per output,
+  `wayvnc -o <output> 0.0.0.0 5900+i`, with `enable_auth=true`, `certificate_file`,
+  `private_key_file`, `username` and `password` in its config (mode 0600). That's VeNCrypt X509, so
+  it's the one host type that works with full TLS today: `proto=vnc pin=<its sha256>`, one line
+  per output, and the panel is the output, so no `rect=`.
+- **X11 desktops:** TigerVNC's x0vncserver with `-SecurityTypes X509Vnc -X509Cert -X509Key`
+  (C7), the same as the test server.
+
+### What cc-aux would build on the host side (cc-host)
+
+1. **Detect** the session type: wlroots (wayvnc), X11 (x0vncserver), macOS, Windows, and keep
+   KDE/GNOME on RDP.
+2. **wayvnc on wlroots:** install it (pacman/apt/dnf), make a self-signed key and certificate per
+   host (`openssl req -x509`, CN = the host name, SAN = its name and IP), write
+   `~/.config/wayvnc/config` (mode 0600) with `enable_auth`, the certificate, key, username and
+   the pairing's per-machine password, and a user unit `cc-wayvnc@<i>.service`
+   (`wayvnc -o <output> 0.0.0.0 <5900+i>`, PartOf graphical-session.target), one per output.
+3. **x0vncserver on X11:** the same certificate and password, a user unit per monitor with
+   `-Geometry` and `-SecurityTypes X509Vnc`, DISPLAY and XAUTHORITY set.
+4. **Announce it:** `proto=vnc` in the agent's answer and the mDNS TXT, and the monitor key as
+   `mN=output,WxH,port[,@x,y]`, so the Frame's discover writes `proto=vnc`, the port and later
+   `rect=`. The certificate's SHA-256 goes into the pairing reply, so trusted-hosts'
+   `cert_sha256` pins it the way krdp's is pinned.
+5. **Pairing:** the VNC password is a random per-machine one from pairing (8 characters for
+   macOS/TightVNC), written to the host's config and to `passwords/<machine>` on the Frame.
+6. **macOS (later):** the kickstart password, a check that Screen Sharing with control is on (and
+   the "Remote Management on, Screen Sharing off" state after a reboot), and the TCC screen
+   recording right, which it can only check and explain. Then a TLS forwarder (stunnel or socat
+   with mTLS against the Frame's pairing certificate, B5) and a pf anchor so 5900 only answers
+   loopback.
+7. **Windows Home (later):** a PowerShell setup: TightVNC's silent MSI, LoopbackOnly, and stunnel as
+   the forwarder.
+
+On the Frame side, the macOS/TightVNC forwarder then needs a small TLS client in cc-panels, or
+libvncclient's `rfbClientConnect`/`rfbClientInitialise` split with our own socket (C4). I'd take
+that once a forwarder exists to test against.
+
+## The design and review (2026-10-02)
 
 ### 1. Why add VNC, and where RDP stays the default
 
@@ -257,7 +389,7 @@ docs/pairing.md.
 ## Status
 
 The review's corrections stand. I only edited the design above where it named 0.9.15 and the request
-hooks that don't exist. Not scheduled.
+hooks that don't exist. The client milestone is built (see "What's built" above); the hosts aren't.
 
 ---
 

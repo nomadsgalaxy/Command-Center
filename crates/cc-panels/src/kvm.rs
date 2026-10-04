@@ -1391,7 +1391,7 @@ mod tests {
     #[test]
     fn a_held_drag_goes_on_to_another_monitor_of_its_machine() {
         use super::Viewer;
-        let v = |host: &str, user: &str, machine: &str| Viewer { name: String::new(), user: user.into(), host: host.into(), port: 0, screen: 0, w: 1920, h: 1080, auto: false, machine: machine.into(), label: String::new(), pop: None };
+        let v = |host: &str, user: &str, machine: &str| Viewer { name: String::new(), user: user.into(), host: host.into(), port: 0, screen: 0, w: 1920, h: 1080, auto: false, machine: machine.into(), label: String::new(), pop: None, vnc: None };
         let (a, b) = (v("desk", "me", ""), v("desk", "me", ""));
         assert_eq!(super::drag_to((0, (&a, false)), Some((1, (&b, false)))), 1, "same host and user: on to it");
         assert_eq!(super::drag_to((0, (&a, false)), None), 0, "between panels: stays, clamped");
@@ -1409,7 +1409,7 @@ mod tests {
     #[test]
     fn a_held_drag_goes_on_to_another_window_panel() {
         use super::Viewer;
-        let win = |n: u32| Viewer { name: format!("win-{n}"), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1280, h: 800, auto: false, machine: String::new(), label: String::new(), pop: None };
+        let win = |n: u32| Viewer { name: format!("win-{n}"), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1280, h: 800, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None };
         let desk = Viewer { host: "desk".into(), ..win(0) };
         let (a, b) = (win(1), win(2));
         assert_eq!(super::drag_to((0, (&a, true)), Some((1, (&b, true)))), 1, "another window: on to it (a tab into another browser)");

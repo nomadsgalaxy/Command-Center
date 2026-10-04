@@ -26,6 +26,19 @@ pub struct Viewer {
     pub machine: String, // machine= (a paired host's name, which finds its password and certificate pin), else ""
     pub label: String,   // label= (D-050), decoded: the user's name for this monitor, else ""
     pub pop: Option<(String, String)>, // for a popped-out window (popout.rs): its source monitor and uuid
+    pub vnc: Option<Vnc>, // proto=vnc (vnc.rs); None is RDP, the default
+}
+
+/// A VNC monitor's options (docs/vnc.md): `proto=vnc [pin=<sha256 hex>] [tls=no]`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Vnc {
+    /// pin=: the host certificate's SHA-256, for a VNC host that isn't paired (a paired one's
+    /// comes from trusted-hosts, like RDP's).
+    pub pin: String,
+    /// tls=no: also allow VNC's own password check and Apple's (ARD) without TLS, which macOS and
+    /// TightVNC need until there's a TLS forwarder. The password then crosses the LAN weakly
+    /// protected, so it's off unless you say so.
+    pub insecure: bool,
 }
 
 pub fn viewers(wanted: &[String]) -> Vec<Viewer> {
@@ -41,13 +54,18 @@ fn parse_viewers(text: &str, wanted: &[String]) -> Vec<Viewer> {
         }
         let Ok(screen) = f[2].parse::<i32>() else { continue };
         let (user, hostport) = f[1].split_once('@').unwrap_or(("", f[1]));
-        let (host, port) = hostport.rsplit_once(':').unwrap_or((hostport, "3389"));
+        let vnc = f[4..].contains(&"proto=vnc").then(|| Vnc {
+            pin: f[4..].iter().find_map(|o| o.strip_prefix("pin=")).unwrap_or("").to_ascii_lowercase(),
+            insecure: f[4..].contains(&"tls=no"),
+        });
+        let default_port = if vnc.is_some() { "5900" } else { "3389" };
+        let (host, port) = hostport.rsplit_once(':').unwrap_or((hostport, default_port));
         let (w, h) = f[3].split_once('x').unwrap_or(("1920", "1080"));
         out.push(Viewer {
             name: f[0].into(),
             user: user.into(),
             host: host.into(),
-            port: port.parse().unwrap_or(3389),
+            port: port.parse().unwrap_or(default_port.parse().unwrap_or(3389)),
             screen: screen + 1,
             w: w.parse().unwrap_or(1920),
             h: h.parse().unwrap_or(1080),
@@ -55,6 +73,7 @@ fn parse_viewers(text: &str, wanted: &[String]) -> Vec<Viewer> {
             machine: f[4..].iter().find_map(|o| o.strip_prefix("machine=")).unwrap_or("").into(),
             label: f[4..].iter().find_map(|o| o.strip_prefix("label=")).map(decode).unwrap_or_default(),
             pop: None,
+            vnc,
         });
     }
     out
@@ -392,6 +411,14 @@ mod tests {
         let p = super::parse_viewers("desk-dp-1  cc-frame@10.0.0.1:3410  4  2560x1440  machine=desk\n", &[]);
         assert_eq!(p[0].machine, "desk");
         assert_eq!(super::parse_viewers(t, &["old".into()]).len(), 1);
+    }
+
+    #[test]
+    fn viewers_read_proto_vnc() {
+        let v = super::parse_viewers("mac  me@mac.local  1  2560x1440  proto=vnc  tls=no\nsway  me@pi:5901  2  1920x1080  proto=vnc  pin=AB12\nkde  me@desk  3  1920x1080\n", &[]);
+        assert_eq!((v[0].port, v[0].vnc.clone()), (5900, Some(super::Vnc { pin: String::new(), insecure: true })), "VNC's port, and tls=no");
+        assert_eq!((v[1].port, v[1].vnc.clone()), (5901, Some(super::Vnc { pin: "ab12".into(), insecure: false })), "TLS unless tls=no");
+        assert_eq!((v[2].port, v[2].vnc.clone()), (3389, None), "no proto= is RDP");
     }
 
     #[test]

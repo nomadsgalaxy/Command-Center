@@ -361,6 +361,12 @@ pub fn forget(h: vr::Handle) {
 /// a few a second while it's peripheral (attention.rs). Whatever changed in the meantime goes
 /// up when it's due (wait).
 pub fn write(p: &Panel, gdi: &freerdp_sys::rdpGdi) {
+    write_frame(p, gdi.primary_buffer, gdi.stride as usize, gdi.width, gdi.height);
+}
+
+/// write for any session's picture: `data` is BGRX (XRGB8888) rows `stride` bytes apart, w x h.
+/// RDP's is the GDI's, VNC's is libvncclient's framebuffer (vnc.rs).
+pub fn write_frame(p: &Panel, data: *const u8, stride: usize, w: i32, h: i32) {
     use std::sync::atomic::Ordering::*;
     if !p.dirty.load(Acquire) || crate::HIDDEN.load(Relaxed) || p.away() {
         return; // stays dirty, and its stale regions keep growing
@@ -370,7 +376,7 @@ pub fn write(p: &Panel, gdi: &freerdp_sys::rdpGdi) {
     if !crate::attention::due(p.level(), crate::attention::PERIPHERAL, s.last, now) {
         return;
     }
-    let (w, h, turned) = (gdi.width, gdi.height, p.vert());
+    let turned = p.vert();
     let want = if turned { (h, w, true) } else { (w, h, false) };
     if std::mem::replace(&mut s.want, want) != want {
         crate::vr::wake(); // the main loop makes them, then pokes this thread (present)
@@ -382,22 +388,22 @@ pub fn write(p: &Panel, gdi: &freerdp_sys::rdpGdi) {
     if x1 > x0 && y1 > y0 {
         // Turned, the picture's (x, y) is stored at column h-1-y of row x.
         let (mx, my, mw, mh) = if turned { (h - y1, x0, y1 - y0, x1 - x0) } else { (x0, y0, x1 - x0, y1 - y0) };
-        let (mut stride, mut data) = (0u32, std::ptr::null_mut());
+        let (mut dst_stride, mut map) = (0u32, std::ptr::null_mut());
         let tm = std::time::Instant::now();
-        let dst = gbm(|| unsafe { gbm_bo_map(s.bo[k], mx as u32, my as u32, mw as u32, mh as u32, TRANSFER_WRITE, &mut stride, &mut data) });
+        let dst = gbm(|| unsafe { gbm_bo_map(s.bo[k], mx as u32, my as u32, mw as u32, mh as u32, TRANSFER_WRITE, &mut dst_stride, &mut map) });
         let map_ms = tm.elapsed().as_millis();
         if dst.is_null() {
             p.stale[k].grow(x0, y0, x1, y1); // still to do
             p.dirty.store(true, Release);
             return;
         }
-        let src = unsafe { gdi.primary_buffer.add(y0 as usize * gdi.stride as usize + x0 as usize * 4) };
+        let src = unsafe { data.add(y0 as usize * stride + x0 as usize * 4) };
         let (cw, ch) = ((x1 - x0) as usize, (y1 - y0) as usize);
         let t = std::time::Instant::now();
-        unsafe { copy_rect(src, gdi.stride as usize, dst as *mut u8, stride as usize, cw, ch, turned) };
+        unsafe { copy_rect(src, stride, dst as *mut u8, dst_stride as usize, cw, ch, turned) };
         let ms = t.elapsed().as_millis();
         let tu = std::time::Instant::now();
-        gbm(|| unsafe { gbm_bo_unmap(s.bo[k], data) });
+        gbm(|| unsafe { gbm_bo_unmap(s.bo[k], map) });
         let unmap_ms = tu.elapsed().as_millis();
         if ms + map_ms + unmap_ms >= 10 {
             eprintln!("slow {}: map {map_ms} copy {ms} unmap {unmap_ms} ms ({cw}x{ch}{}, RDP thread)", p.v.name, if turned { " turned" } else { "" });

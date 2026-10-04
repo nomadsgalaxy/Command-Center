@@ -33,6 +33,45 @@ pub fn env() -> Env {
     }
 }
 
+/// cc-host came from a distro package (it runs from /usr), so the package owns the binaries, the
+/// units, the launcher and krdp's grants (docs/packaging.md). Otherwise it's a user install.
+pub fn packaged() -> bool {
+    // Read from /proc, since current_exe() fails once an update has replaced the file.
+    std::fs::read_link("/proc/self/exe").is_ok_and(|p| p.starts_with("/usr/"))
+}
+
+/// The package's private directory with our patched krdp (Arch: /usr/lib, Fedora and Debian: /usr/libexec).
+pub fn libexec() -> Option<PathBuf> {
+    ["/usr/lib/command-center", "/usr/libexec/command-center"].iter().map(PathBuf::from).find(|d| d.join("krdpserver").exists())
+}
+
+/// The krdpserver to run: the package's patched one when it's there, else an older install's.
+fn krdp(e: &Env, window: bool) -> Option<PathBuf> {
+    match (libexec(), window) {
+        (Some(d), false) => Some(d.join("krdpserver")),
+        (Some(d), true) => Some(d.join("krdpserver-window")).filter(|p| p.exists()),
+        (None, false) => Some(PathBuf::from("/usr/bin/krdpserver")),
+        (None, true) => e.window_server(),
+    }
+}
+
+/// This program was replaced on disk by an update while it runs (/proc/self/exe ends in "(deleted)").
+pub fn replaced() -> bool {
+    std::fs::read_link("/proc/self/exe").is_ok_and(|p| p.to_string_lossy().ends_with(" (deleted)"))
+}
+
+/// The installed package's version and the command that removes it, from whichever package manager has it.
+fn package() -> Option<(String, &'static str)> {
+    [(["pacman", "-Q", "command-center-host"].as_slice(), "sudo pacman -R command-center-host"),
+     (&["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", "command-center-host"], "sudo dnf remove command-center-host"),
+     (&["dpkg-query", "-W", "-f", "${Version}", "command-center-host"], "sudo apt remove command-center-host")]
+        .into_iter().find_map(|(q, rm)| {
+            let (ok, out) = run(q[0], &q[1..]);
+            let v = out.trim().trim_start_matches("command-center-host ").to_owned();
+            (ok && !v.is_empty()).then_some((v, rm))
+        })
+}
+
 // ---------------------------------------------------------------- the system
 
 fn run(cmd: &str, args: &[&str]) -> (bool, String) {
@@ -204,6 +243,9 @@ impl Env {
 
     /// Writes the app menu entry, which you can pin to the taskbar. It starts the host and has Stop in its menu.
     fn launcher(&self) {
+        if packaged() {
+            return; // the package installs its own
+        }
         let d = self.home.join(".local/share/applications");
         let _ = std::fs::create_dir_all(&d);
         let h = self.home.display();
@@ -327,7 +369,22 @@ fn firewall_preview(e: &Env, flag: &str) {
 
 fn check(e: &Env) -> bool {
     let mut bad = false;
-    let tools = vec![("krdpserver", "krdp"), ("kscreen-doctor", "libkscreen"), ("avahi-publish", "avahi")];
+    let mut tools = vec![("kscreen-doctor", "libkscreen"), ("avahi-publish", "avahi")];
+    if packaged() {
+        match package() {
+            Some((v, _)) => println!("  ok   package command-center-host {v}"),
+            None => println!("  note cc-host runs from /usr but no package manager owns command-center-host"),
+        }
+        match libexec() {
+            Some(d) => println!("  ok   krdp (the package's, patched): {}", d.join("krdpserver").display()),
+            None => {
+                println!("  need the package's krdp in /usr/lib/command-center: reinstall command-center-host");
+                bad = true;
+            }
+        }
+    } else {
+        tools.insert(0, ("krdpserver", "krdp"));
+    }
     for (c, pkg) in tools {
         if have(c) {
             println!("  ok   {c}");
@@ -386,12 +443,13 @@ fn check(e: &Env) -> bool {
 
 // ---------------------------------------------------------------- install
 
-fn unit_files() -> Vec<(&'static str, String)> {
-    let host = "%h/.local/share/control-center/cc-host";
+/// The user units, for cc-host at `host` and the monitor servers' krdp at `krdp`. A user install
+/// writes them to ~/.config/systemd/user; a package build writes them with `cc-host units`.
+pub fn unit_files(host: &str, krdp: &str) -> Vec<(&'static str, String)> {
     let agent = format!("{host} serve");
     vec![
         // --plasma talks to KWin directly, so nothing asks for permission on every connect.
-        ("control-center-share@.service", "[Unit]\nDescription=Command Center share: monitor %i over RDP (port 3400+%i)\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n[Service]\nExecStart=/bin/sh -c 'exec /usr/bin/krdpserver --plasma --monitor %i --port $((3400 + %i)) -u \"$USER\" -p \"$(cat %h/.config/control-center/password)\" --certificate %h/.config/control-center/cert.pem --certificate-key %h/.config/control-center/key.pem'\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=graphical-session.target\n".into()),
+        ("control-center-share@.service", "[Unit]\nDescription=Command Center share: monitor %i over RDP (port 3400+%i)\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n[Service]\nExecStart=/bin/sh -c 'exec KRDP --plasma --monitor %i --port $((3400 + %i)) -u \"$USER\" -p \"$(cat %h/.config/control-center/password)\" --certificate %h/.config/control-center/cert.pem --certificate-key %h/.config/control-center/key.pem'\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=graphical-session.target\n".replace("KRDP", krdp)),
         // A paired Frame's own server for one monitor, instance <frame>-<monitor>.
         ("control-center-frame@.service", format!("[Unit]\nDescription=Command Center share for paired Frame %i\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n[Service]\nExecStart={host} frame-run %i\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=graphical-session.target\n")),
         // A paired Frame's popped-out window, instance <frame>-<k>-<uuid>.
@@ -424,6 +482,36 @@ fn copy_self(e: &Env) -> Result<(), String> {
     Ok(())
 }
 
+/// Before a packaged install takes over: removes what an older user install put in the home
+/// directory that would shadow or duplicate the package's files. Pairings, keys and settings in
+/// ~/.config/control-center stay, so no Frame has to pair again (R10).
+fn migrate_user_install(e: &Env) {
+    let old = e.cc_host();
+    let mut said = false;
+    let mut gone = |p: &Path| {
+        if std::fs::remove_file(p).is_ok() && !said {
+            println!("moving from the old install in your home folder to the package (pairings and settings are kept)");
+            said = true;
+        }
+    };
+    gone(&old);
+    let link = e.home.join(".local/bin/cc-share");
+    if std::fs::read_link(&link).is_ok_and(|t| t == old) {
+        gone(&link);
+    }
+    // unit files in ~/.config/systemd/user would shadow the package's in /usr/lib/systemd/user
+    for f in std::fs::read_dir(&e.units).into_iter().flatten().flatten() {
+        let n = f.file_name().to_string_lossy().into_owned();
+        if n.starts_with("control-center-") && n.ends_with(".service") && f.file_type().is_ok_and(|t| t.is_file()) {
+            gone(&f.path());
+        }
+    }
+    for d in ["command-center-host.desktop", "command-center-krdp-window.desktop"] {
+        gone(&e.home.join(".local/share/applications").join(d));
+    }
+    let _ = std::fs::remove_dir_all(e.share.join("krdp-window"));
+}
+
 fn install(e: &Env, args: &[String]) -> i32 {
     let (mut flag, mut announce, mut dry, mut autostart) = ("", None, false, None);
     let mut mons: Vec<String> = vec![];
@@ -448,14 +536,23 @@ fn install(e: &Env, args: &[String]) -> i32 {
         if mons.is_empty() {
             println!("  ask which monitors to share (Enter: all of them)");
         }
-        println!("  copy cc-host to {}, and link ~/.local/bin/cc-share to it", e.share.display());
+        if packaged() {
+            println!("  use the package's cc-host, units and krdp (and remove an older install's copies from your home folder)");
+        } else {
+            println!("  copy cc-host to {}, and link ~/.local/bin/cc-share to it", e.share.display());
+        }
         if !std::fs::metadata(e.dir.join("password")).is_ok_and(|m| m.len() > 0) {
             println!("  make the shared login's password in {}/password", e.dir.display());
         }
         if !std::fs::metadata(e.dir.join("cert.pem")).is_ok_and(|m| m.len() > 0) {
             println!("  make krdp's certificate in {}/cert.pem", e.dir.display());
         }
-        println!("  write the units share@, frame@, agent, guard in {}, and enable: {}agent guard", e.units.display(), mons.iter().map(|m| format!("share@{m} ")).collect::<String>());
+        let enable = mons.iter().map(|m| format!("share@{m} ")).collect::<String>();
+        if packaged() {
+            println!("  enable the package's units: {enable}agent guard");
+        } else {
+            println!("  write the units share@, frame@, agent, guard in {}, and enable: {enable}agent guard", e.units.display());
+        }
         println!("  restart the agent; restart the guard only if no viewer is connected (now: {} connected)", viewers());
         if wants_frames(e) {
             println!("  stop starting paired Frames' servers at login (the agent starts them on connect)");
@@ -468,8 +565,12 @@ fn install(e: &Env, args: &[String]) -> i32 {
         check(e);
         return 0;
     }
+    if packaged() && libexec().is_none() {
+        eprintln!("the package's krdp is missing (/usr/lib/command-center/krdpserver): reinstall command-center-host");
+        return 1;
+    }
     for (c, pkg) in [("krdpserver", "krdp"), ("kscreen-doctor", "libkscreen")] {
-        if !have(c) {
+        if !have(c) && !(c == "krdpserver" && packaged()) {
             eprintln!("{c} isn't installed. Install it with: {}", need(pkg));
             return 1;
         }
@@ -496,14 +597,20 @@ fn install(e: &Env, args: &[String]) -> i32 {
         eprintln!("cc-host cert: {x}");
         return 1;
     }
-    if let Err(x) = copy_self(e) {
-        eprintln!("{x}");
-        return 1;
+    if packaged() {
+        migrate_user_install(e);
+        sysq(&["daemon-reload"]);
+        e.units_cmd(&["disable"], true); // links to the old unit files go; enable below makes the package's
+    } else {
+        if let Err(x) = copy_self(e) {
+            eprintln!("{x}");
+            return 1;
+        }
+        for (name, body) in unit_files("%h/.local/share/control-center/cc-host", "/usr/bin/krdpserver") {
+            let _ = std::fs::write(e.units.join(name), body);
+        }
+        sysq(&["daemon-reload"]);
     }
-    for (name, body) in unit_files() {
-        let _ = std::fs::write(e.units.join(name), body);
-    }
-    sysq(&["daemon-reload"]);
     // Paired Frames' servers start when they connect (the agent does it), not at login. Older installs enabled them.
     for u in frame_wants(e) {
         sysq(&["disable", &u]); // A running one keeps running.
@@ -717,6 +824,9 @@ fn guard(e: &Env) -> i32 {
                     restart_shares();
                 }
             }
+        } else if !active && replaced() {
+            println!("updated: restarting into the new build");
+            return 75; // Restart=on-failure brings up the new one.
         } else if active {
             idle += 2;
             if idle >= 15 {
@@ -733,6 +843,11 @@ fn guard(e: &Env) -> i32 {
 
 // ---------------------------------------------------------------- announcing
 
+/// The announce unit, for cc-host at `host`. `cc-share announce on` writes it in a user install.
+pub fn announce_unit(host: &str) -> String {
+    format!("[Unit]\nDescription=Command Center: announce this machine on the network (mDNS _controlcenter._tcp)\nAfter=graphical-session.target network-online.target\nPartOf=graphical-session.target\n\n[Service]\nExecStart={host} announce-run\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=graphical-session.target\n")
+}
+
 fn announce_cmd(e: &Env, what: &str) -> i32 {
     let unit = e.units.join("control-center-announce.service");
     match what {
@@ -741,12 +856,14 @@ fn announce_cmd(e: &Env, what: &str) -> i32 {
                 eprintln!("avahi-publish not found (install avahi)");
                 return 1;
             }
-            if let Err(x) = copy_self(e) {
-                eprintln!("{x}");
-                return 1;
+            if !packaged() {
+                if let Err(x) = copy_self(e) {
+                    eprintln!("{x}");
+                    return 1;
+                }
+                let _ = std::fs::create_dir_all(&e.units);
+                let _ = std::fs::write(&unit, announce_unit("%h/.local/share/control-center/cc-host"));
             }
-            let _ = std::fs::create_dir_all(&e.units);
-            let _ = std::fs::write(&unit, "[Unit]\nDescription=Command Center: announce this machine on the network (mDNS _controlcenter._tcp)\nAfter=graphical-session.target network-online.target\nPartOf=graphical-session.target\n\n[Service]\nExecStart=%h/.local/share/control-center/cc-host announce-run\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=graphical-session.target\n");
             sysq(&["daemon-reload"]);
             e.set("announce", "on\n");
             sys(&["start", "control-center-announce.service"]);
@@ -840,7 +957,7 @@ fn frame_run(e: &Env, inst: &str) -> i32 {
         }
     };
     let (slot, mon) = (j["slot"].as_i64().unwrap_or(0), m.parse::<i64>().unwrap_or(0));
-    let err = Command::new("/usr/bin/krdpserver").args(["--plasma", "--monitor", m, "--port", &(3400 + 10 * slot + mon).to_string(), "-u", j["user"].as_str().unwrap_or(""), "-p", j["password"].as_str().unwrap_or("")])
+    let err = Command::new(krdp(e, false).unwrap_or_else(|| PathBuf::from("/usr/bin/krdpserver"))).args(["--plasma", "--monitor", m, "--port", &(3400 + 10 * slot + mon).to_string(), "-u", j["user"].as_str().unwrap_or(""), "-p", j["password"].as_str().unwrap_or("")])
         .arg("--certificate").arg(e.dir.join("cert.pem")).arg("--certificate-key").arg(e.dir.join("key.pem")).exec();
     eprintln!("krdpserver: {err}");
     1
@@ -865,7 +982,7 @@ fn window_run(e: &Env, inst: &str) -> i32 {
         eprintln!("window streams are off on this host (cc-share windows on)");
         return 1;
     }
-    let Some(bin) = e.window_server() else {
+    let Some(bin) = krdp(e, true) else {
         eprintln!("no window server built (docs/remote-windows.md step 0)");
         return 1;
     };
@@ -886,14 +1003,17 @@ fn window_run(e: &Env, inst: &str) -> i32 {
 fn windows_cmd(e: &Env, what: &str) -> i32 {
     match what {
         "on" => {
-            let Some(bin) = e.window_server() else {
+            let Some(bin) = krdp(e, true) else {
                 eprintln!("no window server built yet (docs/remote-windows.md step 0)");
                 return 1;
             };
-            let d = e.home.join(".local/share/applications");
-            let _ = std::fs::create_dir_all(&d);
-            let _ = std::fs::write(d.join("command-center-krdp-window.desktop"), format!("[Desktop Entry]\nType=Application\nName=Command Center window server\nExec={}\nNoDisplay=true\nX-KDE-Wayland-Interfaces=org_kde_kwin_fake_input,zkde_screencast_unstable_v1,org_kde_plasma_window_management\n", bin.display()));
-            let _ = run("kbuildsycoca6", &[]);
+            // The package ships the window build's grant (.desktop) itself; a user install writes its own.
+            if !packaged() {
+                let d = e.home.join(".local/share/applications");
+                let _ = std::fs::create_dir_all(&d);
+                let _ = std::fs::write(d.join("command-center-krdp-window.desktop"), format!("[Desktop Entry]\nType=Application\nName=Command Center window server\nExec={}\nNoDisplay=true\nX-KDE-Wayland-Interfaces=org_kde_kwin_fake_input,zkde_screencast_unstable_v1,org_kde_plasma_window_management\n", bin.display()));
+                let _ = run("kbuildsycoca6", &[]);
+            }
             e.set("windows-on", "");
             println!("window streams on: a paired Frame may list this machine's windows on shared monitors (app and size;");
             println!("captions only with: touch {}/windows-captions) and pop them out", e.dir.display());
@@ -1018,6 +1138,10 @@ fn uninstall(e: &Env) -> i32 {
     }
     let _ = std::fs::remove_dir_all(e.share.join("third_party"));
     sysq(&["daemon-reload"]);
+    if packaged() {
+        let rm = package().map_or("your package manager", |(_, rm)| rm);
+        println!("stopped and unpaired; the program itself is the package's: {rm} removes it");
+    }
     0
 }
 
@@ -1038,7 +1162,7 @@ fn unpair_quiet(e: &Env, f: &str) -> i32 {
 
 /// Checks before the key screen that the host is installed and the ports are reachable (cc-share pair [--firewall]).
 pub fn pair_precheck(e: &Env, flag: &str) -> Result<(), i32> {
-    if !std::fs::metadata(e.dir.join("cert.pem")).is_ok_and(|m| m.len() > 0) || !e.units.join("control-center-frame@.service").exists() {
+    if !std::fs::metadata(e.dir.join("cert.pem")).is_ok_and(|m| m.len() > 0) || !(packaged() || e.units.join("control-center-frame@.service").exists()) {
         eprintln!("run cc-share install first");
         return Err(1);
     }

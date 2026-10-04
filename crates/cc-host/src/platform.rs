@@ -110,13 +110,13 @@ impl Platform for Linux {
     }
 
     fn ask(&self, output: &str, text: &str) -> String {
-        let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-        let answer = run("timeout", &["30", &exe, "tagscreen", output, "--ask", text]);
+        // /proc/self/exe still runs this build after a package update has replaced the file.
+        let answer = run("timeout", &["30", "/proc/self/exe", "tagscreen", output, "--ask", text]);
         if answer.trim() == "block" { "block".into() } else { "allow".into() }
     }
 
     fn tagshow(&self, output: &str) -> Option<std::process::Child> {
-        Command::new(std::env::current_exe().ok()?).arg("tagscreen").arg(output)
+        Command::new("/proc/self/exe").arg("tagscreen").arg(output)
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().ok()
     }
 }
