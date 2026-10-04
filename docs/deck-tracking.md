@@ -104,5 +104,20 @@ Built: `crates/cc-host/src/imu.rs` (hidraw, the report decode, the enable and re
 (the sample, the scales, orientation to heading, pitch and roll), the agent's `imu` command and `version`'s
 `features`, `cc-home machine imu`, and `cc-host imu-probe` for a Deck on its own.
 
-Next, in order: the virtual monitor on the Deck (part 2, item 1), because it can fail for reasons I can't
-see from here; then the board and cc-scan's loop; then the filter and the panel.
+Tried on a real Deck: the motion stream runs at 250 readings a second with none lost, and it follows the
+Deck through tilts, rolls, turns and a flip (turn rates past 130°/s, gravity matching the orientation).
+
+The virtual monitor works too. With the Deck's patched krdp 6.4.3 started as `--plasma --virtual-monitor
+1280x800@1`, a client connecting made KWin 6.4.3 add an output, `Virtual-1280x800@1`, to the right of the
+Deck's own screen at x = 1280, and it went away when the session ended. krdp 6.4 only takes NLA, so a test
+client needs `/sec:nla`.
+
+This is paused here. When it picks up again, in order:
+1. The Deck's Frame session streams the virtual monitor while tracking is on (cc-host passes
+   `--virtual-monitor`).
+2. A fourth krdp backport: 6.4.3 maps pointer positions as if the streamed output started at 0,0, so on
+   the virtual output at x = 1280 clicks would land on the real screen. krdp 6.5 maps them onto the output's
+   own geometry.
+3. Apps open on the real screen, so a KWin rule or script moves them to the virtual output.
+4. cc-host's tag screen gets a full-screen tracking board for the real output.
+5. cc-scan reads the board continuously, the filter fuses it with the motion stream, and the panel follows.
