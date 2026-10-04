@@ -68,7 +68,8 @@ anywhere else doesn't match this one, don't trust it.
   already shows. It's ticked in the installer, so untick it if you'd rather not. `--yes` leaves it
   as it was, which is off on a new install. It needs `avahi-daemon` running, and `cc-share check`
   says when it isn't. A Steam Deck has it off: `sudo systemctl enable --now avahi-daemon` turns it
-  on.
+  on. SteamOS also turns publishing off in `/etc/avahi/avahi-daemon.conf`, so a Deck still won't
+  be listed: type its address in Add machine instead.
 - **The firewall rule** lets the private ranges (10/8, 172.16/12, 192.168/16) reach ports 3399-3449.
   That's wider than your subnet, so on a large private network or a VPN more machines can reach the
   door. Only paired Frames get past it. With firewalld, the rule goes into each active zone except

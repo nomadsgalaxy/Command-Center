@@ -441,6 +441,19 @@ fn firewall_preview(e: &Env, flag: &str) {
 
 const AVAHI_ON: &str = "sudo systemctl enable --now avahi-daemon";
 
+/// Whether avahi-daemon.conf's [publish] section has disable-publishing or
+/// disable-user-service-publishing set to yes, either of which stops avahi-publish ("Not permitted").
+fn avahi_publishing_off(conf: &str) -> bool {
+    let mut publish = false;
+    conf.lines().map(str::trim).filter(|l| !l.starts_with('#') && !l.starts_with(';')).any(|l| {
+        if l.starts_with('[') {
+            publish = l == "[publish]";
+            return false;
+        }
+        publish && matches!(l.split_once('=').map(|(k, v)| (k.trim(), v.trim())), Some(("disable-publishing" | "disable-user-service-publishing", "yes")))
+    })
+}
+
 fn avahi_running() -> bool {
     run("systemctl", &["is-active", "-q", "avahi-daemon"]).0
 }
@@ -473,10 +486,13 @@ fn check(e: &Env) -> bool {
     }
     // avahi-publish needs the daemon: without it, it dies at once and the Frame never lists this
     // machine (seen on a Steam Deck, where avahi-daemon is off).
+    let on = std::fs::read_to_string(e.dir.join("announce")).is_ok_and(|a| a.trim() == "on");
     if have("avahi-publish") && !avahi_running() {
-        let on = std::fs::read_to_string(e.dir.join("announce")).is_ok_and(|a| a.trim() == "on");
         println!("  {} avahi-daemon isn't running, so the Frame can't find this machine: {AVAHI_ON}", if on { "need" } else { "note" });
         bad |= on;
+    } else if avahi_publishing_off(&std::fs::read_to_string("/etc/avahi/avahi-daemon.conf").unwrap_or_default()) {
+        // SteamOS ships it this way. Changing the system's avahi config is the user's call, so it's a note.
+        println!("  note avahi's config turns publishing off (/etc/avahi/avahi-daemon.conf), so the Frame won't list this machine: type its address in Add machine");
     }
     println!("  ok   cc-host (cc-host {}): the agent, pairing and tag screens", env!("CARGO_PKG_VERSION"));
     for u in ["control-center-agent", "control-center-guard"] {
@@ -1342,6 +1358,14 @@ pub fn main(cmd: &str, args: &[String]) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn avahi_publishing_off_as_on_steamos() {
+        assert!(avahi_publishing_off("[server]\nuse-ipv4=yes\n[publish]\ndisable-publishing=yes\n"));
+        assert!(avahi_publishing_off("[publish]\n disable-user-service-publishing = yes\n"));
+        assert!(!avahi_publishing_off("[publish]\n#disable-publishing=yes\npublish-addresses=no\n"));
+        assert!(!avahi_publishing_off("[server]\ndisable-publishing=yes\n"), "only [publish]'s");
+    }
 
     #[test]
     fn firewalld_opens_trusted_zones_only() {
