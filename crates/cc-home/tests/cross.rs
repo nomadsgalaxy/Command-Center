@@ -317,3 +317,67 @@ fn align_cross() {
     }
     eprintln!("align-cross ok: {} cases placed, saved and said what cc-home.py did", cases.as_array().unwrap().len());
 }
+
+/// `cc-home workspace enter`, past the camera (CC_HOME_SOLVED gives the quick solve's lines): back
+/// at Home in a room SteamVR calls 444 now. desk is found turned 90 degrees and shifted, side agrees
+/// with it, so every spot moves with desk, 444 is added to Home's rooms and Home goes live. When
+/// side doesn't agree (it's somewhere else), or SteamVR has no room, nothing changes. Not a Python
+/// recording: this came after the port.
+#[test]
+fn enter_a_workspace_in_a_new_room() {
+    use cc_proto::conf::{Json, rigid, rooms};
+    let home = r#"{"workspace": "temporary", "workspaces": {"temporary": {"spots": {}}, "Home": {"universe": "111", "spots": {
+        "home": {"desk": {"centre": [0.0, 1.2, -1.0], "yaw": 0.0, "pitch": 0.0, "roll": 0.0, "width": 0.6, "height": 0.34, "curve": 0},
+                 "side": {"centre": [0.7, 1.2, -0.9], "yaw": -30.0, "pitch": 0.0, "roll": 0.0, "width": 0.6, "height": 0.34, "curve": 0}},
+        "scanned": {"desk": {"centre": [0.0, 1.2, -1.0], "yaw": 0.0, "pitch": 0.0, "roll": 0.0, "width": 0.6, "height": 0.34, "curve": 0},
+                    "side": {"centre": [0.7, 1.2, -0.9], "yaw": -30.0, "pitch": 0.0, "roll": 0.0, "width": 0.6, "height": 0.34, "curve": 0}}}}}}"#;
+    let (from, to) = (([0.0, 1.2, -1.0], 0.0), ([2.0, 1.2, 0.5], 90.0));
+    let side = rigid(Json::parse(home).unwrap().at("workspaces").at("Home").at("spots").at("scanned").at("side"), from, to);
+    let c = |j: &Json| j.at("centre").list().iter().map(|v| v.num().unwrap()).collect::<Vec<_>>();
+    // a solve's line for a monitor at centre with this yaw (level): x and z as the solve gives them
+    let line = |name: &str, centre: Vec<f64>, yaw: f64, rms: f64| {
+        let y = yaw.to_radians();
+        json!({"name": name, "screen": 1, "centre": centre, "x": [y.cos(), 0.0, -y.sin()], "y": [0.0, 1.0, 0.0], "z": [y.sin(), 0.0, y.cos()],
+               "width": 0.6, "height": 0.34, "axis": "flat", "radius": 0.0, "rms": 0.4, "rms_mm": rms, "distance": 0.7}).to_string()
+    };
+    let cases = [
+        ("same desk", vec![line("side", c(&side), 60.0, 3.0), line("desk", vec![2.0, 1.2, 0.5], 90.0, 2.0)], "444", 0),
+        ("side elsewhere", vec![line("side", vec![5.0, 1.2, 5.0], 60.0, 3.0), line("desk", vec![2.0, 1.2, 0.5], 90.0, 2.0)], "444", 1),
+        ("no room", vec![line("desk", vec![2.0, 1.2, 0.5], 90.0, 2.0)], "0", 1),
+    ];
+    for (what, lines, universe, exit) in cases {
+        let d = temp();
+        let conf = d.join(".config/control-center");
+        std::fs::create_dir_all(&conf).unwrap();
+        std::fs::write(conf.join("home.json"), home).unwrap();
+        std::fs::write(conf.join("viewers.conf"), "desk  u@10.0.0.2:3410  1  1920x1080\nside  u@10.0.0.2:3411  2  1920x1080\n").unwrap();
+        let solved = d.join("solved.txt");
+        std::fs::write(&solved, lines.join("\n") + "\n").unwrap();
+        let u = universe.to_owned();
+        let panels = Panels::start(move |t| match t {
+            "universe" => format!("ok {u}"),
+            t if t.starts_with("panels") => "ok 0 panels\n".into(),
+            _ => "ok".into(),
+        });
+        let env = [("CC_PANELS_SOCKET".to_owned(), panels.name.clone()), ("CC_HOME_SOLVED".to_owned(), solved.to_string_lossy().into_owned())];
+        let r = cc_home(&d, &["workspace", "enter", "Home", "--progress"], &env, "");
+        let asked = panels.done();
+        let (out, err) = (String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr));
+        assert_eq!(r.status.code(), Some(exit), "{what}: {out}{err}");
+        let data = Json::parse(&std::fs::read_to_string(conf.join("home.json")).unwrap()).unwrap();
+        let ws = data.at("workspaces").at("Home");
+        if exit == 0 {
+            assert!(out.contains("@entered Home monitor=desk mm=") && out.contains("side agrees with desk"), "{what}: {out}");
+            assert_eq!(rooms(ws), ["111", "444"], "{what}");
+            assert_eq!(data.at("workspace").str(), Some("Home"));
+            let got = c(ws.at("spots").at("home").at("side"));
+            assert!(got.iter().zip(c(&side)).all(|(a, b)| (a - b).abs() < 1e-4), "{what}: {got:?}");
+            assert_eq!(ws.at("spots").at("home").at("side").at("yaw").num(), Some(60.0));
+            assert!(asked.as_array().unwrap().iter().any(|a| a == "workspace reload"), "{what}: {asked}");
+        } else {
+            assert_eq!(data.dumps(), Json::parse(home).unwrap().dumps(), "{what}: nothing changed");
+            assert!(err.contains(if universe == "0" { "doesn't know this room" } else { "its desk changed" }), "{what}: {err}");
+        }
+        let _ = std::fs::remove_dir_all(d);
+    }
+}

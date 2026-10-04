@@ -71,6 +71,9 @@ demand: panels stay free to move.
                                           machines, picked by the room SteamVR tracks when cc-panels starts;
                                           a room none is bound to uses "temporary" (travelling): load <name>
                                           puts that workspace's layout in front of you there (docs/workspaces.md)
+  cc-home workspace enter <name> [monitor ...]   back at that place, but SteamVR made a new room: look at
+                                          one of its monitors (corner tags), and every spot moves with it
+                                          and this room is added to it
   cc-home machine [list | discover [--wait S] | probe <user@host> | add <name> <user@host:port> [WxH] [key=val ...] |
                   set <name> key=val ... |
                   remove <name> | connect <name> | align <name> |
@@ -466,7 +469,7 @@ fn forget(spot: &str) {
     }
 }
 
-const WORKSPACE_USAGE: &str = "cc-home workspace [use <name> | new <name> | save-as <name> | load <name> | rename <old> <new> | forget <name> | machines <name> [add|remove <machine>]]";
+const WORKSPACE_USAGE: &str = "cc-home workspace [use <name> | new <name> | save-as <name> | load <name> | enter <name> [monitor ...] | rename <old> <new> | forget <name> | machines <name> [add|remove <machine>]]";
 
 /// cc-panels' room (its SteamVR universe) when it's running, else 0 (none).
 fn panels_universe() -> u64 {
@@ -499,6 +502,7 @@ fn workspace(args: &[&str]) {
     let cmd = args.first().copied().unwrap_or("");
     let mut live = false; // whether cc-panels needs to take the active workspace again
     match (cmd, args.len()) {
+        ("enter", 2..) => return scan::enter(args[1], &args[2..]), // it writes home.json itself, after the scan
         ("use", 2) => {
             conf::use_workspace(&mut data, args[1]).unwrap_or_else(|e| die(e));
             live = true;
@@ -593,7 +597,8 @@ fn workspace(args: &[&str]) {
     let mut all: Vec<&(String, Json)> = data.at("workspaces").items().iter().collect();
     all.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, w) in all {
-        let room = if w.at("universe").truthy() { format!("room {}", w.at("universe").text()) } else if name == conf::TEMPORARY { "any room".into() } else { "no room yet".into() };
+        let rooms = conf::rooms(w);
+        let room = if !rooms.is_empty() { format!("room {}", rooms.join(", room ")) } else if name == conf::TEMPORARY { "any room".into() } else { "no room yet".into() };
         let mut anchor = String::new();
         if w.at("primary").truthy() {
             anchor += &format!(", primary {}", w.at("primary").text());

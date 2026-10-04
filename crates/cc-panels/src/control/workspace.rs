@@ -7,6 +7,11 @@
 //!              [Load] instead, for travelling: it puts that layout in front of you, in
 //!              Temporary (conf::load_workspace). The saved one never changes, and its own room
 //!              brings it back the way it was.
+//!   [Enter workspace] you're back at that place, but SteamVR calls the room new (the Frame rebuilt
+//!              its map, so its spots are off): every connected monitor of it that has a saved
+//!              scan there shows its four corner tags, and the first one you look at moves every
+//!              spot with it and adds this room to it (cc-home workspace enter). Greyed, with the
+//!              reason, when none of its monitors is connected. Progress goes to the status line.
 //!   [Machines] opens its Machines page (control/machines.rs), scoped to it, to pick which
 //!              machines are in it
 //!   [Rename]   turns the row into a field (SteamVR's keyboard or a physical one); [Save] or
@@ -40,8 +45,9 @@ pub static OPEN: AtomicBool = AtomicBool::new(false);
 
 /// Its labels, drawn at startup as tag-ui-<key>.rgba (so no commas). The last two belong to the
 /// Machines page, and "workspace" is the taskbar chip's.
-pub const LABELS: [(&str, &str); 10] = [
+pub const LABELS: [(&str, &str); 11] = [
     ("workspace", "Workspace"),
+    ("enter", "Enter workspace"),
     ("use", "Use"),
     ("load", "Load for travel"),
     ("active", "Active"),
@@ -53,10 +59,10 @@ pub const LABELS: [(&str, &str); 10] = [
     ("back", "Back"),
 ];
 
-const W: f64 = 880.0; // units, same as the Machines window
+const W: f64 = 1040.0; // units (the Machines window's 880, plus Enter workspace)
 const NAME: f64 = PAD + 24.0; // the name's column (the dot sits before it)
 const DETAIL: f64 = 230.0; // where it belongs
-const BUTTONS: [f64; 4] = [110.0, 110.0, 100.0, 28.0]; // Use/Load, Machines, Rename, x
+const BUTTONS: [f64; 5] = [150.0, 110.0, 110.0, 100.0, 28.0]; // Enter workspace, Use/Load, Machines, Rename, x
 const EDIT: [f64; 2] = [104.0, 28.0]; // a field's Save, x (cancel)
 const NEW: f64 = 190.0; // [Save as workspace]
 const MAX: usize = 8; // rows listed
@@ -66,6 +72,7 @@ const UI_KEYS: [&str; 4] = ["taskbar", "machines", "prefs", "workspace"]; // win
 /// What's under a laser.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Hit {
+    Enter(usize),
     Use(usize), // a row's Use, or Load for travel
     Machines(usize),
     Rename(usize),
@@ -84,6 +91,7 @@ struct Row {
     detail: String, // where it belongs, how many panels
     active: bool,
     load: bool, // bound to another room, so Load for travel instead of Use
+    enter: bool, // one of its monitors is connected and has a saved scan there, so it can be entered
 }
 
 /// A name being typed, for a row's rename or (None) for Save as.
@@ -138,16 +146,17 @@ fn hit(n: usize, typing: Option<usize>, x: f64, y: f64) -> Option<Hit> {
     if i == n {
         return on((PAD, PAD + NEW)).then_some(Hit::SaveAs);
     }
-    [Hit::Use(i), Hit::Machines(i), Hit::Rename(i), Hit::Delete(i)].into_iter().enumerate().find(|(k, _)| on(right(&BUTTONS, *k))).map(|(_, h)| h)
+    [Hit::Enter(i), Hit::Use(i), Hit::Machines(i), Hit::Rename(i), Hit::Delete(i)].into_iter().enumerate().find(|(k, _)| on(right(&BUTTONS, *k))).map(|(_, h)| h)
 }
 
 /// How far hit a reaches: its button plus some room around it.
 fn rect(n: usize, a: Hit) -> Rect {
     let ((x0, x1), i) = match a {
-        Hit::Use(i) => (right(&BUTTONS, 0), i),
-        Hit::Machines(i) => (right(&BUTTONS, 1), i),
-        Hit::Rename(i) => (right(&BUTTONS, 2), i),
-        Hit::Delete(i) => (right(&BUTTONS, 3), i),
+        Hit::Enter(i) => (right(&BUTTONS, 0), i),
+        Hit::Use(i) => (right(&BUTTONS, 1), i),
+        Hit::Machines(i) => (right(&BUTTONS, 2), i),
+        Hit::Rename(i) => (right(&BUTTONS, 3), i),
+        Hit::Delete(i) => (right(&BUTTONS, 4), i),
         Hit::SaveAs => ((PAD, PAD + NEW), n),
         // the field's whole row, whichever row is being typed in
         Hit::Field | Hit::Save | Hit::Unedit => ((0.0, W), n.min(MAX)),
@@ -163,7 +172,7 @@ fn whole_row(i: usize) -> Rect {
 /// What a laser at (x, y) is on: a button, or else the one it was on while it's still near it.
 fn held(was: Option<Hit>, n: usize, typing: Option<usize>, x: f64, y: f64) -> Option<Hit> {
     let still = |a: Hit| match a {
-        Hit::Use(i) | Hit::Machines(i) | Hit::Rename(i) | Hit::Delete(i) => i < n && typing != Some(i),
+        Hit::Enter(i) | Hit::Use(i) | Hit::Machines(i) | Hit::Rename(i) | Hit::Delete(i) => i < n && typing != Some(i),
         Hit::SaveAs => typing != Some(n),
         _ => false, // the field's only count where hit() finds them
     };
@@ -209,16 +218,48 @@ fn dirty(a: &Key, b: &Key) -> Option<Vec<Rect>> {
     Some(r)
 }
 
-/// The rows for home.json's workspaces, Temporary first. `universe` is the current room (0: none).
-fn rows_of(data: &Json, universe: u64) -> Vec<Row> {
+/// The monitors workspace `name` can be entered by: the connected ones among `live` (panel name,
+/// machine) that are its machines' and have a saved scan in it.
+fn roots(data: &Json, name: &str, live: &[(String, String)]) -> Vec<String> {
+    let scanned = data.at("workspaces").at(name).at("spots").at("scanned");
+    live.iter().filter(|(p, m)| scanned.get(p).is_some() && conf::is_member(data, name, m)).map(|(p, _)| p.clone()).collect()
+}
+
+/// The connected remote monitors now: (panel name, machine).
+fn live() -> Vec<(String, String)> {
+    panels().iter().filter(|p| matches!(p.src, Source::Rdp) && p.used() && p.live()).map(|p| (p.v.name.clone(), config::machine_of(&p.v).to_owned())).collect()
+}
+
+/// A line of cc-home workspace enter --progress, as the status line says it (None: not one to show).
+fn enter_line(l: &str) -> Option<String> {
+    let mut w = l.trim().strip_prefix('@')?.split_whitespace();
+    let (ev, name) = (w.next()?, w.next().unwrap_or(""));
+    let kv: Vec<(&str, &str)> = w.filter_map(|x| x.split_once('=')).collect();
+    let k = |key: &str| kv.iter().find(|(a, _)| *a == key).map_or("", |(_, v)| *v);
+    Some(match ev {
+        "prepare" => format!("getting {name} ready"),
+        "capture" => format!("look at a monitor of it: {name} {}%", k("pct")),
+        "solving" => "working out where you are".into(),
+        "skipped" | "failed" => format!("{name}: {}", k("why").replace('-', " ")),
+        "entered" => format!("entered {name} by {}: everything moved {} mm and {} deg, and this room is its own now", k("monitor"), k("mm"), k("deg")),
+        _ => return None,
+    })
+}
+
+const NO_MONITOR: &str = "Connect one of this workspace's machines first: it needs a monitor to find where you are";
+
+/// The rows for home.json's workspaces, Temporary first. `universe` is the current room (0: none),
+/// and `live` the connected monitors (panel name, machine).
+fn rows_of(data: &Json, universe: u64, live: &[(String, String)]) -> Vec<Row> {
     let active = conf::active_workspace(data);
     let mut ws: Vec<&(String, Json)> = data.at("workspaces").items().iter().filter(|(_, w)| matches!(w, Json::Obj(_))).collect();
     ws.sort_by_key(|(n, _)| n != TEMPORARY); // stable, so file order after it
     ws.into_iter()
         .take(MAX)
         .map(|(name, w)| {
-            let room = w.at("universe").str().unwrap_or("");
-            let here = universe != 0 && room == universe.to_string();
+            let rooms = conf::rooms(w);
+            let here = universe != 0 && rooms.contains(&universe.to_string());
+            let room = rooms.last().map_or("", String::as_str);
             let mut d = vec![match () {
                 _ if name == TEMPORARY => "for travelling".to_string(),
                 _ if here => "this room".into(),
@@ -239,6 +280,7 @@ fn rows_of(data: &Json, universe: u64) -> Vec<Row> {
                 detail: d.join(", "),
                 active: *name == active,
                 load: universe != 0 && !room.is_empty() && !here && name != TEMPORARY,
+                enter: name != TEMPORARY && !roots(data, name, live).is_empty(),
             }
         })
         .collect()
@@ -248,6 +290,7 @@ fn rows_of(data: &Json, universe: u64) -> Vec<Row> {
 #[derive(Default)]
 struct Ui {
     title: Option<TagImg>,
+    enter: Option<TagImg>,
     use_: Option<TagImg>,
     load: Option<TagImg>,
     active: Option<TagImg>,
@@ -312,21 +355,25 @@ impl Scene<'_> {
             let (c, a) = tint(typed(g, &r.title, x, y, NAME, cy), t.wtext, t.wtext, t.wtext);
             out = over(out, (c, a * fade));
         } else if x < right(&BUTTONS, 0).0 - GAP {
-            let end = right(&BUTTONS, 0).0 - GAP;
+            let end = right(&BUTTONS, 0).0 - GAP; // (Temporary's empty Enter spot stays blank)
             let fade = if DETAIL + typed_w(g, &r.detail) > end { ((end - x) / 24.0).min(1.0) } else { 1.0 };
             let (c, a) = tint(typed(g, &r.detail, x, y, DETAIL, cy), t.wdim, t.wdim, t.wdim);
             out = over(out, (c, a * fade));
         }
+        if r.name != TEMPORARY {
+            let e = self.labelled(right(&BUTTONS, 0), cy, self.ui.enter.as_ref(), Hit::Enter(i), x, y);
+            out = over(out, if r.enter { e } else { (e.0, e.1 * 0.6) }); // no monitor of it connected: greyed out
+        }
         let first = if r.active { &self.ui.active } else if r.load { &self.ui.load } else { &self.ui.use_ };
-        let b0 = right(&BUTTONS, 0);
+        let b0 = right(&BUTTONS, 1);
         if x > b0.0 - 7.0 && x < b0.1 + 7.0 {
             let b = self.labelled(b0, cy, first.as_ref(), Hit::Use(i), x, y);
             out = over(out, if r.active { (b.0, b.1 * 0.6) } else { b }); // already active, so greyed out
         }
-        out = over(out, self.labelled(right(&BUTTONS, 1), cy, self.ui.machines.as_ref(), Hit::Machines(i), x, y));
-        let rn = self.labelled(right(&BUTTONS, 2), cy, self.ui.rename.as_ref(), Hit::Rename(i), x, y);
+        out = over(out, self.labelled(right(&BUTTONS, 2), cy, self.ui.machines.as_ref(), Hit::Machines(i), x, y));
+        let rn = self.labelled(right(&BUTTONS, 3), cy, self.ui.rename.as_ref(), Hit::Rename(i), x, y);
         out = over(out, if r.name == TEMPORARY { (rn.0, rn.1 * 0.6) } else { rn });
-        over(out, self.x_button(right(&BUTTONS, 3), Hit::Delete(i), self.k.armed == Some(i), r.active, x, y, cy))
+        over(out, self.x_button(right(&BUTTONS, 4), Hit::Delete(i), self.k.armed == Some(i), r.active, x, y, cy))
     }
 
     /// The foot: [Save as workspace] and the status, or the Save as field.
@@ -392,6 +439,15 @@ pub struct Workspace {
     status: String,
     reload: bool, // run switched() on the tick, since act has no grab
     painter: ui::Painter<Key>,
+    entering: Option<Entering>,
+}
+
+/// A running cc-home workspace enter: its lines come over `lines` ("!" before a stderr one).
+struct Entering {
+    child: std::process::Child,
+    lines: std::sync::mpsc::Receiver<String>,
+    entered: bool,
+    last_err: String,
 }
 
 impl Workspace {
@@ -402,6 +458,7 @@ impl Workspace {
             shown: false,
             ui: Arc::new(Ui {
                 title: load("workspace"),
+                enter: load("enter"),
                 use_: load("use"),
                 load: load("load"),
                 active: load("active"),
@@ -420,6 +477,7 @@ impl Workspace {
             status: String::new(),
             reload: false,
             painter: ui::Painter::default(),
+            entering: None,
         }
     }
 
@@ -430,7 +488,7 @@ impl Workspace {
 
     fn refresh(&mut self) {
         match config::workspaces() {
-            Ok(d) => self.rows = rows_of(&d, config::UNIVERSE.load(Relaxed)),
+            Ok(d) => self.rows = rows_of(&d, config::UNIVERSE.load(Relaxed), &live()),
             Err(e) => self.status = e,
         }
     }
@@ -439,6 +497,7 @@ impl Workspace {
         if std::mem::take(&mut self.reload) {
             switched(grab, windows, bar);
         }
+        self.enter_tick();
         let open = OPEN.load(Relaxed);
         if open && self.ov.is_none() {
             self.open(grab);
@@ -632,7 +691,12 @@ impl Workspace {
             self.hide_keyboard();
         }
         let armed = self.armed.take();
+        if self.entering.is_some() {
+            self.status = "entering a workspace: look at one of its monitors, or press Esc over there to stop".into();
+            return;
+        }
         match a {
+            Hit::Enter(i) => self.enter(i),
             Hit::Use(i) if self.rows[i].active => self.status = format!("{} is the active one", self.rows[i].title),
             Hit::Use(i) => {
                 let r = self.rows[i].clone();
@@ -682,6 +746,70 @@ impl Workspace {
             Hit::Field => self.type_in(h),
             Hit::Save => self.save(),
             Hit::Unedit => self.typing = None,
+        }
+    }
+
+    /// Enter workspace on row i: cc-home on the host shows the tags (the camera's there) and writes
+    /// home.json; it tells us `workspace reload` when it's done.
+    fn enter(&mut self, i: usize) {
+        let r = self.rows[i].clone();
+        let roots = config::workspaces().map(|d| roots(&d, &r.name, &live())).unwrap_or_default();
+        if r.name == TEMPORARY || roots.is_empty() {
+            self.status = if r.name == TEMPORARY { "Temporary has no place of its own to enter".into() } else { NO_MONITOR.into() };
+            return;
+        }
+        let mut args = vec!["workspace", "enter", r.name.as_str()];
+        args.extend(roots.iter().map(String::as_str));
+        args.push("--progress");
+        let run = super::machines::on_host(&args).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn();
+        match run {
+            Ok(mut child) => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                for (pipe, mark) in [(child.stdout.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), ""),
+                                     (child.stderr.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), "!")] {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        for l in pipe.map(|o| std::io::BufRead::lines(std::io::BufReader::new(o)).map_while(Result::ok)).into_iter().flatten() {
+                            eprintln!("{mark}{l}");
+                            let _ = tx.send(format!("{mark}{l}"));
+                        }
+                    });
+                }
+                eprintln!("workspace: enter {} by {}", r.name, roots.join(", "));
+                self.status = format!("look at a monitor of {}: {}", r.title, roots.join(", "));
+                self.entering = Some(Entering { child, lines: rx, entered: false, last_err: String::new() });
+            }
+            Err(e) => self.status = format!("can't run cc-home on the host ({e}); use cc-home workspace enter {}", r.name),
+        }
+    }
+
+    /// Follows a running enter: its progress to the status line, and its end.
+    fn enter_tick(&mut self) {
+        let Some(en) = self.entering.as_mut() else { return };
+        let mut take = |l: String, en: &mut Entering| match l.strip_prefix('!') {
+            Some(e) if !e.trim().is_empty() => en.last_err = e.trim().to_owned(),
+            Some(_) => {}
+            None => {
+                en.entered |= l.starts_with("@entered ");
+                if let Some(s) = enter_line(&l) {
+                    self.status = s;
+                }
+            }
+        };
+        while let Ok(l) = en.lines.try_recv() {
+            take(l, en);
+        }
+        if let Ok(Some(st)) = en.child.try_wait() {
+            // its last lines may still be on their way (the readers end at its pipes' end)
+            while let Ok(l) = en.lines.recv_timeout(std::time::Duration::from_millis(500)) {
+                take(l, en);
+            }
+            if !(st.success() && en.entered) {
+                self.status = if en.last_err.is_empty() { format!("enter stopped ({st})") } else { en.last_err.clone() };
+            }
+            eprintln!("workspace: enter ended: {}", self.status);
+            self.entering = None;
+            self.refresh();
         }
     }
 
@@ -738,24 +866,57 @@ mod tests {
 
     #[test]
     fn rows_say_where_each_belongs() {
-        let r = rows_of(&data(), 8000000000000000002);
+        let r = rows_of(&data(), 8000000000000000002, &[]);
         assert_eq!(r.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(), ["Temporary", "home", "office"], "Temporary first");
         assert_eq!(r[1].detail, "this room, 2 panels");
         assert!(r[1].active && !r[1].load && !r[0].load);
         assert_eq!(r[2].detail, "room ..222, 0 panels, 1 machine");
         assert!(r[2].load, "another room's: Load for travel");
         assert_eq!(r[0].detail, "for travelling, 1 panel, from home");
-        let r = rows_of(&data(), 0);
+        let r = rows_of(&data(), 0, &[]);
         assert!(r.iter().all(|r| !r.load), "no room known: Use");
+        // home with a second room (entered after the Frame rebuilt its map): this room too
+        let mut d = data();
+        conf::add_room(&mut d, "home", 444);
+        assert_eq!(rows_of(&d, 444, &[])[1].detail, "this room, 2 panels");
+        assert_eq!(rows_of(&d, 555, &[])[1].detail, "room ..444, 2 panels");
+    }
+
+    /// Enter workspace needs one of its monitors connected, with a saved scan in it.
+    #[test]
+    fn entering_needs_a_connected_scanned_monitor() {
+        let d = Json::parse(r#"{"workspace": "temporary", "workspaces": {"temporary": {"spots": {}},
+            "home": {"universe": "1", "spots": {"scanned": {"desk": {"centre": [0, 1, -1], "yaw": 0}, "laptop": {"centre": [1, 1, -1], "yaw": 0}}}},
+            "office": {"universe": "2", "machines": ["work"], "spots": {"scanned": {"desk": {"centre": [0, 1, -1], "yaw": 0}}}}}}"#).unwrap();
+        let live = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
+        assert!(rows_of(&d, 9, &[]).iter().all(|r| !r.enter), "nothing connected");
+        let on = live(&[("desk", "pc"), ("tv", "pc")]);
+        assert_eq!(roots(&d, "home", &on), ["desk"], "tv has no scan there");
+        assert!(roots(&d, "office", &on).is_empty(), "pc isn't one of office's machines");
+        let r = rows_of(&d, 9, &on);
+        assert_eq!(r.iter().map(|r| (r.name.as_str(), r.enter)).collect::<Vec<_>>(), [("temporary", false), ("home", true), ("office", false)]);
+        assert_eq!(roots(&d, "home", &live(&[("laptop", "lap"), ("desk", "pc")])), ["laptop", "desk"], "all of them: the first looked at wins");
+    }
+
+    #[test]
+    fn enter_lines_for_the_status() {
+        assert_eq!(enter_line("@capture desk pct=40 samples=5 baseline_cm=1 coverage=100").as_deref(), Some("look at a monitor of it: desk 40%"));
+        assert_eq!(enter_line("@prepare desk step=monitor").as_deref(), Some("getting desk ready"));
+        assert_eq!(enter_line("@failed desk why=poor-fit mm=14").as_deref(), Some("desk: poor fit"));
+        assert_eq!(enter_line("@entered Home monitor=desk mm=2412 deg=90.0").as_deref(),
+                   Some("entered Home by desk: everything moved 2412 mm and 90.0 deg, and this room is its own now"));
+        assert_eq!(enter_line("@mode quick"), None);
+        assert_eq!(enter_line("  desk: placed"), None);
     }
 
     #[test]
     fn hits() {
         let mid = |(x0, x1): (f64, f64)| (x0 + x1) / 2.0;
-        assert_eq!(hit(3, None, mid(right(&BUTTONS, 0)), row_y(1)), Some(Hit::Use(1)));
-        assert_eq!(hit(3, None, mid(right(&BUTTONS, 1)), row_y(2)), Some(Hit::Machines(2)));
-        assert_eq!(hit(3, None, mid(right(&BUTTONS, 2)), row_y(0)), Some(Hit::Rename(0)));
-        assert_eq!(hit(3, None, mid(right(&BUTTONS, 3)), row_y(0)), Some(Hit::Delete(0)));
+        assert_eq!(hit(3, None, mid(right(&BUTTONS, 0)), row_y(2)), Some(Hit::Enter(2)));
+        assert_eq!(hit(3, None, mid(right(&BUTTONS, 1)), row_y(1)), Some(Hit::Use(1)));
+        assert_eq!(hit(3, None, mid(right(&BUTTONS, 2)), row_y(2)), Some(Hit::Machines(2)));
+        assert_eq!(hit(3, None, mid(right(&BUTTONS, 3)), row_y(0)), Some(Hit::Rename(0)));
+        assert_eq!(hit(3, None, mid(right(&BUTTONS, 4)), row_y(0)), Some(Hit::Delete(0)));
         assert_eq!(hit(3, None, PAD + 10.0, row_y(3)), Some(Hit::SaveAs));
         assert_eq!(hit(3, None, NAME + 10.0, row_y(0)), None, "a name");
         assert_eq!(hit(3, Some(1), NAME + 10.0, row_y(1)), Some(Hit::Field), "renamed: its field");
@@ -764,13 +925,13 @@ mod tests {
         assert_eq!(hit(3, Some(3), mid(right(&EDIT, 1)), row_y(3)), Some(Hit::Unedit));
         assert!(DETAIL + 200.0 < right(&BUTTONS, 0).0, "room for where it belongs");
         let gap = row_y(0) + BTN_H / 2.0 + 2.0;
-        assert_eq!(held(Some(Hit::Use(0)), 3, None, mid(right(&BUTTONS, 0)), gap), Some(Hit::Use(0)));
+        assert_eq!(held(Some(Hit::Use(0)), 3, None, mid(right(&BUTTONS, 1)), gap), Some(Hit::Use(0)));
     }
 
     #[test]
     fn a_patch_draws_as_all_of_it() {
         let (ui, p) = (Ui::default(), Paint::new(&theme::Theme::default(), theme::CYAN));
-        let rows = rows_of(&data(), 8000000000000000002);
+        let rows = rows_of(&data(), 8000000000000000002, &[]);
         let key = |hover, typing, status: &str| Key { rows: rows.clone(), hover, armed: None, typing, status: status.into(), theme: 0 };
         let s = 1.5;
         let n = rows.len();
@@ -782,6 +943,7 @@ mod tests {
         let t = |row| Some(Typing { row, text: "flat".into(), editing: true });
         let cases = [
             (key(None, None, ""), key(Some(Hit::Use(1)), None, "")),
+            (key(Some(Hit::Use(1)), None, ""), key(Some(Hit::Enter(2)), None, "look at a monitor of it: desk 40%")),
             (key(Some(Hit::Use(1)), None, ""), key(Some(Hit::Delete(2)), None, "x again")),
             (key(None, None, ""), key(None, t(Some(1)), "")),
             (key(None, t(Some(1)), ""), key(Some(Hit::Save), t(Some(1)), "")),

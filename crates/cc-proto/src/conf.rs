@@ -830,6 +830,57 @@ pub fn find_machine(x: &str, vs: &[Viewer], hosts: &[(String, Value)]) -> Option
 // A workspace's machines are its "machines" list (machine ids: viewers.conf's machine=, else the
 // host). No list means every machine, so existing workspaces and Temporary behave like before.
 
+/// The rooms (SteamVR universes) workspace w is bound to. One room is "universe", the way it always
+/// was. A second one (enter_workspace, after the Frame rebuilt its map) adds "universes", the whole
+/// list, and "universe" stays its first, so an older build still knows the first room.
+pub fn rooms(w: &Json) -> Vec<String> {
+    // an id is a string, but a hand-edited file may have a number
+    let id = |u: &Json| match u {
+        Json::Str(s) | Json::Num(s) if !s.is_empty() => Some(s.clone()),
+        _ => None,
+    };
+    match w.get("universes") {
+        Some(Json::Arr(a)) => a.iter().filter_map(id).collect(),
+        _ => id(w.at("universe")).into_iter().collect(),
+    }
+}
+
+fn set_rooms(w: &mut Json, rooms: &[String]) {
+    match rooms.first() {
+        None => drop((w.remove("universe"), w.remove("universes"))),
+        Some(first) => {
+            w.set("universe", Json::Str(first.clone()));
+            if rooms.len() > 1 {
+                w.set("universes", Json::Arr(rooms.iter().cloned().map(Json::Str).collect()));
+            } else {
+                w.remove("universes");
+            }
+        }
+    }
+}
+
+/// Binds this room to workspace `name` as well as its others, and takes it off any other workspace
+/// (a room belongs to one place).
+/// ponytail: the list only grows; a Frame that rebuilds its map often leaves dead ids in it. Prune
+/// the oldest if that ever matters.
+pub fn add_room(data: &mut Json, name: &str, universe: u64) {
+    let id = room(universe).to_string();
+    for (n, w) in data.setdefault("workspaces", Json::obj()).items_mut().iter_mut() {
+        let mut r = rooms(w);
+        let before = r.len();
+        if n == name {
+            if !r.contains(&id) {
+                r.push(id.clone());
+            }
+        } else {
+            r.retain(|x| *x != id);
+        }
+        if r.len() != before {
+            set_rooms(w, &r);
+        }
+    }
+}
+
 /// The travel workspace's key in home.json (the UI calls it "Temporary").
 pub const TEMPORARY: &str = "temporary";
 
@@ -876,7 +927,7 @@ pub fn choose_workspace(data: &mut Json, universe: u64, hint: Option<&str>) -> (
     let (universe, active) = (room(universe), active_workspace(data));
     let id = universe.to_string();
     let ws = data.at("workspaces");
-    let here = |n: &str| universe != 0 && n != TEMPORARY && ws.at(n).at("universe").str() == Some(&id);
+    let here = |n: &str| universe != 0 && n != TEMPORARY && rooms(ws.at(n)).contains(&id);
     let found = if here(&active) { Some(active.clone()) } else { ws.items().iter().map(|(n, _)| n.clone()).find(|n| here(n)) };
     let (name, made) = match found {
         Some(n) => (n, false),
@@ -887,7 +938,7 @@ pub fn choose_workspace(data: &mut Json, universe: u64, hint: Option<&str>) -> (
                 None => (TEMPORARY.into(), !has_workspace(data, TEMPORARY)),
             }
         }
-        None if active != TEMPORARY && has_workspace(data, &active) && !ws.at(&active).at("universe").truthy() => {
+        None if active != TEMPORARY && has_workspace(data, &active) && rooms(ws.at(&active)).is_empty() => {
             data.setdefault("workspaces", Json::obj()).setdefault(&active, Json::obj()).set("universe", Json::Str(id));
             (active.clone(), false)
         }
@@ -1070,6 +1121,83 @@ pub fn load_workspace(data: &mut Json, name: &str, head: [f64; 3], head_yaw: f64
     Ok(n)
 }
 
+// ---- entering a workspace in a new room (docs/workspaces.md, "Back at a workspace")
+//
+// The Frame's inside-out tracking sometimes rebuilds its map, and SteamVR then gives the same room a
+// new universe id. A workspace's spots are still right relative to each other, but its frame moved.
+// One of its monitors, found again by camera, gives that move: its saved pose (spots "scanned") and
+// where it is now. It's an upright rigid move (yaw and a shift), as in cc-home reanchor, since
+// gravity doesn't change. Pitch and roll can't change either, so they're part of the proof.
+
+/// How much a found monitor's size may differ from the saved one's and still be the same monitor
+/// (a fraction). Both come from its EDID through the agent, so they only differ for another model.
+pub const SAME_SIZE: f64 = 0.03;
+/// How far its pitch or roll may be off, in degrees (calibration knob: a quick fit's own tilt
+/// error is well under 1 degree).
+pub const SAME_TILT: f64 = 3.0;
+/// With 2+ monitors found: how far (mm) the others may land from where the first one's move puts them.
+pub const SAME_DESK_MM: f64 = 50.0;
+
+fn angle(a: f64, b: f64) -> f64 {
+    ((a - b + 180.0).rem_euclid(360.0) - 180.0).abs()
+}
+
+/// Whether `found` can be the monitor saved as `saved`: the same size, with the same tilt.
+pub fn same_monitor(saved: &Json, found: &Json) -> Result<(), String> {
+    if centre_of(saved).is_none() || saved.at("yaw").num().is_none() {
+        return Err("no saved scan of it".into());
+    }
+    let size = |p: &Json| (p.at("width").num().unwrap_or(0.0), p.at("height").num().unwrap_or(0.0));
+    let ((sw, sh), (fw, fh)) = (size(saved), size(found));
+    let off = |a: f64, b: f64| (a - b).abs() > SAME_SIZE * a.max(b);
+    if sw > 0.0 && sh > 0.0 && (off(sw, fw) || off(sh, fh)) {
+        return Err(format!("it's {:.0} x {:.0} mm, the saved one {:.0} x {:.0} mm: a different monitor", fw * 1e3, fh * 1e3, sw * 1e3, sh * 1e3));
+    }
+    let n = |p: &Json, k: &str| p.at(k).num().unwrap_or(0.0);
+    let (dp, dr) = (angle(n(saved, "pitch"), n(found, "pitch")), angle(n(saved, "roll"), n(found, "roll")));
+    if dp > SAME_TILT || dr > SAME_TILT {
+        return Err(format!("its tilt is {dp:.1} deg and its roll {dr:.1} deg off the saved scan: it moved, or it's a different monitor"));
+    }
+    Ok(())
+}
+
+/// How far (mm) `found` is from where the move `saved_root` -> `found_root` puts `saved`.
+pub fn misfit_mm(saved: &Json, found: &Json, saved_root: &Json, found_root: &Json) -> f64 {
+    let pose = |p: &Json| Some((centre_of(p)?, p.at("yaw").num()?));
+    let (Some(from), Some(to), Some(at)) = (pose(saved_root), pose(found_root), centre_of(found)) else { return f64::INFINITY };
+    let Some(want) = centre_of(&rigid(saved, from, to)) else { return f64::INFINITY };
+    (0..3).map(|i| (want[i] - at[i]).powi(2)).sum::<f64>().sqrt() * 1000.0
+}
+
+/// You're back at workspace `name`, in a room SteamVR calls `universe` now, and its monitor saved as
+/// `saved` (its "scanned" pose) was just found at `found`. If it's the same monitor (same_monitor),
+/// every spot of the workspace moves with it (rigid, like reanchor; the old home is kept as
+/// "previous"), this room is added to its rooms, and it becomes the active one. Next time this
+/// room picks it straight away. Returns the move's size: mm and degrees.
+pub fn enter_workspace(data: &mut Json, name: &str, universe: u64, saved: &Json, found: &Json) -> Result<(f64, f64), String> {
+    if !has_workspace(data, name) || name == TEMPORARY {
+        return Err(format!("no workspace {} to enter (Temporary has no place of its own)", workspace_title(name)));
+    }
+    if room(universe) == 0 {
+        return Err("SteamVR doesn't know this room yet: wait until tracking settles, then try again".into());
+    }
+    same_monitor(saved, found)?;
+    let pose = |p: &Json| Some((centre_of(p)?, p.at("yaw").num()?));
+    let (Some(from), Some(to)) = (pose(saved), pose(found)) else { return Err("no pose to move by".into()) };
+    let w = data.setdefault("workspaces", Json::obj()).setdefault(name, Json::obj());
+    let spots = w.setdefault("spots", Json::obj());
+    let home = spots.get("home").cloned().unwrap_or_else(Json::obj);
+    for (_, poses) in spots.items_mut().iter_mut().filter(|(k, _)| k != "previous") {
+        for (_, p) in poses.items_mut().iter_mut() {
+            *p = rigid(p, from, to);
+        }
+    }
+    spots.set("previous", home); // undo: cc-home apply previous (as reanchor keeps it)
+    add_room(data, name, universe);
+    data.set("workspace", Json::Str(name.into()));
+    let d = (0..3).map(|i| (to.0[i] - from.0[i]).powi(2)).sum::<f64>().sqrt() * 1000.0;
+    Ok((d, angle(to.1, from.1)))
+}
 
 #[cfg(test)]
 mod tests {
@@ -1297,5 +1425,92 @@ mod tests {
         assert_eq!(s.at("home").at("b").at("yaw").num(), Some(0.0));
         assert!(s.get("scanned").is_none());
         assert!(load_workspace(&mut data, "nowhere", [0.0; 3], 0.0, &[]).is_err());
+    }
+    #[test]
+    fn one_room_stays_the_old_format_and_a_second_makes_a_list() {
+        let mut data = home(TWO);
+        let before = data.dumps();
+        assert_eq!(rooms(data.at("workspaces").at("home")), ["111"]);
+        add_room(&mut data, "home", 111);
+        assert_eq!(data.dumps(), before, "a room it has: nothing changes");
+        add_room(&mut data, "home", 333);
+        let h = data.at("workspaces").at("home");
+        assert_eq!(h.at("universe").str(), Some("111"), "the first stays, for older builds");
+        assert_eq!(rooms(h), ["111", "333"]);
+        assert_eq!(choose_workspace(&mut data, 333, None), ("home".into(), false), "the new room picks it");
+        assert_eq!(choose_workspace(&mut data, 111, None), ("home".into(), false), "and so does the old one");
+        // a room belongs to one workspace: moving it takes it off home, back to one room there
+        add_room(&mut data, "workspace-2", 333);
+        assert_eq!(rooms(data.at("workspaces").at("home")), ["111"]);
+        assert!(data.at("workspaces").at("home").get("universes").is_none());
+        assert_eq!(rooms(data.at("workspaces").at("workspace-2")), ["222", "333"]);
+        // an older file (only "universe") reads the same, and an empty one is no room
+        assert!(rooms(&home(r#"{"universe": ""}"#)).is_empty() && rooms(&Json::obj()).is_empty());
+        // and a file written with a list works for the unbound rule too
+        let mut data = home(r#"{"workspace": "w", "workspaces": {"w": {"spots": {}, "universes": ["1", "2"], "universe": "1"}}}"#);
+        assert_eq!(choose_workspace(&mut data, 2, None), ("w".into(), false));
+        assert_eq!(choose_workspace(&mut data, 3, None), (TEMPORARY.into(), true), "bound already: not rule 3");
+    }
+
+    /// The panel pose cc-home makes from a solve (pose_from_axes), for yaw, pitch and roll 0 facing you.
+    fn pose(c: [f64; 3], yaw: f64, pitch: f64, w: f64) -> Json {
+        home(&format!(r#"{{"centre": [{}, {}, {}], "yaw": {yaw}, "pitch": {pitch}, "roll": 0.0, "width": {w}, "height": 0.34, "curve": 0}}"#, c[0], c[1], c[2]))
+    }
+
+    #[test]
+    fn entering_moves_every_spot_with_one_monitor_and_learns_the_room() {
+        let ws = r#"{"workspace": "temporary", "workspaces": {
+            "temporary": {"spots": {}},
+            "home": {"universe": "111", "spots": {
+                "home": {"left": {"centre": [-0.7, 1.2, -1.0], "yaw": 20.0, "pitch": -5.0, "roll": 0.0, "width": 0.6},
+                         "right": {"centre": [0.7, 1.3, -1.0], "yaw": -20.0, "pitch": -5.0, "roll": 1.0, "width": 0.6}},
+                "scanned": {"left": {"centre": [-0.7, 1.2, -1.0], "yaw": 20.0, "pitch": -5.0, "roll": 0.0, "width": 0.6, "height": 0.34, "curve": 0},
+                            "right": {"centre": [0.7, 1.3, -1.0], "yaw": -20.0, "pitch": -5.0, "roll": 1.0, "width": 0.6, "height": 0.34, "curve": 0}},
+                "previous": {"x": {"centre": [9.0, 9.0, 9.0], "yaw": 0.0}}}}}}"#;
+        let mut data = home(ws);
+        let saved = data.at("workspaces").at("home").at("spots").at("scanned").at("left").clone();
+        // the new map: the room turned 90 degrees and shifted. Where left is found now:
+        let (from, to) = (([-0.7, 1.2, -1.0], 20.0), ([2.0, 1.25, 0.5], 110.0));
+        let mut found = rigid(&saved, from, to);
+        found.set("pitch", Json::float(-5.4)); // a quick fit's own small error
+        let (mm, deg) = enter_workspace(&mut data, "home", 444, &saved, &found).unwrap();
+        assert!((deg - 90.0).abs() < 1e-9 && mm > 2000.0, "{mm} {deg}");
+        let sp = data.at("workspaces").at("home").at("spots");
+        let right = sp.at("home").at("right");
+        let want = rigid(home(ws).at("workspaces").at("home").at("spots").at("home").at("right"), from, to);
+        assert_eq!(right.dumps(), want.dumps(), "home moved as one piece");
+        assert_eq!(sp.at("scanned").at("right").at("yaw").num(), Some(70.0));
+        assert_eq!(sp.at("scanned").at("right").at("roll").num(), Some(1.0), "pitch and roll kept");
+        assert!(centre_of(sp.at("home").at("left")).unwrap().iter().zip([2.0, 1.25, 0.5]).all(|(a, b)| (a - b).abs() < 1e-4));
+        assert_eq!(sp.at("previous").dumps(), home(ws).at("workspaces").at("home").at("spots").at("home").dumps(), "the old home kept for undo, unmoved");
+        assert_eq!(rooms(data.at("workspaces").at("home")), ["111", "444"]);
+        assert_eq!(active_workspace(&data), "home");
+        // next start in that room: recognized straight away
+        assert_eq!(choose_workspace(&mut data, 444, None), ("home".into(), false));
+        // the other monitor agrees with that move (same desk); a moved one doesn't
+        let saved_r = home(ws).at("workspaces").at("home").at("spots").at("scanned").at("right").clone();
+        assert!(misfit_mm(&saved_r, &rigid(&saved_r, from, to), &saved, &found) < 1.0);
+        let mut moved = rigid(&saved_r, from, to);
+        moved.set("centre", Json::Arr(vec![Json::float(0.0), Json::float(0.0), Json::float(0.0)]));
+        assert!(misfit_mm(&saved_r, &moved, &saved, &found) > SAME_DESK_MM);
+    }
+
+    #[test]
+    fn a_different_monitor_or_no_room_is_refused_and_nothing_changes() {
+        let mut data = home(TWO);
+        let saved = pose([0.0, 1.2, -1.0], 0.0, -5.0, 0.6);
+        let before = data.dumps();
+        let bigger = pose([1.0, 1.2, 0.0], 30.0, -5.0, 0.7);
+        assert!(enter_workspace(&mut data, "home", 444, &saved, &bigger).unwrap_err().contains("a different monitor"));
+        let tilted = pose([1.0, 1.2, 0.0], 30.0, 10.0, 0.6);
+        assert!(enter_workspace(&mut data, "home", 444, &saved, &tilted).unwrap_err().contains("tilt"));
+        let ok = pose([1.0, 1.2, 0.0], 30.0, -4.0, 0.6);
+        assert!(enter_workspace(&mut data, "home", 0, &saved, &ok).is_err(), "no room");
+        assert!(enter_workspace(&mut data, "home", 424242, &saved, &ok).is_err(), "the dummy room");
+        assert!(enter_workspace(&mut data, TEMPORARY, 444, &saved, &ok).is_err());
+        assert!(enter_workspace(&mut data, "nowhere", 444, &saved, &ok).is_err());
+        assert!(enter_workspace(&mut data, "home", 444, &Json::obj(), &ok).is_err(), "no saved scan");
+        assert_eq!(data.dumps(), before);
+        assert!(same_monitor(&saved, &ok).is_ok());
     }
 }
