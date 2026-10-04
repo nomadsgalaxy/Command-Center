@@ -2,7 +2,8 @@
 //! (the container, its packages and cc-home itself) stays in shell because there's no Rust
 //! until it's done. Safe to re-run.
 //!   cc-home install          2 · build: FreeRDP 3.31.1 against the container's FFmpeg
-//!                            (panels/third_party/prefix), the workspace (cc-panels), the
+//!                            (panels/third_party/prefix), libvncclient for VNC panels
+//!                            (panels/third_party/vnc-prefix), the workspace (cc-panels), the
 //!                            mouse's SteamVR driver; 3 · commands: cc-panels, cc-home, cc-box
 //!                            in ~/.local/bin, and KWin's grant for the window panels
 //!   cc-home install desktop  the VR launcher's "Desktop" starts Command Center
@@ -124,10 +125,20 @@ fn build() -> Result<(), String> {
         remove_lib(&lib).map_err(|e| format!("{}: {e}", lib.display()))?;
         ok(&mut in_box(&root, &src, &["ninja", "-C", "build", "install"]), true)?;
     }
+    vnc(&root, &fr)?;
     ok(&mut in_box(&root, &root, &["cargo", "build", "--release", "-q"]), false)?;
     // The mouse's SteamVR laser. SteamVR picks it up on its next start.
     ok(&mut Command::new(root.join("driver/cc_pointer/build.sh")), false)?;
     ok(&mut Command::new(root.join("driver/cc_pointer/install.sh")), false)
+}
+
+/// libvncclient for VNC panels (vnc.rs), static, into panels/third_party/vnc-prefix.
+/// tools/build-libvncclient.sh holds the pinned commit, our patch and the cmake options, so a
+/// SteamOS-native build runs the same script.
+fn vnc(root: &Path, fr: &Path) -> Result<(), String> {
+    let prefix = fr.join("vnc-prefix");
+    let script = root.join("tools/build-libvncclient.sh");
+    ok(&mut in_box(root, root, &[&script.to_string_lossy(), &prefix.to_string_lossy()]), false)
 }
 
 /// Same as `rm -f libfreerdp3.so*`.
