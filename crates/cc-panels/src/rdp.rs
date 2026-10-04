@@ -1,10 +1,9 @@
 //! One RDP session per panel: krdp on the machine, FreeRDP here, H.264 decoded with FFmpeg.
-//! Each session keeps reconnecting for as long as cc-panels runs. There's also one clipboard
-//! shared by every machine.
-use crate::{PANELS, Panel, QUIT, panel};
+//! Each session keeps reconnecting for as long as cc-panels runs. Its clipboard channel goes to
+//! clipboard/cliprdr.rs.
+use crate::{Panel, QUIT, panel};
 use freerdp_sys::*;
 use std::ffi::{CStr, CString, c_void};
-use std::sync::Mutex;
 use std::sync::atomic::Ordering::*;
 use std::time::Duration;
 
@@ -81,124 +80,7 @@ unsafe fn desktop(c: *mut rdpContext) -> (u32, u32) {
     }
 }
 
-// ------------------------------------------------------------------ the clipboard
-//
-// Copy on any machine and its krdp announces the new clipboard. We fetch the text, keep it,
-// and offer it to every other machine; their krdp asks us for it when something gets pasted.
-// Text only for now (CF_UNICODETEXT, UTF-16LE).
-
-const UNICODE_TEXT: u32 = 13; // CF_UNICODETEXT
-
-struct Clip {
-    text: Vec<u8>, // UTF-16LE, with its terminating NUL
-    from: usize,
-}
-
-static CLIP: Mutex<Clip> = Mutex::new(Clip { text: Vec::new(), from: usize::MAX });
-
-fn clip_panel(c: *mut CliprdrClientContext) -> usize {
-    unsafe { (*c).custom as usize - 1 }
-}
-
-unsafe fn offer(c: *mut CliprdrClientContext, have: bool) -> UINT {
-    let mut f = CLIPRDR_FORMAT { formatId: UNICODE_TEXT, formatName: std::ptr::null_mut() };
-    let mut list = CLIPRDR_FORMAT_LIST::default();
-    list.common.msgType = CliprdrMsgType_CB_FORMAT_LIST as u16;
-    list.numFormats = have as u32;
-    list.formats = &mut f;
-    unsafe { ((*c).ClientFormatList.unwrap())(c, &list) }
-}
-
-unsafe extern "C" fn on_monitor_ready(c: *mut CliprdrClientContext, _: *const CLIPRDR_MONITOR_READY) -> UINT {
-    let mut general = CLIPRDR_GENERAL_CAPABILITY_SET {
-        capabilitySetType: CB_CAPSTYPE_GENERAL as u16,
-        capabilitySetLength: CB_CAPSTYPE_GENERAL_LEN as u16,
-        version: CB_CAPS_VERSION_2,
-        generalFlags: CB_USE_LONG_FORMAT_NAMES,
-    };
-    let mut caps = CLIPRDR_CAPABILITIES::default();
-    caps.common.msgType = CliprdrMsgType_CB_CLIP_CAPS as u16;
-    caps.cCapabilitiesSets = 1;
-    caps.capabilitySets = &mut general as *mut _ as *mut CLIPRDR_CAPABILITY_SET;
-    let rc = unsafe { ((*c).ClientCapabilities.unwrap())(c, &caps) };
-    if rc != 0 {
-        return rc;
-    }
-    let clip = CLIP.lock().unwrap(); // a machine that (re)connects gets whatever's been copied
-    unsafe { offer(c, !clip.text.is_empty() && clip.from != clip_panel(c)) }
-}
-
-unsafe extern "C" fn on_server_capabilities(_: *mut CliprdrClientContext, _: *const CLIPRDR_CAPABILITIES) -> UINT {
-    0
-}
-
-unsafe extern "C" fn on_server_format_list_response(_: *mut CliprdrClientContext, _: *const CLIPRDR_FORMAT_LIST_RESPONSE) -> UINT {
-    0
-}
-
-unsafe extern "C" fn on_server_format_list(c: *mut CliprdrClientContext, list: *const CLIPRDR_FORMAT_LIST) -> UINT {
-    let mut ok = CLIPRDR_FORMAT_LIST_RESPONSE::default();
-    ok.common.msgType = CliprdrMsgType_CB_FORMAT_LIST_RESPONSE as u16;
-    ok.common.msgFlags = CB_RESPONSE_OK as u16;
-    let rc = unsafe { ((*c).ClientFormatListResponse.unwrap())(c, &ok) };
-    if rc != 0 {
-        return rc;
-    }
-    let list = unsafe { &*list };
-    eprintln!("clipboard: {} announces {} format(s)", panel(clip_panel(c)).v.name, list.numFormats);
-    let formats = unsafe { std::slice::from_raw_parts(list.formats, list.numFormats as usize) };
-    if formats.iter().any(|f| f.formatId == UNICODE_TEXT) {
-        // something was copied there, so fetch it
-        let mut want = CLIPRDR_FORMAT_DATA_REQUEST::default();
-        want.common.msgType = CliprdrMsgType_CB_FORMAT_DATA_REQUEST as u16;
-        want.requestedFormatId = UNICODE_TEXT;
-        return unsafe { ((*c).ClientFormatDataRequest.unwrap())(c, &want) };
-    }
-    0
-}
-
-unsafe extern "C" fn on_server_format_data_response(c: *mut CliprdrClientContext, r: *const CLIPRDR_FORMAT_DATA_RESPONSE) -> UINT {
-    let r = unsafe { &*r };
-    if r.common.msgFlags as u32 & CB_RESPONSE_OK == 0 || r.requestedFormatData.is_null() || r.common.dataLen == 0 {
-        return 0;
-    }
-    let from = clip_panel(c);
-    let mut text = unsafe { std::slice::from_raw_parts(r.requestedFormatData, r.common.dataLen as usize) }.to_vec();
-    if !text.ends_with(&[0, 0]) {
-        text.extend([0, 0]);
-    }
-    {
-        let mut clip = CLIP.lock().unwrap();
-        if text == clip.text {
-            return 0; // that's what we already hold, echoed back, so don't go round again
-        }
-        *clip = Clip { text, from };
-    }
-    eprintln!("clipboard: {} characters from {}", r.common.dataLen / 2, panel(from).v.name);
-    for p in PANELS.get().unwrap().iter().filter(|p| p.index != from) {
-        let other = p.cliprdr.load(Acquire); // offer it everywhere else
-        if !other.is_null() {
-            unsafe { offer(other, true) };
-        }
-    }
-    0
-}
-
-unsafe extern "C" fn on_server_format_data_request(c: *mut CliprdrClientContext, want: *const CLIPRDR_FORMAT_DATA_REQUEST) -> UINT {
-    let clip = CLIP.lock().unwrap(); // pasted there, so hand over what we hold
-    let id = unsafe { (*want).requestedFormatId };
-    eprintln!("clipboard: {} asks for it (format {id})", panel(clip_panel(c)).v.name);
-    let mut r = CLIPRDR_FORMAT_DATA_RESPONSE::default();
-    r.common.msgType = CliprdrMsgType_CB_FORMAT_DATA_RESPONSE as u16;
-    if id == UNICODE_TEXT && !clip.text.is_empty() {
-        r.common.msgFlags = CB_RESPONSE_OK as u16;
-        r.common.dataLen = clip.text.len() as u32;
-        r.requestedFormatData = clip.text.as_ptr();
-    } else {
-        r.common.msgFlags = CB_RESPONSE_FAIL as u16;
-    }
-    unsafe { ((*c).ClientFormatDataResponse.unwrap())(c, &r) }
-}
+// ------------------------------------------------------------------ the clipboard channel (clipboard/cliprdr.rs)
 
 fn is_cliprdr(name: *const std::os::raw::c_char) -> bool {
     unsafe { CStr::from_ptr(name) }.to_bytes_with_nul() == CLIPRDR_SVC_CHANNEL_NAME
@@ -209,19 +91,7 @@ unsafe extern "C" fn on_channel_connected(context: *mut c_void, e: *const Channe
     if !is_cliprdr(e.name) {
         return unsafe { freerdp_client_OnChannelConnectedEventHandler(context, e) }; // graphics pipeline to the GDI
     }
-    let p = unsafe { panel_of(context as *mut rdpContext) };
-    let c = e.pInterface as *mut CliprdrClientContext;
-    unsafe {
-        (*c).custom = (p.index + 1) as *mut c_void;
-        (*c).MonitorReady = Some(on_monitor_ready);
-        (*c).ServerCapabilities = Some(on_server_capabilities);
-        (*c).ServerFormatList = Some(on_server_format_list);
-        (*c).ServerFormatListResponse = Some(on_server_format_list_response);
-        (*c).ServerFormatDataResponse = Some(on_server_format_data_response);
-        (*c).ServerFormatDataRequest = Some(on_server_format_data_request);
-    }
-    p.cliprdr.store(c, Release);
-    eprintln!("clipboard: {} channel up", p.v.name);
+    crate::clipboard::cliprdr::attach(unsafe { panel_of(context as *mut rdpContext) }, e.pInterface as *mut CliprdrClientContext);
 }
 
 unsafe extern "C" fn on_channel_disconnected(context: *mut c_void, e: *const ChannelDisconnectedEventArgs) {
@@ -229,8 +99,7 @@ unsafe extern "C" fn on_channel_disconnected(context: *mut c_void, e: *const Cha
     if !is_cliprdr(e.name) {
         return unsafe { freerdp_client_OnChannelDisconnectedEventHandler(context, e) };
     }
-    unsafe { panel_of(context as *mut rdpContext) }.cliprdr.store(std::ptr::null_mut(), Release);
-    unsafe { (*(e.pInterface as *mut CliprdrClientContext)).custom = std::ptr::null_mut() };
+    crate::clipboard::cliprdr::detach(unsafe { panel_of(context as *mut rdpContext) }, e.pInterface as *mut CliprdrClientContext);
 }
 
 type Connected = unsafe extern "C" fn(*mut c_void, *const ChannelConnectedEventArgs);
