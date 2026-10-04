@@ -4,9 +4,11 @@
 # (packaging/arch/PKGBUILD) stays the one place for krdp's version, checksum and patches; this
 # reads them from it.
 #   krdp/build-steamos.sh [destdir]   default: krdp/steamos/root
-# The result is a /usr tree in destdir with the Arch package's layout: krdp's whole install, with
-# krdpserver's RPATH at /usr/lib/command-center, where qtkeychain goes too. It's ready to go in a
-# host sysext image, and it installs nothing.
+# The result is a /usr tree in destdir with the Arch package's layout, so one cc-host works on
+# every distro: krdpserver and krdpserver-window (the window build needs its own name for its KWin
+# grant) and libKRdp.so.6 all in /usr/lib/command-center, next to qtkeychain, with RPATH there. A
+# private libKRdp means a SteamOS that someday ships krdp never gets its copy shadowed by ours. It's
+# ready to go in a host sysext image, and it installs nothing.
 #
 # SteamOS 0.3 has Plasma 6.2.5 with Qt 6.8.0 and Frameworks 6.14, and krdp 6.7.5 asks for Qt 6.10
 # and Frameworks 6.26. Nothing it uses needs them, so I lower those two minimums to what SteamOS
@@ -64,5 +66,9 @@ sed -i -e "s/^set(QT_MIN_VERSION .*/set(QT_MIN_VERSION \"$qt\")/" -e "s/^set(KF6
 cmake -S "krdp-$ver" -B krdp-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF \
   -DKDE_INSTALL_LIBDIR=lib -DKDE_SKIP_RPATH_SETTINGS=ON -DCMAKE_INSTALL_RPATH=$lib -DCMAKE_PREFIX_PATH="$work/ecm" -DQt6Keychain_DIR="$dest$lib/cmake/Qt6Keychain" >/dev/null
 cmake --build krdp-build >/dev/null
-DESTDIR="$dest" cmake --install krdp-build >/dev/null
+rm -rf "$work/krdp-root"
+DESTDIR="$work/krdp-root" cmake --install krdp-build >/dev/null
+install -Dm755 "$work/krdp-root/usr/bin/krdpserver" "$dest$lib/krdpserver"
+install -Dm755 "$work/krdp-root/usr/bin/krdpserver" "$dest$lib/krdpserver-window"
+cp -P "$work"/krdp-root/usr/lib/libKRdp.so.6* "$dest$lib/"
 echo "krdp $ver for SteamOS $CC_STEAMOS in $dest ($(du -sh "$dest" | cut -f1), $((SECONDS - t0)) s)"
