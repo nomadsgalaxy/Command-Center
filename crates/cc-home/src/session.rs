@@ -39,6 +39,7 @@ pub fn dispatch(name: &str, args: &[OsString]) -> Option<i32> {
         "session" | "cc-desktop" => session(),
         "box" | "cc-box" => boxed(&args[usize::from(name == "cc-home")..]),
         "kwin_wayland_wrapper" => kwin_wrapper(args),
+        "flatpak-bwrap" => flatpak_bwrap(args),
         "install" => crate::install::main(rest),
         _ => return None,
     })
@@ -514,6 +515,46 @@ fn kwin_wrapper(args: &[OsString]) -> i32 {
     127
 }
 
+/// What runs as $runtime/bin/flatpak-bwrap, the session's FLATPAK_BWRAP: bwrap with the
+/// document portal also at the session's path (doc_link).
+fn flatpak_bwrap(args: &[OsString]) -> i32 {
+    // Flatpak hands bwrap its options in a memfd (`--args FD`). Opening it again reads it from
+    // the start without moving bwrap's offset. Anything else, like a pipe, I leave alone.
+    let spec = args.iter().position(|a| a == "--args").and_then(|i| args.get(i + 1)).map(|fd| PathBuf::from(format!("/proc/self/fd/{}", fd.to_string_lossy())));
+    let spec = spec.filter(|f| fs::metadata(f).is_ok_and(|m| m.is_file())).and_then(|f| fs::read(f).ok()).unwrap_or_default();
+    let e = Command::new("/usr/bin/bwrap").args(doc_link(args, &spec, uid())).exec();
+    eprintln!("/usr/bin/bwrap: {e}");
+    127
+}
+
+/// bwrap's arguments with the document portal also linked at its mount's own path inside an app's
+/// sandbox.
+///
+/// The file chooser hands a Flatpak app the chosen file as a path in the document portal's mount,
+/// $XDG_RUNTIME_DIR/doc/<id>/<name>, and here that's /run/user/$UID/cc-desktop/doc. The host
+/// already has its own document portal on /run/user/$UID/doc, so the session's can't mount there.
+/// Flatpak binds the portal's by-app view at /run/flatpak/doc and links only /run/user/$UID/doc to
+/// it, so the path the app gets doesn't exist in its sandbox, and a browser's upload silently gets
+/// nothing. The link fixes the path and shows the app no more than the by-app view it already has.
+///
+/// Only the app's own sandbox gets it, the one whose options bind `<mount>/by-app/<app>` on
+/// /run/flatpak/doc, and that bind says where the mount is (flatpak runs bwrap with no
+/// environment). The D-Bus proxy's sandbox sees the host's /run, where that path is the portal's
+/// mount, and bwrap would fail on it.
+pub fn doc_link(args: &[OsString], spec: &[u8], uid: u32) -> Vec<OsString> {
+    let mut v = args.to_vec();
+    let s: Vec<&[u8]> = spec.split(|&b| b == 0).collect();
+    let mount = s.windows(3).find(|w| w[0] == b"--bind" && w[2] == b"/run/flatpak/doc").and_then(|w| {
+        let src = String::from_utf8_lossy(w[1]);
+        Some(src[..src.find("/by-app/")?].to_owned())
+    });
+    let at = args.iter().position(|a| a == "--args").map(|i| i + 2).filter(|&i| i <= args.len());
+    if let (Some(i), Some(m)) = (at, mount.filter(|m| *m != format!("/run/user/{uid}/doc"))) {
+        v.splice(i..i, ["--symlink".into(), "/run/flatpak/doc".into(), m.into()]);
+    }
+    v
+}
+
 /// Same as `ln -sfn target link`.
 pub fn force_link(target: impl AsRef<Path>, link: &Path) -> std::io::Result<()> {
     if fs::symlink_metadata(link).is_ok() {
@@ -628,6 +669,8 @@ fn session_body(home: &str, host: &str, runtime: &Path) -> Result<i32, i32> {
     // plasma-session starts KWin through kwin_wayland_wrapper, so I shadow it to get the headless
     // screens.
     io("kwin_wayland_wrapper", symlink(exe(), runtime.join("bin/kwin_wayland_wrapper")))?;
+    // Flatpak runs its sandboxes through this, for the document portal's path (doc_link).
+    io("flatpak-bwrap", symlink(exe(), runtime.join("bin/flatpak-bwrap")))?;
     let path = format!("{}:{}", runtime.join("bin").display(), std::env::var("PATH").unwrap_or_default());
     unsafe {
         std::env::set_var("PATH", path);
@@ -636,6 +679,7 @@ fn session_body(home: &str, host: &str, runtime: &Path) -> Result<i32, i32> {
         std::env::set_var("XDG_RUNTIME_DIR", runtime);
         std::env::set_var("XDG_CONFIG_HOME", &config);
         std::env::set_var("XDG_STATE_HOME", &state);
+        std::env::set_var("FLATPAK_BWRAP", runtime.join("bin/flatpak-bwrap"));
     }
     // not exec, because the runtime dir gets cleaned up after
     match Command::new("dbus-run-session").arg("startplasma-wayland").status() {
@@ -730,6 +774,19 @@ mod tests {
         assert_eq!(fs::read_to_string(cache.join("cc-panels.log")).unwrap(), "=== cc-panels c ===\n");
         assert_eq!(stamp().len(), 19);
         let _ = fs::remove_dir_all(cache);
+    }
+
+    #[test]
+    fn doc_link_in_app_sandbox_only() {
+        let a = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        let args = a(&["--args", "44", "--", "vivaldi"]);
+        let app = b"--tmpfs\0/run/user/1000\0--bind\0/run/user/1000/cc-desktop/doc/by-app/x\0/run/flatpak/doc\0";
+        assert_eq!(doc_link(&args, app, 1000),
+            a(&["--args", "44", "--symlink", "/run/flatpak/doc", "/run/user/1000/cc-desktop/doc", "--", "vivaldi"]));
+        // the D-Bus proxy's sandbox, the host's own portal, no --args: unchanged
+        assert_eq!(doc_link(&args, b"--bind\0/run\0/run\0", 1000), args);
+        assert_eq!(doc_link(&args, b"--bind\0/run/user/1000/doc/by-app/x\0/run/flatpak/doc\0", 1000), args);
+        assert_eq!(doc_link(&a(&["--ro-bind", "/", "/", "true"]), app, 1000), a(&["--ro-bind", "/", "/", "true"]));
     }
 
     #[test]
