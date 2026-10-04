@@ -33,6 +33,10 @@ pub trait Platform: Send + Sync {
     fn tagshow(&self, output: &str) -> Option<std::process::Child>;
     /// Asks a question on that output. The answer is "block" (Enter) or "allow" (Esc, or 20 s).
     fn ask(&self, output: &str, text: &str) -> String;
+    /// The hidraw node of this machine's Steam Deck controller, if it has one (src/imu.rs).
+    fn deck_imu(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 /// CLOCK_MONOTONIC right now, in seconds. systemd's monotonic timestamps use the same clock.
@@ -109,6 +113,9 @@ impl Platform for Linux {
         !run("journalctl", &["--user", "-u", unit, "--since", "-6s", "-q", "-o", "cat", "-g", "target not found|Stream error"]).trim().is_empty()
     }
 
+    fn deck_imu(&self) -> Option<std::path::PathBuf> {
+        crate::imu::find()
+    }
     fn ask(&self, output: &str, text: &str) -> String {
         // /proc/self/exe still runs this build after a package update has replaced the file.
         let answer = run("timeout", &["30", "/proc/self/exe", "tagscreen", output, "--ask", text]);

@@ -77,7 +77,7 @@ demand: panels stay free to move.
                   remove <name> | connect <name> | align <name> |
                   pair <addr> <key|-> [--replace] | pair --scan [addr] [--replace] | unpair <machine> |
                   rename <machine> <label> | rename <monitor> <label> --monitor | list --json |
-                  session start|stop <monitor> | window list <machine> |
+                  session start|stop <monitor> | imu <machine> [seconds] | window list <machine> |
                   window start|stop|pop <monitor> <uuid>]    the remote monitors in viewers.conf (comments, columns
                                           and unknown options kept); options: curve=h|v|flat,
                                           radius=<m> (pins the curve's radius: 1.0 for 1000R),
@@ -87,7 +87,9 @@ demand: panels stay free to move.
                                           Frame its own login: every shared monitor is added (docs/pairing.md);
                                           --scan reads the key off the host's screen with the camera, from the
                                           one host showing a key (or addr); rename: what you see (empty
-                                          clears it); names, labels and machine ids all work as <name>
+                                          clears it); names, labels and machine ids all work as <name>;
+                                          imu = a Steam Deck's orientation and rates, live, to wave it and watch
+                                          (Ctrl-C ends it; docs/deck-tracking.md)
   cc-home network                         the networks the headset is on now (wifi name, wired connection name)
                                           and which workspaces know them
   cc-home autoconnect --write             for the launcher, just before cc-panels starts: writes

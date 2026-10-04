@@ -7,7 +7,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use cc_proto::agent::{self, Client};
 use cc_proto::conf::{self, Json, Viewer, py_float};
 use serde_json::{Map, Value, json};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 static NULL: Value = Value::Null;
 
@@ -256,6 +256,63 @@ fn session(op: &str, name: &str) {
 
 fn detail(r: &Value) -> String {
     if truthy(&r["detail"]) { py_text(&r["detail"]) } else { String::new() }
+}
+
+/// Streams a paired Steam Deck's motion sensors through its agent and prints its orientation and the
+/// rates four times a second (docs/agent.md, "IMU stream"). The host puts the controller's setting
+/// back when this connection closes, so Ctrl-C is a clean stop.
+fn imu(m: &str, secs: Option<f64>) {
+    use cc_proto::imu::Sample;
+    let mut cl = agent_for(m).unwrap_or_else(|e| die(e.msg()));
+    let v = cl.call("version", Map::new(), Duration::from_secs(10), |_| {}).unwrap_or_else(|e| die(format!("{m}: {e}")));
+    if !v["features"].as_array().is_some_and(|f| f.contains(&json!("imu"))) {
+        die(format!("{m} has no Steam Deck controller to read (or its cc-host is older than the IMU stream: update it)"));
+    }
+    let r = cl.call("imu", args(json!({"op": "start", "hz": 90})), Duration::from_secs(10), |_| {}).unwrap_or_else(|e| die(format!("{m}: {e}")));
+    if !truthy(&r["ok"]) {
+        die(format!("{m}: imu: {}", py_text(&r["error"])));
+    }
+    println!("{m}: streaming at {} batches/s from a controller that samples at {} Hz. yaw starts at 0 and drifts: the Deck has no compass.", py_text(&r["hz"]), py_text(&r["sample_hz"]));
+    let start = Instant::now();
+    let (mut yaw0, mut shown, mut batches, mut samples) = (None, Instant::now(), 0u32, 0u32);
+    let (mut seq_first, mut seq_last, mut t_first, mut t_last, mut lost) = (None, 0u32, 0u64, 0u64, 0u32);
+    let mut last = Sample::default();
+    while secs.is_none_or(|s| start.elapsed().as_secs_f64() < s) {
+        let mut ended = false;
+        let mut take = |e: &Value| {
+            if e["event"] != "imu" {
+                return;
+            }
+            batches += 1;
+            for s in e["samples"].as_array().into_iter().flatten().filter_map(Sample::from_row) {
+                if seq_first.is_some() && s.seq != seq_last.wrapping_add(1) {
+                    lost += s.seq.wrapping_sub(seq_last).wrapping_sub(1).min(1000);
+                }
+                seq_first.get_or_insert(s.seq);
+                (seq_last, t_last) = (s.seq, s.t_us);
+                t_first = if samples == 0 { s.t_us } else { t_first };
+                samples += 1;
+                last = s;
+            }
+        };
+        if let Err(e) = cl.listen(Duration::from_millis(250), &mut take) {
+            ended = true;
+            eprintln!("{m}: the stream ended ({e})");
+        }
+        if ended {
+            std::process::exit(1);
+        }
+        if shown.elapsed() >= Duration::from_millis(250) && samples > 0 {
+            shown = Instant::now();
+            let (g, w) = (last.accel_g(), last.gyro_dps());
+            let e = last.euler_deg().map(|(y, p, r)| (y - *yaw0.get_or_insert(y), p, r));
+            let span = (t_last.saturating_sub(t_first)).max(1) as f64 / 1e6;
+            let o = e.map_or("no orientation yet".to_string(), |(y, p, r)| format!("yaw {:+7.1}  pitch {p:+6.1}  roll {r:+6.1} deg", (y + 540.0).rem_euclid(360.0) - 180.0));
+            println!("{o} | gyro {:+7.1} {:+7.1} {:+7.1} deg/s | accel {:+.2} {:+.2} {:+.2} g | {:.0} samples/s, {:.0} batches/s, {lost} lost", w[0], w[1], w[2], g[0], g[1], g[2],
+                     samples.saturating_sub(1) as f64 / span, batches as f64 / start.elapsed().as_secs_f64());
+        }
+    }
+    let _ = cl.call("imu", args(json!({"op": "stop"})), Duration::from_secs(5), |_| {});
 }
 
 /// Pop-out (docs/remote-windows.md), for cc-panels. Lists a paired machine's windows, starts or
@@ -584,6 +641,7 @@ pub fn main(argv: &[&str]) {
         "pair" if rest.iter().any(|a| a == "--scan") => true,
         "rename" => n >= 1,
         "probe" | "remove" | "connect" | "unpair" | "align" => n == 1,
+        "imu" => (1..=2).contains(&n),
         "add" | "set" | "pair" => n >= 2,
         "window" => n >= 2 && ["list", "start", "stop", "pop"].contains(&s(0)),
         "session" => n == 2 && ["start", "stop"].contains(&s(0)),
@@ -598,7 +656,7 @@ pub fn main(argv: &[&str]) {
             rest[0] = v.name.clone(); // also find a monitor by the name the user sees
         }
     }
-    if (cmd == "unpair" || cmd == "align") && conf::find_viewer(&rest[0], vs, &hs).is_none() {
+    if (cmd == "unpair" || cmd == "align" || cmd == "imu") && conf::find_viewer(&rest[0], vs, &hs).is_none() {
         if let Some(m) = conf::find_machine(&rest[0], vs, &hs) {
             rest[0] = m;
         }
@@ -778,6 +836,7 @@ pub fn main(argv: &[&str]) {
             pair(&rest[0], &key, replace).unwrap_or_else(|e| die(e));
         }
         "unpair" => unpair(&rest[0]),
+        "imu" => imu(&rest[0], rest.get(1).map(|s| s.parse().unwrap_or_else(|_| die("imu takes a machine and optionally how many seconds")))),
         _ => {
             // one monitor, or every monitor on a machine
             let names: Vec<String> = if vs.iter().any(|v| v.name == rest[0]) {

@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod conf;
+pub mod imu;
 pub mod lan;
 pub mod pair;
 pub mod server;

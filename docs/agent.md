@@ -107,12 +107,13 @@ per Frame at a time:
 
 | cmd | args | does | stage |
 |---|---|---|---|
-| `version` | | `version`, `host_id`, `host`, `login`, `protocols` (["rdp"], later "vnc") | 1 |
+| `version` | | `version`, `host_id`, `host`, `login`, `protocols` (["rdp"], later "vnc"), `features` (a list of what this host offers beyond the basics; `"imu"` means a Steam Deck's controller is here, section 3c) | 1 |
 | `monitors` | | shared outputs: index, output, native size, mm, layout | 1 |
 | `tags` | `show <index> {bg, tags:[[id,x,y,side],...]}` / `hide` | the host **draws** the align screen itself from parameters (section 3a), full screen on that output; answers `escaped` if Esc was pressed on the host | 1 |
 | `status` | | this Frame's sessions and their ports, and the guard's state | 1 |
 | `unpair` | | removes this Frame on the host (its units, frames/, trusted-frames/): the Frame side of `cc-home machine unpair` | 1 |
 | `session` | `start <index> [proto=rdp]` / `stop <index>` | starts this Frame's slot server for that monitor on demand; answers `{port, cert_sha256}` once it listens | 2 |
+| `imu` | `start [hz]` / `stop` | streams a Steam Deck's motion sensors as `imu` events, in batches of `hz` a second (section 3c); only on a host whose `version` lists `"imu"` | 1 |
 | `session` | `proto=vnc` | the same with a VNC server (docs/vnc.md) | 3 |
 
 **The agent enforces these rules, not the Frame:**
@@ -174,6 +175,57 @@ computes:
   DP-1"), and the banner while tags are up. `cc-share lock` pauses the agent: every command is
   refused and running sessions stop until `cc-share unlock`. `cc-share frames` lists each Frame's
   last use and whether the shared login (slot 0) is still active.
+
+### 3c. IMU stream (a Steam Deck's motion sensors)
+
+A Steam Deck has a gyro and an accelerometer in its controller, and the Frame can ask for them
+because a paired Deck's cc-host reads them through hidraw (`crates/cc-host/src/imu.rs`). It's the
+first piece of tracking a Deck in the headset (docs/deck-tracking.md). A host without that
+controller doesn't offer it: `version` lacks `"imu"` in `features`, and `imu` answers `no-imu`.
+
+    → {"v":1, "id":3, "cmd":"imu", "op":"start", "hz":90}
+    ← {"id":3, "ok":true, "hz":90, "sample_hz":250, "accel_per_g":16384, "gyro_per_dps":16.384, "quat_one":32768,
+       "fields":["seq","t_us","ax","ay","az","gx","gy","gz","qw","qx","qy","qz"]}
+    ← {"event":"imu", "n":1, "samples":[[1496899, 15990, -414, 381, 16377, 0, 0, 0, -1666, 420, -276, -32722], ...]}
+    → {"v":1, "id":4, "cmd":"imu", "op":"stop"}
+    ← {"id":4, "ok":true, "stopped":true}
+
+- **What a sample is.** The controller sends a report every 4 ms (250 Hz). Each sample is one
+  row of integers, in the order `fields` says, so nothing is rounded and the lines stay small:
+  - `seq` is the controller's own packet counter. It goes up by one per report, so a gap in it means a
+    lost sample, and `seq` times 4 ms is the sensor's clock.
+  - `t_us` is when the host read it, in microseconds since the stream started. Use it to line the
+    sensor's clock up with the Frame's own. It carries the read's delay, a few milliseconds at most.
+  - `ax ay az` is the accelerometer: divide by `accel_per_g` for g (it reads about +1 g on z when the Deck
+    lies flat and face up).
+  - `gx gy gz` is the gyro: divide by `gyro_per_dps` for degrees per second.
+  - `qw qx qy qz` is the firmware's own fused orientation: divide by `quat_one`. It maps the Deck's axes
+    to a world with z up and **an arbitrary heading**, since nothing in a Deck can sense north, and its
+    heading drifts. The tilt (pitch and roll) is anchored by gravity and doesn't. It's all zeros for a
+    moment after the stream starts.
+  - The axes are the Deck's own and right-handed: x to the right edge, y to the top edge (away from you when
+    you hold it) and z out of the screen.
+  The decoding and the scales live in `cc_proto::imu`, with the report layout in `imu.rs`'s header comment,
+  so the Frame and the host can't disagree.
+- **Batching.** The host sends one `imu` event every `1/hz` second, with every sample read since the last one
+  (about 3 at 90 Hz). `hz` is 10 to 125 and defaults to 90, which keeps the TLS link to roughly 90 events and
+  20 KB a second. `n` counts events from 1.
+- **One stream per host, and it belongs to the connection that started it.** A second Frame gets `busy`. The
+  stream ends on `stop`, when that connection closes, when the Frame is unpaired, and when the agent locks, so
+  a Frame that disappears can't leave the sensor on. Starting again from the same Frame changes the rate.
+- **The controller's setting is put back.** The IMU is off until a setting turns it on (feature report `0x87`,
+  setting 48, IMU_MODE, with the orientation, raw accel and raw gyro bits). The host reads the old value first and
+  turns on only the bits it needs, so if Steam already has the gyro on, it changes nothing. When the stream
+  ends it writes the old value back, unless something else changed the setting in the meantime. The Steam client
+  can keep reading the same hidraw node the whole time. If cc-host is killed in the middle of a stream, nothing
+  can put the setting back, so the IMU stays on until the controller resets. That only costs a little power,
+  and the next stream finds it already on and leaves it that way.
+- Errors: `no-imu` (no Deck controller), `busy`, `bad-rate`, `bad-op`, and `imu-failed: <why>` when the node can't
+  be opened or the controller doesn't answer (the user needs to be allowed to open `/dev/hidrawN`, which a
+  SteamOS login already is).
+- To watch it, run `cc-home machine imu <machine>` on the Frame. It prints the heading, pitch and roll in degrees
+  and the rates four times a second, so you can wave the Deck and see it follow. On the Deck itself,
+  `cc-host imu-probe [seconds]` does the same locally, with no Frame, and puts the setting back.
 
 ## 4. Install (`cc-share install`): idempotent, with a checklist
 

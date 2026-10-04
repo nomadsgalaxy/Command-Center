@@ -316,6 +316,12 @@ fn agent_conformance() {
         let m = c.call("monitors", json!({}));
         assert!(m["monitors"][0]["output"] == "eDP-1" && m["monitors"][0]["width"] == 1920, "{m}");
         assert_eq!(c.call("nonsense", json!({})), json!({"id": 3, "ok": false, "error": "unknown-command"}));
+        // The fake host has no Deck controller, so it doesn't offer the IMU stream.
+        assert_eq!(v["features"], json!([]), "{v}");
+        assert_eq!(c.call("imu", json!({"op": "start"}))["error"], "no-imu");
+        assert_eq!(c.call("imu", json!({"op": "start", "hz": 1}))["error"], "bad-rate");
+        assert_eq!(c.call("imu", json!({"op": "stop"}))["stopped"], json!(false), "stopping what isn't running is fine");
+        assert_eq!(c.call("imu", json!({"op": "sideways"}))["error"], "bad-op");
     });
     s.case("an oversize line closes the connection", |s| {
         let mut c = s.client().unwrap();

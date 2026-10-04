@@ -8,6 +8,7 @@
 //!   cc-host check --agent [--port N]            the agent answers TLS with this host's key
 //!   cc-host units <dir> [--bin P] [--krdp P]    writes the user units, for a package build
 //!   cc-host <cc-share's commands>               install, up, down, check, ... (src/share.rs; cc-share execs this)
+//!   cc-host imu-probe [seconds]                 a Deck's motion sensors on, printed, and put back
 //!   cc-host version
 //! The config directory is ~/.config/control-center, or $CC_CONF.
 
@@ -15,6 +16,7 @@ mod agent;
 mod aruco;
 mod draw;
 mod hostcert;
+mod imu;
 mod pair;
 mod platform;
 mod screen;
@@ -96,6 +98,7 @@ fn main() {
                 std::fs::write(dir.join(name), body).expect("unit");
             }
         }
+        Some("imu-probe") => std::process::exit(imu::probe(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4.0))),
         Some("version") | None => println!("cc-host {}", env!("CARGO_PKG_VERSION")),
         Some(other) => match share::main(other, &args[2..]) {
             Some(code) => std::process::exit(code),

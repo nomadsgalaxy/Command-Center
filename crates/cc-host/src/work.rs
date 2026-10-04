@@ -52,6 +52,14 @@ pub struct Work {
     out_changed: f64,
     asks: HashMap<String, VecDeque<Instant>>,
     pub tags: Tags,
+    imu: Option<ImuStream>,
+}
+
+/// The one IMU stream a host runs (the controller is one device): who asked, and how to stop it.
+struct ImuStream {
+    frame: String,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
 }
 
 fn settings(agent: &Agent) -> Value {
@@ -294,6 +302,57 @@ impl Agent {
 
     pub fn forget_frame(&self, frame: &str) {
         self.work.lock().unwrap().sessions.retain(|k, _| k.0 != frame);
+        self.imu_stop(frame);
+    }
+
+    /// imu start [hz] / stop (docs/agent.md, "IMU stream"): streams the Deck's motion samples to this
+    /// Frame as `imu` events in batches of about `hz` a second, until stop, or its connection closes.
+    /// Answers `no-imu` on a host without a Deck controller and `busy` when another Frame has it.
+    pub fn imu(self: &Arc<Self>, frame: &str, req: &Value) -> Result<Value, String> {
+        match req["op"].as_str() {
+            Some("stop") => Ok(json!({"ok": true, "stopped": self.imu_stop(frame)})),
+            Some("start") => {
+                let hz = match &req["hz"] {
+                    Value::Null => 90,
+                    v => v.as_u64().filter(|h| (10..=125).contains(h)).ok_or("bad-rate")? as u32,
+                };
+                let path = self.plat.deck_imu().ok_or("no-imu")?;
+                if self.work.lock().unwrap().imu.as_ref().is_some_and(|s| s.frame != frame) {
+                    return Err("busy".into());
+                }
+                self.imu_stop(frame); // A second start from the same Frame changes the rate.
+                let mut dev = crate::imu::Imu::open(&path).map_err(|e| format!("imu-failed: {e}"))?;
+                let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (me, f, st) = (self.clone(), frame.to_owned(), stop.clone());
+                let thread = std::thread::spawn(move || {
+                    let mut n = 0u64;
+                    crate::imu::run(&mut dev, hz, &st, |b| {
+                        n += 1;
+                        me.event(&f, json!({"event": "imu", "n": n, "samples": b.iter().map(|s| s.to_row()).collect::<Vec<_>>()}))
+                    });
+                    // dev drops here and puts the controller's setting back.
+                });
+                self.work.lock().unwrap().imu = Some(ImuStream { frame: frame.to_owned(), stop, thread });
+                println!("agent: {frame} imu start {hz} Hz");
+                use cc_proto::imu::{ACCEL_PER_G, GYRO_PER_DPS, QUAT_ONE};
+                Ok(json!({"ok": true, "hz": hz, "sample_hz": crate::imu::DEVICE_HZ, "accel_per_g": ACCEL_PER_G, "gyro_per_dps": GYRO_PER_DPS, "quat_one": QUAT_ONE,
+                          "fields": ["seq", "t_us", "ax", "ay", "az", "gx", "gy", "gz", "qw", "qx", "qy", "qz"]}))
+            }
+            _ => Err("bad-op".into()),
+        }
+    }
+
+    /// Stops this Frame's IMU stream, waits for the controller's setting to be put back, and says whether there was one.
+    pub fn imu_stop(&self, frame: &str) -> bool {
+        let mut w = self.work.lock().unwrap();
+        if w.imu.as_ref().is_some_and(|s| s.frame == frame) {
+            let s = w.imu.take().unwrap();
+            drop(w);
+            s.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = s.thread.join();
+            return true;
+        }
+        false
     }
 
     /// After an agent restart, running servers become sessions again, watched from their Frame's last

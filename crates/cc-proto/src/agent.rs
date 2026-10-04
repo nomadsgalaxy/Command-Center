@@ -258,6 +258,26 @@ impl Client {
     }
 }
 
+impl Client {
+    /// Like `poll`, but it returns once `wait` has passed even if events keep coming (a stream's never go quiet).
+    pub fn listen(&mut self, wait: Duration, mut event: impl FnMut(&Value)) -> Result<(), Error> {
+        let end = Instant::now() + wait;
+        loop {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(());
+            }
+            self.tls.sock.set_read_timeout(Some(left)).ok();
+            match self.line() {
+                Ok(v) if v.get("event").is_some() => event(&v),
+                Ok(_) => {}
+                Err(Error::NoAnswer) => return Ok(()),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
 /// One command on a fresh connection, for callers that only want the answer.
 pub fn call_once(conf: &Path, machine: &str, cmd: &str, args: Map<String, Value>) -> Result<Value, Error> {
     let t = trusted(conf, machine)?;

@@ -155,12 +155,14 @@ impl Agent {
     }
 
     /// Sends an event (escaped, blocked, starting) to that Frame's connection, if it has one.
-    pub fn event(&self, frame: &str, v: Value) {
+    /// Returns false when the Frame has no connection (anymore), so a stream can stop.
+    pub fn event(&self, frame: &str, v: Value) -> bool {
         if let Some(c) = self.state.lock().unwrap().conns.get(frame) {
             let mut b = canon(&v);
             b.push(b'\n');
-            let _ = c.out.send(b);
+            return c.out.send(b).is_ok();
         }
+        false
     }
 
     fn path(&self, p: &str) -> PathBuf {
@@ -284,9 +286,16 @@ impl Agent {
         let commands = std::thread::spawn(move || me.commands(&f2, &ip2, line_rx, out2));
         io_loop(tls, rest, out_rx, line_tx, close);
         let _ = commands.join();
-        let mut st = self.state.lock().unwrap();
-        if st.conns.get(&frame).is_some_and(|c| c.id == id) {
-            st.conns.remove(&frame);
+        let current = {
+            let mut st = self.state.lock().unwrap();
+            let current = st.conns.get(&frame).is_some_and(|c| c.id == id);
+            if current {
+                st.conns.remove(&frame);
+            }
+            current
+        };
+        if current {
+            self.imu_stop(&frame); // The stream belongs to the connection that asked for it.
         }
         println!("agent: {frame} gone");
         true
@@ -340,7 +349,8 @@ impl Agent {
     fn command(self: &Arc<Self>, frame: &str, _ip: &str, cmd: &str, req: &Value) -> Result<Value, String> {
         match cmd {
             "version" => Ok(json!({"ok": true, "version": VERSION, "host_id": host_id(&self.conf), "host": self.plat.hostname(),
-                                   "login": std::env::var("USER").unwrap_or_default(), "protocols": ["rdp"]})),
+                                   "login": std::env::var("USER").unwrap_or_default(), "protocols": ["rdp"],
+                                   "features": if self.plat.deck_imu().is_some() { json!(["imu"]) } else { json!([]) }})),
             "monitors" => Ok(json!({"ok": true, "monitors": self.plat.monitors()})),
             "status" => {
                 let (tags, blocked) = self.tags_state(frame);
@@ -350,6 +360,7 @@ impl Agent {
             "window" if req["op"] == json!("list") => self.window_list(frame),
             "window" if req["op"] == json!("stop") => Ok(self.window_stop(frame, &req["uuid"])),
             "tags" => self.tags(frame, req),
+            "imu" => self.imu(frame, req),
             "unpair" => {
                 for f in [format!("frames/{frame}.json"), format!("trusted-frames/{frame}.pub"), format!("frames/{frame}.last")] {
                     let _ = std::fs::remove_file(self.path(&f));
