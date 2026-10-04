@@ -6,7 +6,7 @@ use crate::draw::Canvas;
 use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
-use wayland_client::protocol::{wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface};
+use wayland_client::protocol::{wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface, wl_touch};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::wp::fractional_scale::v1::client::{wp_fractional_scale_manager_v1 as fsm, wp_fractional_scale_v1 as fs};
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
@@ -26,12 +26,17 @@ pub enum Ev {
     Resized,
     /// The compositor closed the surface, or the connection went away.
     Closed,
+    /// A click or a touch on it, for machines without a keyboard (a Steam Deck). The pairing screen
+    /// takes it as Esc; the tag screen ignores it, so a stray click doesn't end an align.
+    Tap,
 }
 
 #[derive(Default)]
 struct St {
     outputs: Vec<(wl_output::WlOutput, String)>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    pointer: Option<wl_pointer::WlPointer>,
+    touch: Option<wl_touch::WlTouch>,
     shift: [bool; 2],
     logical: (u32, u32),
     /// The preferred scale, in 120ths.
@@ -180,11 +185,32 @@ impl Dispatch<wl_output::WlOutput, usize> for St {
 
 impl Dispatch<wl_seat::WlSeat, ()> for St {
     fn event(st: &mut St, seat: &wl_seat::WlSeat, ev: wl_seat::Event, _: &(), _: &Connection, qh: &QueueHandle<St>) {
-        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(c) } = ev
-            && c.contains(wl_seat::Capability::Keyboard)
-            && st.keyboard.is_none()
-        {
-            st.keyboard = Some(seat.get_keyboard(qh, ()));
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(c) } = ev {
+            if c.contains(wl_seat::Capability::Keyboard) && st.keyboard.is_none() {
+                st.keyboard = Some(seat.get_keyboard(qh, ()));
+            }
+            if c.contains(wl_seat::Capability::Pointer) && st.pointer.is_none() {
+                st.pointer = Some(seat.get_pointer(qh, ()));
+            }
+            if c.contains(wl_seat::Capability::Touch) && st.touch.is_none() {
+                st.touch = Some(seat.get_touch(qh, ()));
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for St {
+    fn event(st: &mut St, _: &wl_pointer::WlPointer, ev: wl_pointer::Event, _: &(), _: &Connection, _: &QueueHandle<St>) {
+        if let wl_pointer::Event::Button { state: WEnum::Value(wl_pointer::ButtonState::Pressed), .. } = ev {
+            st.events.push(Ev::Tap);
+        }
+    }
+}
+
+impl Dispatch<wl_touch::WlTouch, ()> for St {
+    fn event(st: &mut St, _: &wl_touch::WlTouch, ev: wl_touch::Event, _: &(), _: &Connection, _: &QueueHandle<St>) {
+        if let wl_touch::Event::Down { .. } = ev {
+            st.events.push(Ev::Tap);
         }
     }
 }
@@ -378,6 +404,7 @@ pub fn tag_screen_main(output: &str, ask: Option<String>) -> i32 {
         for ev in screen.wait(50) {
             match ev {
                 Ev::Key(k) => inputs.push(In::Key(k)),
+                Ev::Tap => {}
                 Ev::Resized => redraw = true,
                 Ev::Closed => return 0,
             }

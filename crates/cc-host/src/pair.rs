@@ -1,7 +1,7 @@
 //! cc-host pair, which was home/pair.py's host_main (docs/pairing.md). It puts a 6-digit key on screen,
 //! and a Frame that proves it (cc_proto::pair::host_one) gets its own slot, krdp login and ports. The
 //! key lives 5 minutes. 3 wrong confirmations lock it, and then there's a 30 s wait before another.
-//! Esc or SIGTERM cancels it, and it's gone however it ends. When the agent holds 3399 (docs/agent.md),
+//! Esc, a click or tap, or SIGTERM cancels it, and it's gone however it ends. When the agent holds 3399 (docs/agent.md),
 //! pairing connections come through pairing.sock (0600) instead, a socket only this user can open.
 //!   cc-host pair [--test]   --test: cc-home selftest-pair's host (key 123456, one monitor, no screen or units)
 use crate::agent::{host_id, host_key, urandom, write_private};
@@ -126,7 +126,7 @@ fn serve(door: &Door, conf: &Path, plat: &dyn Platform, test: bool, key: &str, n
             return false;
         }
         let (tx, rx) = mpsc::channel();
-        *ask.lock().unwrap() = Ask { question: Some(format!("A Frame named {frame} was paired before with another key. Replace it? Enter: yes, Esc: no")), answer: Some(tx) };
+        *ask.lock().unwrap() = Ask { question: Some(format!("A Frame named {frame} was paired before with another key. Replace it? Enter: yes, Esc or tap: no")), answer: Some(tx) };
         let yes = rx.recv_timeout(Duration::from_secs(60)).unwrap_or(false);
         *ask.lock().unwrap() = Ask::default();
         yes
@@ -247,9 +247,9 @@ pub fn main(conf: &Path, plat: Box<dyn Platform + Send + Sync>, test: bool) -> i
                     Ev::Key(Key::Enter) => {
                         answer(true);
                     }
-                    Ev::Key(_) => {
+                    Ev::Key(_) | Ev::Tap => {
                         if answer(false).is_none() {
-                            cancelled.store(true, Relaxed); // Esc gets rid of the key right away.
+                            cancelled.store(true, Relaxed); // Esc or a tap gets rid of the key right away.
                         }
                     }
                     Ev::Resized => drawn = None,

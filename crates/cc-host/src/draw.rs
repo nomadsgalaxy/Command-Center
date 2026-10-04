@@ -127,7 +127,7 @@ pub fn quiet(w: usize, h: usize) -> Canvas {
 }
 
 /// Draws the pairing key (docs/pairing.md §3): the host's name, the 6 digits at a quarter of the height,
-/// the key as three tags under them, the time left and "Esc to cancel". It's white on #0B0B0F.
+/// the key as three tags under them, the time left and "Esc or tap to cancel". It's white on #0B0B0F.
 pub fn key_screen(host: &str, key: &str, left_s: u64, question: Option<&str>, w: usize, h: usize) -> Canvas {
     let (wi, hi) = (w as i64, h as i64);
     let mut c = Canvas::new(w, h, rgb(0x0b, 0x0b, 0x0f));
@@ -146,7 +146,7 @@ pub fn key_screen(host: &str, key: &str, left_s: u64, question: Option<&str>, w:
     }
     let info = match question {
         Some(q) => q.to_owned(),
-        None => format!("{}:{:02} left   \u{b7}   Esc to cancel", left_s / 60, left_s % 60),
+        None => format!("{}:{:02} left   \u{b7}   Esc or tap to cancel", left_s / 60, left_s % 60),
     };
     c.text(&info, 0, hi * 4 / 5, wi, hi / 10, hi as f32 / 28.0, white);
     c
