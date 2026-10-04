@@ -4367,7 +4367,7 @@
 "host": null,
 "hostconf": null,
 "stdout": "",
-"stderr": "unknown option (known: curve, autoconnect, machine, radius, ssh, label)\n",
+"stderr": "unknown option (known: curve, autoconnect, machine, radius, ssh, label, proto, tls, pin)\n",
 "exit": 1,
 "out": {
 ".config/control-center/home.json": [
