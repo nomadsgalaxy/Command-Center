@@ -132,7 +132,7 @@ pub fn set_option(line: &str, k: &str, v: &str) -> String {
 
 /// cc-home's OPTIONS: the viewers.conf options `machine set` takes, in its order. It's one string
 /// because cc-home's tests/nossh.rs looks for a quoted ssh as a command line.
-pub const OPTIONS: &str = "curve autoconnect machine radius ssh label";
+pub const OPTIONS: &str = "curve autoconnect machine radius ssh label proto tls pin";
 
 /// urllib.parse.quote(s, safe=""): keeps RFC 3986's unreserved characters, every other byte is %XX.
 pub fn quote(s: &str) -> String {
@@ -175,7 +175,9 @@ pub fn set_options(line: &str, opts: &[(String, String)]) -> Result<String, Stri
                 }
                 2 if !word(&v, ".-") => return Err(format!("bad {k} name")),
                 0 if !["h", "v", "flat"].contains(&v.as_str()) => return Err(format!("{k} is one of h, v, flat")),
-                1 if !["yes", "no"].contains(&v.as_str()) => return Err(format!("{k} is one of yes, no")),
+                1 | 7 if !["yes", "no"].contains(&v.as_str()) => return Err(format!("{k} is one of yes, no")),
+                6 if !["rdp", "vnc"].contains(&v.as_str()) => return Err(format!("{k} is one of rdp, vnc")),
+                8 if !(v.len() == 64 && v.bytes().all(|c| c.is_ascii_hexdigit())) => return Err(format!("{k} is a certificate's SHA-256, 64 hex digits")),
                 _ => {}
             }
         }
@@ -1116,7 +1118,8 @@ mod tests {
                    "a   u@h:3410   1   1920x1080  curve=h  radius=1.5  ssh=user@10.0.0.2  machine=m.1");
         for (kv, e) in [("curve=x", "curve is one of h, v, flat"), ("autoconnect=1", "autoconnect is one of yes, no"), ("radius=0.1", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"),
                         ("radius=1.", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"), ("ssh=Root@h", "ssh is user@host"), ("machine=a b", "bad machine name"),
-                        ("label=a\tb", "label: at most 64 characters, no control characters")] {
+                        ("label=a\tb", "label: at most 64 characters, no control characters"), ("proto=ssh", "proto is one of rdp, vnc"), ("tls=off", "tls is one of yes, no"),
+                        ("pin=abc", "pin is a certificate's SHA-256, 64 hex digits")] {
             assert_eq!(set_options(l, &o(&[kv])).unwrap_err(), e);
         }
         assert_eq!(set_options(l, &o(&[&format!("label={}", "x".repeat(65))])).unwrap_err(), "label: at most 64 characters, no control characters");

@@ -8,6 +8,7 @@ license-file.workspace = true
 [dependencies]
 openvr-sys = { path = "../openvr-sys" }
 freerdp-sys = { path = "../freerdp-sys" }
+vncclient-sys = { path = "../vncclient-sys" } # VNC panels (vnc.rs), libvncclient built static
 cc-proto = { path = "../cc-proto" } # the agent and pairing, in Rust (no cc-home run)
 base64 = "0.22" # a pairing's host key, as trusted-hosts keeps it
 libc = "0.2"
