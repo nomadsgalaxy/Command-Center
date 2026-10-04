@@ -394,6 +394,11 @@ impl Agent {
             if idle_at.elapsed() >= Duration::from_secs(30) {
                 idle_at = Instant::now();
                 self.idle_stop();
+                // A package update replaced this binary: restart into the new one when no Frame is connected.
+                if crate::share::replaced() && self.state.lock().unwrap().conns.is_empty() {
+                    eprintln!("updated: restarting into the new build");
+                    std::process::exit(75); // Restart=on-failure brings up the new one.
+                }
             }
             std::thread::sleep(Duration::from_millis(200));
         }

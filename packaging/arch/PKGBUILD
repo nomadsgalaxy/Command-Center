@@ -1,0 +1,93 @@
+# Command Center's host side: cc-host (the agent, pairing, tag screens, setup) and our patched
+# krdp, private to the package (docs/packaging.md). Built from this repo's checkout:
+#   cd packaging/arch && makepkg -si
+# After installing, each user runs cc-share install <monitors> once.
+
+pkgname=command-center-host
+pkgver=0.1.0
+pkgrel=1
+_krdpver=6.7.5
+pkgdesc='Share this machine with the Steam Frame: Command Center host agent and RDP server'
+arch=(x86_64 aarch64)
+url='https://github.com/nomadsgalaxy/Command-Center'
+license=(LicenseRef-OCL-1.1 LicenseRef-SWAtt-1 LGPL-2.0-or-later GPL-2.0-or-later)
+depends=(avahi
+         freerdp
+         gcc-libs
+         glibc
+         kcmutils
+         kconfig
+         kcoreaddons
+         kcrash
+         kguiaddons
+         ki18n
+         kirigami-addons
+         kpipewire
+         kscreen
+         kstatusnotifieritem
+         libxkbcommon
+         pam
+         qt6-base
+         qtkeychain-qt6
+         systemd-libs
+         wayland)
+makedepends=(cargo
+             clang
+             extra-cmake-modules
+             plasma-wayland-protocols)
+install=command-center-host.install
+options=(!lto)
+source=(https://download.kde.org/stable/plasma/$_krdpver/krdp-$_krdpver.tar.xz{,.sig})
+sha256sums=('483fb1d9ffd6954e7b12aa4321763a31726e5c0daac10e135cd13a503ced5330'
+            'SKIP')
+validpgpkeys=('E0A3EB202F8E57528E13E72FD7574483BB57B18D'  # Jonathan Esk-Riddell <jr@jriddell.org>
+              '0AAC775BB6437A8D9AF7A3ACFE0784117FBCE11D'  # Bhushan Shah <bshah@kde.org>
+              'D07BD8662C56CB291B316EB2F5675605C74E02CF'  # David Edmundson <davidedmundson@kde.org>
+              '1FA881591C26B276D7A5518EEAAF29B42A678C20') # Marco Martin <notmart@gmail.com>
+
+# The repo this PKGBUILD sits in: cc-host's source and krdp's patches.
+_repo=$(realpath "$startdir/../..")
+_lib=/usr/lib/command-center
+
+prepare() {
+  for p in pointer-offset clipboard window-stream; do
+    patch -d krdp-$_krdpver -Np1 -i "$_repo/krdp/$p.patch"
+  done
+  cd "$_repo" && cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
+}
+
+build() {
+  # krdp's library is ours alone: RPATH points the binary at it, never at a system libKRdp.
+  cmake -B build -S krdp-$_krdpver \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_RPATH=$_lib \
+    -DBUILD_TESTING=OFF
+  cmake --build build
+  cd "$_repo" && CARGO_TARGET_DIR="$srcdir/target" cargo build --frozen --release -p cc-host
+}
+
+package() {
+  install -Dm755 "$srcdir/target/release/cc-host" "$pkgdir/usr/bin/cc-host"
+  ln -s cc-host "$pkgdir/usr/bin/cc-share"
+
+  # Only what we run from krdp's build: the binary, under two names (each gets its own KWin grant, W1), and its library.
+  DESTDIR="$srcdir/krdp-root" cmake --install build
+  install -Dm755 "$srcdir/krdp-root/usr/bin/krdpserver" "$pkgdir$_lib/krdpserver"
+  install -Dm755 "$srcdir/krdp-root/usr/bin/krdpserver" "$pkgdir$_lib/krdpserver-window"
+  cp -P "$srcdir"/krdp-root/usr/lib/libKRdp.so.6* "$pkgdir$_lib/"
+
+  local apps="$pkgdir/usr/share/applications"
+  install -d "$apps"
+  printf '[Desktop Entry]\nType=Application\nName=Command Center monitor server\nExec=%s\nNoDisplay=true\nX-KDE-Wayland-Interfaces=org_kde_kwin_fake_input,zkde_screencast_unstable_v1\n' \
+    "$_lib/krdpserver" > "$apps/com.commandcenter.krdpserver.desktop"
+  printf '[Desktop Entry]\nType=Application\nName=Command Center window server\nExec=%s\nNoDisplay=true\nX-KDE-Wayland-Interfaces=org_kde_kwin_fake_input,zkde_screencast_unstable_v1,org_kde_plasma_window_management\n' \
+    "$_lib/krdpserver-window" > "$apps/com.commandcenter.krdpserver-window.desktop"
+  printf '[Desktop Entry]\nType=Application\nName=Command Center Host\nComment=Share this machine'"'"'s monitors with the Steam Frame\nExec=/usr/bin/cc-share up\nIcon=video-display\nCategories=Network;RemoteAccess;\nActions=stop;\n\n[Desktop Action stop]\nName=Stop Command Center\nExec=/usr/bin/cc-share down\n' \
+    > "$apps/command-center-host.desktop"
+
+  "$pkgdir/usr/bin/cc-host" units "$pkgdir/usr/lib/systemd/user" --bin /usr/bin/cc-host --krdp "$_lib/krdpserver"
+
+  install -Dm644 "$_repo/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$_repo/LICENSE-SWAtt-v1.md" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-SWAtt-v1.md"
+  install -Dm644 krdp-$_krdpver/LICENSES/* -t "$pkgdir/usr/share/licenses/$pkgname/krdp/"
+}

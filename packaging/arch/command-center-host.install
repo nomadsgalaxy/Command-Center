@@ -1,0 +1,21 @@
+post_install() {
+  echo '>>> Command Center host: each user who shares this machine runs once:'
+  echo '>>>   cc-share install <monitor numbers>    (cc-share list shows them)'
+}
+
+post_upgrade() {
+  # Running agents and guards restart into the new build by themselves once no Frame is connected.
+  echo '>>> Command Center host updated: it restarts itself when no Frame is connected.'
+}
+
+pre_remove() {
+  # Stop it in every logged-in user's session, so nothing keeps running from deleted files.
+  for u in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}'); do
+    systemctl --user --machine="$u@" stop 'control-center-*' 2>/dev/null
+  done
+  return 0
+}
+
+post_remove() {
+  echo '>>> Command Center host removed. Pairings and keys stay in ~/.config/control-center; delete that folder to forget them.'
+}
