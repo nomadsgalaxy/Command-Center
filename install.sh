@@ -44,6 +44,7 @@ packages=(
   rust cargo clang-devel llvm                                                                # the Rust workspace (bindgen; ring for musl)
   pipewire-devel plasma-wayland-protocols wayland-devel                                       # Frame windows as panels (capture.rs, session.rs)
   libjpeg-turbo-devel                                                                        # VNC panels' Tight/JPEG (libvncclient, vnc.rs)
+  pulseaudio-libs-devel                                                                      # sound and microphone (FreeRDP's PulseAudio backends, docs/audio.md)
 )
 inbox bash -s "${packages[@]}" <<'EOF'
 set -euo pipefail

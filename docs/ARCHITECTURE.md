@@ -50,8 +50,9 @@ root. When this file and the code disagree, the code wins, and this file should 
   the agent on 3399 that paired Frames talk to. It also shows the pairing key and the align's tag
   screens, and as `cc-share` (a link to it) it installs units, the firewall rule, the guard and
   mDNS announcing.
-- **krdp** (`krdp/*.patch`): KDE's RDP server with three patches of mine (clipboard, pointer
-  offset, a window-stream mode). The Arch package (`packaging/arch/PKGBUILD`) is the one place
+- **krdp** (`krdp/*.patch`): KDE's RDP server with four patches of mine (clipboard, pointer
+  offset, a window-stream mode, and audio: `src/Audio.cpp`, the host's sound out and the Frame's
+  microphone in, docs/audio.md). The Arch package (`packaging/arch/PKGBUILD`) is the one place
   for its version and patches. `krdp/build-steamos.sh` builds it for a SteamOS host.
 - **cc-scan** (`crates/cc-scan`): not a host program. It's the camera-scan library cc-home uses
   on the Frame (mirror camera, ArUco detection, tag layouts, the fit). It sits here because
@@ -336,7 +337,8 @@ cc-scan) honour `CC_PANELS_SOCKET=<name>`. cc-panels itself always binds `@contr
   `cc_proto::pair`, `crates/cc-host/tests/pair.rs`).
 - **RDP**: FreeRDP client to krdp. Clipboard over cliprdr (`clipboard/cliprdr.rs`,
   `krdp/clipboard.patch`). Slot 0 is the shared login on 3400+m; paired Frames get
-  3400 + 10·slot + m (slots 1–4).
+  3400 + 10·slot + m (slots 1–4). Sound and microphone over rdpsnd and audin, on one session per
+  machine (`config::carries_audio`, `rdp.rs`, `krdp/audio.patch`, docs/audio.md).
 - **RFB**: libvncclient to any VNC server, VeNCrypt X509 with a pinned certificate (docs/vnc.md).
 - **cc_pointer lease**: text datagrams on `@cc_pointer` (format in `crates/cc-pointer/src/lib.rs`,
   docs/laser-pointer-design.md).

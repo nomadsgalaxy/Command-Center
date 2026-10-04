@@ -27,6 +27,7 @@ pub struct Viewer {
     pub label: String,   // label= (D-050), decoded: the user's name for this monitor, else ""
     pub pop: Option<(String, String)>, // for a popped-out window (popout.rs): its source monitor and uuid
     pub vnc: Option<Vnc>, // proto=vnc (vnc.rs); None is RDP, the default
+    pub no_audio: bool, // audio=no: this machine's sound and microphone stay off (docs/audio.md); on by default
 }
 
 /// A VNC monitor's options (docs/vnc.md): `proto=vnc [pin=<sha256 hex>] [tls=no]`.
@@ -74,6 +75,7 @@ fn parse_viewers(text: &str, wanted: &[String]) -> Vec<Viewer> {
             label: f[4..].iter().find_map(|o| o.strip_prefix("label=")).map(decode).unwrap_or_default(),
             pop: None,
             vnc,
+            no_audio: f[4..].contains(&"audio=no"),
         });
     }
     out
@@ -103,6 +105,21 @@ fn decode(s: &str) -> String {
 /// characters at most.
 fn clean(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).take(64).collect()
+}
+
+/// Whether `me` carries its machine's sound and microphone (docs/audio.md). One RDP session per
+/// machine does, or desk-wide and desk-portrait would both play it and both claim the microphone.
+/// `peers` is every monitor, as (viewer, up), where up means live and not failing to connect. It's
+/// the lowest-numbered screen of `me`'s machine among the ones that are up, and `me` counts as up.
+/// One line saying audio=no turns the whole machine off. Pop-out windows, VNC and Frame windows
+/// never carry it.
+pub fn carries_audio(me: &Viewer, peers: &[(&Viewer, bool)]) -> bool {
+    let same = |v: &Viewer| v.pop.is_none() && v.vnc.is_none() && machine_of(v) == machine_of(me);
+    if !same(me) || peers.iter().any(|(v, _)| same(v) && v.no_audio) || me.no_audio {
+        return false;
+    }
+    let first = peers.iter().filter(|(v, up)| same(v) && (*up || v.name == me.name)).map(|(v, _)| (v.screen, v.name.as_str())).chain([(me.screen, me.name.as_str())]).min();
+    first == Some((me.screen, me.name.as_str()))
 }
 
 /// The machine a viewer belongs to: machine=, or its host if it was never paired, same as cc-home.
@@ -412,6 +429,28 @@ mod tests {
         let p = super::parse_viewers("desk-dp-1  cc-frame@10.0.0.1:3410  4  2560x1440  machine=desk\n", &[]);
         assert_eq!(p[0].machine, "desk");
         assert_eq!(super::parse_viewers(t, &["old".into()]).len(), 1);
+    }
+
+    #[test]
+    fn viewers_read_audio_no() {
+        let v = super::parse_viewers("a  u@h:3400  1  1920x1080\nb  u@h:3401  2  1920x1080  audio=no\n", &[]);
+        assert_eq!((v[0].no_audio, v[1].no_audio), (false, true), "on unless audio=no");
+    }
+
+    #[test]
+    fn one_session_per_machine_carries_audio() {
+        let v = super::parse_viewers("wide u@h:3410 1 1920x1080 machine=desk\nport u@h:3411 2 1080x1920 machine=desk\nlap u@l:3410 1 1920x1080 machine=lap\nvnc u@m:5900 1 1920x1080 machine=desk proto=vnc\n", &[]);
+        let all = |up: [bool; 4]| v.iter().zip(up).collect::<Vec<_>>();
+        let who = |p: &[(&super::Viewer, bool)]| v.iter().map(|m| super::carries_audio(m, p)).collect::<Vec<_>>();
+        assert_eq!(who(&all([true; 4])), [true, false, true, false], "the lowest screen of each machine, never VNC");
+        assert_eq!(who(&all([false, true, true, true])), [true, true, true, false], "the first one is down: the second one takes it (and the first takes it back when it connects)");
+        assert_eq!(who(&all([false; 4]))[1], true, "a lone session carries it, even if the others are down");
+        let mut off = super::parse_viewers("a u@h:3410 1 1920x1080 machine=d\nb u@h:3411 2 1920x1080 machine=d audio=no\n", &[]);
+        let p: Vec<_> = off.iter().map(|m| (m, true)).collect();
+        assert_eq!((super::carries_audio(&off[0], &p), super::carries_audio(&off[1], &p)), (false, false), "one audio=no turns the machine off");
+        off[1].no_audio = false;
+        let p: Vec<_> = off.iter().map(|m| (m, true)).collect();
+        assert!(super::carries_audio(&off[0], &p));
     }
 
     #[test]

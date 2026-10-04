@@ -34,7 +34,7 @@ One package per distro, with the same files everywhere:
 | --- | --- |
 | `/usr/bin/cc-host` | the agent, pairing, tag screens, setup and checks |
 | `/usr/bin/cc-share` | a symlink to cc-host (it acts on the name it's run as), so the documented commands keep working |
-| `/usr/lib/command-center/krdpserver` | our patched krdp (pointer offset, clipboard, window streams), its own name and path |
+| `/usr/lib/command-center/krdpserver` | our patched krdp (pointer offset, clipboard, window streams, audio), its own name and path |
 | `/usr/lib/command-center/krdpserver-window` | the same build under a second name, so window streams get their own KWin grant (W1) |
 | `/usr/lib/command-center/libKRdp.so.6*` | krdp's library, private: both binaries find it through RPATH, never the system's |
 | `/usr/share/applications/com.commandcenter.krdpserver.desktop` | NoDisplay; `Exec=/usr/lib/command-center/krdpserver`, `X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input,zkde_screencast_unstable_v1` |

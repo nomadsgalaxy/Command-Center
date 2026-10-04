@@ -1,0 +1,665 @@
+diff -ruN a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt	2026-09-08 06:52:51.000000000 -0400
++++ b/CMakeLists.txt	2026-10-04 00:50:26.933983221 -0400
+@@ -50,6 +50,10 @@
+ find_package(KPipeWire 5.27.80 REQUIRED)
+ find_package(XKB REQUIRED)
+ 
++# Audio.cpp: the host's sound to the client, and the client's microphone as a source
++find_package(PkgConfig REQUIRED)
++pkg_check_modules(PipeWire REQUIRED IMPORTED_TARGET libpipewire-0.3)
++
+ find_package(Qt6Keychain CONFIG)
+ set_package_properties(Qt6Keychain PROPERTIES
+                                    DESCRIPTION "Provides support for secure credentials storage"
+diff -ruN a/src/Audio.cpp b/src/Audio.cpp
+--- a/src/Audio.cpp	1969-12-31 19:00:00.000000000 -0500
++++ b/src/Audio.cpp	2026-10-04 01:07:50.086387814 -0400
+@@ -0,0 +1,505 @@
++// SPDX-FileCopyrightText: 2026 Command Center
++//
++// SPDX-License-Identifier: LGPL-2.1-only OR LGPL-3.0-only OR LicenseRef-KDE-Accepted-LGPL
++
++#include "Audio.h"
++
++#include <algorithm>
++#include <atomic>
++#include <condition_variable>
++#include <cstring>
++#include <deque>
++#include <mutex>
++#include <thread>
++#include <vector>
++
++#include <pipewire/pipewire.h>
++#include <spa/param/audio/format-utils.h>
++
++#include <freerdp/channels/audin.h>
++#include <freerdp/channels/drdynvc.h>
++#include <freerdp/channels/rdpsnd.h>
++#include <freerdp/channels/wtsvc.h>
++#include <freerdp/codec/audio.h>
++#include <freerdp/freerdp.h>
++#include <freerdp/peer.h>
++#include <freerdp/server/audin.h>
++#include <freerdp/server/rdpsnd.h>
++
++#include "PeerContext_p.h"
++#include "RdpConnection.h"
++
++#include "krdp_logging.h"
++
++namespace KRdp
++{
++
++namespace
++{
++// What goes to the client: 16-bit stereo at 48 kHz, which every client's PCM path takes. Opus would
++// be smaller, but 1.5 Mbit/s is nothing on a LAN, and PCM needs no codec on either end.
++constexpr uint32_t OutRate = 48000;
++constexpr uint32_t OutChannels = 2;
++// What the microphone comes in as: 16-bit mono at 48 kHz.
++constexpr uint32_t InRate = 48000;
++constexpr uint32_t InChannels = 1;
++// A backlog beyond this is dropped (oldest first), so a stalled reader means a gap, not delay.
++constexpr size_t MaxBacklogMs = 200;
++// The rdpsnd version that has Wave2 (MS-RDPEA), which carries a block without FreeRDP encoding it
++constexpr UINT16 RdpsndVersionWin8 = 8;
++
++// Brings PipeWire up once for the process.
++void pwInit()
++{
++    static std::once_flag once;
++    std::call_once(once, [] {
++        pw_init(nullptr, nullptr);
++    });
++}
++
++AUDIO_FORMAT pcmFormat(uint32_t rate, uint32_t channels)
++{
++    AUDIO_FORMAT f{};
++    f.wFormatTag = WAVE_FORMAT_PCM;
++    f.nChannels = channels;
++    f.nSamplesPerSec = rate;
++    f.nBlockAlign = channels * 2;
++    f.nAvgBytesPerSec = rate * channels * 2;
++    f.wBitsPerSample = 16;
++    return f;
++}
++
++// A PipeWire stream on its own thread loop. Both directions use it: the host's sound comes in
++// through one (a capture of the default sink's monitor), and the client's microphone goes out
++// through another (a source).
++class Pw
++{
++public:
++    ~Pw()
++    {
++        stop();
++    }
++
++    // Starts a stream. `onProcess` runs on PipeWire's data thread, so it must not block.
++    bool start(const char *name, pw_properties *props, enum pw_direction direction, pw_stream_flags flags, uint32_t rate, uint32_t channels, void (*onProcess)(void *), void *data)
++    {
++        pwInit();
++        m_data = data;
++        m_onProcess = onProcess;
++        m_loop = pw_thread_loop_new(name, nullptr);
++        if (!m_loop) {
++            pw_properties_free(props);
++            return false;
++        }
++        m_events.version = PW_VERSION_STREAM_EVENTS;
++        m_events.process = [](void *self) {
++            auto pw = static_cast<Pw *>(self);
++            pw->m_onProcess(pw->m_data);
++        };
++        pw_thread_loop_lock(m_loop);
++        m_stream = pw_stream_new_simple(pw_thread_loop_get_loop(m_loop), name, props, &m_events, this);
++        bool ok = m_stream != nullptr;
++        if (ok) {
++            uint8_t buffer[1024];
++            spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
++            spa_audio_info_raw info{};
++            info.format = SPA_AUDIO_FORMAT_S16_LE;
++            info.rate = rate;
++            info.channels = channels;
++            if (channels == 1) {
++                info.position[0] = SPA_AUDIO_CHANNEL_MONO;
++            } else {
++                info.position[0] = SPA_AUDIO_CHANNEL_FL;
++                info.position[1] = SPA_AUDIO_CHANNEL_FR;
++            }
++            const spa_pod *params[1] = {spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info)};
++            ok = pw_stream_connect(m_stream, direction, PW_ID_ANY, flags, params, 1) == 0;
++        }
++        pw_thread_loop_unlock(m_loop);
++        if (!ok || pw_thread_loop_start(m_loop) != 0) {
++            stop();
++            return false;
++        }
++        return true;
++    }
++
++    void stop()
++    {
++        if (!m_loop) {
++            return;
++        }
++        pw_thread_loop_stop(m_loop);
++        if (m_stream) {
++            pw_stream_destroy(m_stream);
++            m_stream = nullptr;
++        }
++        pw_thread_loop_destroy(m_loop);
++        m_loop = nullptr;
++    }
++
++    pw_stream *stream() const
++    {
++        return m_stream;
++    }
++
++private:
++    pw_thread_loop *m_loop = nullptr;
++    pw_stream *m_stream = nullptr;
++    pw_stream_events m_events{};
++    void *m_data = nullptr;
++    void (*m_onProcess)(void *) = nullptr;
++};
++
++// Bytes handed from one thread to another, with the oldest dropped past a limit.
++class Fifo
++{
++public:
++    explicit Fifo(size_t maxBytes)
++        : m_max(maxBytes)
++    {
++    }
++
++    void push(const uint8_t *data, size_t size)
++    {
++        {
++            std::lock_guard lock(m_mutex);
++            m_bytes.insert(m_bytes.end(), data, data + size);
++            if (m_bytes.size() > m_max) {
++                m_bytes.erase(m_bytes.begin(), m_bytes.begin() + (m_bytes.size() - m_max));
++            }
++        }
++        m_cv.notify_one();
++    }
++
++    // Takes up to `size` bytes, waiting for some until stop(). Returns how many.
++    size_t popWait(std::vector<uint8_t> &out, size_t size)
++    {
++        std::unique_lock lock(m_mutex);
++        m_cv.wait(lock, [this] {
++            return m_stop || !m_bytes.empty();
++        });
++        size_t n = std::min(size, m_bytes.size());
++        out.assign(m_bytes.begin(), m_bytes.begin() + n);
++        m_bytes.erase(m_bytes.begin(), m_bytes.begin() + n);
++        return n;
++    }
++
++    // Takes up to `size` bytes without waiting. Returns how many.
++    size_t pop(uint8_t *out, size_t size)
++    {
++        std::lock_guard lock(m_mutex);
++        size_t n = std::min(size, m_bytes.size());
++        std::copy(m_bytes.begin(), m_bytes.begin() + n, out);
++        m_bytes.erase(m_bytes.begin(), m_bytes.begin() + n);
++        return n;
++    }
++
++    void stop()
++    {
++        {
++            std::lock_guard lock(m_mutex);
++            m_stop = true;
++        }
++        m_cv.notify_all();
++    }
++
++private:
++    std::mutex m_mutex;
++    std::condition_variable m_cv;
++    std::deque<uint8_t> m_bytes;
++    size_t m_max;
++    bool m_stop = false;
++};
++}
++
++class KRDP_NO_EXPORT Audio::Private
++{
++public:
++    explicit Private(RdpConnection *session)
++        : session(session)
++        , outFifo(OutRate * OutChannels * 2 * MaxBacklogMs / 1000)
++        , inFifo(InRate * InChannels * 2 * MaxBacklogMs / 1000)
++    {
++    }
++
++    PeerContext *peerContext() const;
++
++    // The host's sound to the client (rdpsnd)
++    void startOut();
++    void stopOut();
++    void onActivated();
++    void sendLoop();
++    // The client's microphone to the host (audin)
++    void startIn();
++    void stopIn();
++    void onMicData(const BYTE *data, size_t size);
++    void startMicSource();
++
++    RdpConnection *session;
++    HANDLE vcm = nullptr;
++
++    RdpsndServerContext *rdpsnd = nullptr;
++    Pw capture;
++    Fifo outFifo;
++    std::thread sender;
++    std::atomic<bool> closing = false;
++    bool sendFailed = false;
++
++    audin_server_context *audin = nullptr;
++    Pw source;
++    Fifo inFifo;
++    std::once_flag sourceOnce;
++};
++
++PeerContext *Audio::Private::peerContext() const
++{
++    return reinterpret_cast<PeerContext *>(session->rdpPeerContext());
++}
++
++Audio::Audio(RdpConnection *session)
++    : d(std::make_unique<Private>(session))
++{
++}
++
++Audio::~Audio()
++{
++    close();
++}
++
++void Audio::update()
++{
++    if (!d->vcm) {
++        d->vcm = d->peerContext()->virtualChannelManager;
++    }
++    if (d->closing || !d->vcm || !WTSVirtualChannelManagerIsChannelJoined(d->vcm, RDPSND_CHANNEL_NAME)) {
++        return; // the client didn't ask for audio, so there's nothing to do
++    }
++    if (!d->rdpsnd) {
++        d->startOut();
++    }
++    // The microphone rides a dynamic channel, so it waits for drdynvc. The client asks for sound and
++    // microphone together, so the rdpsnd channel stands in for "this client wants audio".
++    if (!d->audin && WTSVirtualChannelManagerGetDrdynvcState(d->vcm) == DRDYNVC_STATE_READY) {
++        d->startIn();
++    }
++}
++
++void Audio::close()
++{
++    d->closing = true;
++    d->stopOut();
++    d->stopIn();
++}
++
++// ---------------------------------------------------------------------------- the host's sound
++
++void Audio::Private::startOut()
++{
++    rdpsnd = rdpsnd_server_context_new(vcm);
++    if (!rdpsnd) {
++        qCWarning(KRDP) << "Failed creating the rdpsnd context";
++        return;
++    }
++    rdpsnd->data = this;
++    rdpsnd->rdpcontext = session->rdpPeerContext();
++    // The context frees this array, so it comes from calloc.
++    rdpsnd->server_formats = static_cast<AUDIO_FORMAT *>(calloc(1, sizeof(AUDIO_FORMAT)));
++    rdpsnd->server_formats[0] = pcmFormat(OutRate, OutChannels);
++    rdpsnd->num_server_formats = 1;
++    rdpsnd->src_format = &rdpsnd->server_formats[0];
++    rdpsnd->Activated = [](RdpsndServerContext *context) {
++        static_cast<Audio::Private *>(context->data)->onActivated();
++    };
++    if (rdpsnd->Initialize(rdpsnd, TRUE) != CHANNEL_RC_OK) {
++        qCWarning(KRDP) << "Failed initializing the rdpsnd channel";
++        rdpsnd_server_context_free(rdpsnd);
++        rdpsnd = nullptr;
++    }
++}
++
++// The client has answered with the formats it can play (on rdpsnd's own thread).
++void Audio::Private::onActivated()
++{
++    for (UINT16 i = 0; i < rdpsnd->num_client_formats; i++) {
++        if (audio_format_compatible(rdpsnd->src_format, &rdpsnd->client_formats[i])) {
++            if (rdpsnd->SelectFormat(rdpsnd, i) != CHANNEL_RC_OK) {
++                qCWarning(KRDP) << "rdpsnd: SelectFormat failed";
++                return;
++            }
++            if (closing || sender.joinable()) {
++                return;
++            }
++            auto props = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Capture", PW_KEY_MEDIA_ROLE, "Music", PW_KEY_STREAM_CAPTURE_SINK, "true",
++                                           PW_KEY_NODE_NAME, "krdp-audio-out", PW_KEY_NODE_DESCRIPTION, "Command Center audio to the Steam Frame", nullptr);
++            // Always on its own data thread, so a slow network never stalls PipeWire's graph.
++            sender = std::thread([this] {
++                sendLoop();
++            });
++            const bool ok = capture.start(
++                "krdp-audio-out",
++                props,
++                PW_DIRECTION_INPUT,
++                static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS),
++                OutRate,
++                OutChannels,
++                [](void *self) {
++                    auto me = static_cast<Audio::Private *>(self);
++                    auto stream = me->capture.stream();
++                    pw_buffer *b = pw_stream_dequeue_buffer(stream);
++                    if (!b) {
++                        return;
++                    }
++                    const spa_data &data = b->buffer->datas[0];
++                    if (data.data && data.chunk->size) {
++                        me->outFifo.push(static_cast<const uint8_t *>(data.data) + data.chunk->offset, data.chunk->size);
++                    }
++                    pw_stream_queue_buffer(stream, b);
++                },
++                this);
++            if (!ok) {
++                qCWarning(KRDP) << "Couldn't capture the host's audio with PipeWire";
++            } else {
++                qCInfo(KRDP) << "Sending the host's audio to the client";
++            }
++            return;
++        }
++    }
++    qCWarning(KRDP) << "rdpsnd: the client can't play 48 kHz stereo PCM, so no audio";
++}
++
++// Sends what the capture gathered, in pieces of at most 20 ms.
++void Audio::Private::sendLoop()
++{
++    constexpr size_t frameBytes = OutChannels * 2;
++    constexpr size_t chunk = OutRate / 50 * frameBytes;
++    std::vector<uint8_t> buf;
++    const auto start = std::chrono::steady_clock::now();
++    while (!closing) {
++        const size_t n = outFifo.popWait(buf, chunk);
++        if (closing) {
++            break;
++        }
++        if (n < frameBytes) {
++            continue;
++        }
++        const UINT32 ms = static_cast<UINT32>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
++        // The PCM goes out as it is (Wave2, version 8 and up), not through FreeRDP's own encoder: the
++        // encoder is a build option (WITH_DSP_FFMPEG) and the one in SteamOS's FreeRDP 3.17 turned
++        // signed 16-bit PCM into unsigned, which is a loud noise. An older client gets SendSamples.
++        const UINT error = rdpsnd->clientVersion >= RdpsndVersionWin8
++            ? rdpsnd->SendSamples2(rdpsnd, rdpsnd->selected_client_format, buf.data(), n, static_cast<UINT16>(ms & 0xFFFF), ms)
++            : rdpsnd->SendSamples(rdpsnd, buf.data(), n / frameBytes, static_cast<UINT16>(ms & 0xFFFF));
++        if (error != CHANNEL_RC_OK && !sendFailed) {
++            sendFailed = true;
++            qCWarning(KRDP) << "rdpsnd: couldn't send audio";
++        }
++    }
++}
++
++void Audio::Private::stopOut()
++{
++    if (rdpsnd) {
++        rdpsnd->Stop(rdpsnd); // joins rdpsnd's thread, so onActivated isn't running after this
++    }
++    capture.stop();
++    outFifo.stop();
++    if (sender.joinable()) {
++        sender.join();
++    }
++    if (rdpsnd) {
++        rdpsnd_server_context_free(rdpsnd);
++        rdpsnd = nullptr;
++    }
++}
++
++// ---------------------------------------------------------------------------- the microphone
++
++void Audio::Private::startIn()
++{
++    audin = audin_server_context_new(vcm);
++    if (!audin) {
++        qCWarning(KRDP) << "Failed creating the audin context";
++        return;
++    }
++    audin->userdata = this;
++    audin->Data = [](audin_server_context *context, const SNDIN_DATA *data) -> UINT {
++        auto me = static_cast<Audio::Private *>(context->userdata);
++        const size_t size = Stream_GetRemainingLength(data->Data);
++        me->onMicData(static_cast<const BYTE *>(Stream_ConstPointer(data->Data)), size);
++        return CHANNEL_RC_OK;
++    };
++    // Only one format, so the client's answer can't mix up which one it chose.
++    const AUDIO_FORMAT format = pcmFormat(InRate, InChannels);
++    if (!audin_server_set_formats(audin, 1, &format) || !audin->Open(audin)) {
++        qCWarning(KRDP) << "Failed opening the audin channel";
++        audin_server_context_free(audin);
++        audin = nullptr;
++    }
++}
++
++void Audio::Private::onMicData(const BYTE *data, size_t size)
++{
++    if (closing) {
++        return;
++    }
++    // The microphone's node appears with the first sound, once the client has agreed on the format.
++    std::call_once(sourceOnce, [this] {
++        auto props = pw_properties_new(PW_KEY_MEDIA_CLASS, "Audio/Source", PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback", PW_KEY_MEDIA_ROLE, "Communication",
++                                       PW_KEY_NODE_NAME, "cc_frame_microphone", PW_KEY_NODE_DESCRIPTION, "Steam Frame microphone (Command Center)",
++                                       PW_KEY_NODE_NICK, "Steam Frame microphone", nullptr);
++        const bool ok = source.start(
++            "krdp-microphone",
++            props,
++            PW_DIRECTION_OUTPUT,
++            static_cast<pw_stream_flags>(PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS),
++            InRate,
++            InChannels,
++            [](void *self) {
++                auto me = static_cast<Audio::Private *>(self);
++                auto stream = me->source.stream();
++                pw_buffer *b = pw_stream_dequeue_buffer(stream);
++                if (!b) {
++                    return;
++                }
++                spa_data &data = b->buffer->datas[0];
++                if (!data.data) {
++                    pw_stream_queue_buffer(stream, b);
++                    return;
++                }
++                constexpr uint32_t stride = InChannels * 2;
++                uint64_t frames = data.maxsize / stride;
++                if (b->requested) {
++                    frames = std::min<uint64_t>(frames, b->requested);
++                }
++                const size_t want = frames * stride;
++                const size_t got = me->inFifo.pop(static_cast<uint8_t *>(data.data), want);
++                std::memset(static_cast<uint8_t *>(data.data) + got, 0, want - got); // a short read is silence
++                data.chunk->offset = 0;
++                data.chunk->stride = stride;
++                data.chunk->size = want;
++                pw_stream_queue_buffer(stream, b);
++            },
++            this);
++        if (ok) {
++            qCInfo(KRDP) << "The client's microphone is a PipeWire source now";
++        } else {
++            qCWarning(KRDP) << "Couldn't make the microphone's PipeWire source";
++        }
++    });
++    inFifo.push(data, size);
++}
++
++void Audio::Private::stopIn()
++{
++    if (audin) {
++        audin->Close(audin); // joins audin's thread, so no more data arrives
++    }
++    source.stop();
++    inFifo.stop();
++    if (audin) {
++        audin_server_context_free(audin);
++        audin = nullptr;
++    }
++}
++
++}
+diff -ruN a/src/Audio.h b/src/Audio.h
+--- a/src/Audio.h	1969-12-31 19:00:00.000000000 -0500
++++ b/src/Audio.h	2026-10-04 00:50:09.431026625 -0400
+@@ -0,0 +1,41 @@
++// SPDX-FileCopyrightText: 2026 Command Center
++//
++// SPDX-License-Identifier: LGPL-2.1-only OR LGPL-3.0-only OR LicenseRef-KDE-Accepted-LGPL
++
++#pragma once
++
++#include <memory>
++
++#include "krdp_export.h"
++
++namespace KRdp
++{
++
++class RdpConnection;
++
++/**
++ * Sound and microphone for one RDP session, over rdpsnd and audin.
++ *
++ * Nothing starts until the client joins the rdpsnd channel, so a session whose client doesn't ask
++ * for audio costs nothing. Then the host's default output (its sink's monitor, through PipeWire)
++ * is sent to the client as 48 kHz stereo PCM, and the client's microphone is published as a
++ * PipeWire source called "Steam Frame microphone (Command Center)", which any app can pick.
++ * close() stops both and takes the source away.
++ */
++class KRDP_NO_EXPORT Audio
++{
++public:
++    explicit Audio(RdpConnection *session);
++    ~Audio();
++
++    /// Called from the session's loop: starts the channels once the client has joined them.
++    void update();
++    /// Stops the capture, closes the channels and removes the microphone.
++    void close();
++
++private:
++    class Private;
++    const std::unique_ptr<Private> d;
++};
++
++}
+diff -ruN a/src/CMakeLists.txt b/src/CMakeLists.txt
+--- a/src/CMakeLists.txt	2026-10-04 00:49:20.711972672 -0400
++++ b/src/CMakeLists.txt	2026-10-04 00:50:26.934141968 -0400
+@@ -17,6 +17,8 @@
+ 
+ target_sources(KRdp PRIVATE
+     AbstractSession.cpp
++    Audio.cpp
++    Audio.h
+     Clipboard.cpp
+     Clipboard.h
+     RdpConnection.cpp
+@@ -73,6 +75,7 @@
+     ${PAM_LIBRARIES}
+ 
+     KF6::ConfigCore
++    PkgConfig::PipeWire
+     K::KPipeWire
+     K::KPipeWireRecord
+     K::KPipeWireDmaBuf
+diff -ruN a/src/RdpConnection.cpp b/src/RdpConnection.cpp
+--- a/src/RdpConnection.cpp	2026-09-08 06:52:51.000000000 -0400
++++ b/src/RdpConnection.cpp	2026-10-04 00:50:26.934334411 -0400
+@@ -24,6 +24,7 @@
+ 
+ #include <freerdp/channels/drdynvc.h>
+ 
++#include "Audio.h"
+ #include "Clipboard.h"
+ #include "Cursor.h"
+ #include "InputHandler.h"
+@@ -206,6 +207,7 @@
+     std::unique_ptr<Cursor> cursor;
+     std::unique_ptr<NetworkDetection> networkDetection;
+     std::unique_ptr<Clipboard> clipboard;
++    std::unique_ptr<Audio> audio;
+ 
+     freerdp_peer *peer = nullptr;
+ 
+@@ -230,6 +232,7 @@
+     d->cursor = std::make_unique<Cursor>(this);
+     d->networkDetection = std::make_unique<NetworkDetection>(this);
+     d->clipboard = std::make_unique<Clipboard>(this);
++    d->audio = std::make_unique<Audio>(this);
+ 
+     QMetaObject::invokeMethod(this, &RdpConnection::initialize, Qt::QueuedConnection);
+ }
+@@ -361,8 +364,8 @@
+     // PSEUDO_XSERVER is apparently required for things to work properly.
+     freerdp_settings_set_uint32(settings, FreeRDP_OsMinorType, OSMINORTYPE_PSEUDO_XSERVER);
+ 
+-    // TODO: Implement audio support
+-    freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, false);
++    // Sound and microphone are Audio.cpp's, and start only if the client asks for them.
++    freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, true);
+ 
+     freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, 32);
+ 
+@@ -468,6 +471,11 @@
+             }
+         }
+ 
++        // Sound and microphone, if the client asked for them (Audio.h)
++        if (d->peer->connected && (d->state == State::Activated || d->state == State::Streaming)) {
++            d->audio->update();
++        }
++
+         if (drdynvcJoined != lastDrdynvcJoined || drdynvcState != lastDrdynvcState) {
+             lastDrdynvcJoined = drdynvcJoined;
+             lastDrdynvcState = drdynvcState;
+@@ -560,6 +568,7 @@
+ 
+ bool RdpConnection::onClose()
+ {
++    d->audio->close();
+     d->clipboard->close();
+     d->videoStream->close();
+     setState(State::Closed);
+diff -ruN a/src/RdpConnection.h b/src/RdpConnection.h
+--- a/src/RdpConnection.h	2026-09-08 06:52:51.000000000 -0400
++++ b/src/RdpConnection.h	2026-10-04 00:50:09.448981352 -0400
+@@ -22,6 +22,7 @@
+ class Cursor;
+ class NetworkDetection;
+ class Clipboard;
++class Audio;
+ 
+ /**
+  * An RDP session.
+@@ -110,6 +111,7 @@
+     friend class VideoStream;
+     friend class NetworkDetection;
+     friend class Clipboard;
++    friend class Audio;
+ 
+     void setState(State newState);
+     void initialize();

@@ -116,7 +116,10 @@ fn build() -> Result<(), String> {
     // instead of overwritten, so a running cc-panels isn't using a file that changes under it.
     let lib = fr.join("prefix/lib64/libfreerdp3.so");
     let mtime = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
-    if !lib.is_file() || mtime(&h264) > fs::canonicalize(&lib).ok().and_then(|l| mtime(&l)) {
+    // with-pulse says the build has the PulseAudio backends (sound and microphone, docs/audio.md), so
+    // a prefix made before that gets rebuilt once.
+    let stamp = fr.join("prefix/with-pulse");
+    if !lib.is_file() || !stamp.is_file() || mtime(&h264) > fs::canonicalize(&lib).ok().and_then(|l| mtime(&l)) {
         let prefix = format!("-DCMAKE_INSTALL_PREFIX={}", fr.join("prefix").display());
         let mut cmake = vec!["cmake", "-S", ".", "-B", "build", "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", &prefix];
         cmake.extend(FREERDP_FLAGS);
@@ -124,6 +127,7 @@ fn build() -> Result<(), String> {
         ok(&mut in_box(&root, &src, &["ninja", "-C", "build"]), true)?;
         remove_lib(&lib).map_err(|e| format!("{}: {e}", lib.display()))?;
         ok(&mut in_box(&root, &src, &["ninja", "-C", "build", "install"]), true)?;
+        fs::write(&stamp, "").map_err(|e| format!("{}: {e}", stamp.display()))?;
     }
     vnc(&root, &fr)?;
     ok(&mut in_box(&root, &root, &["cargo", "build", "--release", "-q"]), false)?;
@@ -156,7 +160,7 @@ const FREERDP_FLAGS: &[&str] = &[
     "-DWITH_FFMPEG=ON", "-DWITH_VIDEO_FFMPEG=ON", "-DWITH_DSP_FFMPEG=OFF", "-DWITH_SWSCALE=ON",
     "-DWITH_OPENH264=OFF", "-DWITH_CLIENT=ON", "-DWITH_CLIENT_SDL=OFF", "-DWITH_X11=OFF", "-DWITH_WAYLAND=OFF", "-DWITH_SERVER=OFF",
     "-DWITH_SHADOW=OFF", "-DWITH_PROXY=OFF", "-DWITH_SAMPLE=OFF", "-DWITH_MANPAGES=OFF", "-DWITH_CUPS=OFF", "-DWITH_PCSC=OFF",
-    "-DWITH_PULSE=OFF", "-DWITH_ALSA=OFF", "-DWITH_OSS=OFF", "-DWITH_FUSE=OFF", "-DWITH_KRB5=OFF", "-DWITH_SMARTCARD_EMULATE=OFF",
+    "-DWITH_PULSE=ON", "-DWITH_ALSA=OFF", "-DWITH_OSS=OFF", "-DWITH_FUSE=OFF", "-DWITH_KRB5=OFF", "-DWITH_SMARTCARD_EMULATE=OFF",
     "-DWITH_FDK_AAC=OFF", "-DWITH_LAME=OFF", "-DWITH_SOXR=OFF", "-DWITH_OPUS=OFF", "-DWITH_GSM=OFF", "-DWITH_FAAD2=OFF", "-DWITH_FAAC=OFF",
     "-DWITH_AAD=OFF", "-DWITH_WEBVIEW=OFF", "-DWITH_SDL_IMAGE_DIALOGS=OFF", "-DCHANNEL_URBDRC=OFF", "-DWITH_JSONC_REQUIRED=OFF",
     "-DBUILD_TESTING=OFF", "-DWITH_SIMD=ON",

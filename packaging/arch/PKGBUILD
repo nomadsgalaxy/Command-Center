@@ -5,7 +5,7 @@
 
 pkgname=command-center-host
 pkgver=0.1.0
-pkgrel=1
+pkgrel=2
 _krdpver=6.7.5
 pkgdesc='Share this machine with the Steam Frame: Command Center host agent and RDP server'
 arch=(x86_64 aarch64)
@@ -25,6 +25,7 @@ depends=(avahi
          kpipewire
          kscreen
          kstatusnotifieritem
+         libpipewire
          libxkbcommon
          pam
          qt6-base
@@ -50,7 +51,7 @@ _repo=$(realpath "$startdir/../..")
 _lib=/usr/lib/command-center
 
 prepare() {
-  for p in pointer-offset clipboard window-stream; do
+  for p in pointer-offset clipboard window-stream audio; do
     patch -d krdp-$_krdpver -Np1 -i "$_repo/krdp/$p.patch"
   done
   cd "$_repo" && cargo fetch --locked --target "$CARCH-unknown-linux-gnu"

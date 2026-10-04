@@ -81,6 +81,8 @@ I looked up every library in `cc-panels`' dependency tree in the host's `/usr/li
 - `libgbm.so.1`, `libdrm.so.2` (Valve's Mesa, `deckard-mesa` 26.3: these have to match the GPU driver, so
   they're never bundled)
 - `libpipewire-0.3.so.0` (PipeWire 1.6.8: the client library has to match the daemon)
+- `libpulse.so.0` and `libpulse-mainloop-glib.so.0` (PulseAudio's client library, which PipeWire's
+  pulse server answers: FreeRDP's sound and microphone backends, docs/audio.md)
 - `libssl.so.3`, `libcrypto.so.3` (OpenSSL 3.2.1: stable ABI across 3.x, and it gets security fixes
   from Valve)
 - `libsystemd.so.0`, `libjson-c.so.5`, `libz.so.1`, `libexpat.so.1`

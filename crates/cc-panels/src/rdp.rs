@@ -1,6 +1,13 @@
 //! One RDP session per panel: krdp on the machine, FreeRDP here, H.264 decoded with FFmpeg.
 //! Each session keeps reconnecting for as long as cc-panels runs. Its clipboard channel goes to
 //! clipboard/cliprdr.rs.
+//!
+//! Sound and microphone (docs/audio.md): FreeRDP's rdpsnd and audin channels with its PulseAudio
+//! backends, which talk to the Frame's PipeWire through its PulseAudio socket. Only one session per
+//! machine opens them (config::carries_audio), or a machine's two monitors would play everything
+//! twice and both claim the microphone. The channels are chosen when a session connects, so when
+//! the choice moves (the carrying monitor was closed, or came back) the session that gains or
+//! loses it reconnects once, right away.
 use crate::{Panel, QUIT, panel};
 use freerdp_sys::*;
 use std::ffi::{CStr, CString, c_void};
@@ -208,6 +215,26 @@ fn session(p: &Panel, start: bool) -> Result<u32, String> {
     }
 }
 
+/// Points libpulse at the Frame's PipeWire (its PulseAudio socket). The Desktop session has its own
+/// XDG_RUNTIME_DIR, where the session setup links that socket (session.rs), but a pinned
+/// PULSE_SERVER doesn't depend on that. Keeps one the user set. Called once, before any thread.
+pub fn audio_env() {
+    if std::env::var_os("PULSE_SERVER").is_some() {
+        return;
+    }
+    let socket = format!("/run/user/{}/pulse/native", unsafe { libc::getuid() });
+    if std::path::Path::new(&socket).exists() {
+        unsafe { std::env::set_var("PULSE_SERVER", format!("unix:{socket}")) };
+    }
+}
+
+/// Whether this panel's session should carry its machine's audio right now.
+fn carries_audio(p: &Panel) -> bool {
+    let all: Vec<&Panel> = crate::panels().iter().filter(|q| q.used() && matches!(q.src, crate::Source::Rdp)).collect();
+    let peers: Vec<(&crate::config::Viewer, bool)> = all.iter().map(|q| (&*q.v, q.live() && !q.down.load(Relaxed))).collect();
+    crate::config::carries_audio(&p.v, &peers)
+}
+
 /// Connects, runs the session until it ends, and reconnects, until cc-panels ends or the panel
 /// gets disconnected (main.rs disconnect, which makes it not live).
 pub fn run(p: &'static Panel) {
@@ -238,6 +265,7 @@ pub fn run(p: &'static Panel) {
         }
     };
     let (mut said, mut changed) = (false, false); // log each failure once, not on every retry
+    let mut moved = false; // the last session ended because audio moved, so no pause before the next
     while !QUIT.load(Relaxed) && p.live() {
         let port = match session(p, true) {
             Ok(n) => {
@@ -275,6 +303,8 @@ pub fn run(p: &'static Panel) {
         ep.ClientNew = Some(on_client_new);
         // re-read on each try, since pairing again changes both
         let (password, pin) = (cstr(&crate::config::password(&p.v.machine)), crate::config::pin(&p.v.machine));
+        let audio = carries_audio(p) && !pop;
+        p.audio.store(audio, Relaxed);
         unsafe {
             let c = freerdp_client_context_new(&ep);
             (*(c as *mut PanelContext)).panel = p.index;
@@ -313,6 +343,10 @@ pub fn run(p: &'static Panel) {
             n(FreeRDP_Settings_Keys_UInt32_FreeRDP_ConnectionType, CONNECTION_TYPE_LAN);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_NetworkAutoDetect, true); // krdp measures round trips
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_RedirectClipboard, true); // one clipboard for every machine
+            // The host's sound plays here (rdpsnd) and the Frame's microphone goes to it (audin), on
+            // the one session per machine that carries them. FreeRDP's default backend is PulseAudio.
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_AudioPlayback, audio);
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_AudioCapture, audio);
             // Static channels (the clipboard) on this thread. H.264's colour conversion ignores
             // this flag, so install.sh patches FreeRDP's h264.c to run it here too instead of on
             // WinPR's 8-thread pool (3.5-4 ms less CPU a 3840x1080 frame, ~5 ms more latency; efficiency-plan.md 2a)
@@ -320,6 +354,7 @@ pub fn run(p: &'static Panel) {
             p.rdp.store(c, Release);
             if freerdp_client_start(c) == 0 && freerdp_connect((*c).instance) != 0 {
                 p.connected.store(true, Release);
+                p.down.store(false, Relaxed);
                 ever = true;
                 if pop {
                     let (w, h) = desktop(c);
@@ -340,6 +375,11 @@ pub fn run(p: &'static Panel) {
                     if count > 0 && !wake.is_null() {
                         handles[count as usize] = wake;
                         count += 1;
+                    }
+                    if carries_audio(p) != audio {
+                        eprintln!("{}: audio moves {}, reconnecting", p.v.name, if audio { "off it" } else { "onto it" });
+                        moved = true;
+                        break;
                     }
                     let ms = crate::gpu::wait(p).as_millis() as u32;
                     if count == 0 || WaitForMultipleObjects(count, handles.as_ptr(), 0, ms) == WAIT_FAILED {
@@ -367,6 +407,7 @@ pub fn run(p: &'static Panel) {
                 freerdp_disconnect((*c).instance); // frees the GDI
 
             } else {
+                p.down.store(true, Relaxed);
                 eprintln!("{}: can't connect (0x{:08x})", p.v.name, freerdp_get_last_error(c));
             }
             detach(p);
@@ -376,7 +417,9 @@ pub fn run(p: &'static Panel) {
         if pop {
             break; // a window's session ending means the window (or its server) closed, so no reconnect
         }
-        pause();
+        if !std::mem::take(&mut moved) {
+            pause();
+        }
     }
     // ask the host to stop this Frame's server for it (otherwise its idle stop does). A window's
     // gets stopped even on quitting, since it's its own krdpserver (400-800 MB, counted in

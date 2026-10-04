@@ -104,7 +104,7 @@ const SPARES: usize = 2;
 /// a pop-out's slot is emptied again when it ends.
 /// ponytail: each fill leaks its Viewer (a few hundred bytes), so `p.v` stays a plain reference
 pub struct Fill(Mutex<Option<&'static config::Viewer>>);
-static NONE: config::Viewer = config::Viewer { name: String::new(), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1920, h: 1080, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None };
+static NONE: config::Viewer = config::Viewer { name: String::new(), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1920, h: 1080, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None, no_audio: false };
 
 impl std::ops::Deref for Fill {
     type Target = config::Viewer;
@@ -133,6 +133,8 @@ pub struct Panel {
     pub wake: AtomicPtr<std::ffi::c_void>, // wakes its RDP thread's wait (rdp::poke)
     pub dirty: AtomicBool,
     pub connected: AtomicBool,
+    pub down: AtomicBool,  // its last try to connect failed (rdp.rs): audio doesn't wait on it
+    pub audio: AtomicBool, // its session connected carrying the machine's sound and microphone (rdp.rs)
     pub stale: [Stale; 2], // per GPU buffer
     pub cliprdr: AtomicPtr<freerdp_sys::CliprdrClientContext>, // its clipboard channel, while connected
     level: AtomicU8,            // how much of its stream is worth having (attention.rs)
@@ -163,6 +165,8 @@ impl Panel {
             wake: AtomicPtr::default(),
             dirty: AtomicBool::new(false),
             connected: AtomicBool::new(false),
+            down: AtomicBool::new(false),
+            audio: AtomicBool::new(false),
             stale: [Stale::new(), Stale::new()],
             cliprdr: AtomicPtr::default(),
             level: AtomicU8::new(attention::Level::Full as u8),
@@ -688,6 +692,7 @@ impl Drop for GiveBack {
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().collect();
+    rdp::audio_env(); // before any thread, since it sets a variable
     if args.get(1).is_some_and(|a| a == "--assets") && args.len() >= 4 {
         assets::draw(&args[2], &args[3], &args[4..]); // `--assets <dir> <font> tag=...` draws the Machines window's new tags
         return std::process::ExitCode::SUCCESS;
@@ -832,7 +837,7 @@ fn run() -> Result<(), String> {
     }
     let first_window = list.len();
     for n in 1..=windows::SLOTS {
-        let v = config::Viewer { name: format!("win-{n}"), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1280, h: 800, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None };
+        let v = config::Viewer { name: format!("win-{n}"), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1280, h: 800, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None, no_audio: false };
         list.push(Panel::new(list.len(), v, Source::Window(Mutex::new(None)), grab::VIOLET, None)?);
     }
     let _ = PANELS.set(list);
