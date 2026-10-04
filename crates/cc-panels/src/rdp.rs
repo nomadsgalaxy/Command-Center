@@ -288,7 +288,9 @@ pub fn run(p: &'static Panel) {
             n(FreeRDP_Settings_Keys_UInt32_FreeRDP_DesktopWidth, p.v.w);
             n(FreeRDP_Settings_Keys_UInt32_FreeRDP_DesktopHeight, p.v.h);
             n(FreeRDP_Settings_Keys_UInt32_FreeRDP_ColorDepth, 32);
-            b(FreeRDP_Settings_Keys_Bool_FreeRDP_NlaSecurity, false); // krdp checks the password itself
+            // Both, and the server picks: our krdp 6.7.5 takes TLS and checks the password itself,
+            // while SteamOS's krdp 6.4 (a Steam Deck) only takes NLA ("server supports only NLA").
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_NlaSecurity, true);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_TlsSecurity, true);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_RdpSecurity, false);
             if let Some(pin) = &pin {
