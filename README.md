@@ -46,6 +46,14 @@ it, and `| sh -s -- --dry-run` only says what it would do. To build a checkout b
 Nothing between the Frame and a computer uses SSH. It all goes through pairing, the computer's
 agent (TLS on port 3399) and krdp ([docs/ssh-free.md](docs/ssh-free.md)).
 
+### Signed releases
+
+Releases and the Arch packages are signed with Command Center's own key. Its fingerprint is
+`79BF A59F 256A 889D 2152  0E84 60EB 1BE5 E677 4107`, and the public key is
+[packaging/command-center.asc](packaging/command-center.asc) (also on
+[framecc.nomadsgalaxy.com](https://framecc.nomadsgalaxy.com/command-center.asc)). If a fingerprint
+anywhere else doesn't match this one, don't trust it.
+
 ### What a computer shares and leaves open
 
 - **Announcing** broadcasts the computer's name and its monitors' outputs and sizes to the local
