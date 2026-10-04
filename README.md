@@ -62,10 +62,9 @@ lists the Frames paired with it.
   3399) and RDP (ports 3400 and up).
 - The installer opens those ports for private networks only, and never in an untrusted firewall
   zone.
-- Releases are signed. The key's fingerprint is
-  `79BF A59F 256A 889D 2152  0E84 60EB 1BE5 E677 4107`, and the public key is
-  [packaging/command-center.asc](packaging/command-center.asc). If a fingerprint anywhere else
-  doesn't match, don't trust it.
+
+## AI Usage
+I leaned on AI to help me write a decent amount of this, being unfamiliar with coding in a 3D space. I made the decisions on what it did and what systems this app is using, but I'm going to be spending time reevaluating my workflow as I'm not particularly proud of how much I leaned on AI for this project.
 
 ## Not yet
 
