@@ -901,6 +901,7 @@ struct Owner {
     away: bool,
     window: bool, // a window panel, so any shape and it can zoom
     ctls: usize,  // how many controls it has, counted from the right
+    bare: bool,   // an app's popup (a menu): no card at all, since it rides on its window's panel
 }
 
 /// Theater mode's backdrop: an opaque dark square 8 m wide, 2 m in front of the headset. It
@@ -1026,10 +1027,11 @@ impl Grab {
         if let Some(p) = panels().get(i) {
             let window = matches!(p.src, Source::Window(_));
             let ctls = if window { CTLS } else if p.v.pop.is_some() { 1 } else { 0 }; // a pop-out gets just close (popout.rs)
-            return Some(Owner { name: &p.v.name, card: p.card, overlay: p.overlay, accent: p.accent, tag: p.tag(), live: p.live(), away: p.away(), window, ctls });
+            let bare = window && crate::windows::is_popup(i);
+            return Some(Owner { name: &p.v.name, card: p.card, overlay: p.overlay, accent: p.accent, tag: p.tag(), live: p.live(), away: p.away(), window, ctls, bare });
         }
         let x = self.extra.as_ref().filter(|_| i == self.slot())?;
-        Some(Owner { name: x.name, card: x.card, overlay: x.win, accent: x.accent, tag: (0, None), live: true, away: !x.shown, window: false, ctls: 1 })
+        Some(Owner { name: x.name, card: x.card, overlay: x.win, accent: x.accent, tag: (0, None), live: true, away: !x.shown, window: false, ctls: 1, bare: false })
     }
 
     /// Where slot i's owner is.
@@ -1481,7 +1483,13 @@ impl Grab {
             (x.pl, m)
         });
         // Same for each panel's card margins (kvm.rs card_hit).
-        k.cards = k.place.iter().enumerate().map(|(i, pl)| self.drawn[i].as_ref().map_or([chrome(pl).1; 3], |d| [d.spec.g, d.spec.g + d.spec.bottom(), d.spec.g + d.spec.top()])).collect();
+        // A popup has none, so the pointer around it is on the window behind.
+        k.cards = k
+            .place
+            .iter()
+            .enumerate()
+            .map(|(i, pl)| if crate::windows::is_popup(i) { [0.0; 3] } else { self.drawn[i].as_ref().map_or([chrome(pl).1; 3], |d| [d.spec.g, d.spec.g + d.spec.bottom(), d.spec.g + d.spec.top()]) })
+            .collect();
         // Reread the aligned places once a second, since an align or a workspace switch changes them.
         if self.scanned_read.is_none_or(|t| now - t > Duration::from_secs(1)) {
             self.scanned_read = Some(now);
@@ -1509,7 +1517,7 @@ impl Grab {
             let Some(p) = self.owner(i) else { continue };
             // Hidden panels' controls shouldn't catch lasers, and neither should ones that are
             // away (minimized, or hidden for theater mode). An empty window slot has none.
-            let show = !hidden && p.live && !p.away;
+            let show = !hidden && p.live && !p.away && !p.bare;
             if show != self.shown[i] {
                 self.shown[i] = show;
                 if show { call!(ov, ShowOverlay, p.card) } else { call!(ov, HideOverlay, p.card) };
@@ -1525,7 +1533,7 @@ impl Grab {
             // Our own cursor on a panel brings its controls in too, so the mouse can find them.
             // On the Extra it brings in the Extra's card, not the card of the panel behind it.
             let ours = k.awake && if i == self.slot() { k.on_extra } else { k.active == i && !k.on_extra };
-            let want = !hidden && (self.drags[i].is_some() || self.near[i].is_some_and(|t| now < t) || ours);
+            let want = !hidden && !p.bare && (self.drags[i].is_some() || self.near[i].is_some_and(|t| now < t) || ours);
             let before = self.fade[i];
             // Don't fade in over a stub (only a stub is at Rest). The fade waits for the full
             // card the painter is drawing, otherwise it'd be over before that's back.
@@ -1551,7 +1559,9 @@ impl Grab {
                     call!(ov, HideOverlay, p.card);
                 } else if !hidden {
                     call!(ov, ShowOverlay, p.overlay);
-                    call!(ov, ShowOverlay, p.card);
+                    if !p.bare {
+                        call!(ov, ShowOverlay, p.card);
+                    }
                 }
             }
             self.moving |= want || self.fade[i] != before;
@@ -1626,17 +1636,17 @@ impl Grab {
             let pick = left.iter().position(|&a| left.iter().all(|&b| !front[a][b])).unwrap_or(0);
             order.push(left.remove(pick));
         }
-        // In theater mode its panel goes last, the backdrop just under it, and everything else under that.
+        // In theater mode its panel goes last with its menus over it, the backdrop just under it,
+        // and everything else under that.
         let theater = crate::THEATER.load(Relaxed);
-        if let Some(at) = order.iter().position(|&i| i == theater) {
-            let t = order.remove(at);
-            order.push(t);
-        }
+        let (mut top, mut order): (Vec<usize>, Vec<usize>) = order.into_iter().partition(|&i| theater != usize::MAX && crate::windows::root(i) == theater);
+        let under = order.len(); // the theater panel's rank
+        order.append(&mut top);
         if order == self.order {
             return;
         }
         if theater != usize::MAX {
-            call!(ov, SetOverlaySortOrder, self.dim, 10 + (order.len() as u32 - 1) * 4 - 1);
+            call!(ov, SetOverlaySortOrder, self.dim, 10 + under as u32 * 4 - 1);
         }
         for (rank, &i) in order.iter().enumerate() {
             let (p, base) = (&panels()[i], 10 + rank as u32 * 4);

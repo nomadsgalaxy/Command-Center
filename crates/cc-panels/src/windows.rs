@@ -42,6 +42,8 @@ const OUTPUT: (u32, u32) = (2560, 1440); // Virtual-1, where the windows live (s
 const PARK: &str = "Virtual-2"; // an output no window is put on (session/cc-desktop): the pointer rests there when it's off our panels
 const SHELL: usize = usize::MAX; // Input.hover: on Plasma's bar (plasmabar.rs)
 const DRAGGED: Duration = Duration::from_secs(3); // a window made this soon after a window drag (a torn-off tab) goes where it was
+const LIFT: f64 = 0.02; // a popup's panel sits this far in front of its parent's, so it's nearer for the pointer and painted over it
+const POPUP_AFTER: Duration = Duration::from_secs(3); // a popup this soon after a click, a key or another popup is a menu; later, a tooltip
 
 /// Pointer and keys into the session, from the input loop (our mouse and keyboards) and the
 /// main loop (the lasers). KWin scripts can't see the stacking order, so we don't model it.
@@ -59,6 +61,7 @@ struct Input {
     down: u32, // buttons down in the session (bit: code - BTN_LEFT)
     wheel: f64, // wl_pointer units a notch (CC_WHEEL; 15 is libinput's)
     wait: Duration, // how long a press waits for its raise (CC_RAISE_MS)
+    last: Option<Instant>, // the last button or key sent, or popup seen: a popup soon after is a menu, not a tooltip
 }
 
 /// A press waiting for its window to be raised.
@@ -82,6 +85,7 @@ static INPUT: Mutex<Input> = Mutex::new(Input {
     down: 0,
     wheel: 15.0,
     wait: Duration::from_millis(100),
+    last: None,
 });
 
 impl Input {
@@ -120,6 +124,7 @@ impl Input {
             return;
         }
         self.down ^= bit;
+        self.last = Some(Instant::now());
         s.button(code, down);
     }
 }
@@ -134,11 +139,20 @@ fn button_code(flags: u32) -> Option<u32> {
     }
 }
 
+/// A point x, y in a window's stream (`stream_w` pixels wide) as a point in the session. A
+/// popup's panel maps to the popup's own place, not its parent's.
+fn session_point(cg: [i32; 4], stream_w: u32, x: f64, y: f64) -> (f64, f64) {
+    let px = stream_w as f64 / cg[2].max(1) as f64; // stream pixels per session unit
+    (cg[0] as f64 + x / px, cg[1] as f64 + y / px)
+}
+
 /// The pointer on a window panel, at x, y in its stream's pixels from the top left.
 pub fn mouse(p: &Panel, flags: u32, x: f64, y: f64) {
     let Some(w) = win(p.index) else { return };
-    let px = p.size().0 as f64 / w.cg[2].max(1) as f64; // stream pixels per session unit
-    let at = (w.cg[0] as f64 + x / px, w.cg[1] as f64 + y / px);
+    let at = session_point(w.cg, p.size().0, x, y);
+    // A popup is above its parent already, and the script can't raise it (it isn't adopted), so
+    // nothing waits for a raise there.
+    let popup = w.popup();
     let press = flags & PTR_FLAGS_DOWN != 0 && button_code(flags).is_some();
     if press {
         // Plasma's open popup is above every window (a raise can't lift one past it), and this
@@ -157,7 +171,9 @@ pub fn mouse(p: &Panel, flags: u32, x: f64, y: f64) {
     // raise what they hover, so its drop lands here (the raise's answer moves it again).
     if s.hover != Some(p.index) {
         s.hover = Some(p.index);
-        s.raise(&w.uuid);
+        if !popup {
+            s.raise(&w.uuid);
+        }
     }
     if under && s.down == 0 && (press || button_code(flags).is_none()) {
         return;
@@ -170,7 +186,7 @@ pub fn mouse(p: &Panel, flags: u32, x: f64, y: f64) {
             Some(pr) => pr.up = true,
             None => s.button(&ses, b, false),
         }
-    } else if s.raised.as_deref() == Some(w.uuid.as_str()) {
+    } else if popup || s.raised.as_deref() == Some(w.uuid.as_str()) {
         s.button(&ses, b, true);
     } else {
         s.raise(&w.uuid);
@@ -181,7 +197,11 @@ pub fn mouse(p: &Panel, flags: u32, x: f64, y: f64) {
 /// A key (evdev code) to the session's focused window. The kernel's repeats (2) get dropped
 /// because the app repeats a held key itself, at the session's rate.
 pub fn key(code: u16, value: i32) {
-    let s = INPUT.lock().unwrap().session.clone();
+    let s = {
+        let mut i = INPUT.lock().unwrap();
+        i.last = Some(Instant::now());
+        i.session.clone()
+    };
     if let Some(s) = s.filter(|_| value != 2) {
         s.key(code as u32, value != 0);
     }
@@ -292,7 +312,7 @@ pub struct Win {
     pub caption: String,
     pub cg: [i32; 4], // clientGeometry in the session: x, y, w, h
     pub parent: String, // a dialog's window ("" for none)
-    pub kind: String,   // window | dialog
+    pub kind: String,   // window | dialog | popup
     pub minimized: bool, // minimized in KWin, so its panel is hidden
 }
 
@@ -301,6 +321,10 @@ pub fn geom(e: &Value) -> [i32; 4] {
 }
 
 impl Win {
+    pub fn popup(&self) -> bool {
+        self.kind == "popup"
+    }
+
     fn from(e: &Value) -> Option<Win> {
         let s = |k: &str| e[k].as_str().unwrap_or_default().to_string();
         let (uuid, app) = (s("uuid"), s("app"));
@@ -334,6 +358,7 @@ struct Slot {
     last_up: Option<Instant>,        // its last frame up; a peripheral panel only gets a few a second
     fps: u32,                        // its stream's frame-rate cap, as last asked
     edge: Option<Instant>,           // peripheral since
+    follow: Option<(Mat, f64)>,      // a popup's place on its parent's panel, as last set
 }
 
 /// A panel centred at the cursor's point p, facing you level (like `ahead`), 10 cm nearer so
@@ -370,6 +395,40 @@ pub fn max_size(p: &Panel) -> (f64, f64) {
 /// `anchored` (stretched by its bottom-right corner, grab.rs).
 pub fn resized(pl: &crate::geometry::Placement, nw: f64, nh: f64, anchored: bool) -> Mat {
     if anchored { pl.on_surface((nw - pl.width) / 2.0, (pl.height - nh) / 2.0, 0.0) } else { pl.matrix() }
+}
+
+/// A popup's panel on its parent's: at the popup's offset from its parent in the session, at the
+/// parent panel's metres per session pixel, LIFT in front. Its matrix and width.
+/// ponytail: flat, even on a curved parent (it touches the curve where it opened); bend it if a
+/// wide menu on a tight curve bothers anyone.
+fn popup_place(parent: &crate::geometry::Placement, pcg: [i32; 4], cg: [i32; 4]) -> (Mat, f64) {
+    let (sx, sy) = (parent.width / pcg[2].max(1) as f64, parent.height / pcg[3].max(1) as f64);
+    let mid = |g: [i32; 4]| (g[0] as f64 + g[2] as f64 / 2.0, g[1] as f64 + g[3] as f64 / 2.0);
+    let ((x, y), (px, py)) = (mid(cg), mid(pcg));
+    (parent.on_surface((x - px) * sx, (py - y) * sy, LIFT), cg[2] as f64 * sx)
+}
+
+/// Whether a popup is a menu to show: a submenu, or one that came soon after a click, a key or
+/// another popup. One that comes from hovering alone is a tooltip (Qt's are popups on Wayland).
+fn popup_wanted(parent_popup: bool, last: Option<Instant>, now: Instant) -> bool {
+    parent_popup || last.is_some_and(|t| now.saturating_duration_since(t) < POPUP_AFTER)
+}
+
+/// Whether panel i shows an app's popup (a menu): no card, no chip, and it rides on its parent's panel.
+pub fn is_popup(i: usize) -> bool {
+    crate::panels().get(i).is_some_and(|_| win(i).is_some_and(|w| w.popup()))
+}
+
+/// The panel a popup panel hangs from in the end (a submenu's menu's window), or i itself.
+pub fn root(i: usize) -> usize {
+    let mut i = i;
+    for _ in 0..8 {
+        // a menu's submenu's submenu at most, and never a loop
+        let Some(w) = crate::panels().get(i).and_then(|_| win(i)).filter(Win::popup) else { break };
+        let Some(j) = crate::panels().iter().find(|p| win(p.index).is_some_and(|o| o.uuid == w.parent)) else { break };
+        i = j.index;
+    }
+    i
 }
 
 /// The STUCK watchdog's wait: STUCK, or six of the stream's frame intervals if that's longer
@@ -550,6 +609,14 @@ impl Windows {
             "add" => {
                 INPUT.lock().unwrap().covered(); // a new window maps on top
                 let Some(w) = Win::from(e) else { return };
+                if w.popup() && self.slot_of(&w.uuid).is_none() {
+                    let parent = self.slot_of(&w.parent).and_then(|j| win(self.first + j));
+                    let mut s = INPUT.lock().unwrap();
+                    if parent.as_ref().is_none_or(|pw| !popup_wanted(pw.popup(), s.last, Instant::now())) {
+                        return; // a tooltip, or its window has no panel to show it on
+                    }
+                    s.last = Some(Instant::now()); // a menu bar's next menu, opened by hovering, is wanted too
+                }
                 self.seen.insert(w.uuid.clone());
                 if let Some(i) = self.slot_of(&w.uuid) {
                     let min = w.minimized;
@@ -565,7 +632,12 @@ impl Windows {
                 }
             }
             "remove" => {
-                INPUT.lock().unwrap().covered();
+                let mut s = INPUT.lock().unwrap();
+                s.covered();
+                if self.slot_of(uuid).and_then(|i| win(self.first + i)).is_some_and(|w| w.popup()) {
+                    s.last = Some(Instant::now());
+                }
+                drop(s);
                 self.unslotted.retain(|w| w.uuid != uuid);
                 if let Some(i) = self.slot_of(uuid) {
                     self.free(i, grab);
@@ -669,9 +741,22 @@ impl Windows {
     fn adopt(&mut self, i: usize, w: Win, grab: &mut grab::Grab) {
         let p = panel(self.first + i);
         let (cw, ch) = (w.cg[2].max(1) as u32, w.cg[3].max(1) as u32);
+        if w.popup() {
+            if self.slot_of(&w.parent).is_none() {
+                return; // its window went meanwhile, and the popup with it
+            }
+            p.set_size(cw, ch);
+            p.set_zoom(1.0);
+            grab.cancel(p.index);
+            eprintln!("{}: {} popup ({}x{}) on its window's panel", p.v.name, w.key, cw, ch);
+            set_win(p.index, Some(w));
+            self.slots[i].follow = None;
+            self.place_popup(i);
+            return self.open(i); // shown on its first frame
+        }
         p.set_size(cw, ch);
         // Where it was (a restart, or a hibernated app reopened), else its app's spot (the first one open), else `ahead`.
-        let app_open = (0..SLOTS).any(|j| win(self.first + j).is_some_and(|o| o.key == w.key));
+        let app_open = (0..SLOTS).any(|j| win(self.first + j).is_some_and(|o| o.key == w.key && !o.popup()));
         let hibernated = || self.resumed.get_mut(&w.key)?.as_array_mut().filter(|v| !v.is_empty()).map(|v| v.remove(0));
         let (pose, zoom, from) = match self.poses.get(&w.uuid).cloned().or_else(hibernated).and_then(|v| Some((config::pose_from(&v)?, v["zoom"].as_f64()))) {
             Some((pose, zoom)) => (pose, zoom, "where it was"),
@@ -992,11 +1077,24 @@ impl Windows {
 
     fn keep_pose(&mut self, i: usize, uuid: &str) {
         let p = panel(self.first + i);
-        if p.live() {
+        if p.live() && !is_popup(p.index) {
             let pl = KVM.lock().unwrap().place[p.index];
             let mut v = config::pose_json(&pl.pose(), pl.height);
             v["zoom"] = json!(p.zoom());
             self.poses.insert(uuid.into(), v);
+        }
+    }
+
+    /// Puts popup slot i's panel on its parent's (popup_place), when either moved or resized.
+    fn place_popup(&mut self, i: usize) {
+        let p = panel(self.first + i);
+        let Some(w) = win(p.index) else { return };
+        let Some(pw) = self.slot_of(&w.parent).map(|j| self.first + j).and_then(|j| Some((j, win(j)?))) else { return };
+        let mut k = KVM.lock().unwrap();
+        let at = popup_place(&k.place[pw.0], pw.1.cg, w.cg);
+        if self.slots[i].follow != Some(at) {
+            self.slots[i].follow = Some(at);
+            k.set_pose(p.index, &at.0, at.1, 0.0);
         }
     }
 
@@ -1104,8 +1202,23 @@ impl Windows {
             };
             if step != 0 {
                 s.nudged += 1;
-                self.kwin.send(json!({"c": "nudge", "uuid": w.uuid, "d": step}));
+                if w.popup() {
+                    // KWin won't resize a popup, but a stream resumed records a frame at once
+                    // (WindowScreenCastSource::resume), so pause it and resume it
+                    self.cap.set_active(i as u64, step < 0);
+                } else {
+                    self.kwin.send(json!({"c": "nudge", "uuid": w.uuid, "d": step}));
+                }
             }
+        }
+        if w.popup() {
+            // its size is its own, its place its parent's: none of the size sync below
+            let (sw, sh) = s.shown.size;
+            if sw > 0 && (sw, sh) != p.size() {
+                p.set_size(sw, sh);
+                s.follow = None;
+            }
+            return self.place_popup(i);
         }
         if grab.resizing(p.index) {
             s.anchored = grab.stretching(p.index);
@@ -1235,7 +1348,7 @@ mod tests {
     #[test]
     fn only_the_latest_raise_counts() {
         let q: kwin::Queue = Default::default();
-        let mut s = Input { session: None, cmds: Some(q.clone()), raised: None, asked: None, seq: 0, hover: None, at: (0.0, 0.0), pending: None, down: 0, wheel: 15.0, wait: Duration::ZERO };
+        let mut s = Input { session: None, cmds: Some(q.clone()), raised: None, asked: None, seq: 0, hover: None, at: (0.0, 0.0), pending: None, down: 0, wheel: 15.0, wait: Duration::ZERO, last: None };
         s.raise("A");
         assert!(s.answered("A", Some(1)));
         s.raise("B"); // pointer onto B: A no longer counts as on top
@@ -1293,6 +1406,34 @@ mod tests {
         assert_eq!(stuck_after(Level::Quiet, WINDOW_FPS), attention::QUIET_EVERY * 6);
         assert_eq!(stuck_after(Level::Peripheral, EDGE_FPS), Duration::from_secs(1) / EDGE_FPS * 6);
         assert_eq!(stuck_after(Level::Full, 1), Duration::from_secs(6)); // a slow cap: six of its frames
+    }
+
+    #[test]
+    fn a_popup_rides_on_its_parent_where_it_is_in_the_session() {
+        use crate::geometry::Placement;
+        let at = |m: Mat| [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64];
+        let pose = Pose { centre: [0.3, 1.5, -1.4], yaw: 25.0, pitch: -10.0, width: 1.0, ..Default::default() };
+        let parent = Placement::from_matrix(&panel_matrix(&pose), 1.0, 0.8, 0.0); // 1000x800 at 1 mm a pixel
+        let (pcg, cg) = ([100, 50, 1000, 800], [700, 150, 200, 300]); // a menu opened at (600, 100) in the window
+        let (m, w) = popup_place(&parent, pcg, cg);
+        assert!((w - 0.2).abs() < 1e-9, "the parent's scale: {w}");
+        let popup = Placement::from_matrix(&m, w, 1.5, 0.0);
+        let (corner, under) = (at(popup.on_surface(-0.1, 0.15, 0.0)), at(parent.on_surface(0.1, 0.3, LIFT)));
+        let off = corner.iter().zip(under).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+        assert!(off < 1e-5, "its top-left is over the window's (600, 100), LIFT nearer: off by {off}");
+        // and a click on it goes to the popup's own place in the session, not its parent's
+        assert_eq!(session_point(cg, 400, 100.0, 50.0), (750.0, 175.0));
+        assert_eq!(session_point(pcg, 1000, 600.0, 100.0), (700.0, 150.0));
+    }
+
+    #[test]
+    fn a_popup_after_a_click_is_a_menu_and_one_from_hovering_a_tooltip() {
+        let now = Instant::now();
+        let ago = |s: u64| now.checked_sub(Duration::from_secs(s));
+        assert!(popup_wanted(false, ago(1), now), "right after a click or a key");
+        assert!(!popup_wanted(false, ago(10), now), "hovering long after: a tooltip");
+        assert!(!popup_wanted(false, None, now));
+        assert!(popup_wanted(true, ago(10), now), "a submenu, however long the menu's been open");
     }
 
     #[test]
