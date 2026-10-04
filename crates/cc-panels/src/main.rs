@@ -31,6 +31,7 @@ mod laser;
 mod plasmabar;
 mod popout;
 mod rdp;
+mod vnc;
 #[allow(dead_code)] // virtual outputs for desktop mode aren't wired up yet; the spike uses them
 mod session;
 mod taskbar;
@@ -103,7 +104,7 @@ const SPARES: usize = 2;
 /// a pop-out's slot is emptied again when it ends.
 /// ponytail: each fill leaks its Viewer (a few hundred bytes), so `p.v` stays a plain reference
 pub struct Fill(Mutex<Option<&'static config::Viewer>>);
-static NONE: config::Viewer = config::Viewer { name: String::new(), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1920, h: 1080, auto: false, machine: String::new(), label: String::new(), pop: None };
+static NONE: config::Viewer = config::Viewer { name: String::new(), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1920, h: 1080, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None };
 
 impl std::ops::Deref for Fill {
     type Target = config::Viewer;
@@ -329,7 +330,7 @@ impl Panel {
                 if flags & PTR_FLAGS_DOWN != 0 {
                     windows::shell_outside(); // a click outside Plasma's open popup closes it
                 }
-                rdp::mouse(self, flags, x, y)
+                if self.v.vnc.is_some() { vnc::mouse(self, flags, x, y) } else { rdp::mouse(self, flags, x, y) }
             }
             Source::Window(_) => windows::mouse(self, flags, x, y),
         }
@@ -338,6 +339,7 @@ impl Panel {
     /// A key: its evdev code, and 0 for up, 1 for down, 2 for the kernel's repeat.
     pub fn key(&self, code: u16, value: i32) {
         match self.src {
+            Source::Rdp if self.v.vnc.is_some() => vnc::key(self, code, value),
             Source::Rdp => {
                 let sc = kvm::scancode(code);
                 if sc != 0 {
@@ -351,6 +353,7 @@ impl Panel {
     /// Wheel notches, positive is up or right (evdev's convention).
     pub fn wheel(&self, horizontal: bool, notches: f64) {
         match self.src {
+            Source::Rdp if self.v.vnc.is_some() => vnc::wheel(self, horizontal, notches),
             Source::Rdp => rdp::wheel(self, horizontal, (notches * 120.0).round() as i32 * if horizontal { -1 } else { 1 }),
             Source::Window(_) => windows::wheel(horizontal, notches),
         }
@@ -359,6 +362,7 @@ impl Panel {
     /// There's something to take input: a connected machine or a shown window.
     pub fn takes_input(&self) -> bool {
         match self.src {
+            Source::Rdp if self.v.vnc.is_some() => self.connected.load(Relaxed),
             Source::Rdp => rdp::input(self).is_some(),
             Source::Window(_) => self.live(),
         }
@@ -705,7 +709,7 @@ fn connect(p: &'static Panel, after: Duration) -> std::thread::JoinHandle<()> {
     call!(ov, ShowOverlay, p.overlay);
     std::thread::spawn(move || {
         std::thread::sleep(after);
-        rdp::run(p)
+        if p.v.vnc.is_some() { vnc::run(p) } else { rdp::run(p) }
     })
 }
 
@@ -828,7 +832,7 @@ fn run() -> Result<(), String> {
     }
     let first_window = list.len();
     for n in 1..=windows::SLOTS {
-        let v = config::Viewer { name: format!("win-{n}"), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1280, h: 800, auto: false, machine: String::new(), label: String::new(), pop: None };
+        let v = config::Viewer { name: format!("win-{n}"), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1280, h: 800, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None };
         list.push(Panel::new(list.len(), v, Source::Window(Mutex::new(None)), grab::VIOLET, None)?);
     }
     let _ = PANELS.set(list);
