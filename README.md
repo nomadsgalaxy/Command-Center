@@ -2,149 +2,79 @@
 
 # Command Center
 
-Command Center is the Steam Frame's VR desktop. It puts the windows of the Frame's own Plasma session and the monitors of your other computers in the room with you as panels, each one where you want it. The Frame's mouse and keyboard drive whichever panel you point at, so one set of hands works every machine. It's all Rust. More at [framecc.nomadsgalaxy.com](https://framecc.nomadsgalaxy.com).
+Command Center is a VR desktop for the Steam Frame. Your windows, and the monitors of your other
+computers, hang in the room around you as panels you can move, resize and curve. One mouse and
+keyboard drive whichever panel you point at. It's all Rust. More at
+[framecc.nomadsgalaxy.com](https://framecc.nomadsgalaxy.com).
 
-Here's what runs where:
+## What you need
 
-| Piece | Runs on | What it does |
-| --- | --- | --- |
-| `cc-host` (also called as `cc-share`) | each computer you want to see (Arch, KDE Plasma on Wayland, `krdp`) | Serves monitor N over RDP on port 3400+N with `krdpserver --plasma --monitor N`, as the user service `control-center-share@N`, and runs the agent the Frame pairs with. `cc-share` is a link to the same binary. |
-| `cc-panels` | the Frame | The Desktop itself: every remote monitor and every window of its Plasma session as a SteamVR panel, plus the taskbar, pointer and keyboard. |
-| `cc-home` | the Frame | Spots, workspaces, machines, pairing and align. Run `cc-home` with no arguments to see its commands. |
+- A Steam Frame with SteamOS and SteamVR.
+- A Bluetooth mouse and keyboard paired with the Frame. For now they're required.
+- Computers running Linux with KDE Plasma 6 on Wayland and krdp, on the same local network.
+  A Steam Deck in desktop mode counts.
 
 ## Install
 
-For now the Frame needs a Bluetooth mouse and keyboard paired with it, since that's what drives
-the panels.
-
-Run this in a terminal on the Steam Frame (Konsole, or over SSH), and then on each computer you
-want to see from it:
+Run this in a terminal on the Frame, then on each computer you want to see from it:
 
 ```
 curl -fsSL https://framecc.nomadsgalaxy.com/install | sh
 ```
 
-It downloads the installer (`cc-install`) from the latest release, checks it against the
-release's `SHA256SUMS`, and works out which machine it's on. Running it again updates
-Command Center or removes it.
+The installer works out which machine it's on. Run it again later to update or remove Command
+Center.
 
-- **On the Frame**, it gets the code into `~/control-center` and builds it in a container
-  (`control-center`, through distrobox). The first run takes a while. When it's done, open
-  **Desktop** from the SteamVR launcher. If the pointer driver changed, it tells you: SteamVR only
-  loads drivers when it starts, so the installer offers to restart the Frame and waits for your
-  yes. A Desktop that's already open keeps running while it builds, and the update loads the next
-  time you open it.
-- **On a computer** (KDE Plasma on Wayland, with krdp), it lists your monitors with their names
-  and sizes, all ticked, so you choose which ones the Frame shows. It installs `cc-host`, one
-  static binary for x86_64 or aarch64. Then it looks at the computer for the things that stop the
-  Frame from finding or reaching it, and offers to fix each one (see below). A Steam Deck in
-  desktop mode counts as a computer: SteamOS 3.8 comes with krdp.
-- **The fixes** need `sudo`, so the installer shows the exact commands and asks before it runs
-  any of them. `--yes` counts as yes. With no terminal and no `--yes` it only prints them. It
-  offers three: opening the firewall in the right zones, starting `avahi-daemon`, and turning
-  publishing on in `avahi-daemon.conf`. The last two only come up if announcing is ticked. If
-  `sudo` says no, this account probably has no password yet (a fresh Steam Deck doesn't), so run
-  `passwd` first and then `cc-share fix` (`cc-share fix --announce` before you turn announcing on). `cc-share check` lists anything still wrong, each with
-  its fix.
-- **Pairing** is the last step, and the installer walks you through it. Run `cc-share pair` on
-  the computer and a 6-digit key fills its screen. On the Frame, open Workspace, then Machines,
-  then Add machine, pick the computer and press Pair. Then type the key, or press Pair by
-  looking and look at the screen. If the computer isn't in the list, press Pair by looking anyway:
-  the key screen shows the computer's address as tags too, so the Frame reads both. Typing the
-  address works as well.
-  Esc, a click or a tap closes the key screen, so a Steam Deck with no keyboard can cancel too. **Align** (Machines, Align) then puts each panel on the real
-  monitor it shows.
+- **On the Frame,** it builds Command Center. The first run takes a while. When it's done, open
+  **Desktop** from the SteamVR launcher.
+- **On a computer,** you pick which monitors the Frame can show. If something would stop the
+  Frame from finding or reaching the computer, like the firewall, the installer shows the exact
+  `sudo` commands to fix it and asks first. The details are in
+  [docs/packaging.md](docs/packaging.md#host-fixes).
 
-If there's no terminal to answer questions on, pass the answers instead: `| sh -s -- --yes` installs or
-updates, `| sh -s -- --yes 0 1` shares monitors 0 and 1, `| sh -s -- --remove --yes` removes
-it, and `| sh -s -- --dry-run` only says what it would do. `--yes` is also your yes to the fixes
-above, so it runs them with sudo (and `--remove --yes` undoes them). To build a checkout by hand, run
-`./install.sh` in it.
+With no terminal to answer questions on, pass the answers: `| sh -s -- --yes` installs or
+updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
 
-Nothing between the Frame and a computer uses SSH. It all goes through pairing, the computer's
-agent (TLS on port 3399) and krdp ([docs/ssh-free.md](docs/ssh-free.md)).
+## Pair and align
 
-### Signed releases
+1. On the computer, run `cc-share pair`. A 6-digit key fills its screen.
+2. On the Frame, open **Workspace → Machines → Add machine**. Pick the computer, or just press
+   **Pair by looking** and look at its screen: the key screen carries the computer's address too,
+   so it doesn't need to be in the list. You can also type the address and key.
+3. Press **Align**. The monitors show AprilTags, the headset's camera finds them, and each panel
+   lands on its real monitor.
 
-Releases and the Arch packages are signed with Command Center's own key. Its fingerprint is
-`79BF A59F 256A 889D 2152  0E84 60EB 1BE5 E677 4107`, and the public key is
-[packaging/command-center.asc](packaging/command-center.asc) (also on
-[framecc.nomadsgalaxy.com](https://framecc.nomadsgalaxy.com/command-center.asc)). If a fingerprint
-anywhere else doesn't match this one, don't trust it.
+## Everyday use
 
-### What a computer shares and leaves open
+- **Spots** save where your panels are in the room. `cc-home save desk` saves them, and
+  `cc-home apply desk` puts them back.
+- **Workspaces** keep a layout per room. Back in a room, **Enter workspace** uses one of its
+  monitors to put everything where it belongs.
+- **Closing the Desktop** saves which apps were open and frees the memory for a game. Opening
+  it again brings them back.
 
-- **Announcing** broadcasts the computer's name and its monitors' outputs and sizes to the local
-  network (mDNS), so the Frame can list it. There's no login in it and no address beyond what mDNS
-  already shows. It's ticked in the installer, so untick it if you'd rather not. `--yes` leaves it
-  as it was, which is off on a new install. It needs `avahi-daemon` running with publishing on.
-  A Steam Deck has neither: the daemon is off, and SteamOS sets `disable-publishing=yes` and
-  `disable-user-service-publishing=yes` in `/etc/avahi/avahi-daemon.conf`, so `avahi-publish` gets
-  "Not permitted". If announcing is on, the installer offers to fix both. It starts the daemon
-  (`sudo systemctl enable --now avahi-daemon`), copies the config to
-  `avahi-daemon.conf.before-command-center`, changes only those two keys in `[publish]` to `no`
-  and restarts the daemon. If you unticked announcing, it doesn't touch avahi. Removing Command
-  Center puts the config back from the copy, as long as nothing has changed it since, and leaves
-  `avahi-daemon` running because other things may use it. The announce service also notices when
-  `avahi-publish` dies, says why in its journal (`journalctl --user -u control-center-announce`)
-  and starts it again, waiting 2 s and doubling up to 60 s. If you'd rather not fix avahi, use Pair by looking, or type the address in Add machine.
-- **The firewall rule** lets the private ranges (10/8, 172.16/12, 192.168/16) reach ports 3399-3449.
-  That's wider than your subnet, so on a large private network or a VPN more machines can reach the
-  door. Only paired Frames get past it. With firewalld, the installer opens it in each active zone except
-  public, external, dmz, block and drop, since a network in one of those isn't one you trust (a
-  Steam Deck's Wi-Fi is in `home` while `public` is the default, so a rule without `--zone`
-  would never apply). It shows the `sudo firewall-cmd --permanent --zone=<zone> ...` commands
-  and asks, and it takes our rules back out of an untrusted zone if an older version put them
-  there. If your home network is only in an untrusted zone, it opens nothing and says how to move
-  it to the home zone (`sudo firewall-cmd --permanent --zone=home --change-interface=<interface>`).
-  With ufw there are no zones, so it's the one rule. Removing Command Center offers to close it
-  again.
-- **The shared login (slot 0)** from before pairing stays on (ports 3400+), and anyone with its
-  password can connect. `cc-share check` and `cc-share frames` remind you while it's there. Once
-  every monitor you use is paired, you can retire it, and the Machines window will offer to.
+On a computer, `cc-share check` says if anything's wrong and how to fix it, and `cc-share frames`
+lists the Frames paired with it.
 
-On the computer, `cc-share check` runs the checklist again (`cc-share install … --dry-run` shows what
-an install would change), `cc-share fix [--yes]` offers the fixes again, `cc-share frames` lists paired Frames, `cc-share unpair <frame>` revokes
-one, and `cc-share lock` / `unlock` pauses the agent.
+## Security
 
-**Diagnosing with SSH:** SSH is never used by default. With `CC_SSH=1`, cc-home may use it (align's
-old path, `machine probe user@host`), and it says so every time. cc-home's `tests/nossh.rs`
-(`cargo test -p cc-home --test nossh`) proves that everything else works with SSH gone.
-
-## Spots (saved screen places)
-
-`cc-home` saves where the screens are in the room (SteamVR's standing space), so they come back to
-the same real-world place whichever way you're facing. Screens stay free to move and recentering
-still works. Spots only apply when you ask.
-
-```
-cc-home save desk          # save every screen where it is now (default spot: home)
-cc-home apply desk         # put them back
-cc-home list | forget <spot>
-cc-home calibrate desk-wide   # "home" for a remote monitor: touch three corners of its picture
-```
-
-Calibrating puts a remote monitor's panel exactly on the real monitor, at its real size. When you
-touch the corners (`cc-home calibrate`), it reads the controller's tip from the running Desktop
-(cc-panels). Spots live in `~/.config/control-center/home.json`. If SteamVR's room origin moves
-(say, you redo room setup), save or calibrate again.
-
-**Align** does the same from a look. The monitor shows AprilTags, the headset's view
-(`/dev/video99`, the VR mirror with passthrough) reads them while you move your head slowly, and
-each panel lands on its real monitor, curve included. Use Machines, Align, or
-`cc-home machine align <monitor>` ([docs/apriltag-mapping.md](docs/apriltag-mapping.md)). After an
-align, a monitor you've moved by hand gets a button beside its grab bar that puts it back. If
-SteamVR relocalizes the room, everything shifts together, so align one monitor and move the rest
-with it (`cc-home reanchor <monitor>`).
+- The Frame and a computer only talk after pairing, through the computer's agent (TLS on port
+  3399) and RDP (ports 3400 and up).
+- The installer opens those ports for private networks only, and never in an untrusted firewall
+  zone.
+- Releases are signed. The key's fingerprint is
+  `79BF A59F 256A 889D 2152  0E84 60EB 1BE5 E677 4107`, and the public key is
+  [packaging/command-center.asc](packaging/command-center.asc). If a fingerprint anywhere else
+  doesn't match, don't trust it.
 
 ## Not yet
 
-- **Steam Deck:** its desktop mode is X11 and Game Mode is gamescope, and krdp can't capture
-  either. Sunshine + Moonlight would cover it.
-- **Gaming-grade latency:** RDP suits desktop work. Moonlight is the upgrade path.
+- **Controlling a Steam Deck:** SteamOS's own krdp shows the screen but drops mouse and keyboard
+  input. A fixed krdp for it is in the works.
+- **Gaming-grade latency:** RDP suits desktop work, not fast games.
 
 ## License
 
-Command Center is under OCL v1.1 + SWAtt v1 (Open Community License v1.1 + Software Attribution
-v1, by Prusa Research). Creator: Nomads Galaxy. See [NOTICE.md](NOTICE.md), [LICENSE](LICENSE)
-and [LICENSE-SWAtt-v1.md](LICENSE-SWAtt-v1.md). Third-party components keep their own licenses.
+OCL v1.1 + SWAtt v1 (Open Community License v1.1 + Software Attribution v1, by Prusa Research).
+Creator: Nomads Galaxy. See [NOTICE.md](NOTICE.md), [LICENSE](LICENSE) and
+[LICENSE-SWAtt-v1.md](LICENSE-SWAtt-v1.md). Third-party components keep their own licenses.
