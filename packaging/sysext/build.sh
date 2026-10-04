@@ -2,10 +2,10 @@
 # Builds Command Center's Frame side as one systemd-sysext image (docs/packaging-frame.md): a
 # read-only squashfs that systemd-sysext lays over SteamOS's /usr and /opt. It only builds and
 # checks the file. It never installs, merges or refreshes anything.
+#   packaging/sysext/build-native.sh      first: the builds, made for SteamOS (no container)
 #   packaging/sysext/build.sh [out.raw]   default: packaging/sysext/out/command-center.raw
 # Environment:
-#   CC_ROOT     the checkout whose builds go in (default: this one; a worktree has no builds,
-#               so point it at ~/control-center)
+#   CC_ROOT     the checkout whose builds go in (default: this one)
 #   CC_VERSION  the image's version (default: git describe of CC_ROOT)
 # Exits non-zero (3 on the host) when the image is built, but something in it can't load on this SteamOS (the check lists it).
 set -euo pipefail
@@ -37,9 +37,12 @@ mkdir -p "$s/$lib/session" "$s/$lib/panels/third_party/prefix/lib64" "$s/$lib/cr
 for c in cc-launch cc-desktop cc-rest; do ln -s ../cc-home "$s/$lib/session/$c"; done
 for c in cc-home cc-panels; do ln -s "../lib/command-center/$c" "$s/usr/bin/$c"; done
 cp -P "$root"/panels/third_party/prefix/lib64/lib{freerdp3,freerdp-client3,winpr3}.so.3* "$s/$lib/panels/third_party/prefix/lib64/"
+# Says the build is native, so cc-box runs things directly (session.rs, native()). A container
+# build has none, and the check below would fail it anyway.
+[ -f "$root/panels/third_party/prefix/steamos-release" ] && install -m644 "$root/panels/third_party/prefix/steamos-release" "$s/$lib/panels/third_party/prefix/"
 install -m644 "$root"/panels/cc-windows.js "$root"/panels/cc-restore.js "$s/$lib/panels/"
 install -m644 "$root"/crates/cc-panels/actions/*.json "$s/$lib/crates/cc-panels/actions/"
-strip --strip-debug "$s/$lib/cc-home" "$s/$lib/target/release/cc-panels"
+strip --strip-debug "$s/$lib/cc-home" "$s/$lib/target/release/cc-panels" "$s/$lib"/panels/third_party/prefix/lib64/*.so.*.*
 
 # The pointer driver goes where SteamVR's own drivers are. vrserver loads every folder in
 # /opt/steamvr/drivers, so nobody runs vrpathreg.
@@ -81,6 +84,8 @@ printf 'ID=%s\nVERSION_ID=%s\nARCHITECTURE=arm64\nIMAGE_ID=%s\nIMAGE_VERSION=%s\
 mkdir -p "$(dirname "$out")"
 mksquashfs "$s" "$out" -all-root -noappend -comp zstd -quiet
 echo "built $out ($(du -h "$out" | cut -f1), $name $version, for $ID $VERSION_ID)"
+# Without root it can't mount the image to look inside, but it does check that it's one.
+systemd-dissect --validate "$out" >/dev/null && echo "systemd-dissect: a valid image"
 
 # Can everything in it load here? Each ELF's libraries have to be in the image, SteamOS's /usr/lib
 # or SteamVR's runtime, and it can't want a newer glibc than SteamOS has.

@@ -12,7 +12,8 @@
 //!   cc-home rest                session/cc-rest: hibernate save, the session stopped, and the
 //!                               programs named in `rest_nice` at nice 10 and idle-ish IO
 //!   cc-home session             session/cc-desktop: Plasma in a headless KWin (the cc-desktop unit)
-//!   cc-home box <cmd> [args...] cc-box: a command in the control-center container
+//!   cc-home box <cmd> [args...] cc-box: a command in the control-center container, or right
+//!                               here when the build is native (native())
 //! With CC_DRY=1, desktop, panels, rest and box print the commands that would change something
 //! (systemd-run, systemctl stop, distrobox enter, renice ...) instead of running them.
 use crate::{cache, home_dir};
@@ -66,9 +67,21 @@ fn uid() -> u32 {
 }
 
 /// The repository, worked out from target/<triple>/release/cc-home (same as cc-panels' root()).
+/// Installed from the sysext image, cc-home sits right in that tree's root, /usr/lib/command-center,
+/// with no target/ above it (packaging/sysext/build.sh).
 pub fn root() -> PathBuf {
-    let exe = fs::read_link("/proc/self/exe").unwrap_or_default();
-    exe.ancestors().find(|a| a.ends_with("target")).and_then(|t| t.parent()).map(PathBuf::from).unwrap_or_default()
+    root_of(&fs::read_link("/proc/self/exe").unwrap_or_default())
+}
+
+pub fn root_of(exe: &Path) -> PathBuf {
+    let checkout = exe.ancestors().find(|a| a.ends_with("target")).and_then(|t| t.parent());
+    checkout.or(exe.parent()).map(PathBuf::from).unwrap_or_default()
+}
+
+/// Built for SteamOS itself (packaging/sysext/build-native.sh), the sysext image or a checkout
+/// built that way, so everything runs on the host and there's no container.
+pub fn native(root: &Path) -> bool {
+    root.join("panels/third_party/prefix/steamos-release").is_file()
 }
 
 fn exe() -> PathBuf {
@@ -422,10 +435,12 @@ fn panels(args: &[String]) -> i32 {
 
 // ---- cc-box
 
-/// Builds `nice -n N distrobox enter <box> -- args`.
-pub fn box_argv(nice: &str, home: &str, name: &str, args: &[OsString]) -> Vec<OsString> {
+/// Builds `nice -n N distrobox enter <box> -- args`, or just `nice -n N args` with no box.
+pub fn box_argv(nice: &str, home: &str, name: Option<&str>, args: &[OsString]) -> Vec<OsString> {
     let mut v: Vec<OsString> = ["nice", "-n", nice].map(OsString::from).into();
-    v.extend([format!("{home}/.local/bin/distrobox"), "enter".into(), name.into(), "--".into()].map(OsString::from));
+    if let Some(name) = name {
+        v.extend([format!("{home}/.local/bin/distrobox"), "enter".into(), name.into(), "--".into()].map(OsString::from));
+    }
     v.extend(args.iter().cloned());
     v
 }
@@ -439,39 +454,19 @@ fn setup_done(name: &str) -> bool {
 
 /// cc-box runs a command in Command Center's container (Fedora, through distrobox), which is where
 /// the build tools, FreeRDP, OpenCV and the OpenVR runtime's libraries live. The container starts in
-/// a systemd scope of its own, so ending whatever started it doesn't stop it.
+/// a systemd scope of its own, so ending whatever started it doesn't stop it. A native build
+/// needs none of that, so there it's only the nice.
 fn boxed(args: &[OsString]) -> i32 {
     let name = var_or("CC_CONTAINER", "control-center");
-    let xdg = format!("/run/user/{}", uid());
-    unsafe {
-        std::env::set_var("XDG_RUNTIME_DIR", &xdg);
-        // podman needs the real user bus (systemd, for the container's cgroup), and a desktop
-        // session may be running on a private one.
-        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={xdg}/bus"));
-    }
-    let running = Command::new("podman").args(["container", "inspect", "-f", "{{.State.Running}}", &name]).stderr(Stdio::null()).output();
-    if !running.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim_end_matches('\n') == "true") {
-        if !Command::new("podman").args(["container", "exists", &name]).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) {
-            eprintln!("no {name} container: run install.sh");
-            return 1;
-        }
-        let desc = format!("--description={name} container (Command Center)");
-        let _ = run(Command::new("systemd-run").args(["--user", "--scope", "--quiet", "--collect", &desc, "podman", "start", &name]).stdout(Stdio::null()));
-    }
-    // A new container sets itself up on first boot. distrobox enter only waits for that when it
-    // starts the container itself, so wait here.
-    if !setup_done(&name) {
-        eprintln!("waiting for the {name} container's first-boot setup...");
-        for _ in 0..600 {
-            if setup_done(&name) {
-                break;
-            }
-            sleep_s(1);
+    let native = native(&root());
+    if !native {
+        if let Err(c) = container_up(&name) {
+            return c;
         }
     }
     // Gentle by default for builds and tools, since the headset is rendering VR too. cc-panels
     // passes CC_NICE=0.
-    let argv = box_argv(&var_or("CC_NICE", "10"), &home_dir(), &name, args);
+    let argv = box_argv(&var_or("CC_NICE", "10"), &home_dir(), (!native).then_some(name.as_str()), args);
     let mut c = Command::new(&argv[0]);
     c.args(&argv[1..]);
     if DRY.load(Relaxed) {
@@ -481,6 +476,38 @@ fn boxed(args: &[OsString]) -> i32 {
     let e = c.exec();
     eprintln!("nice: {e}");
     if e.kind() == std::io::ErrorKind::NotFound { 127 } else { 126 }
+}
+
+/// Starts the container if it isn't running, and waits for its first-boot setup.
+fn container_up(name: &str) -> Result<(), i32> {
+    let xdg = format!("/run/user/{}", uid());
+    unsafe {
+        std::env::set_var("XDG_RUNTIME_DIR", &xdg);
+        // podman needs the real user bus (systemd, for the container's cgroup), and a desktop
+        // session may be running on a private one.
+        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={xdg}/bus"));
+    }
+    let running = Command::new("podman").args(["container", "inspect", "-f", "{{.State.Running}}", name]).stderr(Stdio::null()).output();
+    if !running.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim_end_matches('\n') == "true") {
+        if !Command::new("podman").args(["container", "exists", name]).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) {
+            eprintln!("no {name} container: run install.sh");
+            return Err(1);
+        }
+        let desc = format!("--description={name} container (Command Center)");
+        let _ = run(Command::new("systemd-run").args(["--user", "--scope", "--quiet", "--collect", &desc, "podman", "start", name]).stdout(Stdio::null()));
+    }
+    // A new container sets itself up on first boot. distrobox enter only waits for that when it
+    // starts the container itself, so wait here.
+    if !setup_done(name) {
+        eprintln!("waiting for the {name} container's first-boot setup...");
+        for _ in 0..600 {
+            if setup_done(name) {
+                break;
+            }
+            sleep_s(1);
+        }
+    }
+    Ok(())
 }
 
 // ---- cc-desktop
@@ -795,7 +822,10 @@ mod tests {
         assert_eq!(session_unit(Path::new("/r/target/aarch64-unknown-linux-musl/release/cc-home")).join(" "),
             "systemd-run --user --collect --quiet --unit cc-desktop -p TimeoutStopSec=10 -p StandardOutput=truncate:/tmp/cc-desktop.log -p StandardError=inherit /r/target/aarch64-unknown-linux-musl/release/cc-home session");
         let a: Vec<OsString> = ["/r/target/release/cc-panels", "--for", "0"].map(OsString::from).into();
-        assert_eq!(box_argv("0", "/h", "control-center", &a), ["nice", "-n", "0", "/h/.local/bin/distrobox", "enter", "control-center", "--", "/r/target/release/cc-panels", "--for", "0"]);
+        assert_eq!(box_argv("0", "/h", Some("control-center"), &a), ["nice", "-n", "0", "/h/.local/bin/distrobox", "enter", "control-center", "--", "/r/target/release/cc-panels", "--for", "0"]);
+        assert_eq!(box_argv("10", "/h", None, &a), ["nice", "-n", "10", "/r/target/release/cc-panels", "--for", "0"]);
+        assert_eq!(root_of(Path::new("/r/target/aarch64-unknown-linux-musl/release/cc-home")), Path::new("/r"));
+        assert_eq!(root_of(Path::new("/usr/lib/command-center/cc-home")), Path::new("/usr/lib/command-center"));
         assert_eq!(kwin_args("2560x1440", &["--xwayland".into()]), ["--virtual", "--width", "2560", "--height", "1440", "--output-count", "3", "--no-lockscreen", "--xwayland"]);
         let m = "# c\nMESA_GL_VERSION_OVERRIDE=4.3\n\n#VK_ICD_FILENAMES=\"a\"\nVRCOMPOSITOR_TU_DEBUG=sysmem,preempt\nQ=\"x y\"\n";
         assert_eq!(assignments(m), [("MESA_GL_VERSION_OVERRIDE".into(), "4.3".into()), ("VRCOMPOSITOR_TU_DEBUG".into(), "sysmem,preempt".into()), ("Q".into(), "x y".into())]);
