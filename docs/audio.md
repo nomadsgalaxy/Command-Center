@@ -16,6 +16,7 @@ choice of which session carries what (below) is the same choice the camera will 
 - **Frame to host** is audin, a dynamic channel. FreeRDP's audin records the Frame's default
   microphone through PulseAudio and sends 48 kHz 16-bit mono PCM. krdp publishes it as a PipeWire
   source called "Steam Frame microphone (Command Center)", so it's in the device list of every app.
+- **Buffering.** cc-panels gives rdpsnd 200 ms of room (`latency:200`, which is also PulseAudio's buffer). Without it, rdpsnd drops any chunk that arrives behind more than two others, and the sound waits behind the picture on the RDP thread, so it arrives in bursts and chopped.
 - PCM only. Opus would cut the bandwidth, but it needs an encoder on the host and a decoder on the
   Frame, for a LAN that doesn't need it. If a Wi-Fi link ever does, it's a format added to both
   lists, and nothing else changes.
