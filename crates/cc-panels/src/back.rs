@@ -216,6 +216,7 @@ impl Backs {
                 self.failed = Some(Instant::now());
                 break;
             };
+            eprintln!("backs: panel {i}, {n} strip(s), {:.3} x {:.3} m round {:.2} m{}", f.pl.width, f.pl.height, f.pl.curve, if f.pl.vert { " (top to bottom)" } else { "" });
             let mut sort = 0;
             call!(ov, GetOverlaySortOrder, f.overlay, &mut sort);
             for &h in &hs {
