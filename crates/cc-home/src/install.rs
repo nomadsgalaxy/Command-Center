@@ -112,6 +112,14 @@ fn build() -> Result<(), String> {
     if text.contains("yuv_context_new(Compressor, 0)") {
         fs::write(&h264, text.replace("yuv_context_new(Compressor, 0)", "yuv_context_new(Compressor, THREADING_FLAGS_DISABLE_THREADS)")).map_err(|e| format!("{}: {e}", h264.display()))?;
     }
+    // rdpsnd drops a chunk once more than its latency plus two chunks is queued, and with a latency
+    // set, PulseAudio's buffer of that same size counts as queued, so it sat at the limit and any
+    // 10 ms hiccup dropped 20 ms of sound (docs/audio.md). Twice the latency is room for both.
+    let rdpsnd = src.join("channels/rdpsnd/client/rdpsnd_main.c");
+    let text = fs::read_to_string(&rdpsnd).map_err(|e| format!("{}: {e}", rdpsnd.display()))?;
+    if text.contains("maxDuration = duration * 2 + rdpsnd->latency;") {
+        fs::write(&rdpsnd, text.replace("maxDuration = duration * 2 + rdpsnd->latency;", "maxDuration = duration * 2 + rdpsnd->latency * 2;")).map_err(|e| format!("{}: {e}", rdpsnd.display()))?;
+    }
     // Rebuild when the source is newer than the library. The old library gets unlinked first
     // instead of overwritten, so a running cc-panels isn't using a file that changes under it.
     let lib = fr.join("prefix/lib64/libfreerdp3.so");
@@ -119,7 +127,8 @@ fn build() -> Result<(), String> {
     // with-pulse says the build has the PulseAudio backends (sound and microphone, docs/audio.md), so
     // a prefix made before that gets rebuilt once.
     let stamp = fr.join("prefix/with-pulse");
-    if !lib.is_file() || !stamp.is_file() || mtime(&h264) > fs::canonicalize(&lib).ok().and_then(|l| mtime(&l)) {
+    let built = fs::canonicalize(&lib).ok().and_then(|l| mtime(&l));
+    if !lib.is_file() || !stamp.is_file() || mtime(&h264) > built || mtime(&rdpsnd) > built {
         let prefix = format!("-DCMAKE_INSTALL_PREFIX={}", fr.join("prefix").display());
         let mut cmake = vec!["cmake", "-S", ".", "-B", "build", "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", &prefix];
         cmake.extend(FREERDP_FLAGS);

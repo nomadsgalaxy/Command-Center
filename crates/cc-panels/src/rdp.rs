@@ -361,6 +361,10 @@ pub fn run(p: &'static Panel) {
                 let argv: Vec<*const std::os::raw::c_char> = args.iter().map(|a| a.as_ptr()).collect();
                 freerdp_client_add_static_channel(s, argv.len(), argv.as_ptr());
                 freerdp_client_add_dynamic_channel(s, argv.len(), argv.as_ptr());
+            } else {
+                // Otherwise FreeRDP adds rdpsnd with its fake player whenever device redirection is
+                // on, and krdp streams the machine's sound to it too, which doubled the traffic.
+                b(FreeRDP_Settings_Keys_Bool_FreeRDP_DeviceRedirection, false);
             }
             // Static channels (the clipboard) on this thread. H.264's colour conversion ignores
             // this flag, so install.sh patches FreeRDP's h264.c to run it here too instead of on

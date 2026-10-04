@@ -26,6 +26,8 @@ fr=panels/third_party
 [ -d "$fr/FreeRDP" ] || git clone -q --depth 1 --branch 3.31.1 https://github.com/FreeRDP/FreeRDP.git "$fr/FreeRDP"
 # The H.264 threading patch, the same one cc-home install makes (install.rs).
 sed -i 's/yuv_context_new(Compressor, 0)/yuv_context_new(Compressor, THREADING_FLAGS_DISABLE_THREADS)/' "$fr/FreeRDP/libfreerdp/codec/h264.c"
+# And rdpsnd's drop limit, twice its latency (install.rs says why).
+sed -i 's/maxDuration = duration \* 2 + rdpsnd->latency;/maxDuration = duration * 2 + rdpsnd->latency * 2;/' "$fr/FreeRDP/channels/rdpsnd/client/rdpsnd_main.c"
 # The feature set comes from install.rs, so the container build and this one can't drift apart.
 # That includes WITH_PULSE=ON, and SteamOS ships libpulse's headers. On top of it: no ICU (its soname changes every release), no uriparser (AAD only) and no VA-API
 # encoder (a server feature, and Fedora's build never found libva anyway).
