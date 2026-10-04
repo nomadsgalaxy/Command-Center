@@ -77,7 +77,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `vr.rs` | OpenVR's C API tables, the `call!` macro, overlay helpers, head pose, the main loop's wake. |
 | `geometry.rs` | Poses and placements in standing space (x right, y up, -z forward), matrices, curved hits. |
 | `grab.rs` | Each panel's card (Breeze-like frame, tabs, grab bar, knobs): drawing, hit-testing, carrying, resizing, curving, snap-back, the `Extra` slot the control windows share, saving the "home" spot on release. |
-| `back.rs` | Dim backs for panels seen from behind, from a shared strip budget. |
+| `back.rs` | Dim backs for panels seen from behind, one flat overlay each. |
 | `kvm.rs` | Our mice and keyboards (evdev grab, `input_loop` thread `cc-input`): the 3D pointer ray (`mv`, `land`), click to type (`set_engaged`, `type_to`), Right Ctrl chords, gaze lock, text fields for the control windows. |
 | `laser.rs` | The SteamVR laser off our panels: which hand to lease, raw-space poses, the lease protocol to cc_pointer (`lease_thread`, thread `cc-lease`), `Beam` for the dot. |
 | `gaze.rs` | Eye tracking through the eyetracking action (which panel you look at). |
