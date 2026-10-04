@@ -6194,7 +6194,7 @@
 "asked": []
 },
 {
-"name": "pair --scan: no host showing a key",
+"name": "pair --scan, no host announcing: the address comes off the screen, so cc-panels is needed",
 "files": {
 ".config/control-center/viewers.conf": "@text:1",
 ".config/control-center/home.json": "@text:2",
@@ -6215,7 +6215,7 @@
 "host": null,
 "hostconf": null,
 "stdout": "",
-"stderr": "no host is showing a pairing key (cc-share pair on it)\n",
+"stderr": "cc-panels isn't running (start it, or click Desktop in VR)\n",
 "exit": 1,
 "out": {
 ".config/control-center/home.json": [

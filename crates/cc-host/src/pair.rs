@@ -224,6 +224,7 @@ pub fn main(conf: &Path, plat: Box<dyn Platform + Send + Sync>, test: bool) -> i
     let cancelled = Arc::new(AtomicBool::new(false));
     let ask = Arc::new(Mutex::new(Ask::default()));
     let end = mono() + LIFE;
+    let addr = cc_proto::lan::route_source(); // for the address tags (docs/pairing.md 3)
     let (state, paired) = std::thread::scope(|sc| {
         let worker = sc.spawn(|| serve(&door, conf, plat.as_ref(), test, &key, &name, &cancelled, &ask));
         let mut drawn: Option<(Option<String>, u64, (usize, usize))> = None;
@@ -236,7 +237,7 @@ pub fn main(conf: &Path, plat: Box<dyn Platform + Send + Sync>, test: bool) -> i
             let now = (question.clone(), (end - mono()).max(0.0) as u64, s.size());
             if drawn.as_ref() != Some(&now) {
                 let (w, h) = now.2;
-                if s.show(&draw::key_screen(&name, &key, now.1, question.as_deref(), w, h)).is_err() {
+                if s.show(&draw::key_screen(&name, &key, addr, now.1, question.as_deref(), w, h)).is_err() {
                     cancelled.store(true, Relaxed);
                 }
                 drawn = Some(now);

@@ -1216,23 +1216,29 @@ pub fn calibrate(name: &str, hand: &str) {
 
 // ---- pairing by looking
 
-/// Pairs by looking at the host's key screen. The host is the one announcing pair=1 (or addr). The
+/// The address the host's tags gave, as text, if it's one a Frame may connect to. Only a private IPv4
+/// address is: the tags are just where to connect (the key is the secret, and the handshake gives the
+/// host's pinned key), but a screen mustn't be able to send a pairing to somewhere on the internet.
+fn tag_addr(a: [u8; 4]) -> Result<String, String> {
+    if !cc_proto::lan::private_v4(a) {
+        return Err(format!("the host's screen shows {}.{}.{}.{}, which isn't a private address: not pairing with it", a[0], a[1], a[2], a[3]));
+    }
+    Ok(format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3]))
+}
+
+/// Pairs by looking at the host's key screen. The host is the one announcing pair=1 (or addr). With no addr
+/// and not exactly one announcing host, its address is read off the screen's tags along with the key. The
 /// key gets read off its tags through the camera, then it pairs as if you'd typed it.
 pub fn pair_scan(addr: Option<&str>, replace: bool) {
-    let addr = match addr {
-        Some(a) => a.to_owned(),
-        None => {
-            let showing: Vec<_> = machine::discover(3.0).into_iter().filter(|h| h.txt("pair") == Some("1")).collect();
-            if showing.len() != 1 {
-                for h in &showing {
-                    println!("@host name={} addr={} pair=1", h.name, h.addr);
-                }
-                die(if showing.is_empty() { "no host is showing a pairing key (cc-share pair on it)" } else { "more than one host is showing a key: give its address" });
-            }
-            println!("@pair {} host={} state=scanning", showing[0].addr, showing[0].name);
-            showing[0].addr.clone()
+    let mut addr = addr.map(str::to_owned);
+    if addr.is_none() {
+        // mDNS may be off or blocked on the host; then it's the tags' address, so a failed browse isn't fatal.
+        let showing: Vec<_> = machine::try_discover(3.0).unwrap_or_default().into_iter().filter(|h| h.txt("pair") == Some("1")).collect();
+        if let [h] = showing.as_slice() {
+            println!("@pair {} host={} state=scanning", h.addr, h.name);
+            addr = Some(h.addr.clone());
         }
-    };
+    }
     let t0 = Instant::now();
     target(); // the HUD and the head pose come from cc-panels
     let work = PathBuf::from(cache("pairscan"));
@@ -1245,29 +1251,35 @@ pub fn pair_scan(addr: Option<&str>, replace: bool) {
     let mut cam = Scan::open(&work.join("shots.json"), &conf_dir()).unwrap_or_else(|e| stopped(&e));
     cam.button("cancel");
     cam.say("Look at the pairing key on the host's screen");
-    cam.want(900..1000);
+    cam.want((900..1000).chain(if addr.is_none() { cc_scan::ADDR_BASE..cc_scan::ADDR_BASE + 256 } else { 0..0 }));
     let r = (|| -> Result<(f64, f64), String> {
         cam.keyread().unwrap_or_else(|e| stopped(&e)); // the first frame proves the camera works
         let ready = secs(t0);
         println!("@pairscan state=looking");
-        let (mut reads, mut key) = (Vec::<String>::new(), None);
+        let (mut reads, mut key) = (Vec::<(String, Option<[u8; 4]>)>::new(), None);
         let start = Instant::now();
         while key.is_none() {
             if secs(start) > 60.0 {
                 println!("@pairscan state=timeout");
                 return Err("no pairing key seen in 60 s: is it on the host's screen?".into());
             }
-            let (got, still, skip) = cam.keyread().unwrap_or_else(|e| stopped(&e));
+            let (got, at, still, skip) = cam.keyread().unwrap_or_else(|e| stopped(&e));
             if skip {
                 println!("@pairscan state=cancelled");
                 return Err("cancelled".into());
             }
-            if let Some(got) = got.filter(|_| still) {
+            // with no address to go on, a read needs the address tags too
+            if let Some(got) = got.filter(|_| still && (addr.is_some() || at.is_some())) {
                 // the key itself is never printed
-                reads.push(got);
+                reads.push((got, if addr.is_some() { None } else { at }));
                 let n = reads.len();
                 if n >= 2 && reads[n - 2] == reads[n - 1] {
-                    key = Some(reads[n - 1].clone());
+                    key = Some(reads[n - 1].0.clone());
+                    if let Some(a) = reads[n - 1].1 {
+                        let a = tag_addr(a).inspect_err(|_| println!("@pairscan state=refused"))?;
+                        println!("@pair {a} state=scanning");
+                        addr = Some(a);
+                    }
                 }
             }
         }
@@ -1275,7 +1287,7 @@ pub fn pair_scan(addr: Option<&str>, replace: bool) {
         println!("@pairscan state=read");
         cam.say("Key read: pairing");
         cam.want(vec![]);
-        machine::pair(&addr, key.as_deref().unwrap_or(""), replace)?;
+        machine::pair(addr.as_deref().unwrap_or(""), key.as_deref().unwrap_or(""), replace)?;
         Ok((ready, scanned))
     })();
     cam.finish(); // the HUD goes
@@ -1320,6 +1332,16 @@ mod tests {
     /// Calibrate then capture on a fake camera. Every frame tag read 6 times sizes the grid from the
     /// smallest ladder tag (x1.35), a head moving 1 cm a frame over the whole grid completes it (24
     /// samples, 12 cm, 70% coverage), and a monitor whose screen went away is skipped with its why.
+    #[test]
+    fn only_a_private_address_off_the_tags_is_used() {
+        assert_eq!(tag_addr([192, 168, 1, 20]).as_deref(), Ok("192.168.1.20"));
+        assert_eq!(tag_addr([10, 1, 2, 3]).as_deref(), Ok("10.1.2.3"));
+        assert_eq!(tag_addr([172, 20, 0, 9]).as_deref(), Ok("172.20.0.9"));
+        for a in [[8, 8, 8, 8], [127, 0, 0, 1], [169, 254, 0, 1], [172, 32, 0, 1], [100, 64, 0, 1], [224, 0, 0, 1], [0, 0, 0, 0]] {
+            assert!(tag_addr(a).unwrap_err().contains("isn't a private address"), "{a:?}");
+        }
+    }
+
     #[test]
     fn calibrate_and_capture() {
         let (a, b) = (mon("a", 0), mon("b", 50));

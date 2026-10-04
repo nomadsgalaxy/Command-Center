@@ -3,7 +3,7 @@
 //! may enter the banner band. There's the pairing key, done like home/pair.py's Screen: white on
 //! near-black, the digits a quarter of the height, and the key's tags. And there's a calm grey prompt.
 //! The font is Atkinson Hyperlegible Mono, bundled under the OFL.
-use crate::aruco::{KEY_TAG_BITS, TAG_BITS};
+use crate::aruco::{ADDR_TAG_BITS, KEY_TAG_BITS, TAG_BITS};
 use serde_json::Value;
 
 static FONT_BYTES: &[u8] = include_bytes!("../../../third_party/fonts/AtkinsonHyperlegibleMono[wght].ttf");
@@ -128,21 +128,33 @@ pub fn quiet(w: usize, h: usize) -> Canvas {
 
 /// Draws the pairing key (docs/pairing.md §3): the host's name, the 6 digits at a quarter of the height,
 /// the key as three tags under them, the time left and "Esc or tap to cancel". It's white on #0B0B0F.
-pub fn key_screen(host: &str, key: &str, left_s: u64, question: Option<&str>, w: usize, h: usize) -> Canvas {
+/// With the host's address, a second strip of four tags (one octet each) goes under the key's, with the
+/// address in text beneath it, so a Frame that can't find the host by mDNS can still reach it.
+pub fn key_screen(host: &str, key: &str, addr: Option<[u8; 4]>, left_s: u64, question: Option<&str>, w: usize, h: usize) -> Canvas {
     let (wi, hi) = (w as i64, h as i64);
     let mut c = Canvas::new(w, h, rgb(0x0b, 0x0b, 0x0f));
     let white = rgb(255, 255, 255);
     c.text(&format!("Pair {host} with Command Center: look at this screen from the Frame, or type the key"), 0, hi / 30, wi, hi / 12, hi as f32 / 22.0, white);
     c.text(&format!("{} {}", &key[..3], &key[3..]), 0, hi / 8, wi, hi * 3 / 10, hi as f32 / 4.0, white);
     // The key's tags: three of them, two digits each (DICT_4X4_1000 ids 900+), in a white strip with quiet zones.
-    let side = (hi / 4).min(wi / 14) / 6 * 6;
+    // The address strip below has the same tag size, so it needs room for two: h/8 at most.
+    let side = (hi / 8).min(wi / 14) / 6 * 6;
     let (gap, q) = (side / 3, side / 6);
-    let total = 3 * side + 2 * gap;
-    let (x0, y0) = ((wi - total) / 2, hi * 9 / 20);
-    c.rect(x0 - q, y0 - q, total + 2 * q, side + 2 * q, white);
-    for k in 0..3 {
-        let pair: usize = key[2 * k..2 * k + 2].parse().unwrap_or(0);
-        tag(&mut c, KEY_TAG_BITS[pair], x0 + k as i64 * (side + gap), y0, side);
+    let strip = |c: &mut Canvas, bits: &[u16], y0: i64| {
+        let total = bits.len() as i64 * side + (bits.len() as i64 - 1) * gap;
+        let x0 = (wi - total) / 2;
+        c.rect(x0 - q, y0 - q, total + 2 * q, side + 2 * q, white);
+        for (k, b) in bits.iter().enumerate() {
+            tag(c, *b, x0 + k as i64 * (side + gap), y0, side);
+        }
+    };
+    let y0 = hi * 43 / 100;
+    let digits: Vec<u16> = (0..3).map(|k| KEY_TAG_BITS[key[2 * k..2 * k + 2].parse::<usize>().unwrap_or(0)]).collect();
+    strip(&mut c, &digits, y0);
+    if let Some(a) = addr {
+        let y1 = y0 + side + 2 * q + gap;
+        strip(&mut c, &a.map(|o| ADDR_TAG_BITS[o as usize]), y1);
+        c.text(&format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3]), 0, y1 + side + 2 * q, wi, hi / 20, hi as f32 / 28.0, white);
     }
     let info = match question {
         Some(q) => q.to_owned(),
@@ -157,4 +169,40 @@ pub fn to_pgm(c: &Canvas) -> Vec<u8> {
     let mut out = format!("P5\n{} {}\n255\n", c.w, c.h).into_bytes();
     out.extend(c.px.iter().map(|p| ((((p >> 16) & 255) * 30 + ((p >> 8) & 255) * 59 + (p & 255) * 11) / 100) as u8));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reads a drawn canvas the way the Frame does: cc-scan's own detector and decoders.
+    fn read(c: &Canvas) -> (Option<String>, Option<[u8; 4]>) {
+        let g = cc_scan::image::Gray { w: c.w, h: c.h, px: to_pgm(c)[format!("P5\n{} {}\n255\n", c.w, c.h).len()..].to_vec() };
+        let tags = cc_scan::detect(&g, &cc_scan::dict::DICT_4X4_1000);
+        (cc_scan::read_key(&tags), cc_scan::read_addr(&tags))
+    }
+
+    #[test]
+    fn the_key_screen_decodes_to_its_key_and_address() {
+        for (w, h) in [(1920, 1080), (1280, 720), (2560, 1440), (1080, 1920), (1000, 1000)] {
+            for (key, addr) in [("123456", [192, 168, 1, 20]), ("000000", [10, 0, 0, 1]), ("999900", [172, 31, 255, 254])] {
+                let (k, a) = read(&key_screen("desk", key, Some(addr), 299, None, w, h));
+                assert_eq!((k.as_deref(), a), (Some(key), Some(addr)), "{w}x{h}");
+            }
+        }
+    }
+
+    #[test]
+    fn no_address_means_no_address_tags() {
+        let (k, a) = read(&key_screen("desk", "482917", None, 299, None, 1920, 1080));
+        assert_eq!((k.as_deref(), a), (Some("482917"), None));
+    }
+
+    #[test]
+    fn the_bit_tables_match_cc_scans_dictionary() {
+        assert_eq!(&ADDR_TAG_BITS[..], &cc_scan::dict::CODES[cc_scan::ADDR_BASE..cc_scan::ADDR_BASE + 256]);
+        assert_eq!(&KEY_TAG_BITS[..], &cc_scan::dict::CODES[cc_scan::KEY_BASE..cc_scan::KEY_BASE + 100]);
+        assert_eq!(&TAG_BITS[..], &cc_scan::dict::CODES[..250]);
+        assert!(cc_scan::ADDR_BASE + 256 <= 900 && cc_scan::ADDR_BASE >= 250, "clear of align's and the key's ids");
+    }
 }

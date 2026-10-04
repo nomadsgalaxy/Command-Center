@@ -46,7 +46,7 @@ fn main() {
             agent.serve(lis);
         }
         Some("render") => {
-            // Renders a screen as a PGM on stdout for checks: render tags <w> <h> (params on stdin) | key <w> <h> <host> <key> | prompt <w> <h> <text>
+            // Renders a screen as a PGM on stdout for checks: render tags <w> <h> (params on stdin) | key <w> <h> <host> <key> [<ipv4>] | prompt <w> <h> <text>
             let (w, h): (usize, usize) = (args[3].parse().expect("width"), args[4].parse().expect("height"));
             let c = match args[2].as_str() {
                 "tags" => {
@@ -54,7 +54,7 @@ fn main() {
                     std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).expect("params");
                     draw::tag_screen(&serde_json::from_str(&s).expect("params JSON"), w, h)
                 }
-                "key" => draw::key_screen(&args[5], &args[6], 299, None, w, h),
+                "key" => draw::key_screen(&args[5], &args[6], args.get(7).and_then(|a| a.parse::<std::net::Ipv4Addr>().ok()).map(|a| a.octets()), 299, None, w, h),
                 _ => draw::prompt(&args[5].replace("\\n", "\n"), w, h),
             };
             std::io::Write::write_all(&mut std::io::stdout(), &draw::to_pgm(&c)).expect("stdout");

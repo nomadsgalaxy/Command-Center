@@ -63,13 +63,38 @@ outside the 250 that align uses). Each tag carries two digits (id − 900), and 
 right along the tags' own x axis, so a portrait monitor or a tilted head reads the same. The bit
 patterns are embedded in pair.py (`key_tag_cells`), since hosts have no OpenCV.
 
-`cc-home machine pair --scan [addr] [--replace]` pairs with the one host announcing `pair=1` (or
-with `addr`; if there are several and no addr, it lists them and stops). It reads the tags through
-the VR mirror camera, using cc-panels' HUD ("Look at the pairing key on the host's screen", green
-outlines, a cancel button) and head pose. It never connects to SteamVR itself, and it refuses to
-run without cc-panels. The same key read three times in a row counts. The key goes to pair()
-inside cc-home and is never printed. Progress shows as `@pair <addr> host=<name> state=scanning`,
-`@pairscan state=looking|read|cancelled|timeout`, then the lines of section 8.
+The same screen shows the host's **LAN address** as four more tags under the key's, one per
+octet, plus the address in plain text. They're `DICT_4X4_1000` ids **300–555** (the octet is id −
+300), which is clear of align's 0–249 and the key's 900–999. They're read left to right along the
+tags' own x axis, like the key's. The address is the IPv4 source address of the host's default
+route (the one the kernel would send from, nothing is actually sent), and only if it's private.
+With several routes the kernel's choice (lowest metric) is the one shown. With no route, or a
+public address, the screen has no address tags. The bit patterns are in cc-host's `aruco.rs`,
+and a test checks them against cc-scan's dictionary.
+
+`cc-home machine pair --scan [addr] [--replace]` pairs with `addr` if it's given. Otherwise, if
+exactly one host is announcing `pair=1`, it uses that one. If mDNS is off or blocked on the host
+(or finds none, or several), it reads the address off the tags along with the key. It reads the
+tags through the VR mirror camera, using cc-panels' HUD ("Look at the pairing key on the host's
+screen", green outlines, a cancel button) and head pose. It never connects to SteamVR itself, and
+it refuses to run without cc-panels. The same key (and address) read twice in a row counts. The key
+goes to pair() inside cc-home and is never printed. Progress shows as
+`@pair <addr> host=<name> state=scanning` (an announcing host) or `@pair <addr> state=scanning`
+(an address off the tags), `@pairscan state=looking|read|cancelled|timeout|refused`, then the
+lines of section 8. The Machines window's Add machine form has the button too, with or without
+found hosts, and then runs the scan with no address.
+
+**The address is only where to connect.** The key is still the secret, and the host's pinned key
+still comes from the pairing handshake (section 4), so a wrong address can't pair: whoever answers
+there has to know the key. Still, the Frame only takes a **private IPv4 address** off a screen
+(10/8, 172.16/12, 192.168/16). Anything else is refused (`@pairscan state=refused`), so a screen
+can't send the Frame's pairing to the internet. Tailscale's 100.64/10 isn't private in that sense,
+so a host reached over it needs its address typed.
+
+**When the host isn't in the list:** it's probably not announcing (mDNS is off, or blocked on its
+network). The user doesn't need to fix that. They run `cc-share pair` on the host, open Add machine
+on the Frame, and press Pair by looking while facing the host's screen. Typing the host's address
+and the 6 digits stays as the fallback.
 
 **Trust:** the tags carry the whole key, so any camera that sees the host's screen can read it,
 just as any person who sees it can read the digits. It's the same physical-presence model
