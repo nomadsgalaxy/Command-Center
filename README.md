@@ -30,7 +30,7 @@ Center.
 - **On a computer,** you pick which monitors the Frame can show. If something would stop the
   Frame from finding or reaching the computer, like the firewall, the installer shows the exact
   `sudo` commands to fix it and asks first. The details are in
-  [docs/packaging.md](docs/packaging.md#host-fixes).
+  [docs/packaging.md](docs/packaging.md#host-fixes-what-the-installer-finds-and-fixes).
 
 With no terminal to answer questions on, pass the answers: `| sh -s -- --yes` installs or
 updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
