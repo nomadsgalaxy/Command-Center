@@ -82,14 +82,14 @@ printf 'ID=%s\nVERSION_ID=%s\nARCHITECTURE=arm64\nIMAGE_ID=%s\nIMAGE_VERSION=%s\
   "$ID" "$VERSION_ID" "$name" "$version" >"$s/usr/lib/extension-release.d/extension-release.$name"
 
 mkdir -p "$(dirname "$out")"
-mksquashfs "$s" "$out" -all-root -noappend -comp zstd -quiet
+mksquashfs "$s" "$out" -all-root -noappend -comp zstd -quiet -no-progress
 echo "built $out ($(du -h "$out" | cut -f1), $name $version, for $ID $VERSION_ID)"
 # Without root it can't mount the image to look inside, but it does check that it's one.
 systemd-dissect --validate "$out" >/dev/null && echo "systemd-dissect: a valid image"
 
 # Can everything in it load here? Each ELF's libraries have to be in the image, SteamOS's /usr/lib
 # or SteamVR's runtime, and it can't want a newer glibc than SteamOS has.
-host_glibc=GLIBC_$(ldd --version | head -1 | grep -oE '[0-9.]+$')
+host_glibc=GLIBC_$(ldd --version | sed -n 1p | grep -oE '[0-9.]+$')
 dirs=("$s/$lib/panels/third_party/prefix/lib64" /usr/lib /opt/steamvr/bin/linuxarm64)
 bad=0
 while IFS= read -r f; do
@@ -100,7 +100,7 @@ while IFS= read -r f; do
     for d in "${dirs[@]}"; do [ -e "$d/$n" ] && found=1 && break; done
     [ -n "$found" ] || { echo "  $rel needs $n, which SteamOS doesn't have"; bad=1; }
   done
-  g=$(objdump -T "$f" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1)
+  g=$(objdump -T "$f" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1) || true # nothing for static cc-home
   if [ -n "$g" ] && [ "$(printf '%s\n' "$g" "$host_glibc" | sort -V | tail -1)" != "$host_glibc" ]; then
     echo "  $rel needs $g, SteamOS has $host_glibc"
     bad=1

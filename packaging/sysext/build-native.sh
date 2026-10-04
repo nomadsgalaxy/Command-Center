@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Builds the Frame side for SteamOS itself, in the SteamOS build container (steamos-buildenv.sh),
 # so it runs on the host with no Fedora container: cc-home, FreeRDP 3.31.1 against SteamOS's own
-# FFmpeg 7, libvncclient when the checkout has VNC panels, cc-panels against those, and the
-# pointer driver. build.sh then packs the results into the sysext image.
+# FFmpeg 7, libvncclient, cc-panels against those, and the pointer driver. build.sh then packs the results into the sysext image.
 #   packaging/sysext/build-native.sh
 # It builds in place, into the checkout's usual paths (target/, panels/third_party/prefix), so a
 # checkout built this way runs natively too. Don't run it in the checkout the Desktop is running
@@ -42,12 +41,10 @@ ninja -C "$fr/FreeRDP/build-steamos" install >/dev/null
 . /etc/os-release
 echo "$VERSION_ID" >"$fr/prefix/steamos-release"
 
-# The VNC branch's script holds libvncclient's commit, patch and options, and it builds the same
-# way here as in the container. Static, so cc-panels only gains SteamOS's libssl, libjpeg and libz.
-if [ -x tools/build-libvncclient.sh ]; then
-  step "libvncclient"
-  tools/build-libvncclient.sh "$fr/vnc-prefix"
-fi
+# tools/build-libvncclient.sh holds libvncclient's commit, patch and options, and it builds the
+# same way here as in the container. Static, so cc-panels only gains SteamOS's libssl, libjpeg and libz.
+step "libvncclient"
+tools/build-libvncclient.sh "$fr/vnc-prefix"
 
 step "cc-panels"
 cargo build --release -q -p cc-panels

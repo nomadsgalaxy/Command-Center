@@ -133,8 +133,13 @@ pkg-config, git, and `/usr/include` has `libavcodec`, `pipewire-0.3`, `gbm.h` an
 cleanest match for the host ABI is the Frame's own root filesystem:
 
 - **The SteamOS build container** is a podman image imported from the Frame's read-only rootfs
-  (`/usr` plus a minimal `/etc`), with rustup installed inside. Everything links against exactly what
-  that SteamOS build ships, nothing newer. I'd make one per SteamOS minor (0.3, 0.4).
+  (`/usr` plus a minimal `/etc`). Everything links against exactly what that SteamOS build ships,
+  nothing newer. There's one per SteamOS version: `packaging/sysext/steamos-buildenv.sh` makes
+  `localhost/cc-steamos:0.3.0`. It leaves out docs, translations, icons, fonts and firmware (1.7 GB
+  nobody links against), and the ~40 root-only files in `/usr`. On the Frame it took **116 s** and the
+  image is **5.8 GB** (podman's store, on `/home`). Rust isn't in the image: `steamos-buildenv.sh run`
+  mounts the cc-rust rustup from `~/.local/share/cc-rust`, plus my home and `/opt/steamvr`
+  read-only. SteamOS has no `llvm-ar`, so the musl build of cc-home uses binutils' `ar`.
 - **I'm not using Arch Linux ARM.** Its glibc and FFmpeg are newer than SteamOS's, so it hits the same
   symbol-version problem as Fedora.
 - **I'm not using Valve's SDK image.** There's no public SteamOS image for the Frame's `vr` variant
@@ -146,8 +151,10 @@ cleanest match for the host ABI is the Frame's own root filesystem:
 Rust doesn't care which glibc it's built against, so the workspace builds as-is. The cc_pointer build
 already checks `GLIBC_2.39` the same way.
 
-**What this changes:** nothing at run time needs distrobox. cc-panels runs straight on the host, so
-`cc-box` (the `box` mode) is only for development builds.
+**What this changes:** nothing at run time needs distrobox. cc-panels runs straight on the host. A
+build made this way leaves `panels/third_party/prefix/steamos-release`, and when that's there,
+`cc-box` runs its command directly (still niced) instead of in the container. That goes for the image
+and for a checkout built natively. A checkout built in the container works the same as before.
 
 ## 3. The image layout
 
@@ -356,36 +363,77 @@ I checked each piece against the sandbox:
 The session and the driver are the deal-breakers. Flatpak stays the plan for host-side UI where it
 fits, not the Frame.
 
-## 6. The prototype
+## 6. Building it
 
-`packaging/sysext/build.sh` builds the image from a checkout's current builds and checks it. It never
-installs anything. It re-runs itself on the host through `distrobox-host-exec` when started in a
-container, because it needs SteamOS's `mksquashfs` and wants to check against SteamOS's libraries.
+Three scripts, and none of them install anything:
 
 ```
-CC_ROOT=~/control-center packaging/sysext/build.sh   # → packaging/sysext/out/command-center.raw
+packaging/sysext/steamos-buildenv.sh   # once per SteamOS version: the build container
+packaging/sysext/build-native.sh       # cc-home, FreeRDP, libvncclient, cc-panels, the driver
+packaging/sysext/build.sh              # → packaging/sysext/out/command-center.raw
 ```
 
-What I ran (October 3, 2026):
+`build-native.sh` builds in place, into the checkout's usual paths, so don't run it in the checkout
+the Desktop is running from: it replaces that checkout's FreeRDP. I use a worktree. It reads FreeRDP's
+feature set from `FREERDP_FLAGS` in install.rs, so the two builds can't drift apart, and adds
+`-DWITH_UNICODE_BUILTIN=ON -DWITH_URIPARSER=OFF -DWITH_VAAPI_H264_ENCODING=OFF`. The last one is
+because SteamOS has libva and Fedora's build never found it, and it's a server feature anyway.
+libvncclient comes from `tools/build-libvncclient.sh`, unchanged, since it already works with
+whatever system it's in.
 
-- **The build:** 7.1 MB, squashfs with zstd, everything owned by root, with the layout from section 3.
-- **`systemd-dissect --validate`:** `OK`. Without root, `systemd-dissect` can't mount it to look
-  inside (`Failed to allocate user namespace`, and `systemd-mountfsd` isn't running), so I checked the
-  contents with `unsquashfs -ll` and the release file with `unsquashfs -cat` instead.
-- **The ABI check failed, as expected,** and it lists exactly what section 2 says: `cc-home`,
-  `cc-panels` and the driver pass, and the FreeRDP libraries need FFmpeg 8, ICU 77, uriparser and
-  `GLIBC_2.42`. So the script exits non-zero, which is how it should be until FreeRDP is built in the
-  SteamOS container.
+`build.sh` re-runs itself on the host through `distrobox-host-exec`, because it needs SteamOS's
+`mksquashfs` and checks against SteamOS's libraries.
+
+What I got (October 3, 2026, with other builds running on the Frame at the same time):
+
+- **The native build:** 7 min 16 s from clean, 88 s when only cc-panels changed.
+- **Every library comes from SteamOS** except our three FreeRDP 3.31.1 libraries: FFmpeg 7
+  (`libavcodec.so.61`), OpenSSL 3.2, PipeWire 1.6.8, `libjpeg.so.8` and `libjansson.so.4` (FreeRDP
+  picked jansson here, json-c in Fedora). There's no ICU or uriparser anymore. On the host,
+  `ldd -r` finds every library and every symbol for `cc-panels`, the FreeRDP libraries and the
+  driver.
+- **Newest glibc symbol:** `cc-panels` 2.39, `libwinpr3` 2.34 (was 2.42), `libfreerdp3` 2.32,
+  `libfreerdp-client3` 2.28, the driver 2.34. SteamOS has 2.39.
+- **The image:** 7.5 MB, squashfs with zstd. `build.sh`'s check passes ("every program and
+  library in it can load on this SteamOS"), and `systemd-dissect --validate` says `OK`. Without
+  root it can't mount the image to look inside, so I checked the contents with `unsquashfs -ll` and
+  the release file with `unsquashfs -cat`.
+- **From the unpacked image,** `CC_DRY=1 cc-box echo hi` prints `nice -n 10 echo hi`: no distrobox.
+
+H.264 still goes through FFmpeg's `WITH_VIDEO_FFMPEG`, which links `avformat`, `avdevice` and `avfilter`
+too, and with SteamOS's FFmpeg cc-panels ends up loading about 170 libraries. They're all in
+SteamOS, so it only costs load time. I'll measure that before trying to trim it.
 
 I didn't install, merge or refresh the image, so it's untested on a live system.
+
+### krdp on a SteamOS host
+
+This is for a Steam Deck, or a Frame sharing its own screen. `krdp/build-steamos.sh` builds the krdp
+from `packaging/arch/PKGBUILD` (6.7.5, the same checksum and patches) in the same container, into a
+`/usr` tree for a host sysext. It installs nothing. From clean it takes about a minute.
+
+SteamOS 0.3 has Plasma 6.2.5, Qt 6.8.0 and Frameworks 6.14, and krdp 6.7.5 asks for Qt 6.10 and
+Frameworks 6.26. It builds once I lower those two minimums, with three more changes:
+
+- **extra-cmake-modules 6.14** isn't on SteamOS. It's only needed to build, so it stays in the work dir.
+- **qtkeychain 0.15** isn't on SteamOS either, and krdp links it, so it goes in
+  `/usr/lib/command-center` with krdpserver's RPATH pointing there.
+- **KPipeWire 6.2** has `setActive()` where 6.7 has `start()` and `stop()`, and it has no
+  `setColorRange()`. The script swaps the calls and drops the colour range, so the H.264 stream is
+  limited range. Colours might look a little flat. If they do, bundling KPipeWire 6.7 is the fix.
+
+The examples are off (they hit the same KPipeWire calls). krdp links SteamOS's FreeRDP 3.17.2
+server libraries, not ours. Everything resolves on the host, and the newest glibc symbol is 2.34. It
+still needs a live test: a Frame panel showing a Deck's screen, the pointer patch, the clipboard and
+a window stream.
 
 ## 7. What's left, and how long
 
 | Work | Effort |
 | --- | --- |
-| The SteamOS build container (an import of the Frame's rootfs, plus rustup) | ½ day |
-| FreeRDP 3.31.1 in it: SteamOS FFmpeg 7, `WITH_UNICODE_BUILTIN`, no uriparser, `build.sh` check passing | 1–2 days, mostly testing H.264 against krdp |
-| Running from `/usr`: `root()` falls back to the exe's folder; `cc-box` runs directly instead of distrobox; `is_panels()` still matches `target/release/cc-panels`, since cc-home starts it by that full path; cc-launch's library check | ½–1 day |
+| ~~The SteamOS build container~~ (done) | |
+| ~~FreeRDP 3.31.1 in it~~ (builds, `build.sh` check passes); testing H.264 against krdp live | ½ day |
+| ~~Running from `/usr`~~ (`root()`, `cc-box`, `on_host()`); still to do: cc-launch's library check | ½ day |
 | First live test: merge on the Frame, Desktop tile, KWin grant, driver loading from `/opt`, an OS update | 1 day, plus waiting for an OS update |
 | cc-install's sysext path: pkexec install, the signed-update helper and polkit action, moving over from a checkout install, Remove | 2–3 days |
 | Releases: signing, building the `.raw` on the Frame as a runner, publishing per SteamOS minor | 1–2 days |
