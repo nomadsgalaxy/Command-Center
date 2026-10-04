@@ -191,8 +191,17 @@ publisher that exits at once.
 ## SteamOS hosts
 
 SteamOS's root is read-only, so pacman packages don't install there in the normal way. A Steam
-Deck used as a host gets the same systemd-sysext image approach as the Frame, with
-`command-center-host`'s files in it. The sysext design is cc-dev's.
+Deck used as a host gets its krdp as a systemd-sysext instead.
+
+The Deck's own krdp (6.4.3 on SteamOS 3.8) shows its screen but can't be controlled: it runs
+input on the wrong thread, never authenticates with KWin's fake input, and sends the pointer
+position in the wrong units. krdp 6.5 fixed all three. `krdp/deck/build.sh` builds 6.4.3 with
+those fixes backported (`input-thread.patch`, `fake-input.patch`), against SteamOS's own
+packages, into a sysext folder that puts it in `/usr/lib/command-center`. cc-host prefers a krdp
+there, so the Frame's sessions use it, and the system's krdp stays as it was. The extension is
+pinned to the SteamOS version it was built for, so after an update the stock krdp comes back
+until it's built again. The script's header has the install commands. Having the installer build
+and install it on its own is the next step.
 
 ## Fedora, then Debian and Ubuntu (designed now, built later)
 

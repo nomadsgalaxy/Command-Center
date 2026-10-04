@@ -1,0 +1,34 @@
+--- a/src/PlasmaScreencastV1Session.cpp	2026-10-04 02:21:45.261050659 -0400
++++ b/src/PlasmaScreencastV1Session.cpp	2026-10-04 02:27:59.680062008 -0400
+@@ -163,6 +163,8 @@
+     , d(std::make_unique<Private>())
+ {
+     d->remoteInterface = new FakeInput();
++    // Backported from krdp 6.5: KWin ignores fake input from a client that hasn't authenticated.
++    d->remoteInterface->authenticate(QStringLiteral("krdpserver"), QString());
+ }
+ 
+ PlasmaScreencastV1Session::~PlasmaScreencastV1Session()
+@@ -223,17 +225,19 @@
+         auto me = std::static_pointer_cast<QMouseEvent>(event);
+         auto position = me->position();
+         auto logicalPosition = QPointF{(position.x() / size().width()) * logicalSize().width(), (position.y() / size().height()) * logicalSize().height()};
+-        d->remoteInterface->pointer_motion_absolute(logicalPosition.x(), logicalPosition.y());
++        // Backported from krdp 6.5: fake_input takes wl_fixed, so plain numbers put the pointer
++        // 256 times too near the top-left corner.
++        d->remoteInterface->pointer_motion_absolute(wl_fixed_from_double(logicalPosition.x()), wl_fixed_from_double(logicalPosition.y()));
+         break;
+     }
+     case QEvent::Wheel: {
+         auto we = std::static_pointer_cast<QWheelEvent>(event);
+         auto delta = we->angleDelta();
+         if (delta.y() != 0) {
+-            d->remoteInterface->axis(WL_POINTER_AXIS_VERTICAL_SCROLL, delta.y() / 120);
++            d->remoteInterface->axis(WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_double(delta.y() / 8.0));
+         }
+         if (delta.x() != 0) {
+-            d->remoteInterface->axis(WL_POINTER_AXIS_HORIZONTAL_SCROLL, delta.x() / 120);
++            d->remoteInterface->axis(WL_POINTER_AXIS_HORIZONTAL_SCROLL, wl_fixed_from_double(delta.x() / 8.0));
+         }
+         break;
+     }

@@ -1,0 +1,9 @@
+command-center/
+stage/
+build/
+krdp-6.4.3/
+krdp.tar.xz
+pacman.conf
+mirrorlist
+keyrings/
+build.log

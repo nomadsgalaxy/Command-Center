@@ -69,8 +69,9 @@ lists the Frames paired with it.
 
 ## Not yet
 
-- **Controlling a Steam Deck:** SteamOS's own krdp shows the screen but drops mouse and keyboard
-  input. A fixed krdp for it is in the works.
+- **Controlling a Steam Deck out of the box:** SteamOS's own krdp shows the screen but drops
+  mouse and keyboard input. `krdp/deck/build.sh` builds a fixed one
+  ([docs/packaging.md](docs/packaging.md#steamos-hosts)); the installer doesn't do it for you yet.
 - **Gaming-grade latency:** RDP suits desktop work, not fast games.
 
 ## License
