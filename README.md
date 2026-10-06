@@ -52,6 +52,8 @@ updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
   monitors to put everything where it belongs.
 - **Closing the Desktop** saves which apps were open and frees the memory for a game. Opening
   it again brings them back.
+- **VR games:** while one runs, Command Center steps aside. Its panels hide and pause, and the
+  controllers, mouse and keyboard all go to the game. Everything comes back when the game ends.
 
 On a computer, `cc-share check` says if anything's wrong and how to fix it, and `cc-share frames`
 lists the Frames paired with it.

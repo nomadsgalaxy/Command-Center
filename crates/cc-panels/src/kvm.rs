@@ -161,6 +161,7 @@ pub struct Kvm {
     pub ppd: Vec<f64>,         // each panel's pixels per degree from where the head is now
     devices: Vec<Device>,
     pub engaged: bool, // keyboards are ours and type into a remote (click to type, or a Right Ctrl tap)
+    yielded: bool,     // a game is running, so the mice are the Frame's too, not only the keyboards
     pub awake: bool,   // the cursor shows (mouse motion wakes it, IDLE puts it to sleep)
     pub active: usize, // the panel the cursor is on, where mouse input goes
     pub kbd: usize,    // the panel you clicked last, where typing goes
@@ -251,6 +252,7 @@ pub static KVM: Mutex<Kvm> = Mutex::new(Kvm {
     ppd: Vec::new(),
     devices: Vec::new(),
     engaged: false,
+    yielded: false,
     awake: false,
     active: 0,
     kbd: 0,
@@ -432,6 +434,27 @@ impl Kvm {
         self.engaged = on;
         self.grab_keyboards();
         eprintln!("keyboard {} ({why})", if on { "to the remotes" } else { "to the Frame" });
+    }
+
+    /// Under a game, every device goes back to the Frame, mice too, so the game and anything else
+    /// outside Command Center gets the mouse and keyboard. They come back when it ends.
+    pub fn set_yielded(&mut self, on: bool, why: &str) {
+        if on == self.yielded {
+            return;
+        }
+        self.yielded = on;
+        if on {
+            self.set_engaged(false, why);
+            self.set_awake(false);
+        }
+        for d in self.devices.iter_mut().filter(|d| d.mouse_only) {
+            if on {
+                d.grab(false);
+            } else {
+                d.grab_when_free();
+            }
+        }
+        eprintln!("mice {} ({why})", if on { "to the Frame" } else { "to Command Center" });
     }
 
     /// Whether panel i is taking your input right now: it's the cursor's (you used the mouse or
@@ -1190,6 +1213,9 @@ impl Kvm {
         for mut d in found {
             if self.keyboards() && !d.mouse_only {
                 d.grab_when_free();
+            }
+            if self.yielded && d.mouse_only {
+                d.grab(false); // probe grabbed it, but a game has the mice
             }
             eprintln!("input: {} ({})", d.name, d.path);
             self.devices.push(d);

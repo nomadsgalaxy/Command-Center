@@ -23,6 +23,12 @@ impl Gaze {
         (e == 0 && action != 0).then_some(Gaze { action, set })
     }
 
+    /// Lets go of the action set. It's active at global overlay priority, the level that takes
+    /// input away from the scene app, so a game got no controllers while it stayed active.
+    pub fn release(&self) {
+        call!(input, UpdateActionState, std::ptr::null_mut(), size_of::<sys::VRActiveActionSet_t>() as u32, 0);
+    }
+
     /// Where you're looking: an origin and a unit direction in standing space, if the
     /// tracker has a valid sample right now.
     pub fn sample(&self) -> Option<(V3, V3)> {

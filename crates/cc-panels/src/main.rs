@@ -923,6 +923,8 @@ fn run() -> Result<(), String> {
     let mut pace = Pace::new(display_hz(), Instant::now());
     let _ = vr::MAIN.set(std::thread::current()); // vr::wake ends the wait between ticks
     let mut gaze_tried: Option<Instant> = None;
+    let mut gaze_off = false; // a game is running, so the gaze's action set is let go
+    let mut game_hid = false; // the panels are hidden because a VR game is running
     let mut last_event = 0; // the last SteamVR event's type, for the loop's status line
     let mut was_away = false; // hidden or under a game last tick
     while !QUIT.load(Relaxed) {
@@ -1038,6 +1040,18 @@ fn run() -> Result<(), String> {
         if away && !was_away {
             KVM.lock().unwrap().set_engaged(false, if seen.hidden { "Desktop hidden" } else { "game running" });
         }
+        // A VR game: Command Center steps aside. The mice go to it as well as the keyboards (the
+        // line above), every panel hides, and the panels are paused (attention.rs), until it ends.
+        KVM.lock().unwrap().set_yielded(seen.game, if seen.game { "game running" } else { "no game" });
+        if seen.game && !game_hid && !HIDDEN.load(Relaxed) {
+            game_hid = true;
+            control::show_panels(false);
+            eprintln!("game: a VR game is running, so the Desktop hides and waits");
+        } else if !seen.game && game_hid {
+            game_hid = false;
+            control::show_panels(true); // only what the game hid; one you hid yourself stays hidden
+            eprintln!("game: it ended, so the Desktop is back");
+        }
         was_away = away;
         laps.lap("attention");
         for (p, b) in panels().iter().zip(&mut buffers) {
@@ -1100,7 +1114,15 @@ fn run() -> Result<(), String> {
         }
         popout::tick(&mut KVM.lock().unwrap());
         laps.lap("control");
-        if let Some(g) = &gaze
+        // Not under a game: the gaze's action set is global priority, so it took the game's controllers.
+        if bar.game() != gaze_off {
+            gaze_off = bar.game();
+            if let (true, Some(g)) = (gaze_off, &gaze) {
+                g.release();
+                KVM.lock().unwrap().gaze(None);
+            }
+        }
+        if let Some(g) = gaze.as_ref().filter(|_| !gaze_off)
             && gaze_tried.is_none_or(|t| laps.start.duration_since(t) >= GAZE_EVERY)
         {
             gaze_tried = Some(laps.start);
