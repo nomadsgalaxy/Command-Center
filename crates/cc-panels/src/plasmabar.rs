@@ -55,6 +55,13 @@ static CROP: Mutex<Option<(Rect, Rect)>> = Mutex::new(None);
 /// The panel and every open plasmashell popup, shown here or not. They're above every window.
 static ABOVE: Mutex<Vec<Rect>> = Mutex::new(Vec::new());
 
+/// With ~/.cache/control-center/plasma-debug there when cc-panels starts, laser clicks on the bar
+/// and every placement of the overlay go to the log, to find where a click lands.
+fn debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".cache/control-center/plasma-debug").exists())
+}
+
 fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     let (x0, y0) = (a[0].max(b[0]), a[1].max(b[1]));
     let (x1, y1) = ((a[0] + a[2]).min(b[0] + b[2]), (a[1] + a[3]).min(b[1] + b[3]));
@@ -378,6 +385,9 @@ impl Plasma {
         let width = c[2] as f64 * mpp;
         let placed = Some((local, dev, c, (width * 1000.0).round() as u32, b, (curve * 1000.0).round() as u32));
         if self.placed != placed {
+            if debug() {
+                eprintln!("plasma-debug: placed crop {c:?} panel {p:?} width {width:.3} m shift {dx:.3},{dy:.3} bounds {b:?} clickable {} on_win {}", self.clickable, self.on_win);
+            }
             if self.placed.is_none_or(|q| q.4 != b) {
                 let mut t = sys::VRTextureBounds_t { uMin: b[0], vMin: b[1], uMax: b[2], vMax: b[3] };
                 call!(ov, SetOverlayTextureBounds, self.ov, &mut t);
@@ -438,6 +448,21 @@ impl Plasma {
         self.moving = self.held != 0;
         while call!(ov, PollNextOverlayEvent, self.ov, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let m = unsafe { e.data.mouse };
+            if debug() && e.eventType != sys::EVREventType_VREvent_MouseMove {
+                eprintln!("plasma-debug: overlay event {} at {:.3},{:.3} -> {:?} crop {:?}", e.eventType, m.x, m.y, at(m.x as f64, m.y as f64), *CROP.lock().unwrap());
+            }
+            if debug() && e.eventType == sys::EVREventType_VREvent_MouseMove {
+                // every 10th move: SteamVR's point on the overlay next to where the laser crosses it by our own placement
+                static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                if N.fetch_add(1, Relaxed) % 10 == 0 {
+                    let ours = vr::laser_pose(e.trackedDeviceIndex).zip(KVM.lock().unwrap().plasma).and_then(|(l, pl)| {
+                        let o = [l[0][3] as f64, l[1][3] as f64, l[2][3] as f64];
+                        let d = [-l[0][2] as f64, -l[1][2] as f64, -l[2][2] as f64];
+                        pl.hit(&o, &d).map(|(_, u, v)| (u / pl.width + 0.5, v / pl.height + 0.5, pl.width, pl.height))
+                    });
+                    eprintln!("plasma-debug: move steamvr {:.3},{:.3} ours {:?} crop {:?}", m.x, m.y, ours, CROP.lock().unwrap().map(|c| c.0));
+                }
+            }
             self.laser(&e, at(m.x as f64, m.y as f64));
         }
     }
@@ -446,6 +471,9 @@ impl Plasma {
     /// bar's bottom left (taskbar.rs). Handled as if it hit this overlay at that point of the panel.
     pub fn on_bar(&mut self, e: &vr::VREvent_t, fx: f64, fy: f64) {
         let at = self.panel.as_ref().map(|p| global(p.1, fx, fy));
+        if debug() && e.eventType != sys::EVREventType_VREvent_MouseMove {
+            eprintln!("plasma-debug: frame event {} at panel {fx:.3},{fy:.3} -> {at:?} clickable {}", e.eventType, self.clickable);
+        }
         self.laser(e, at);
     }
 
