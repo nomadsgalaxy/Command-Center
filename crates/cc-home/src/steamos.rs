@@ -118,6 +118,88 @@ pub fn check_abi(root: &Path) -> Result<(), String> {
     }
 }
 
+// ---- the SteamVR path
+
+/// SteamVR's own folder on SteamOS, where the image's driver is looked at.
+pub const OS_STEAMVR: &str = "/opt/steamvr";
+/// Where the image puts the pointer driver.
+pub const IMAGE_DRIVER: &str = "/opt/steamvr/drivers/cc_pointer";
+
+/// `runtime[0]` of an openvrpaths.vrpath, which is what `steamvr path --ignore-pending` prints.
+pub fn runtime_of(vrpath: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(vrpath).ok()?;
+    v["runtime"][0].as_str().filter(|s| !s.is_empty()).map(String::from)
+}
+
+/// The drivers vrpathreg has registered (`external_drivers`).
+pub fn external_drivers(vrpath: &str) -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_str(vrpath).unwrap_or_default();
+    v["external_drivers"].as_array().into_iter().flatten().filter_map(|d| d.as_str().map(String::from)).collect()
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Driver {
+    /// SteamVR runs from /opt/steamvr, so it loads the image's driver by itself.
+    Loads,
+    /// SteamVR runs from elsewhere and the driver is registered already.
+    Registered,
+    /// SteamVR runs from elsewhere and the image's driver isn't registered: register it there.
+    Register { runtime: String },
+    /// The image's driver isn't here (a checkout install registers its own, install.sh), or SteamVR's path isn't known.
+    NotOurs,
+}
+
+/// What to do about the driver. `runtime` is SteamVR's path and `os` the OS one, both resolved (a
+/// symlink to the same folder is the same), `external` what vrpathreg has registered, and `present`
+/// whether the image's driver folder exists.
+pub fn driver_plan(runtime: Option<&str>, os: &str, external: &[String], present: bool) -> Driver {
+    let Some(runtime) = runtime else { return Driver::NotOurs };
+    if !present {
+        return Driver::NotOurs;
+    }
+    if runtime == os {
+        Driver::Loads
+    } else if external.iter().any(|d| d == IMAGE_DRIVER) {
+        Driver::Registered
+    } else {
+        Driver::Register { runtime: runtime.into() }
+    }
+}
+
+/// What gets logged for each outcome, plainly.
+pub fn driver_note(d: &Driver, registered_ok: Option<bool>) -> Option<String> {
+    match d {
+        Driver::Register { runtime } if registered_ok == Some(true) => {
+            Some(format!("SteamVR runs from {runtime}, not {OS_STEAMVR}, so it doesn't see the pointer driver in the image. I registered {IMAGE_DRIVER} with vrpathreg. Restart SteamVR once to load it."))
+        }
+        Driver::Register { runtime } => Some(format!("SteamVR runs from {runtime}, not {OS_STEAMVR}, so it doesn't see the pointer driver in the image, and registering {IMAGE_DRIVER} with vrpathreg failed. The mouse's laser won't work until it's registered.")),
+        _ => None,
+    }
+}
+
+/// Takes the image's driver back out of vrpathreg's registry, if `check_steamvr` put it there (so
+/// removing the image doesn't leave SteamVR pointing at a folder that's gone). `unregister` is given
+/// the folder. Returns whether it was registered.
+pub fn forget_driver(unregister: impl FnOnce(&str) -> bool) -> bool {
+    let vrpath = fs::read_to_string(format!("{}/.config/openvr/openvrpaths.vrpath", crate::home_dir())).unwrap_or_default();
+    external_drivers(&vrpath).iter().any(|d| d == IMAGE_DRIVER) && unregister(IMAGE_DRIVER)
+}
+
+/// Checks where SteamVR runs and registers the image's driver if it can't see it. It reads the paths
+/// file only, and runs vrpathreg (which edits that file and doesn't connect to SteamVR) once, when
+/// it's needed. `register` does that: given the driver folder, whether it worked.
+pub fn check_steamvr(register: impl FnOnce(&str) -> bool) {
+    let home = crate::home_dir();
+    let vrpath = fs::read_to_string(format!("{home}/.config/openvr/openvrpaths.vrpath")).unwrap_or_default();
+    let resolve = |p: &str| fs::canonicalize(p).map_or_else(|_| p.to_owned(), |c| c.to_string_lossy().into_owned());
+    let runtime = runtime_of(&vrpath).map(|r| resolve(&r));
+    let plan = driver_plan(runtime.as_deref(), &resolve(OS_STEAMVR), &external_drivers(&vrpath), Path::new(IMAGE_DRIVER).is_dir());
+    let ok = matches!(plan, Driver::Register { .. }).then(|| register(IMAGE_DRIVER));
+    if let Some(msg) = driver_note(&plan, ok) {
+        note(&msg);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +252,56 @@ mod tests {
         let broken = abi_message("0.4.5", "0.5.0", &["libavcodec.so.62".into(), "libavutil.so.60".into()]);
         assert!(broken.contains("can't start") && broken.contains("libavcodec.so.62, libavutil.so.60") && broken.contains("installer"), "{broken}");
         assert!(!broken.contains("so it starts"));
+    }
+
+    const VRPATH: &str = "{\n\t\"config\" : [ \"/home/steamos/.config/openvr/config\" ],\n\t\"external_drivers\" : [ \"/home/steamos/.local/share/control-center/cc_pointer-250fba28fc57\" ],\n\t\"jsonid\" : \"vrpathreg\",\n\t\"runtime\" : [ \"/opt/steamvr\" ],\n\t\"version\" : 1\n}";
+
+    #[test]
+    fn it_reads_where_steamvr_runs_and_what_is_registered() {
+        assert_eq!(runtime_of(VRPATH), Some("/opt/steamvr".into()));
+        assert_eq!(external_drivers(VRPATH), ["/home/steamos/.local/share/control-center/cc_pointer-250fba28fc57"]);
+        assert_eq!(runtime_of("{\"runtime\": []}"), None);
+        assert_eq!(runtime_of("{\"runtime\": [\"\"]}"), None, "empty");
+        assert_eq!(runtime_of("not json"), None);
+        assert_eq!(runtime_of(""), None, "no paths file yet");
+        assert!(external_drivers("{}").is_empty() && external_drivers("").is_empty());
+    }
+
+    fn plan(runtime: Option<&str>, external: &[&str], present: bool) -> Driver {
+        driver_plan(runtime, "/opt/steamvr", &external.iter().map(|s| s.to_string()).collect::<Vec<_>>(), present)
+    }
+
+    #[test]
+    fn steamvr_from_the_os_loads_the_images_driver_by_itself() {
+        assert_eq!(plan(Some("/opt/steamvr"), &[], true), Driver::Loads);
+        assert_eq!(plan(Some("/opt/steamvr"), &["/somewhere/else"], true), Driver::Loads, "nothing to do whatever else is registered");
+    }
+
+    #[test]
+    fn steamvr_from_elsewhere_gets_the_driver_registered_once() {
+        let steam = "/home/steamos/.local/share/Steam/steamapps/common/SteamVR";
+        assert_eq!(plan(Some(steam), &[], true), Driver::Register { runtime: steam.into() });
+        assert_eq!(plan(Some(steam), &["/other/driver"], true), Driver::Register { runtime: steam.into() }, "someone else's driver isn't ours");
+        assert_eq!(plan(Some(steam), &["/other/driver", IMAGE_DRIVER], true), Driver::Registered, "not again");
+        assert_eq!(plan(Some("/home/steamos/work/steamvr"), &[], true), Driver::Register { runtime: "/home/steamos/work/steamvr".into() }, "a setpath copy too");
+    }
+
+    #[test]
+    fn nothing_is_registered_when_there_is_no_image_driver_or_no_path() {
+        assert_eq!(plan(Some("/home/steamos/work/steamvr"), &[], false), Driver::NotOurs, "a checkout install registers its own (install.sh)");
+        assert_eq!(plan(None, &[], true), Driver::NotOurs, "no paths file to go by");
+        assert_eq!(plan(Some("/opt/steamvr"), &[], false), Driver::NotOurs);
+    }
+
+    #[test]
+    fn it_says_what_it_did_only_when_it_did_something() {
+        let reg = Driver::Register { runtime: "/x/steamvr".into() };
+        let done = driver_note(&reg, Some(true)).unwrap();
+        assert!(done.contains("/x/steamvr") && done.contains("registered") && done.contains("Restart SteamVR"), "{done}");
+        let failed = driver_note(&reg, Some(false)).unwrap();
+        assert!(failed.contains("failed") && failed.contains("laser won't work"), "{failed}");
+        for quiet in [Driver::Loads, Driver::Registered, Driver::NotOurs] {
+            assert_eq!(driver_note(&quiet, None), None);
+        }
     }
 }

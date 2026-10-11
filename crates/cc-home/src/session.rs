@@ -195,6 +195,23 @@ fn systemctl(args: &[&str]) -> Command {
     c
 }
 
+/// Registers the driver folder with SteamVR's vrpathreg. SteamVR reads ~/.config/openvr, but inside
+/// Command Center's Desktop XDG_CONFIG_HOME points somewhere else, and vrpathreg would quietly write a
+/// registry SteamVR never reads (the same as driver/cc_pointer/install.sh). It only edits that file, so
+/// it spends none of SteamVR's binding loads. With CC_DRY=1 it prints the command instead.
+fn register_driver(dir: &str) -> bool {
+    let mut c = Command::new("/opt/steamvr/bin/linuxarm64/vrpathreg");
+    c.args(["adddriver", dir]).env("XDG_CONFIG_HOME", format!("{}/.config", home_dir())).env("LD_LIBRARY_PATH", "/opt/steamvr/bin/linuxarm64").stdout(Stdio::null()).stderr(Stdio::null());
+    run(&mut c).is_ok_and(|s| s.success())
+}
+
+/// The other half of `register_driver`.
+pub fn unregister_driver(dir: &str) -> bool {
+    let mut c = Command::new("/opt/steamvr/bin/linuxarm64/vrpathreg");
+    c.args(["removedriver", dir]).env("XDG_CONFIG_HOME", format!("{}/.config", home_dir())).env("LD_LIBRARY_PATH", "/opt/steamvr/bin/linuxarm64").stdout(Stdio::null()).stderr(Stdio::null());
+    run(&mut c).is_ok_and(|s| s.success())
+}
+
 /// What session/cc-launch runs.
 fn desktop(args: &[String]) -> i32 {
     strip_steam(false);
@@ -206,6 +223,9 @@ fn desktop(args: &[String]) -> i32 {
             eprintln!("{msg}");
             return 1;
         }
+        // The image's pointer driver is only seen when SteamVR runs from /opt/steamvr. If it runs
+        // from somewhere else, register the driver with vrpathreg (once; steamos.rs).
+        crate::steamos::check_steamvr(register_driver);
     }
     let runtime = format!("{}/cc-desktop", var_or("XDG_RUNTIME_DIR", &format!("/run/user/{}", uid())));
     // A Desktop closed a moment ago may still be stopping because an app is slow to quit. Let it

@@ -75,7 +75,15 @@ fn desktop() -> Result<(), String> {
 
 fn remove() -> Result<(), String> {
     let (root, home) = (root(), home_dir());
-    ok(&mut Command::new(root.join("driver/cc_pointer/install.sh")).arg("uninstall"), false)?;
+    // A checkout install registered its own copy; the sysext image has no such script. And if the
+    // image's driver was registered because SteamVR runs from somewhere else (steamos.rs), that goes too.
+    let script = root.join("driver/cc_pointer/install.sh");
+    if script.is_file() {
+        ok(&mut Command::new(script).arg("uninstall"), false)?;
+    }
+    if crate::steamos::forget_driver(crate::session::unregister_driver) {
+        println!("unregistered the image's pointer driver from vrpathreg");
+    }
     // Only our own links, and the Desktop entry only if it's ours (another app may have put its own there).
     for c in ["cc-panels", "cc-home", "cc-box"] {
         let l = format!("{home}/.local/bin/{c}");
