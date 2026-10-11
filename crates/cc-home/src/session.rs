@@ -1,7 +1,8 @@
 //! The Desktop's launch glue, ported from the shell scripts it replaces. Their paths are symlinks
 //! to cc-home now and it dispatches on argv[0]. The behaviour, timeouts, log format, markers and
 //! exit codes all match the scripts:
-//!   cc-home desktop [name ...]  session/cc-launch: what the VR launcher's "Desktop" runs. The
+//!   cc-home desktop [name ...]  session/cc-launch: what the VR launcher's "Desktop" runs. A native
+//!                               build first checks it still fits the running SteamOS (steamos.rs). The
 //!                               desktop session (its own systemd user unit cc-desktop, so it
 //!                               outlives cc-panels) if it isn't up, hibernate restore,
 //!                               autoconnect, then cc-panels with no time limit; a deliberate
@@ -198,6 +199,14 @@ fn systemctl(args: &[&str]) -> Command {
 fn desktop(args: &[String]) -> i32 {
     strip_steam(false);
     let root = root();
+    // A native build (the sysext image) against a SteamOS it wasn't built on: it starts if its
+    // libraries still load, and says what's wrong if they don't (steamos.rs).
+    if native(&root) {
+        if let Err(msg) = crate::steamos::check_abi(&root) {
+            eprintln!("{msg}");
+            return 1;
+        }
+    }
     let runtime = format!("{}/cc-desktop", var_or("XDG_RUNTIME_DIR", &format!("/run/user/{}", uid())));
     // A Desktop closed a moment ago may still be stopping because an app is slow to quit. Let it
     // finish, or the new session can't start and cc-panels comes up without one (live,

@@ -18,6 +18,7 @@ mod install;
 mod machine;
 mod scan;
 mod session;
+mod steamos;
 
 use cc_proto::conf::{self, Json, Viewer, py_round};
 use std::os::linux::net::SocketAddrExt;

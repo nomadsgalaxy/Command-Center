@@ -74,16 +74,20 @@ Categories=Utility;
 EOF
 
 # sysext only merges an image whose release file is named after it and matches the host. SteamOS
-# has no SYSEXT_LEVEL, so the match is ID and VERSION_ID: a new SteamOS minor (0.3 to 0.4) leaves
-# the image unmerged instead of running it against libraries it wasn't built for.
+# has no SYSEXT_LEVEL, so a VERSION_ID would have to match exactly, and SteamOS goes 0.4.5 to 0.4.6
+# every few days: the image would be dropped at every update. ID=_any skips that, and
+# ARCHITECTURE=arm64 still keeps it off anything else. What breaks us is a library changing, not a
+# version string, so that's checked where it matters: cc-home desktop compares the SteamOS this was
+# built on (panels/third_party/prefix/steamos-release, in the image) with the running one and checks
+# the libraries still load (crates/cc-home/src/steamos.rs).
 . /etc/os-release
 mkdir -p "$s/usr/lib/extension-release.d"
-printf 'ID=%s\nVERSION_ID=%s\nARCHITECTURE=arm64\nIMAGE_ID=%s\nIMAGE_VERSION=%s\n' \
-  "$ID" "$VERSION_ID" "$name" "$version" >"$s/usr/lib/extension-release.d/extension-release.$name"
+printf 'ID=_any\nARCHITECTURE=arm64\nIMAGE_ID=%s\nIMAGE_VERSION=%s\n' \
+  "$name" "$version" >"$s/usr/lib/extension-release.d/extension-release.$name"
 
 mkdir -p "$(dirname "$out")"
 mksquashfs "$s" "$out" -all-root -noappend -comp zstd -quiet -no-progress
-echo "built $out ($(du -h "$out" | cut -f1), $name $version, for $ID $VERSION_ID)"
+echo "built $out ($(du -h "$out" | cut -f1), $name $version, built on $ID $VERSION_ID, merges on any SteamOS)"
 # Without root it can't mount the image to look inside, but it does check that it's one.
 systemd-dissect --validate "$out" >/dev/null && echo "systemd-dissect: a valid image"
 
