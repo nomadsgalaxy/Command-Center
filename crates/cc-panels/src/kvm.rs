@@ -542,11 +542,15 @@ impl Kvm {
 
     /// The cursor's point in the room: on the active panel, or floating.
     fn cursor_point(&self) -> [f64; 3] {
+        self.cursor_point_with(&Live)
+    }
+
+    fn cursor_point_with(&self, s: &impl Stage) -> [f64; 3] {
         if let Some(f) = self.free {
             return f;
         }
-        let ((w, h), pl) = (panel(self.active).size(), &self.place[self.active]);
-        let (u, v) = pl.at_pixel((w, h), self.x, self.y);
+        let (size, pl) = (s.panel(self.active).size, &self.place[self.active]);
+        let (u, v) = pl.at_pixel(size, self.x, self.y);
         let m = pl.on_surface(u, v, 0.0);
         [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64]
     }
@@ -554,25 +558,29 @@ impl Kvm {
     /// Restart the ray at the head and aim it where the cursor is, so the cursor doesn't jump
     /// after a panel moved under it.
     fn reaim(&mut self) {
-        self.reaim_from(vr::head_position());
+        self.reaim_with(&Live);
     }
 
-    fn reaim_from(&mut self, head: [f64; 3]) {
-        let p = self.cursor_point();
-        self.anchor = head;
+    fn reaim_with(&mut self, s: &impl Stage) {
+        let p = self.cursor_point_with(s);
+        self.anchor = s.head();
         (self.yaw, self.pitch) = angles(&[p[0] - self.anchor[0], p[1] - self.anchor[1], p[2] - self.anchor[2]]);
     }
 
     /// Recenter: the ray starts at the head and points the way you're facing, so the
     /// cursor ends up straight ahead (on engaging, and with Right Ctrl + Space).
     pub fn recenter(&mut self) {
-        let Some(m) = vr::head() else {
-            return self.reaim(); // not tracked right now, so at least start from the last head position
+        self.recenter_with(&mut Live);
+    }
+
+    fn recenter_with(&mut self, s: &mut impl Stage) {
+        let Some(m) = s.head_pose() else {
+            return self.reaim_with(&*s); // not tracked right now, so at least start from the last head position
         };
         self.anchor = [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64];
         (self.yaw, self.pitch) = angles(&[-m[0][2] as f64, -m[1][2] as f64, -m[2][2] as f64]);
         self.pitch = self.pitch.clamp(-85.0, 85.0);
-        self.land();
+        self.land_with(s);
     }
 
     /// The nearest panel a ray meets inside its edges (one it can reach): (panel, distance, u, v).
@@ -670,6 +678,10 @@ impl Kvm {
 
     /// Mouse motion turns the ray; the cursor goes where it lands.
     fn mv(&mut self) {
+        self.mv_with(&mut Live);
+    }
+
+    fn mv_with(&mut self, s: &mut impl Stage) {
         // Looking at a different panel than the cursor's: the cursor starts from where you look.
         let focus = self.focus.filter(|_| self.gaze_lock && self.gaze_fresh() && self.buttons == 0);
         if let Some(f) = focus.filter(|&f| f != self.active || self.free.is_some()) {
@@ -679,18 +691,22 @@ impl Kvm {
             };
             let pl = &self.place[f];
             let (u, v) = pl.clamped(u, v);
-            self.anchor = vr::head_position();
+            self.anchor = s.head();
             self.aim_at(f, u, v);
         }
         self.yaw -= self.dx * self.sensitivity; // right turns the ray right
         self.pitch = (self.pitch - self.dy * self.sensitivity).clamp(-85.0, 85.0);
         (self.dx, self.dy) = (0.0, 0.0);
-        self.land();
+        self.land_with(s);
     }
 
     /// Where the ray lands now. This runs every frame, not just on mouse motion, so leaning or
     /// turning your head (or a panel moving) re-lands the cursor on what you see.
     pub fn land(&mut self) {
+        self.land_with(&mut Live);
+    }
+
+    fn land_with(&mut self, st: &mut impl Stage) {
         (self.on_bar, self.on_plasma) = (None, false);
         if self.beam_buttons != 0 || self.card_held {
             // Held through the laser (a drag on SteamVR's UI, or carrying a panel by its bar),
@@ -792,13 +808,13 @@ impl Kvm {
                 None if held_window => hit = None,
                 None if keep == focus => {
                     // you turned right away from it (past its curve, or behind), so stay at the cursor
-                    let (u, v) = pl.at_pixel(panel(k).size(), self.x, self.y);
+                    let (u, v) = pl.at_pixel(st.panel(k).size, self.x, self.y);
                     self.aim_at(k, u, v);
                     hit = Some((k, 0.0, u, v));
                 }
                 None if self.buttons != 0 => {
                     // dragging and you turned away from it: the cursor stays where it was
-                    let (u, v) = pl.at_pixel(panel(k).size(), self.x, self.y);
+                    let (u, v) = pl.at_pixel(st.panel(k).size, self.x, self.y);
                     hit = Some((k, self.depth, u, v));
                 }
                 None => {}
@@ -819,7 +835,7 @@ impl Kvm {
         // Check from the eye too: once the head's moved, a nearer panel can cover the point.
         if self.buttons == 0 && keep.is_none() {
             let p = free.unwrap_or_else(|| point(hit.unwrap().1));
-            let eye = vr::head_position();
+            let eye = st.head();
             let to = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
             let n = norm(&to);
             if n > 1e-6 {
@@ -828,11 +844,11 @@ impl Kvm {
                 if let Some(t) = self.extra_hit(&eye, &to, nearer).filter(|&t| t < n - 0.02) {
                     // re-aim the ray at it from the eye, so a press's drag lock holds at the point it hit
                     self.to_extra([0, 1, 2].map(|i| eye[i] + to[i] * t), t);
-                    return self.reaim();
+                    return self.reaim_with(&*st);
                 }
                 if let Some((j, t)) = self.card_hit(&eye, &to, nearer).filter(|h| h.1 < n - 0.02) {
                     self.to_card(j, [0, 1, 2].map(|i| eye[i] + to[i] * t), t);
-                    return self.reaim();
+                    return self.reaim_with(&*st);
                 }
                 if let Some(nearer) = nearer.filter(|h| h.1 < n - 0.02) {
                     hit = Some(nearer);
@@ -843,7 +859,7 @@ impl Kvm {
             self.free = free;
             self.sent = None; // back on a panel, even at the same pixel, counts as a move
             if self.buttons != 0 && window(self.active) {
-                self.window_drag = Some((self.cursor_point(), Instant::now()));
+                self.window_drag = Some((self.cursor_point_with(&*st), Instant::now()));
                 windows::drag_off(); // held from a window, so now it's off every window
             } else {
                 windows::leave();
@@ -857,16 +873,16 @@ impl Kvm {
             }
             self.active = i;
         }
-        let (p, pl) = (panel(i), &self.place[i]);
+        let pl = &self.place[i];
         self.free = None;
-        (self.x, self.y) = pl.pixel_at(p.size(), u, v);
+        (self.x, self.y) = pl.pixel_at(st.panel(i).size, u, v);
         if self.buttons != 0 && window(i) {
-            self.window_drag = Some((self.cursor_point(), Instant::now()));
+            self.window_drag = Some((self.cursor_point_with(&*st), Instant::now()));
         }
         let at = (i, self.x as i32, self.y as i32);
         if self.sent != Some(at) {
             self.sent = Some(at);
-            p.mouse(PTR_FLAGS_MOVE, self.x, self.y);
+            st.move_pointer(i, self.x, self.y);
             self.moves += 1;
         }
     }
@@ -911,18 +927,22 @@ impl Kvm {
         let texel = (o.width * h as f64 / (o.height * w as f64)) as f32;
         apply(s, p.overlay, &Place::new(At::Room(o.matrix()), o.width).texel(texel).curve(curve));
         if i == self.active && self.free.is_none() && self.awake {
-            self.reaim_from(s.head()); // the cursor rides along (gestures, presets, the control socket)
+            self.reaim_with(&*s); // the cursor rides along (gestures, presets, the control socket)
         }
     }
 
     /// Right Ctrl + mouse swings the panel around your head (yaw, then pitch about the
     /// horizontal axis across the line to it), keeping its distance and turning it with the swing.
     fn swing(&mut self, dx: f64, dy: f64) {
+        self.swing_with(&mut Live, dx, dy);
+    }
+
+    fn swing_with(&mut self, s: &mut impl Stage, dx: f64, dy: f64) {
         if self.free.is_some() {
             return; // between panels there's nothing under the cursor to move
         }
         let i = self.active;
-        let head = vr::head_position();
+        let head = s.head();
         let mut pl = self.place[i];
         let mut v = [0, 1, 2].map(|k| pl.c[k] - head[k]);
         let up = [0.0, 1.0, 0.0];
@@ -939,11 +959,15 @@ impl Kvm {
             }
         }
         pl.c = [0, 1, 2].map(|k| head[k] + v[k]);
-        self.set_pose(i, &pl.matrix(), pl.width, pl.curve);
+        self.set_pose_with(s, i, &pl.matrix(), pl.width, pl.curve);
     }
 
     /// Right Ctrl + wheel pushes the panel away or pulls it closer along the line from your head; with Shift, it resizes.
     fn scale(&mut self, notches: i32, resize: bool) {
+        self.scale_with(&mut Live, notches, resize);
+    }
+
+    fn scale_with(&mut self, s: &mut impl Stage, notches: i32, resize: bool) {
         if self.free.is_some() {
             return;
         }
@@ -954,14 +978,14 @@ impl Kvm {
             // a curved panel can't wrap past half its circle, so its radius grows with it instead
             let width = (pl.width * f).clamp(MIN_WIDTH, MAX_WIDTH);
             let curve = crate::geometry::curve_for_width(pl.curve, width);
-            return self.set_pose(i, &pl.matrix(), width, curve);
+            return self.set_pose_with(s, i, &pl.matrix(), width, curve);
         }
-        let head = vr::head_position();
+        let head = s.head();
         let v = [0, 1, 2].map(|k| pl.c[k] - head[k]);
         let d = norm(&v);
         let next = (d * f).clamp(KEY_PUSH_RANGE.0, KEY_PUSH_RANGE.1);
         pl.c = [0, 1, 2].map(|k| head[k] + v[k] / (d + 1e-9) * next);
-        self.set_pose(i, &pl.matrix(), pl.width, pl.curve);
+        self.set_pose_with(s, i, &pl.matrix(), pl.width, pl.curve);
     }
 
     /// A key or button. `ours` means its device is grabbed (otherwise the Frame gets it too).
@@ -1774,6 +1798,303 @@ mod tests {
             k.set_pose_with(&mut f, 1, &at(), 1.0, 0.0);
             k.set_pose_with(&mut f, 0, &at(), 1.0, 0.0);
             assert_eq!(k.anchor, [0.0; 3], "neither the other panel nor the active one with the mouse asleep");
+        }
+    }
+
+    // ---- the cursor's landing, the gaze, and the Right Ctrl gestures, with a stand-in for SteamVR
+
+    mod seeing {
+        use super::super::{FREE_DISTANCE, GAZE_DWELL, Kvm, Placement};
+        use crate::geometry::{Pose, V3, angles, dot, norm, panel_matrix};
+        use crate::stage::fake::{Fake, apart};
+        use std::time::Instant;
+
+        const EYE: V3 = [0.0, 1.6, 0.0];
+
+        /// A flat panel facing the user, centred at (x, y, z), w wide, 16:9.
+        fn panel(x: f64, y: f64, z: f64, w: f64) -> Placement {
+            Placement::from_matrix(&panel_matrix(&Pose { centre: [x, y, z], ..Default::default() }), w, 0.5625, 0.0)
+        }
+
+        fn world(places: Vec<Placement>) -> (Kvm, Fake) {
+            let mut k = Kvm::idle();
+            let n = places.len();
+            k.place = places;
+            k.anchor = EYE;
+            (k, Fake::with_panels(n))
+        }
+
+        fn aim(k: &mut Kvm, from: V3, at: V3) {
+            k.anchor = from;
+            (k.yaw, k.pitch) = angles(&[at[0] - from[0], at[1] - from[1], at[2] - from[2]]);
+        }
+
+        fn far(a: &V3, b: &V3) -> f64 {
+            norm(&[a[0] - b[0], a[1] - b[1], a[2] - b[2]])
+        }
+
+        fn surface(pl: &Placement, u: f64, v: f64) -> V3 {
+            let m = pl.on_surface(u, v, 0.0);
+            [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64]
+        }
+
+        // ---------------------------------------------------------------- landing
+
+        #[test]
+        fn the_ray_landing_on_a_panel_puts_the_cursor_on_its_pixel_and_sends_one_move() {
+            let p = panel(0.0, 1.4, -1.5, 1.6);
+            let (mut k, mut f) = world(vec![p]);
+            aim(&mut k, EYE, surface(&p, 0.0, 0.0));
+            k.land_with(&mut f);
+            assert!(k.free.is_none() && k.active == 0);
+            assert!((k.x - 960.0).abs() < 0.01 && (k.y - 540.0).abs() < 0.01, "the middle: {} {}", k.x, k.y);
+            assert_eq!(f.moves, vec![(0, k.x, k.y)]);
+            k.land_with(&mut f);
+            assert_eq!(f.moves.len(), 1, "landing again on the same pixel sends nothing");
+            aim(&mut k, EYE, surface(&p, 0.4, 0.2)); // right of the middle and above it
+            k.land_with(&mut f);
+            assert!((k.x - (0.4 / 1.6 + 0.5) * 1920.0).abs() < 0.01 && (k.y - (0.5 - 0.2 / 0.9) * 1080.0).abs() < 0.01, "{} {}", k.x, k.y);
+            assert_eq!(f.moves.len(), 2);
+        }
+
+        #[test]
+        fn a_ray_off_every_panel_floats_at_the_last_depth_and_sends_nothing() {
+            let p = panel(0.0, 1.4, -1.5, 1.6);
+            let (mut k, mut f) = world(vec![p]);
+            aim(&mut k, EYE, [4.0, 1.6, -1.5]);
+            k.land_with(&mut f);
+            let at = k.free.expect("floating");
+            assert!((far(&at, &EYE) - FREE_DISTANCE).abs() < 1e-9, "at its depth");
+            assert!(f.moves.is_empty());
+            assert!(!k.cursor().1, "and it isn't ours");
+        }
+
+        #[test]
+        fn a_ray_just_past_a_panels_edge_floats_on_its_plane() {
+            let p = panel(0.0, 1.4, -1.5, 1.6);
+            let (mut k, mut f) = world(vec![p]);
+            aim(&mut k, EYE, surface(&p, 0.9, 0.0)); // 10 cm past the edge, within its reach
+            k.land_with(&mut f);
+            let t = p.hit(&EYE, &crate::geometry::direction(k.yaw, k.pitch)).unwrap().0;
+            let at = k.free.expect("floating");
+            assert!((far(&at, &EYE) - t).abs() < 1e-9, "on the panel's plane, not at the floating depth");
+            assert!((t - FREE_DISTANCE).abs() > 0.01);
+        }
+
+        #[test]
+        fn once_the_head_has_moved_a_nearer_panel_covers_the_point() {
+            let (a, b) = (panel(0.0, 1.4, -2.0, 2.0), panel(0.0, 1.5, -1.0, 0.4));
+            let (mut k, mut f) = world(vec![a, b]);
+            // from where the ray starts it goes past b (b is 0.3 m to the side), but from the eye b is in the way
+            aim(&mut k, [0.6, 1.6, 0.0], [0.0, 1.4, -2.0]);
+            k.land_with(&mut f);
+            assert_eq!(k.active, 1, "the nearer panel has the cursor");
+            assert!(k.free.is_none());
+            assert_eq!(f.moves.len(), 1);
+            assert_eq!(f.moves[0].0, 1);
+            assert!((k.x - 960.0).abs() < 0.5 && (k.y - 540.0).abs() < 0.5, "on the point the eye sees it at: {} {}", k.x, k.y);
+            assert_eq!(k.anchor, [0.6, 1.6, 0.0], "the ray itself isn't moved (only the Extra and cards re-aim it)");
+        }
+
+        #[test]
+        fn the_taskbars_frame_in_front_of_a_panel_takes_the_cursor_off_it() {
+            let (p, bar) = (panel(0.0, 1.4, -1.5, 1.6), panel(0.0, 1.4, -1.0, 0.6));
+            let (mut k, mut f) = world(vec![p]);
+            k.bar = Some(bar);
+            aim(&mut k, EYE, surface(&bar, 0.1, 0.0));
+            k.land_with(&mut f);
+            assert!(k.on_bar.is_some() && k.free.is_some(), "on the bar, floating");
+            assert!(f.moves.is_empty(), "nothing is sent to the panel behind it");
+            assert!((far(&k.free.unwrap(), &EYE) - bar.hit(&EYE, &crate::geometry::direction(k.yaw, k.pitch)).unwrap().0).abs() < 1e-9);
+            // a panel nearer than the bar covers it
+            let near = panel(0.1, 1.4, -0.5, 1.0);
+            k.place.push(near);
+            f.panels.push(crate::stage::PanelFacts { overlay: 101, size: (1920, 1080), vert: false });
+            aim(&mut k, EYE, surface(&near, 0.0, 0.0));
+            k.land_with(&mut f);
+            assert!(k.on_bar.is_none() && k.active == 1, "the panel in front has it");
+        }
+
+        #[test]
+        fn recentering_points_the_ray_where_the_head_faces_and_clamps_looking_straight_up() {
+            let p = panel(0.0, 1.4, -1.5, 1.6);
+            let (mut k, mut f) = world(vec![p]);
+            k.anchor = [9.0, 9.0, 9.0];
+            f.head_pose = Some(panel_matrix(&Pose { centre: EYE, ..Default::default() }));
+            k.recenter_with(&mut f);
+            assert!(far(&k.anchor, &EYE) < 1e-6, "from the head");
+            assert!(k.active == 0 && (k.x - 960.0).abs() < 0.01 && (k.y - (0.5 - 0.2 / 0.9) * 1080.0).abs() < 0.5, "straight ahead from 20 cm above its middle lands above it: {} {}", k.x, k.y);
+            f.head_pose = Some(panel_matrix(&Pose { centre: EYE, pitch: 89.0, ..Default::default() }));
+            k.recenter_with(&mut f);
+            assert_eq!(k.pitch, 85.0, "never quite straight up");
+        }
+
+        #[test]
+        fn recentering_an_untracked_head_aims_the_ray_back_at_the_cursor() {
+            let p = panel(0.0, 1.4, -1.5, 1.6);
+            let (mut k, mut f) = world(vec![p]);
+            (k.x, k.y) = (960.0, 540.0);
+            f.head = [0.3, 1.7, 0.1];
+            f.head_pose = None;
+            k.recenter_with(&mut f);
+            assert_eq!(k.anchor, f.head, "from where the head was last tracked");
+            let hit = p.hit(&k.anchor, &crate::geometry::direction(k.yaw, k.pitch)).unwrap();
+            assert!(hit.1.abs() < 1e-3 && hit.2.abs() < 1e-3, "at the cursor's point");
+        }
+
+        // ---------------------------------------------------------------- the gaze
+
+        fn two_monitors() -> (Kvm, Fake, Placement, Placement) {
+            let (a, b) = (panel(-0.9, 1.4, -1.5, 1.6), panel(0.9, 1.4, -1.5, 1.6));
+            let (k, f) = world(vec![a, b]);
+            (k, f, a, b)
+        }
+
+        fn look(from: V3, at: V3) -> Option<(V3, V3)> {
+            let d = [at[0] - from[0], at[1] - from[1], at[2] - from[2]];
+            let n = norm(&d);
+            Some((from, d.map(|x| x / n)))
+        }
+
+        #[test]
+        fn looking_at_another_monitor_takes_the_pointer_there_after_a_moment() {
+            let (mut k, _f, _a, b) = two_monitors();
+            let at = surface(&b, 0.2, 0.1);
+            k.gaze(look(EYE, at));
+            assert!(matches!(k.gaze_on, Some((1, ..))) && k.focus.is_none(), "a glance changes nothing");
+            let since = Instant::now() - GAZE_DWELL - std::time::Duration::from_millis(20);
+            k.gaze_on = Some((1, since, 0.2, 0.1));
+            k.gaze(look(EYE, at));
+            assert_eq!(k.focus, Some(1), "held long enough");
+            // between the monitors, nothing changes
+            k.gaze(look(EYE, [0.0, 1.4, -1.5]));
+            assert_eq!(k.focus, Some(1));
+        }
+
+        #[test]
+        fn looking_at_the_taskbar_frees_the_cursor_to_go_there() {
+            let (mut k, _f, _a, b) = two_monitors();
+            k.focus = Some(1);
+            k.gaze_on = Some((1, Instant::now(), 0.0, 0.0));
+            k.bar = Some(panel(0.0, 1.0, -1.0, 0.6));
+            k.gaze(look(EYE, surface(&b, 0.0, 0.0)));
+            assert!(k.focus.is_some(), "looking at a panel the bar doesn't cover keeps the focus");
+            k.gaze(look(EYE, [0.0, 1.0, -1.0]));
+            assert!(k.focus.is_none() && k.gaze_on.is_none());
+        }
+
+        #[test]
+        fn mouse_motion_starts_from_where_you_look_when_the_gaze_holds_another_monitor() {
+            let (mut k, mut f, _a, b) = two_monitors();
+            k.gaze_lock = true;
+            k.focus = Some(1);
+            k.gaze_at = Some(Instant::now());
+            k.gaze_on = Some((1, Instant::now(), 0.2, 0.1));
+            k.anchor = [5.0, 5.0, 5.0];
+            k.active = 0;
+            k.mv_with(&mut f);
+            assert_eq!(k.anchor, f.head, "the ray restarts at the head");
+            assert_eq!(k.active, 1, "and the cursor is on the monitor you look at");
+            assert!((k.x - (0.2 / 1.6 + 0.5) * 1920.0).abs() < 0.01 && (k.y - (0.5 - 0.1 / 0.9) * 1080.0).abs() < 0.01, "at the point you looked at: {} {}", k.x, k.y);
+            let _ = b;
+        }
+
+        // ---------------------------------------------------------------- Right Ctrl gestures
+
+        #[test]
+        fn swinging_turns_the_panel_round_your_head_keeping_its_distance_and_facing() {
+            let p = panel(0.0, 1.4, -1.5, 1.6);
+            let (mut k, mut f) = world(vec![p]);
+            let d0 = far(&p.c, &EYE);
+            k.swing_with(&mut f, 100.0, 0.0); // 100 counts a side: 3 degrees at 0.03 a count
+            let n = k.place[0];
+            assert!((far(&n.c, &EYE) - d0).abs() < 1e-5, "same distance");
+            assert!((n.c[1] - p.c[1]).abs() < 1e-6, "same height");
+            let flat = |c: &V3| [c[0] - EYE[0], 0.0, c[2] - EYE[2]];
+            let (a, b) = (flat(&p.c), flat(&n.c));
+            let turned = (dot(&a, &b) / (norm(&a) * norm(&b))).acos().to_degrees();
+            assert!((turned - 3.0).abs() < 1e-3, "{turned}");
+            assert!((dot(&p.z, &n.z).acos().to_degrees() - 3.0).abs() < 1e-3, "it turns with the swing and still faces you");
+            assert!(apart(&f.writes.room_of(f.overlay(0)).unwrap(), &n.matrix()) < 1e-6, "and SteamVR was told");
+            assert!((n.width - 1.6).abs() < 1e-9);
+        }
+
+        #[test]
+        fn swinging_up_arcs_the_panel_over_your_head_without_changing_where_it_points_from_the_side() {
+            let p = panel(0.0, 1.4, -1.5, 1.6);
+            let (mut k, mut f) = world(vec![p]);
+            let d0 = far(&p.c, &EYE);
+            k.swing_with(&mut f, 0.0, -100.0); // up
+            let n = k.place[0];
+            assert!((far(&n.c, &EYE) - d0).abs() < 1e-5, "same distance");
+            assert!((n.c[1] - p.c[1]).abs() > 0.05, "it moved up or down");
+            assert!(n.c[0].abs() < 1e-6, "still straight ahead");
+            let before = k.place[0];
+            k.swing_with(&mut f, 0.0, 0.0);
+            assert!(far(&k.place[0].c, &before.c) < 1e-6, "no motion, no change");
+        }
+
+        #[test]
+        fn swinging_does_nothing_between_panels() {
+            let (mut k, mut f) = world(vec![panel(0.0, 1.4, -1.5, 1.6)]);
+            k.free = Some([0.0, 1.0, -1.0]);
+            k.swing_with(&mut f, 100.0, 100.0);
+            assert!(f.writes.0.is_empty());
+        }
+
+        #[test]
+        fn the_wheel_pushes_a_panel_6_percent_a_notch_along_the_line_from_the_head() {
+            let p = panel(0.0, 1.4, -1.5, 1.6);
+            let (mut k, mut f) = world(vec![p]);
+            let d0 = far(&p.c, &EYE);
+            k.scale_with(&mut f, 3, false);
+            let n = k.place[0];
+            assert!((far(&n.c, &EYE) - d0 * 1.06f64.powi(3)).abs() < 1e-6);
+            let (a, b) = ([0, 1, 2].map(|i| p.c[i] - EYE[i]), [0, 1, 2].map(|i| n.c[i] - EYE[i]));
+            assert!((dot(&a, &b) / (norm(&a) * norm(&b)) - 1.0).abs() < 1e-9, "on the same line");
+            assert!((n.width - 1.6).abs() < 1e-9, "pushing doesn't resize");
+            k.scale_with(&mut f, 100, false);
+            assert!((far(&k.place[0].c, &EYE) - 10.0).abs() < 1e-5, "no further than 10 m");
+            k.scale_with(&mut f, -200, false);
+            assert!((far(&k.place[0].c, &EYE) - 0.3).abs() < 1e-5, "no nearer than 30 cm");
+        }
+
+        #[test]
+        fn shift_and_the_wheel_resize_about_the_middle_within_the_limits() {
+            let p = panel(0.0, 1.4, -1.5, 1.6);
+            let (mut k, mut f) = world(vec![p]);
+            k.scale_with(&mut f, 2, true);
+            let n = k.place[0];
+            assert!((n.width - 1.6 * 1.06 * 1.06).abs() < 1e-9 && (n.height / n.width - 0.5625).abs() < 1e-9);
+            assert!(far(&n.c, &p.c) < 1e-6, "the middle stays");
+            assert!((f.writes.width_of(f.overlay(0)).unwrap() as f64 - n.width).abs() < 1e-6);
+            k.scale_with(&mut f, 200, true);
+            assert_eq!(k.place[0].width, 6.0);
+            k.scale_with(&mut f, -400, true);
+            assert_eq!(k.place[0].width, 0.15);
+        }
+
+        #[test]
+        fn a_curved_panel_resized_from_the_keys_grows_its_radius_before_it_would_wrap() {
+            let p = Placement { curve: 0.5, ..panel(0.0, 1.4, -1.5, 1.6) };
+            let (mut k, mut f) = world(vec![p]);
+            k.scale_with(&mut f, 200, true);
+            let n = k.place[0];
+            assert_eq!(n.width, 6.0);
+            assert!((n.curve - 6.0 / std::f64::consts::PI).abs() < 1e-9, "{}", n.curve);
+            assert!(f.writes.curvature_of(f.overlay(0)).unwrap() <= 0.5 + 1e-6, "never past a half circle");
+            let (mut k, mut f) = world(vec![Placement { curve: 2.0, ..panel(0.0, 1.4, -1.5, 1.6) }]);
+            k.scale_with(&mut f, 3, true);
+            assert_eq!(k.place[0].curve, 2.0, "a radius that still fits is kept");
+        }
+
+        #[test]
+        fn the_wheel_does_nothing_while_the_cursor_floats_between_panels() {
+            let (mut k, mut f) = world(vec![panel(0.0, 1.4, -1.5, 1.6)]);
+            k.free = Some([0.0, 1.0, -1.0]);
+            k.scale_with(&mut f, 5, false);
+            k.scale_with(&mut f, 5, true);
+            assert!(f.writes.0.is_empty());
         }
     }
 }

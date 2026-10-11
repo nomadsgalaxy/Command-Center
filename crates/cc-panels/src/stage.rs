@@ -27,8 +27,12 @@ pub trait Stage: Overlays {
     fn laser(&self, dev: u32) -> Option<Mat>;
     /// Where the head is (or was last tracked).
     fn head(&self) -> V3;
+    /// The head's pose right now, if it's tracked.
+    fn head_pose(&self) -> Option<Mat>;
     /// Slot i's overlay facts.
     fn panel(&self, i: usize) -> PanelFacts;
+    /// Sends panel i's machine (or window) a pointer move to pixel (x, y).
+    fn move_pointer(&mut self, i: usize, x: f64, y: f64);
 }
 
 impl Stage for Live {
@@ -44,9 +48,17 @@ impl Stage for Live {
         vr::head_position()
     }
 
+    fn head_pose(&self) -> Option<Mat> {
+        vr::head()
+    }
+
     fn panel(&self, i: usize) -> PanelFacts {
         let p = crate::panel(i);
         PanelFacts { overlay: p.overlay, size: p.size(), vert: p.vert() }
+    }
+
+    fn move_pointer(&mut self, i: usize, x: f64, y: f64) {
+        crate::panel(i).mouse(freerdp_sys::PTR_FLAGS_MOVE, x, y);
     }
 }
 
@@ -63,7 +75,11 @@ pub mod fake {
         pub devices: HashMap<u32, Mat>,
         pub lasers: HashMap<u32, Mat>,
         pub head: V3,
+        /// The head's pose, when it's tracked; None is an untracked headset.
+        pub head_pose: Option<Mat>,
         pub panels: Vec<PanelFacts>,
+        /// The pointer moves sent, as (panel, x, y).
+        pub moves: Vec<(usize, f64, f64)>,
     }
 
     impl Fake {
@@ -133,8 +149,16 @@ pub mod fake {
             self.head
         }
 
+        fn head_pose(&self) -> Option<Mat> {
+            self.head_pose
+        }
+
         fn panel(&self, i: usize) -> PanelFacts {
             self.panels[i]
+        }
+
+        fn move_pointer(&mut self, i: usize, x: f64, y: f64) {
+            self.moves.push((i, x, y));
         }
     }
 }
