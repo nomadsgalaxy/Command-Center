@@ -21,7 +21,7 @@
 //!
 //! A laser press on a back carries its panel (grab.rs poll), so you can grab a panel that was
 //! left backwards and turn it round. The card is one-sided too, so it's no use from behind.
-use crate::geometry::{Mat, Placement, V3, dot, norm};
+use crate::geometry::{Mat, Placement, V3, chord, dot, norm};
 use crate::{call, vr};
 use openvr_sys as sys;
 use std::sync::Mutex;
@@ -89,22 +89,12 @@ pub fn back_matrix(m: &Mat, behind: f64) -> Mat {
     b
 }
 
-/// A flat sheet for an arc `w` long round radius `curve` (0 = flat), as (width, metres forward).
-/// It's the arc's chord, which sits at most s off the arc (in its middle).
-pub fn flat(w: f64, curve: f64) -> (f64, f64) {
-    if curve <= 0.0 {
-        return (w, 0.0);
-    }
-    let a = (w / (2.0 * curve)).min(std::f64::consts::PI); // half the arc's angle
-    (2.0 * curve * a.sin(), curve * (1.0 - a.cos()))
-}
-
 /// A panel's back: its matrix and width. It's as wide as the arc's chord and touches the arc's
 /// middle, BEHIND it, so all of it stays behind the picture.
 pub fn sheet(pl: &Placement) -> (Mat, f64) {
     // a panel curved top to bottom is its picture's overlay a quarter turn round (kvm.rs)
     let o = if pl.vert { pl.turned() } else { *pl };
-    (back_matrix(&o.on_surface(0.0, 0.0, 0.0), BEHIND), flat(o.width, o.curve).0)
+    (back_matrix(&o.on_surface(0.0, 0.0, 0.0), BEHIND), chord(o.width, o.curve).0)
 }
 
 /// A panel as the backs see it: its slot, picture overlay and place, whether it can have a back at
@@ -298,8 +288,8 @@ mod tests {
 
     #[test]
     fn a_curved_back_lies_flat_on_the_chord() {
-        assert_eq!(flat(1.2, 0.0), (1.2, 0.0));
-        let (w, s) = flat(1.2, 1.0); // 1.2 m round a 1 m radius: 0.6 rad each side
+        assert_eq!(chord(1.2, 0.0), (1.2, 0.0));
+        let (w, s) = chord(1.2, 1.0); // 1.2 m round a 1 m radius: 0.6 rad each side
         assert!((w - 2.0 * 0.6f64.sin()).abs() < 1e-9 && (s - (1.0 - 0.6f64.cos())).abs() < 1e-9, "{w} {s}");
         assert!(w < 1.2 && s > 0.17 && s < 0.18);
     }
@@ -327,7 +317,7 @@ mod tests {
             let pl = Placement { vert, ..Placement::from_matrix(&m, 1.2, 0.5, 1.5) };
             let (b, w) = sheet(&pl);
             let o = if vert { pl.turned() } else { pl };
-            assert!((w - flat(o.width, o.curve).0).abs() < 1e-9, "vert {vert}: the chord's width");
+            assert!((w - chord(o.width, o.curve).0).abs() < 1e-9, "vert {vert}: the chord's width");
             let mid = o.on_surface(0.0, 0.0, 0.0);
             let z = col(&b, 2);
             assert!(close(&z, &col(&mid, 2).map(|v| -v)), "vert {vert}: facing out of the back");

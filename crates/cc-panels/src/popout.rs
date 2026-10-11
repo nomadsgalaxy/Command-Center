@@ -8,6 +8,7 @@
 //! The card's x or `viewer disconnect` stops the window's server and frees the slot. The window
 //! closing on the host does the same, after showing "window closed" for a few seconds.
 use crate::geometry::{Placement, Pose, angles, panel_matrix};
+use crate::limits::POPOUT_WIDTH;
 use crate::kvm::{KVM, Kvm};
 use crate::{Panel, QUIT, Source, config, panel, panels};
 use std::sync::Mutex;
@@ -229,9 +230,9 @@ pub fn tick(k: &mut Kvm) {
         let width = if keep {
             pl.width
         } else if first {
-            (w.max(1) as f64 / crate::windows::px_per_m_now()).clamp(0.1, 4.0)
+            (w.max(1) as f64 / crate::windows::px_per_m_now()).clamp(POPOUT_WIDTH.0, POPOUT_WIDTH.1)
         } else {
-            (pl.width * w.max(1) as f64 / w0 as f64).clamp(0.1, 4.0)
+            (pl.width * w.max(1) as f64 / w0 as f64).clamp(POPOUT_WIDTH.0, POPOUT_WIDTH.1)
         };
         // a change grows or shrinks it from its top-left, so the picture stays under the cursor
         let m = crate::windows::resized(&pl, width, width * h.max(1) as f64 / w.max(1) as f64, !first);

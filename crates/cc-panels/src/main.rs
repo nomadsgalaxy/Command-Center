@@ -29,6 +29,7 @@ mod handoff;
 mod kvm;
 mod kwin;
 mod laser;
+mod limits;
 mod plasmabar;
 mod popout;
 mod rdp;
@@ -211,7 +212,7 @@ impl Panel {
 
     /// 0.5 (small text) to 3 (big). Anything else, like nothing saved, is 1.
     pub fn set_zoom(&self, z: f64) {
-        let z = if z > 0.0 { z.clamp(0.5, 3.0) } else { 1.0 };
+        let z = if z > 0.0 { z.clamp(limits::ZOOM.0, limits::ZOOM.1) } else { 1.0 };
         self.zoom.store(z.to_bits(), Relaxed);
     }
 

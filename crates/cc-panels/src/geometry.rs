@@ -1,5 +1,8 @@
 //! Where panels are. Poses live in SteamVR's standing space (x right, y up, -z forward), the same
-//! convention cc-home's spots use, so a saved spot drops straight in.
+//! convention cc-home's spots use, so a saved spot drops straight in. The curve formulas are
+//! here too (`bend`, `sagitta`, `radius_for`, `chord`); the numbers they share are in limits.rs.
+
+use crate::limits::FLAT_SAG;
 
 pub type V3 = [f64; 3];
 pub type Mat = [[f32; 4]; 3]; // OpenVR's HmdMatrix34_t rows
@@ -210,6 +213,62 @@ impl Placement {
     }
 }
 
+// ------------------------------------------------------------------ curves
+// A panel's curve is a radius in metres (0 is flat). SteamVR wants it as a fraction, and everything
+// that bends a panel agrees on the same rules, so they're written once, here.
+
+/// SetOverlayCurvature's value for an overlay `width` wide on a circle of radius `r` (0: flat):
+/// width / (2πr), and at most 1, a closed cylinder.
+pub fn bend(width: f64, r: f64) -> f32 {
+    if r > 0.0 { (width / (2.0 * std::f64::consts::PI * r)).min(1.0) as f32 } else { 0.0 }
+}
+
+/// The smallest radius an arc `w` wide can have: a half circle (R = w/π). Past that it would wrap
+/// round behind itself.
+pub fn least_radius(w: f64) -> f64 {
+    w / std::f64::consts::PI
+}
+
+/// How far the edges of an arc `w` wide on radius `r` come toward you from its middle: the arc's
+/// sagitta, R(1 − cos(w/2R)). 0 when flat.
+pub fn sagitta(w: f64, r: f64) -> f64 {
+    if r > 0.0 { r * (1.0 - (w / (2.0 * r)).cos()) } else { 0.0 }
+}
+
+/// The curve radius that puts a w-wide panel's edges `sag` metres in front of its middle
+/// (`sagitta`'s inverse). Under `FLAT_SAG` it's 0 (flat), and it never wraps past a half circle.
+pub fn radius_for(sag: f64, w: f64) -> f64 {
+    let least = least_radius(w);
+    if sag < FLAT_SAG {
+        return 0.0;
+    }
+    if sag >= least {
+        return least;
+    }
+    let (mut lo, mut hi) = (least, 1.0e4); // sagitta falls as the radius grows
+    for _ in 0..60 {
+        let mid = (lo * hi).sqrt();
+        if sagitta(w, mid) > sag { lo = mid } else { hi = mid }
+    }
+    (lo * hi).sqrt()
+}
+
+/// A wider panel keeps its curve, except it can't wrap past a half circle, so then the radius
+/// grows with it. That was my choice: resizing should never dead-end.
+pub fn curve_for_width(curve: f64, width: f64) -> f64 {
+    if curve > 0.0 { curve.max(least_radius(width)) } else { 0.0 }
+}
+
+/// A flat sheet for an arc `w` long round radius `curve` (0 = flat), as (width, metres forward).
+/// It's the arc's chord, which sits at most the sagitta off the arc (in its middle).
+pub fn chord(w: f64, curve: f64) -> (f64, f64) {
+    if curve <= 0.0 {
+        return (w, 0.0);
+    }
+    let a = (w / (2.0 * curve)).min(std::f64::consts::PI); // half the arc's angle
+    (2.0 * curve * a.sin(), curve * (1.0 - a.cos()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +371,43 @@ mod tests {
             let (y2, p2) = angles(&direction(y, p));
             assert!((y - y2).abs() < 1e-9 && (p - p2).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn side_edge_depth_gives_the_curve() {
+        let w = 1.6;
+        assert_eq!(radius_for(0.005, w), 0.0); // under a centimetre is flat
+        assert_eq!(radius_for(5.0, w), w / std::f64::consts::PI); // never past a half circle
+        for r in [0.8, 1.5, 3.0] {
+            let sag = r * (1.0 - (w / (2.0 * r)).cos());
+            assert!((radius_for(sag, w) - r).abs() < 1e-6, "{r}");
+            assert_eq!(sagitta(w, r), sag);
+        }
+        assert_eq!(sagitta(w, 0.0), 0.0, "flat");
+        assert_eq!(curve_for_width(1.0, 2.0), 1.0);
+        assert!((curve_for_width(1.0, 4.0) - 4.0 / std::f64::consts::PI).abs() < 1e-12);
+        assert_eq!(curve_for_width(0.0, 4.0), 0.0);
+    }
+
+    #[test]
+    fn bend_is_width_over_the_circumference_and_closes_at_one() {
+        assert_eq!(bend(2.0, 0.0), 0.0, "flat");
+        assert_eq!(bend(2.0, -1.0), 0.0, "no negative radius");
+        assert!((bend(1.0, 1.0) - 1.0 / (2.0 * std::f32::consts::PI)).abs() < 1e-7);
+        assert!((bend(std::f64::consts::PI, 1.0) - 0.5).abs() < 1e-7, "a half circle is half a cylinder");
+        assert_eq!(bend(100.0, 1.0), 1.0, "a closed cylinder at most");
+    }
+
+    #[test]
+    fn the_chord_is_flat_for_a_flat_panel_and_reaches_across_a_half_circle() {
+        assert_eq!(chord(1.5, 0.0), (1.5, 0.0));
+        let r = 1.0;
+        let (w, fwd) = chord(std::f64::consts::PI * r, r); // a half circle
+        assert!((w - 2.0 * r).abs() < 1e-12 && (fwd - r).abs() < 1e-12, "{w} {fwd}");
+        let (w, fwd) = chord(10.0, r); // wrapped past a whole circle: capped at half
+        assert!(w.abs() < 1e-9 && (fwd - 2.0 * r).abs() < 1e-12, "{w} {fwd}");
+        // short of a half circle, how far the chord sits behind the arc's middle is the sagitta
+        assert!((chord(1.2, 2.0).1 - sagitta(1.2, 2.0)).abs() < 1e-12);
     }
 
     #[test]

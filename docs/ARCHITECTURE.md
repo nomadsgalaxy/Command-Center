@@ -76,7 +76,8 @@ root. When this file and the code disagree, the code wins, and this file should 
 | --- | --- |
 | `main.rs` | `Panel` (one per overlay: remotes, spares, window slots), start-up (`run`), the main loop and its pacing (`Pace`), routing input to RDP/VNC/window (`Panel::mouse/key/wheel`), overlay laser events (`laser`), `close_desktop`, `connect`/`disconnect` of a remote. |
 | `vr.rs` | OpenVR's C API tables, the `call!` macro, overlay helpers, head pose, the main loop's wake. |
-| `geometry.rs` | Poses and placements in standing space (x right, y up, -z forward), matrices, curved hits. |
+| `geometry.rs` | Poses and placements in standing space (x right, y up, -z forward), matrices, curved hits, and the curve formulas every surface shares (`bend`, `sagitta`, `radius_for`, `curve_for_width`, `chord`). |
+| `limits.rs` | The shared numbers, named once: panel width limits, push/pull steps and ranges, zoom and taskbar-scale ranges, the curve notch. The laser and Right Ctrl keep their different values until the one-manipulator spec merges them. |
 | `grab.rs` | Each panel's card (Breeze-like frame, tabs, grab bar, knobs): drawing, hit-testing, carrying, resizing, curving, snap-back, the `Extra` slot the control windows share, saving the "home" spot on release. |
 | `back.rs` | Dim backs for panels seen from behind, one flat overlay each. |
 | `kvm.rs` | Our mice and keyboards (evdev grab, `input_loop` thread `cc-input`): the 3D pointer ray (`mv`, `land`), click to type (`set_engaged`, `type_to`), Right Ctrl chords, gaze lock, text fields for the control windows. |

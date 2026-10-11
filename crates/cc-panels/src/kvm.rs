@@ -15,6 +15,7 @@
 //! and typing would land on the Frame mid-word.
 use crate::config::Viewer;
 use crate::geometry::{Placement, angles, direction, norm, rotate};
+use crate::limits::{KEY_NOTCH, KEY_PUSH_RANGE, MAX_WIDTH, MIN_WIDTH};
 use crate::{QUIT, call, laser, panel, plasmabar, root, vr, windows};
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
 use std::collections::HashSet;
@@ -910,8 +911,7 @@ impl Kvm {
         call!(ov, SetOverlayWidthInMeters, p.overlay, o.width as f32);
         // the picture stretched to that height in the meantime (1 when it's the pixels' own)
         call!(ov, SetOverlayTexelAspect, p.overlay, (o.width * h as f64 / (o.height * w as f64)) as f32);
-        let bend = if curve > 0.0 { (o.width / (2.0 * std::f64::consts::PI * curve)).min(1.0) } else { 0.0 };
-        call!(ov, SetOverlayCurvature, p.overlay, bend as f32);
+        call!(ov, SetOverlayCurvature, p.overlay, crate::geometry::bend(o.width, curve));
         vr::place(p.overlay, &o.matrix());
         if i == self.active && self.free.is_none() && self.awake {
             self.reaim(); // the cursor rides along (gestures, presets, the control socket)
@@ -952,17 +952,17 @@ impl Kvm {
         }
         let i = self.active;
         let mut pl = self.place[i];
-        let f = 1.06f64.powi(notches);
+        let f = KEY_NOTCH.powi(notches);
         if resize {
             // a curved panel can't wrap past half its circle, so its radius grows with it instead
-            let width = (pl.width * f).clamp(0.15, 6.0);
-            let curve = if pl.curve > 0.0 { pl.curve.max(width / std::f64::consts::PI) } else { 0.0 };
+            let width = (pl.width * f).clamp(MIN_WIDTH, MAX_WIDTH);
+            let curve = crate::geometry::curve_for_width(pl.curve, width);
             return self.set_pose(i, &pl.matrix(), width, curve);
         }
         let head = vr::head_position();
         let v = [0, 1, 2].map(|k| pl.c[k] - head[k]);
         let d = norm(&v);
-        let next = (d * f).clamp(0.3, 10.0);
+        let next = (d * f).clamp(KEY_PUSH_RANGE.0, KEY_PUSH_RANGE.1);
         pl.c = [0, 1, 2].map(|k| head[k] + v[k] / (d + 1e-9) * next);
         self.set_pose(i, &pl.matrix(), pl.width, pl.curve);
     }

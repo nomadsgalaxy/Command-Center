@@ -29,7 +29,8 @@
 //! means a panel costs SteamVR only two overlays of the 128 every app shares. The picture sits
 //! in front and keeps every laser inside it; where on the card a laser lands says whether it's
 //! the bar, an edge or a corner.
-use crate::geometry::{Mat, Placement, Pose, V3, angles, dot, inv_rigid, mul, norm, panel_matrix};
+use crate::geometry::{Mat, Placement, Pose, V3, angles, bend, curve_for_width, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
+use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, ZOOM, ZOOM_NOTCH};
 use crate::kvm::Kvm;
 use crate::theme::{self, Accent, MAGENTA, Rgb, Theme, Tokens};
 use crate::{HIDDEN, Source, call, panels, vr};
@@ -120,8 +121,6 @@ pub const LOST: Duration = Duration::from_millis(500); // a carrying device that
 const SNAP_MOVE: f64 = 0.01; // m
 const SNAP_TURN: f64 = 0.5; // degrees
 const FACE_TURN: f64 = 3.0; // degrees: a panel turned less than this from facing the eye gets no face-me button
-const MIN_WIDTH: f64 = 0.15;
-const MAX_WIDTH: f64 = 6.0;
 
 // ------------------------------------------------------------------ the look
 //
@@ -256,32 +255,6 @@ fn held_part(spec: &CardSpec, w: f64, h: f64, extra: bool, was: Option<Part>, u:
     let s = HOLD_SLOP * g;
     let near = |p: Part| dead(u, v) || [(s, 0.0), (-s, 0.0), (0.0, s), (0.0, -s)].iter().any(|&(du, dv)| at(u + du, v + dv) == Some(p));
     was.filter(|&p| near(p)).or(here)
-}
-
-/// The curve radius that puts a w-wide panel's edges `sag` metres in front of its middle
-/// (the arc's sagitta: sag = R(1 − cos(w/2R))). Under a centimetre it's 0 (flat), and it never
-/// wraps past a half circle (R ≥ w/π).
-pub fn radius_for(sag: f64, w: f64) -> f64 {
-    let least = w / std::f64::consts::PI;
-    if sag < 0.01 {
-        return 0.0;
-    }
-    if sag >= least {
-        return least;
-    }
-    let sagitta = |r: f64| r * (1.0 - (w / (2.0 * r)).cos());
-    let (mut lo, mut hi) = (least, 1.0e4); // sagitta falls as the radius grows
-    for _ in 0..60 {
-        let mid = (lo * hi).sqrt();
-        if sagitta(mid) > sag { lo = mid } else { hi = mid }
-    }
-    (lo * hi).sqrt()
-}
-
-/// A wider panel keeps its curve, except it can't wrap past a half circle, so then the radius
-/// grows with it. That was my choice: resizing should never dead-end.
-pub fn curve_for_width(curve: f64, width: f64) -> f64 {
-    if curve > 0.0 { curve.max(width / std::f64::consts::PI) } else { 0.0 }
 }
 
 /// Everything needed to draw the card for a panel w × h (metres) with a frame g wide, as a
@@ -885,7 +858,7 @@ impl Extra {
     fn place(&mut self, m: &Mat, w: f64, curve: f64) {
         self.pl = Placement::from_matrix(m, w, self.pl.height / self.pl.width, curve);
         call!(ov, SetOverlayWidthInMeters, self.win, w as f32);
-        call!(ov, SetOverlayCurvature, self.win, crate::taskbar::curvature(w, curve));
+        call!(ov, SetOverlayCurvature, self.win, bend(w, curve));
         vr::place(self.win, m);
     }
 }
@@ -1212,8 +1185,8 @@ impl Grab {
     fn scroll(&mut self, i: usize, notches: f64, k: &mut Kvm) {
         match self.drags[i].as_mut().map(|d| &mut d.mode) {
             Some(Mode::Move { .. }) => self.push(i, notches, k),
-            Some(Mode::Curve { s0, .. }) => *s0 = (*s0 + 0.03 * notches).max(0.0),
-            Some(Mode::Zoom { zoom0, .. }) => *zoom0 = (*zoom0 * 1.1f64.powf(notches)).clamp(0.5, 3.0),
+            Some(Mode::Curve { s0, .. }) => *s0 = (*s0 + CURVE_NOTCH * notches).max(0.0),
+            Some(Mode::Zoom { zoom0, .. }) => *zoom0 = (*zoom0 * ZOOM_NOTCH.powf(notches)).clamp(ZOOM.0, ZOOM.1),
             _ => {}
         }
     }
@@ -1251,7 +1224,7 @@ impl Grab {
             Part::Knob => {
                 // The edges come toward you as far as the point you grabbed does.
                 let Some((local, z0)) = taken(pl, dev) else { return };
-                let s0 = if pl.curve > 0.0 { pl.curve * (1.0 - (pl.width / (2.0 * pl.curve)).cos()) } else { 0.0 };
+                let s0 = sagitta(pl.width, pl.curve);
                 Mode::Curve { local, z0, s0 }
             }
             Part::Ctl(_) | Part::Snap | Part::Face => return, // buttons, not drags (poll handles them)
@@ -1409,7 +1382,7 @@ impl Grab {
         let mut p = mul(&d, rel);
         let to = [0, 1, 2].map(|r| p[r][3] as f64 - head[r]);
         let len = norm(&to);
-        let next = (len * (1.0 + 0.08 * notches)).clamp(0.25, 5.0);
+        let next = (len * (1.0 + LASER_PUSH_STEP * notches)).clamp(LASER_PUSH_RANGE.0, LASER_PUSH_RANGE.1);
         for r in 0..3 {
             p[r][3] = (head[r] + to[r] / (len + 1e-9) * next) as f32;
         }
@@ -1827,7 +1800,6 @@ impl Grab {
         let placed = Some((pl.matrix(), mm(pl.width), mm(pl.height), mm(pl.curve)));
         if d.placed != placed {
             d.placed = placed;
-            let bend = |len: f64| if pl.curve > 0.0 { (len / (2.0 * std::f64::consts::PI * pl.curve)).min(1.0) } else { 0.0 };
             let s = &d.spec;
             let (top, bottom) = (s.top(), s.bottom()); // the tab's room on top, the bar's below
             let (fw, fh) = (pl.width + 2.0 * s.g, pl.height + 2.0 * s.g + top + bottom);
@@ -1839,7 +1811,7 @@ impl Grab {
             let (tw, th) = if pl.vert { (th, tw) } else { (tw, th) };
             call!(ov, SetOverlayWidthInMeters, c, ow as f32);
             call!(ov, SetOverlayTexelAspect, c, (ow * th / (oh * tw)) as f32); // exactly oh high
-            call!(ov, SetOverlayCurvature, c, bend(ow) as f32);
+            call!(ov, SetOverlayCurvature, c, bend(ow, pl.curve));
             let mut scale = sys::HmdVector2_t { v: [ow as f32, oh as f32] }; // events in metres
             call!(ov, SetOverlayMouseScale, c, &mut scale);
             vr::place(c, &at);
@@ -1976,17 +1948,7 @@ mod tests {
     }
 
     #[test]
-    fn side_edge_depth_gives_the_curve() {
-        let w = 1.6;
-        assert_eq!(radius_for(0.005, w), 0.0); // under a centimetre is flat
-        assert_eq!(radius_for(5.0, w), w / std::f64::consts::PI); // never past a half circle
-        for r in [0.8, 1.5, 3.0] {
-            let sag = r * (1.0 - (w / (2.0 * r)).cos());
-            assert!((radius_for(sag, w) - r).abs() < 1e-6, "{r}");
-        }
-        assert_eq!(curve_for_width(1.0, 2.0), 1.0);
-        assert!((curve_for_width(1.0, 4.0) - 4.0 / std::f64::consts::PI).abs() < 1e-12);
-        assert_eq!(curve_for_width(0.0, 4.0), 0.0);
+    fn a_point_grabbed_in_a_devices_frame_comes_back_where_it_was() {
         // a point grabbed in a device's frame comes back where it was
         let (c, sn) = (0.6f32.cos(), 0.6f32.sin());
         let d: Mat = [[c, 0.0, sn, 0.3], [0.0, 1.0, 0.0, 1.2], [-sn, 0.0, c, -0.5]];

@@ -400,7 +400,7 @@ impl Plasma {
                 call!(ov, SetOverlayTextureBounds, self.ov, &mut t);
             }
             call!(ov, SetOverlayWidthInMeters, self.ov, width as f32);
-            call!(ov, SetOverlayCurvature, self.ov, crate::taskbar::curvature(width, curve));
+            call!(ov, SetOverlayCurvature, self.ov, crate::geometry::bend(width, curve));
             if dev == u32::MAX {
                 vr::place(self.ov, &local);
             } else {

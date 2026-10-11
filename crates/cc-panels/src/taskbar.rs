@@ -46,7 +46,8 @@
 //! wrist still show, since they're nearer than the backdrop; fixed hides because the Frame
 //! draws by depth, not sort order.
 //! ponytail: no file watch; hand edits to settings.json apply on restart.
-use crate::geometry::{Mat, Placement, Pose, V3, angles, direction, dot, inv_rigid, mul, norm, panel_matrix};
+use crate::geometry::{Mat, Placement, Pose, V3, angles, bend, curve_for_width, direction, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
+use crate::limits::{BAR_SCALE, CURVE_NOTCH};
 use crate::grab::{self, Look, TagImg, average, line, over, rbox, tint};
 use crate::theme::{self, Accent, Tokens};
 use crate::kvm::KVM;
@@ -206,11 +207,6 @@ struct Frame {
     knob: (f64, f64),            // the curve knob's centre
 }
 
-/// SetOverlayCurvature's value for a bar `width` wide on a circle of radius `r` (0: flat).
-pub fn curvature(width: f64, r: f64) -> f32 {
-    if r > 0.0 { (width / (2.0 * std::f64::consts::PI * r)).min(1.0) as f32 } else { 0.0 }
-}
-
 /// Each chip's span (x0, x1) from the row's start, GAP apart, plus the row's width. If they
 /// don't fit in MAX_ROW, the panel chips all narrow by the same factor and their labels get clipped.
 fn layout(chips: &[(Chip, f64)]) -> (Vec<(Chip, f64, f64)>, f64) {
@@ -317,7 +313,7 @@ fn frame_look(mode: Mode, carried: bool, hover: Option<Part>, mouse_on: bool) ->
 /// The new scale when a corner drags a frame from w0 wide (at scale s0) to w wide. Both rows
 /// grow together, about the centre.
 fn rescale(s0: f64, w0: f64, w: f64) -> f64 {
-    (s0 * w / w0.max(1e-6)).clamp(0.5, 3.0)
+    (s0 * w / w0.max(1e-6)).clamp(BAR_SCALE.0, BAR_SCALE.1)
 }
 
 /// Where Plasma's overlay goes for our frame at `m` bent to radius r (0 is flat): its middle
@@ -724,7 +720,7 @@ impl Taskbar {
             wrist: [Hand::Left, Hand::Right].map(wrist_local),
             wrist_dev: None,
             hold: None,
-            scale: config::settings()["taskbar_scale"].as_f64().map_or(1.0, |s| s.clamp(0.5, 3.0)),
+            scale: config::settings()["taskbar_scale"].as_f64().map_or(1.0, |s| s.clamp(BAR_SCALE.0, BAR_SCALE.1)),
             curve: config::settings()["taskbar_curve"].as_f64().filter(|r| *r > 0.0).unwrap_or(0.0),
             hover: None,
             placed: None,
@@ -765,7 +761,7 @@ impl Taskbar {
     /// The curve radius as drawn. It's the user's, but like a panel's (grab.rs) it never wraps
     /// past a half circle as the frame grows (Plasma's panel fits its apps, and a corner scales it).
     fn radius(&self) -> f64 {
-        grab::curve_for_width(self.curve, self.frame.w * self.mpp)
+        curve_for_width(self.curve, self.frame.w * self.mpp)
     }
 
     fn carrying(&self) -> bool {
@@ -974,7 +970,7 @@ impl Taskbar {
                 sys::EVREventType_VREvent_ScrollDiscrete => {
                     let n = unsafe { e.data.scroll.ydelta } as f64;
                     if let Some(Hold { kind: Kind::Curve { from, .. }, .. }) = self.hold.as_mut() {
-                        *from = (*from + 0.03 * n).max(0.0);
+                        *from = (*from + CURVE_NOTCH * n).max(0.0);
                     }
                 }
                 _ => {}
@@ -1031,7 +1027,7 @@ impl Taskbar {
             }
             Take::Curve => {
                 let Some((local, z0)) = grab::taken(&pl, dev) else { return };
-                let from = if pl.curve > 0.0 { pl.curve * (1.0 - (pl.width / (2.0 * pl.curve)).cos()) } else { 0.0 };
+                let from = sagitta(pl.width, pl.curve);
                 Kind::Curve { local, z0, from }
             }
         };
@@ -1062,7 +1058,7 @@ impl Taskbar {
                     self.fit();
                 }
             }
-            Kind::Curve { local, z0, from } => self.curve = grab::radius_for(from + grab::depth_of(&pl, &d, &local) - z0, pl.width),
+            Kind::Curve { local, z0, from } => self.curve = radius_for(from + grab::depth_of(&pl, &d, &local) - z0, pl.width),
         }
     }
 
@@ -1270,7 +1266,7 @@ impl Taskbar {
         if self.placed != placed {
             self.placed = placed;
             call!(ov, SetOverlayWidthInMeters, self.ov, width as f32);
-            call!(ov, SetOverlayCurvature, self.ov, curvature(width, r));
+            call!(ov, SetOverlayCurvature, self.ov, bend(width, r));
             if dev == u32::MAX {
                 vr::place(self.ov, local);
             } else {
@@ -1462,7 +1458,7 @@ mod tests {
         for crop in [panel, [818, 900, 924, 540]] {
             let (dx, dy) = (0.0, (crop[3] - panel[3]) as f64 / 2.0 * mpp); // plasmabar.rs `shift`
             for curve in [0.0, 1.263] {
-                let r = grab::curve_for_width(curve, f.w * mpp);
+                let r = curve_for_width(curve, f.w * mpp);
                 let bar = Placement::from_matrix(&m, f.w * mpp, f.h / f.w, r); // kvm.rs `bar`
                 let at = in_well(&m, r, dx, f.plasma_up() * mpp + dy);
                 let pl = Placement::from_matrix(&at, crop[2] as f64 * mpp, crop[3] as f64 / crop[2] as f64, r); // kvm.rs `plasma`
@@ -1509,9 +1505,9 @@ mod tests {
     fn the_curve_never_wraps_past_half_a_circle() {
         // the radius saved for a narrower frame, as `radius` draws it once the frame has grown
         let w = frame(Some(PLASMA), &[]).w * MPP;
-        assert_eq!(grab::curve_for_width(0.4, w), 0.4, "narrow: the user's");
-        let r = grab::curve_for_width(0.4, 3.0 * w); // a corner scaled it up 3x
-        assert!(r > 0.4 && (curvature(3.0 * w, r) - 0.5).abs() < 1e-6, "{r}");
+        assert_eq!(curve_for_width(0.4, w), 0.4, "narrow: the user's");
+        let r = curve_for_width(0.4, 3.0 * w); // a corner scaled it up 3x
+        assert!(r > 0.4 && (bend(3.0 * w, r) - 0.5).abs() < 1e-6, "{r}");
     }
 
     fn st(chip: Chip) -> State {

@@ -15,6 +15,8 @@ mod back; // capture.rs tells it what went up, so it has to be here
 mod capture;
 #[path = "../geometry.rs"]
 mod geometry;
+#[path = "../limits.rs"]
+mod limits; // geometry.rs's numbers
 #[path = "../session.rs"]
 mod session;
 #[path = "../vr.rs"]
