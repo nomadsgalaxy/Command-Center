@@ -96,6 +96,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `control.rs` | The control socket `@controlcenter` (`open`, `handle`, `command`). Its `//!` header is the command reference. |
 | `control/machines.rs` | The Machines window: rows per machine, Add machine form, discover, pair (in-process, cc_proto), align (runs `cc-home machine align` on the host), reanchor offer. |
 | `control/prefs.rs` | The Preferences window: settings.json's user settings, applied on click. |
+| `control/dashtab.rs` | Command Center's tab in SteamVR's dashboard: show/hide the Desktop and where the mouse and keyboard go. |
 | `control/workspace.rs` | The Workspace window: rows per workspace, Use/Load/Save as/Rename/Forget, machines per workspace; `switched` reconnects to match. |
 | `control/ui.rs` | The drawing kit those windows share (chrome, buttons, switches, typed text), window placement. |
 | `control/hud.rs` | The camera scan's status strip and tag outlines in the headset. |
@@ -281,6 +282,21 @@ VNC is the same shape: `vnc.rs:run` → libvncclient update callbacks → `gpu::
    right away to tell echoes apart, since each monitor is its own krdpserver on one host clipboard.
 3. Files from a machine stay a descriptor until pasted, then get staged in
    `~/.cache/control-center/clipboard/`.
+
+### The dashboard tab
+
+1. `Dashtab::tick` (`control/dashtab.rs`, called from the main loop) makes the tab once at start with
+   `vr::create_dashboard_overlay` (key `controlcenter.dashboard`, icon `packaging/command-center.png`).
+   After that it polls the page's laser events and redraws it with the Preferences window's kit
+   (`control/ui.rs`).
+2. **Desktop [Show|Hide]** calls `control::show_panels`, the same as the socket's `show` and `hide`.
+3. **Mouse and keyboard [Command Center|Steam / game]** sets `dashtab::steam_input()`. The main
+   loop ORs it with the game state into its one `set_yielded` call, so kvm's `yielded` still has a
+   single writer. Choosing Steam / game does what a VR game does to the input (the keyboards and
+   mice go back to the Frame) but leaves the panels where they are.
+4. Not built yet: handing the input to Steam by itself when the dashboard opens (main.rs already
+   calls `dashtab::dashboard` on `DashboardActivated`/`DashboardDeactivated`, which is where it
+   goes), and detecting a 2D game. That waits on research into how SteamVR runs 2D Steam games.
 
 ### Installer and packaging
 

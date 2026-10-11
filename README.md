@@ -54,6 +54,9 @@ updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
   it again brings them back.
 - **VR games:** while one runs, Command Center steps aside. Its panels hide and pause, and the
   controllers, mouse and keyboard all go to the game. Everything comes back when the game ends.
+- **The dashboard tab:** open SteamVR's dashboard and Command Center has its own tab, next to
+  Steam's. It shows or hides the Desktop, and it lets you choose where your mouse and keyboard go:
+  Command Center, or Steam and the game you're in.
 
 On a computer, `cc-share check` says if anything's wrong and how to fix it, and `cc-share frames`
 lists the Frames paired with it.
