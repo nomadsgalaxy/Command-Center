@@ -62,16 +62,15 @@ Exec=/$lib/target/release/cc-panels
 NoDisplay=true
 X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1,org_kde_kwin_fake_input
 EOF
-# Shadows SteamOS's own entry while the image is merged, so the VR launcher's Desktop starts
-# Command Center, and removing the image gives the stock one back (nothing per user is left behind).
-cat >"$apps/deckard-nested-desktop.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=Desktop
-Comment=Command Center: your Plasma desktop and remote machines as VR panels
-Exec=/$lib/session/cc-launch
-Categories=Utility;
-EOF
+# Our own tile for the VR launcher, with Steam library art, beside SteamOS's Desktop (which stays
+# untouched). The art goes where Valve keeps its own, /usr/share/applications/steam/<app>/, and
+# removing the image takes the tile with it. The entry is the same template cc-home install uses.
+art=$s/usr/share/applications/steam/command-center
+mkdir -p "$art"
+for f in capsule hero logo store-capsule; do install -m644 "$root/packaging/art/$f.png" "$art/$f.png"; done
+install -m644 "$root/packaging/command-center.png" "$art/icon.png"
+sed -e "s|@EXEC@|/$lib/session/cc-launch|" -e "s|@ICON@|/usr/share/applications/steam/command-center/icon.png|" -e "s|@ART@|/usr/share/applications/steam/command-center|" \
+  "$root/packaging/command-center.desktop.in" >"$apps/command-center.desktop"
 
 # sysext only merges an image whose release file is named after it and matches the host. SteamOS
 # has no SYSEXT_LEVEL, so a VERSION_ID would have to match exactly, and SteamOS goes 0.4.5 to 0.4.6

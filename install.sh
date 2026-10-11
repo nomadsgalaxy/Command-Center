@@ -9,7 +9,7 @@
 #                         at /opt/steamvr
 #   install.sh cc-home    cc-home, a static musl binary (it runs on the Frame's host too), with a
 #                         user-local rustup kept apart from the container's toolchain
-#   install.sh desktop    the VR launcher's "Desktop" starts Command Center (cc-home install desktop)
+#   install.sh desktop    a Command Center tile in the VR launcher, beside SteamOS's Desktop (cc-home install desktop)
 #   install.sh            container, cc-home, then `cc-home install` (crates/cc-home/src/install.rs):
 #                         FreeRDP 3.31.1 against that FFmpeg, cc-panels, the pointer driver, and
 #                         the commands in ~/.local/bin

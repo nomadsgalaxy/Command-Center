@@ -149,7 +149,7 @@ pub fn plan(f: &Facts, action: Action, share: &[usize], announce: bool, work: &P
                 step("Set up the build container (the first time takes a while)", run(&sh, &["container"]), "The log says what failed. Run the installer again: a download that broke halfway usually works the second time."),
                 step("Build cc-home", run(&sh, &["cc-home"]), again),
                 step("Build Command Center: FreeRDP, the Desktop and the pointer", run(&f.repo.join("cc-home"), &["install"]), again),
-                step("Make Desktop in the SteamVR launcher open Command Center", run(&f.repo.join("cc-home"), &["install", "desktop"]), again),
+                step("Add Command Center to the SteamVR launcher", run(&f.repo.join("cc-home"), &["install", "desktop"]), again),
             ]
         }
         (Kind::Host, Action::Remove) => vec![step("Stop and remove cc-host", run(&f.home.join(".local/share/control-center/cc-host"), &["uninstall"]), again)],
@@ -204,7 +204,7 @@ pub fn done(f: &Facts, action: Action, share: &[usize], announce: bool, log: &[S
     let mut v = vec![];
     match (f.kind, action) {
         (Kind::Frame, Action::Remove) => {
-            v.push("Command Center is removed. Desktop in the SteamVR launcher opens SteamOS's own desktop again.".into());
+            v.push("Command Center is removed. Its tile is gone from the SteamVR launcher, and SteamOS's Desktop is as it was.".into());
             v.push(String::new());
             v.push(format!("I kept the code ({}), the build container and your settings, so a reinstall is quick. To remove them too:", f.repo.display()));
             v.push(format!("  distrobox rm control-center; rm -rf {} ~/.config/control-center", f.repo.display()));
@@ -214,9 +214,9 @@ pub fn done(f: &Facts, action: Action, share: &[usize], announce: bool, log: &[S
             v.push(String::new());
             v.push("Next:".into());
             if f.desktop_open {
-                v.push("  1. Your Desktop is still open with the old version. Close it, then open Desktop from the SteamVR launcher again.".into());
+                v.push("  1. Your Desktop is still open with the old version. Close it, then open Command Center from the SteamVR launcher again.".into());
             } else {
-                v.push("  1. Open Desktop from the SteamVR launcher.".into());
+                v.push("  1. Open Command Center from the SteamVR launcher.".into());
             }
             v.push("  2. To see a computer from here, run the same command on it:".into());
             v.push(format!("     {ONE_LINE}"));
@@ -470,7 +470,7 @@ pub mod tests {
         let mut f = frame();
         f.desktop_open = true;
         let d = done(&f, Action::Update, &[], false, &[], true).join("\n");
-        assert!(d.contains("Close it, then open Desktop") && d.contains("pointer driver changed"));
+        assert!(d.contains("Close it, then open Command Center") && d.contains("pointer driver changed"));
         assert!(!done(&frame(), Action::Install, &[], false, &[], false).join("\n").contains("pointer"));
     }
 

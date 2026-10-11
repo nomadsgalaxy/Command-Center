@@ -6,10 +6,11 @@
 //!                            (panels/third_party/vnc-prefix), the workspace (cc-panels), the
 //!                            mouse's SteamVR driver; 3 · commands: cc-panels, cc-home, cc-box
 //!                            in ~/.local/bin, and KWin's grant for the window panels
-//!   cc-home install desktop  the VR launcher's "Desktop" starts Command Center
-//!                            (session/cc-launch), replacing the stock desktop's
-//!                            entry (remove ~/.local/share/applications/
-//!                            deckard-nested-desktop.desktop to give the stock one back)
+//!   cc-home install desktop  a Command Center tile in the VR launcher, with its own Steam
+//!                            library art (~/.local/share/applications/command-center.desktop,
+//!                            from packaging/command-center.desktop.in), beside SteamOS's Desktop.
+//!                            An older install overrode SteamOS's own Desktop entry; that
+//!                            override is removed, so the stock Desktop is back
 //!   cc-home install remove   undoes both, and unregisters the pointer driver; the checkout,
 //!                            the container and ~/.config/control-center stay
 use crate::home_dir;
@@ -60,16 +61,33 @@ pub fn main(args: &[String]) -> i32 {
     )
 }
 
+/// The launcher tile's text: packaging/command-center.desktop.in with where the program, its icon and
+/// its art are. The sysext image builds the same entry (packaging/sysext/build.sh) with its own paths.
+pub fn launcher_entry(exec: &str, icon: &str, art: &str) -> String {
+    include_str!("../../../packaging/command-center.desktop.in").replace("@EXEC@", exec).replace("@ICON@", icon).replace("@ART@", art)
+}
+
+/// Whether a .desktop file's text is the entry an older `install desktop` wrote over SteamOS's own Desktop.
+fn is_old_override(text: &str) -> bool {
+    text.contains("Comment=Command Center") && text.contains("Name=Desktop")
+}
+
 fn desktop() -> Result<(), String> {
     let (root, home) = (root(), home_dir());
     let apps = format!("{home}/.local/share/applications");
     fs::create_dir_all(&apps).map_err(|e| format!("{apps}: {e}"))?;
-    // Overrides /usr/share/applications/deckard-nested-desktop.desktop (SteamOS's nested desktop).
+    // Our own tile, with art, beside SteamOS's Desktop. The art stays in the checkout.
     let launch = root.join("session/cc-launch");
-    let entry = format!("[Desktop Entry]\nType=Application\nName=Desktop\nComment=Command Center: your Plasma desktop and remote machines as VR panels\nExec={}\nCategories=Utility;\n", launch.display());
-    fs::write(format!("{apps}/deckard-nested-desktop.desktop"), entry).map_err(|e| format!("{apps}: {e}"))?;
+    let entry = launcher_entry(&launch.to_string_lossy(), &root.join("packaging/command-center.png").to_string_lossy(), &root.join("packaging/art").to_string_lossy());
+    fs::write(format!("{apps}/command-center.desktop"), entry).map_err(|e| format!("{apps}: {e}"))?;
+    // An older install replaced SteamOS's Desktop entry. Give it back.
+    let old = format!("{apps}/deckard-nested-desktop.desktop");
+    if fs::read_to_string(&old).is_ok_and(|t| is_old_override(&t)) {
+        fs::remove_file(&old).map_err(|e| format!("{old}: {e}"))?;
+        println!("removed the old override of SteamOS's Desktop entry, so the stock Desktop is back");
+    }
     sycoca();
-    println!("the VR launcher's Desktop now starts Command Center ({})", launch.display());
+    println!("a Command Center tile for the VR launcher ({}), beside SteamOS's Desktop", launch.display());
     Ok(())
 }
 
@@ -93,12 +111,13 @@ fn remove() -> Result<(), String> {
     }
     let apps = format!("{home}/.local/share/applications");
     let _ = fs::remove_file(format!("{apps}/org.controlcenter.panels.desktop"));
+    let _ = fs::remove_file(format!("{apps}/command-center.desktop"));
     let entry = format!("{apps}/deckard-nested-desktop.desktop");
-    if fs::read_to_string(&entry).is_ok_and(|t| t.contains("Comment=Command Center")) {
+    if fs::read_to_string(&entry).is_ok_and(|t| is_old_override(&t)) {
         fs::remove_file(&entry).map_err(|e| format!("{entry}: {e}"))?;
     }
     sycoca();
-    println!("removed: the commands, the Desktop entry (the VR launcher's Desktop is SteamOS's again) and the pointer driver");
+    println!("removed: the commands, the Command Center tile (SteamOS's Desktop is untouched) and the pointer driver");
     println!("kept: {} (the code and its builds), the control-center container, and your settings in ~/.config/control-center", root.display());
     Ok(())
 }
@@ -205,4 +224,46 @@ fn commands() -> Result<(), String> {
     sycoca();
     println!("a Nomads Galaxy project");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tile_has_a_name_what_to_run_and_valves_art_keys() {
+        let t = launcher_entry("/x/session/cc-launch", "/x/packaging/command-center.png", "/x/packaging/art");
+        let key = |k: &str| t.lines().find_map(|l| l.strip_prefix(&format!("{k}=")));
+        assert_eq!(key("Name"), Some("Command Center"));
+        assert_eq!(key("Exec"), Some("/x/session/cc-launch"));
+        assert_eq!(key("Icon"), Some("/x/packaging/command-center.png"));
+        assert_eq!(key("X-Steam-Library-Capsule"), Some("/x/packaging/art/capsule.png"));
+        assert_eq!(key("X-Steam-Library-Hero"), Some("/x/packaging/art/hero.png"));
+        assert_eq!(key("X-Steam-Library-Logo"), Some("/x/packaging/art/logo.png"));
+        assert_eq!(key("X-Steam-Library-StoreCapsule"), Some("/x/packaging/art/store-capsule.png"));
+        assert_eq!(key("X-Steam-Controller-Template"), Some("Desktop"));
+        assert!(!t.contains('@'), "every placeholder filled: {t}");
+        assert_eq!(key("X-Steam-Special"), None, "SteamOS's Desktop has it, and the launcher picks out one");
+        assert!(t.starts_with("[Desktop Entry]\nType=Application\n"));
+    }
+
+    #[test]
+    fn the_art_the_tile_names_is_in_the_repo_at_valves_sizes() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/art");
+        for (f, w, h) in [("capsule.png", 600, 900), ("hero.png", 3840, 1240), ("logo.png", 1280, 720), ("store-capsule.png", 1280, 720)] {
+            let b = fs::read(dir.join(f)).unwrap_or_else(|e| panic!("{f}: {e}"));
+            assert_eq!(&b[..8], b"\x89PNG\r\n\x1a\n", "{f} is a PNG");
+            let dim = |at: usize| u32::from_be_bytes(b[at..at + 4].try_into().unwrap());
+            assert_eq!((dim(16), dim(20)), (w, h), "{f}");
+        }
+    }
+
+    #[test]
+    fn only_the_old_override_of_steamos_desktop_counts_as_ours_to_remove() {
+        let old = "[Desktop Entry]\nType=Application\nName=Desktop\nComment=Command Center: your Plasma desktop and remote machines as VR panels\nExec=/x/session/cc-launch\nCategories=Utility;\n";
+        assert!(is_old_override(old));
+        assert!(!is_old_override("[Desktop Entry]\nName=Desktop\nExec=steamos-nested-desktop\n"), "Valve's own");
+        assert!(!is_old_override("[Desktop Entry]\nName=Desktop\nComment=Someone else's desktop\n"), "another app's override");
+        assert!(!is_old_override(&launcher_entry("a", "b", "c")), "our new tile isn't it");
+    }
 }

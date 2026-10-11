@@ -1,0 +1,24 @@
+[Desktop Entry]
+Type=Application
+Name=Command Center
+Comment=An all-in-one VR desktop and software KVM: your Plasma desktop and your computers as VR panels
+Exec=@EXEC@
+Categories=Utility;
+Icon=@ICON@
+
+# Steam library art for the Frame's non-Steam launcher, the same keys as SteamOS's own Desktop entry
+# (/usr/share/applications/deckard-nested-desktop.desktop). packaging/art/build.sh makes the images.
+# 600x900 capsule
+X-Steam-Library-Capsule=@ART@/capsule.png
+# 3840x1240 hero
+X-Steam-Library-Hero=@ART@/hero.png
+# 1280x720 logo over the hero
+X-Steam-Library-Logo=@ART@/logo.png
+# 1280x720 horizontal capsule
+X-Steam-Library-StoreCapsule=@ART@/store-capsule.png
+
+# The controller preset: the mouse and keyboard layout, as Valve's Desktop uses.
+X-Steam-Controller-Template=Desktop
+
+# No X-Steam-Special: SteamOS's Desktop entry has it, and the launcher picks out one entry for it.
+# This one sits beside that, and leaves the stock Desktop alone.
