@@ -177,7 +177,8 @@ keep working without changes.
   crates/cc-panels/actions/*.json           the SteamVR action manifest and bindings
 /opt/steamvr/drivers/cc_pointer/            driver.vrdrivermanifest, bin/linuxarm64/driver_cc_pointer.so, resources/
 /usr/share/applications/org.controlcenter.panels.desktop   KWin's screencast and fake-input grant
-/usr/share/applications/deckard-nested-desktop.desktop     the VR launcher's "Desktop" → cc-launch
+/usr/share/applications/command-center.desktop             our own tile in the VR launcher → cc-launch (beside SteamOS's Desktop)
+/usr/share/applications/steam/command-center/              its Steam library art: capsule, hero, logo, store-capsule, icon
 /usr/lib/extension-release.d/extension-release.command-center
 ```
 
@@ -196,6 +197,19 @@ nothing per user to register, and no SteamVR binding loads get spent on vrpathre
 When moving an existing install over, the old registration has to go
 (`driver/cc_pointer/install.sh uninstall`), or SteamVR loads both copies.
 
+**When SteamVR doesn't run from `/opt/steamvr`.** The Frame can run it from elsewhere (`steamvr
+setpath`, or a Steam-managed copy that mounts under `~/.local/share/Steam/steamapps/common`), and
+vrserver then never looks in `/opt/steamvr/drivers`. So `cc-home desktop` (session/cc-launch) checks
+at each start. `steamvr path --ignore-pending` prints `runtime[0]` of
+`~/.config/openvr/openvrpaths.vrpath`, resolved, so it reads that file instead of running anything,
+and it opens no OpenVR connection. If that path isn't `/opt/steamvr`, the image's driver is there and
+it isn't in `external_drivers` yet, it runs `vrpathreg adddriver /opt/steamvr/drivers/cc_pointer`,
+once, with `XDG_CONFIG_HOME=$HOME/.config` (inside the Desktop it points elsewhere, and vrpathreg
+would write a registry SteamVR never reads). vrpathreg only edits that file, so it spends none of
+SteamVR's binding loads. What it did goes to stderr and `~/.cache/control-center/launch.log`, with a
+note to restart SteamVR once. `cc-home install remove` takes the registration back out. The logic
+is in `crates/cc-home/src/steamos.rs`, as pure functions with tests.
+
 The hash-named folders were there so a loaded driver never gets replaced underneath vrserver. With
 sysext, a running vrserver keeps the `.so` it mapped from the old image, and the new one loads on the
 next SteamVR start, same as today. `install.sh check`'s "needs a SteamVR restart" logic carries over:
@@ -203,34 +217,51 @@ compare the mapped path's image against the merged one.
 
 ### The launcher entry
 
-Right now `cc-home install desktop` writes a per-user override to
-`~/.local/share/applications/deckard-nested-desktop.desktop`. If the image goes away, that file stays
-behind and points at a missing binary, and the Desktop tile breaks. If the image ships the same file
-name in `/usr/share/applications` instead, the overlay shadows SteamOS's own entry while the image is
-merged, and removing the image puts the stock one back on its own. That's what the prototype does.
+Command Center has its own tile, `command-center.desktop`, and SteamOS's Desktop is left alone. An
+earlier version shadowed Valve's `deckard-nested-desktop.desktop` (the image) or overrode it per user
+(`cc-home install desktop`), which meant installing Command Center took the stock Desktop away and hid
+any change Valve made to it. Both are gone: `install desktop` removes the old override if it's ours,
+and the image ships only its own file.
 
-The catch is that while it's merged we hide any change Valve makes to that file. To opt out per user,
-copy the stock entry into `~/.local/share/applications` (the user's copy wins).
+The entry carries the same keys SteamOS's Desktop uses for the Frame's non-Steam launcher:
+`X-Steam-Library-Capsule` (600x900), `X-Steam-Library-Hero` (3840x1240), `X-Steam-Library-Logo`
+(1280x720), `X-Steam-Library-StoreCapsule` (1280x720) and `X-Steam-Controller-Template=Desktop`. It
+leaves out `X-Steam-Special=Desktop`, which marks SteamOS's own entry ("for Steam Frame's non-Steam
+app launcher to pick this out"), so two entries don't claim it.
+
+`packaging/command-center.desktop.in` is the one template. The image fills it with system paths and
+puts the art in `/usr/share/applications/steam/command-center/`, next to where Valve keeps its own;
+`cc-home install desktop` fills it with the checkout's paths and leaves the art in
+`packaging/art/`. Removing the image (or `cc-home install remove`) removes the tile, and nothing of
+Valve's changed. `packaging/art/build.sh` draws the images from `packaging/command-center.svg` with
+`rsvg-convert` (and `bc`) in the logo's own colours, with no Steam marks (Valve's branding rules), and
+the PNGs are committed so installing needs no renderer.
 
 ### The release file and matching
 
 `extension-release.command-center` holds:
 
 ```
-ID=steamos
-VERSION_ID=0.3.0
+ID=_any
 ARCHITECTURE=arm64
 IMAGE_ID=command-center
 IMAGE_VERSION=<git describe>
 ```
 
-SteamOS has no `SYSEXT_LEVEL`, so systemd matches `ID`, then `VERSION_ID` exactly. Each build has its
-own `BUILD_ID`, and `VERSION_ID` looks like the release line (the hotfix repo is `release/0.3.x`), so I
-expect the image to keep working through 0.3 updates and stop merging at 0.4. I haven't watched it
-across an update yet, though. That's the right failure: no Desktop tile instead of a
-crashing cc-panels, until there's an image built for 0.4. `ID=_any` (supported, the strings are in
-`libsystemd-shared-257`) would turn that guard off, and I'd only use it with option 1's library check
-in cc-launch.
+SteamOS has no `SYSEXT_LEVEL`, so with `ID=steamos` systemd matches `VERSION_ID` exactly, and that
+moves every few days (0.3.0 on Oct 3, 0.4.5 on Oct 7). I stamped it that way first, expecting it to
+last through a release line, and an image stamped 0.3.0 was silently ignored on 0.4.5. So the image is
+`ID=_any`, which skips the version match, and `ARCHITECTURE=arm64` still keeps it off anything else.
+
+What actually breaks a native build is a library it was built against changing, so that's checked
+where it matters. `cc-home desktop` (session/cc-launch) compares the SteamOS version the build was
+made on (`panels/third_party/prefix/steamos-release`, which build-native.sh writes and build.sh
+ships in the image) with the running `VERSION_ID`. The same version needs nothing more. A different
+one runs `ldd` over cc-panels, and if everything still loads it starts and says so ("SteamOS is
+0.4.6 now, and this was built on 0.4.5. Everything it needs still loads, so it starts."). If
+something doesn't load (an FFmpeg or glibc bump), it stops and names what's missing and what to do
+(run the installer again). The note goes to stderr and `~/.cache/control-center/launch.log`, since
+the VR launcher doesn't show cc-launch's output. The code is `crates/cc-home/src/steamos.rs`.
 
 The file name has to match the image's name: `command-center.raw` (or `command-center.raw.v/`, see
 section 4) needs `extension-release.command-center`.
@@ -340,8 +371,9 @@ and `~/.cache/control-center`. The Desktop tile is SteamOS's again on its own.
 
 - **The image survives:** `/var/lib/extensions` is copied to the new slot.
 - **The service stays enabled:** `*.wants/**` is on the keep list.
-- **On a new SteamOS minor (0.4),** the release file stops matching, so it's left unmerged. cc-install,
-  or the sysupdate timer, fetches the image built for that minor.
+- **On a new SteamOS version,** the image still merges (`ID=_any`), and cc-launch checks that the
+  libraries it was built against still load (see the release file above). If they don't, it says so and
+  cc-install, or the sysupdate timer, fetches an image built for that SteamOS.
 - **Developer mode:** `steamos-readonly disable` and `pacman` won't work while the image is merged,
   because the overlay keeps `/usr` read-only. Run `systemd-sysext unmerge` first, then `merge`
   afterwards.
@@ -446,7 +478,7 @@ biggest unknown.
 
 Open questions I want answered on the device:
 
-- Does the VR launcher pick up an overlay-shadowed `deckard-nested-desktop.desktop` without a reboot
-  (`kbuildsycoca6`)?
+- Does the VR launcher show `command-center.desktop`, with its art, without a reboot
+  (`kbuildsycoca6`)? Does a second Desktop-template entry confuse it?
 - Does `.raw.v/` vpick work for sysext on 257 here?
 - How does `systemd-sysext refresh` behave while vrserver has the driver mapped?

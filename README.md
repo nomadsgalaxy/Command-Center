@@ -26,7 +26,8 @@ The installer works out which machine it's on. Run it again later to update or r
 Center.
 
 - **On the Frame,** it builds Command Center. The first run takes a while. When it's done, open
-  **Desktop** from the SteamVR launcher.
+  **Command Center** from the SteamVR launcher. It has its own tile, next to SteamOS's Desktop,
+  which stays as it was. Removing Command Center takes the tile away and nothing else.
 - **On a computer,** you pick which monitors the Frame can show. If something would stop the
   Frame from finding or reaching the computer, like the firewall, the installer shows the exact
   `sudo` commands to fix it and asks first. The details are in

@@ -120,8 +120,9 @@ root. When this file and the code disagree, the code wins, and this file should 
 | --- | --- |
 | `main.rs` | `USAGE` (the CLI reference), argv[0] dispatch into session.rs, spots (`save`, `apply`, `reanchor`), `workspace`, `autoconnect`/`write_autoconnect`, `network`, the control-socket client (`Panels`, `CC_PANELS_SOCKET`). |
 | `session.rs` | Launch glue: `desktop` (cc-launch), `panels` (the cc-panels wrapper), `rest_now` (cc-rest), `session` (cc-desktop), `boxed` (cc-box), the `kwin_wayland_wrapper` and `flatpak-bwrap` shims, `CC_DRY=1`. |
+| `steamos.rs` | What a native build checks at launch: the SteamOS version it was built on against the running one (and `ldd` over cc-panels when they differ), and where SteamVR runs from, registering the image's pointer driver with vrpathreg only when SteamVR isn't in `/opt/steamvr`. Pure functions, with tests. |
 | `hibernate.rs` | Saves which apps were open at a deliberate close and reopens them next launch. |
-| `install.rs` | `cc-home install` (FreeRDP, libvncclient, cc-panels, the pointer driver, `~/.local/bin` links, the KWin grant `.desktop`), `install desktop`, `install remove`. |
+| `install.rs` | `cc-home install` (FreeRDP, libvncclient, cc-panels, the pointer driver, `~/.local/bin` links, the KWin grant `.desktop`), `install desktop` (our launcher tile, `packaging/command-center.desktop.in`), `install remove`. |
 | `machine.rs` | `cc-home machine ...`: viewers.conf edits, discover (mDNS), `pair`, unpair, session/window commands through the agent. |
 | `scan.rs` | Everything with the camera: `scan` (align), `refit`, `calibrate`, `pair_scan`. |
 | `tests/cross.rs` | Byte-for-byte checks against the old Python's recorded output. |
@@ -161,9 +162,11 @@ root. When this file and the code disagree, the code wins, and this file should 
 
 ### Desktop launch, close, rest and hibernate
 
-1. The SteamVR launcher's "Desktop" entry runs `session/cc-launch`
-   (`~/.local/share/applications/deckard-nested-desktop.desktop`, written by
-   `install.rs:desktop`). That's `session.rs:desktop`.
+1. The SteamVR launcher's "Command Center" tile runs `session/cc-launch`
+   (`~/.local/share/applications/command-center.desktop`, written by `install.rs:desktop` from
+   `packaging/command-center.desktop.in`, or shipped in the sysext image). That's `session.rs:desktop`.
+   On a native build it first runs `steamos.rs`: the library check against the running SteamOS, and
+   registering the pointer driver with vrpathreg when SteamVR doesn't run from `/opt/steamvr`.
 2. It waits out a cc-desktop that's still stopping, then starts the session unit if it's down
    (`session_unit` → `systemd-run` → `cc-home session` → `session.rs:session_body`: runtime dir,
    KWin config, the `kwin_wayland_wrapper` shim for headless outputs, `dbus-run-session
