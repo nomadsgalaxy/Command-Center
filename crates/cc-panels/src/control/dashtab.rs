@@ -206,6 +206,9 @@ impl Dashtab {
             self.open();
         }
         let Some((h, _)) = self.ov else { return };
+        // asked every frame, not only told by the Activated event: the Desktop is usually started
+        // from the dashboard, so it's already open when we start, and that event never comes
+        OPEN.store(call!(ov, IsDashboardVisible), Relaxed);
         self.events(h, hand);
         // drawn once at the start, and after that only while the dashboard is open
         if self.painter.drawn().is_none() || OPEN.load(Relaxed) {
