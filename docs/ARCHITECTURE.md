@@ -81,7 +81,8 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `back.rs` | Dim backs for panels seen from behind, one flat overlay each. |
 | `kvm.rs` | Our mice and keyboards (evdev grab, `input_loop` thread `cc-input`): the 3D pointer ray (`mv`, `land`), click to type (`set_engaged`, `type_to`), Right Ctrl chords, gaze lock, text fields for the control windows. |
 | `laser.rs` | The SteamVR laser off our panels: which hand to lease, raw-space poses, the lease protocol to cc_pointer (`lease_thread`, thread `cc-lease`), `Beam` for the dot. |
-| `gaze.rs` | Eye tracking through the eyetracking action (which panel you look at). |
+| `gaze.rs` | Eye tracking through the eyetracking action (which panel you look at), at action set priority 0. It logs once if valid samples stop. |
+| `handoff.rs` | Stepping aside for a game, VR or 2D: the thread that spots a 2D Steam game from gamescope's X server, and `Handoff`, the state the main loop asks every tick (who has the input, when the panels hide and come back). |
 | `attention.rs` | Per-panel stream rates: full where you look, a few fps in view, paused when hidden, minimized, during a game or with the headset off (D-042). |
 | `gpu.rs` | GBM buffers imported into SteamVR (`Buffers::present`), `write`/`write_frame` from decode threads, `show_raw` (two buffers, no blink) for UI overlays. |
 | `rdp.rs` | One FreeRDP session per remote panel (`run`, reconnect loop), `session` (asks the agent for this Frame's server), `agent` (one agent call), input out (`mouse`, `key`, `wheel`), cliprdr attach. |
@@ -290,13 +291,24 @@ VNC is the same shape: `vnc.rs:run` → libvncclient update callbacks → `gpu::
    After that it polls the page's laser events and redraws it with the Preferences window's kit
    (`control/ui.rs`).
 2. **Desktop [Show|Hide]** calls `control::show_panels`, the same as the socket's `show` and `hide`.
-3. **Mouse and keyboard [Command Center|Steam / game]** sets `dashtab::steam_input()`. The main
-   loop ORs it with the game state into its one `set_yielded` call, so kvm's `yielded` still has a
-   single writer. Choosing Steam / game does what a VR game does to the input (the keyboards and
-   mice go back to the Frame) but leaves the panels where they are.
-4. Not built yet: handing the input to Steam by itself when the dashboard opens (main.rs already
-   calls `dashtab::dashboard` on `DashboardActivated`/`DashboardDeactivated`, which is where it
-   goes), and detecting a 2D game. That waits on research into how SteamVR runs 2D Steam games.
+3. **Mouse and keyboard [Command Center|Steam / game]** is a press on `handoff::Handoff`, the one
+   place that decides who has the input. The main loop calls `Handoff::step` each tick (VR game,
+   2D game, is our tab selected), then uses `playing()` for the attention and hide logic,
+   `yielded()` for kvm's one `set_yielded` call, and `panels()` to hide the panels for a game and
+   show only what it hid. With no game, Steam / game just gives the keyboards and mice back to the
+   Frame and leaves the panels where they are.
+4. **2D games.** A flat Steam game runs in gamescope (`--backend openvr`) as a SteamVR system
+   overlay, so the scene process id stays 0. `handoff::start` runs a thread that reads
+   GAMESCOPE_FOCUSED_APP from gamescope's X server on :0, with a small hand-written X11 client
+   because no X crate is in the tree, and falls back to a `reaper SteamLaunch AppId=` process. A real
+   app id (not 0, not Steam's own UI, 769) means a game is playing. Then the panels hide so
+   SteamVR's laser mode, which our overlays keep on, lets the controllers go, and the keyboards and
+   mice go back to the Frame. Picking our tab (`IsActiveDashboardOverlay`, only the moment it's
+   picked) or pressing Command Center takes the Desktop back for the rest of that game, and Steam /
+   game hands it to the game again. When the game ends, only what it hid comes back.
+5. Not built yet: handing the input to Steam by itself when the dashboard merely opens. main.rs
+   already calls `dashtab::dashboard` on `DashboardActivated`/`DashboardDeactivated`, which is where
+   it goes.
 
 ### Installer and packaging
 

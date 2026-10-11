@@ -5,23 +5,25 @@
 //!   Mouse and keyboard   [Command Center|Steam / game]   where they go. "Steam / game" gives the
 //!                        keyboards and mice back to the Frame (kvm.rs `set_yielded`, the way a VR
 //!                        game does), and "Command Center" takes them again.
-//! plus a line saying what the choice does.
+//! plus a line saying what the choice does. While a 2D Steam game is playing, the same two choices
+//! hand the Desktop back and forth with the game (handoff.rs), and picking this tab does what
+//! pressing "Command Center" does. What it shows is who has the input right now, game or not.
 //!
 //! It's made once at start (`CreateDashboardOverlay`, key controlcenter.dashboard) and lives as
 //! long as cc-panels does, so unlike the other windows it has no card and no open/close. Its
 //! thumbnail is packaging/command-center.png. It's painted with the Preferences window's kit
 //! (ui.rs) and gets laser clicks as mouse events on its overlay, in the page's units.
 //!
-//! The choice of input is `steam_input()`. The main loop reads it with the game state
-//! (main.rs, `set_yielded`), because kvm's `yielded` is already driven from there every frame
-//! and a second writer would undo it.
+//! A choice is a press on the `Handoff` (handoff.rs), which the main loop reads with the game
+//! state to set kvm's `yielded`. That keeps one writer for it, because a second would be undone on
+//! the next frame.
 //!
-//! Not here yet: handing the mouse and keyboard to Steam by itself when the dashboard opens, and
-//! detecting a 2D game. `dashboard()` is where the first goes, since main.rs calls it when the
-//! dashboard opens or closes; the second reads the game state the same way `steam_input()` does.
+//! Not here: handing the mouse and keyboard to Steam by itself when the dashboard merely opens.
+//! `dashboard()` is where that would go, since main.rs calls it when the dashboard opens or closes.
 use super::ui::{self, BTN_H, PAD, Px, ROW, Rect, SCALE, TITLE, text, typed, typed_w};
 use crate::grab::{Paint, TagImg, over, tint};
 use crate::taskbar::tex_scale;
+use crate::handoff::Handoff;
 use crate::{HIDDEN, call, theme, vr};
 use openvr_sys as sys;
 use std::sync::Arc;
@@ -38,14 +40,8 @@ pub const LABELS: [(&str, &str); 6] = [
     ("dashsteam", "Steam / game"),
 ];
 
-/// Where the mouse and keyboard go: false is Command Center, true is Steam and the game.
-static STEAM_INPUT: AtomicBool = AtomicBool::new(false);
 /// SteamVR's dashboard is open (main.rs tells `dashboard`), so the tab is being looked at.
 static OPEN: AtomicBool = AtomicBool::new(false);
-
-pub fn steam_input() -> bool {
-    STEAM_INPUT.load(Relaxed)
-}
 
 /// The dashboard opened or closed. It only keeps the tab from redrawing while nobody can see it.
 pub fn dashboard(open: bool) {
@@ -197,17 +193,22 @@ impl Dashtab {
         self.hover.is_some()
     }
 
+    /// Our tab is the dashboard's active one: the dashboard is open and this is the page showing.
+    pub fn selected(&self) -> bool {
+        OPEN.load(Relaxed) && self.ov.is_some_and(|(h, _)| call!(ov, IsActiveDashboardOverlay, h))
+    }
+
     /// Every frame: makes the tab the first time, then handles its events and draws it.
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self, hand: &mut Handoff) {
         if self.ov.is_none() && !self.tried {
             self.tried = true;
             self.open();
         }
         let Some((h, _)) = self.ov else { return };
-        self.events(h);
+        self.events(h, hand);
         // drawn once at the start, and after that only while the dashboard is open
         if self.painter.drawn().is_none() || OPEN.load(Relaxed) {
-            self.paint(h);
+            self.paint(h, hand.yielded());
         }
     }
 
@@ -232,7 +233,7 @@ impl Dashtab {
     }
 
     /// Laser events: hovering, and presses on a choice.
-    fn events(&mut self, h: vr::Handle) {
+    fn events(&mut self, h: vr::Handle, hand: &mut Handoff) {
         let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
         while call!(ov, PollNextOverlayEvent, h, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let m = unsafe { e.data.mouse };
@@ -242,7 +243,7 @@ impl Dashtab {
                 sys::EVREventType_VREvent_FocusLeave => self.hover = None,
                 sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
                     if let Some(a) = at {
-                        act(a);
+                        act(a, hand);
                     }
                 }
                 _ => {}
@@ -251,8 +252,8 @@ impl Dashtab {
     }
 
     /// Redraws it off the main thread when anything changed, and only the parts that did.
-    fn paint(&mut self, h: vr::Handle) {
-        let key = Key { shown: !HIDDEN.load(Relaxed), steam: steam_input(), hover: self.hover, theme: theme::generation() };
+    fn paint(&mut self, h: vr::Handle, steam: bool) {
+        let key = Key { shown: !HIDDEN.load(Relaxed), steam, hover: self.hover, theme: theme::generation() };
         self.painter.paint(h, key, || {
             let (ui, p) = (self.ui.clone(), Paint::new(&theme::get(), theme::VIOLET));
             move |was: Option<Key>, px, k: &Key| {
@@ -272,8 +273,9 @@ impl Dashtab {
     }
 }
 
-/// A click. The Desktop's choice is applied now; the input's is read by main.rs on its next frame.
-fn act(Hit(row, seg): Hit) {
+/// A click. The Desktop's choice is applied now; the input's goes to the hand-off, which main.rs
+/// reads on its next frame.
+fn act(Hit(row, seg): Hit, hand: &mut Handoff) {
     if row == 0 {
         let show = seg == 0;
         if show != HIDDEN.load(Relaxed) {
@@ -281,8 +283,9 @@ fn act(Hit(row, seg): Hit) {
         }
         eprintln!("dashboard tab: Desktop {}", if show { "shown" } else { "hidden" });
         super::show_panels(show);
-    } else if STEAM_INPUT.swap(seg == 1, Relaxed) != (seg == 1) {
+    } else {
         eprintln!("dashboard tab: mouse and keyboard to {}", if seg == 1 { "Steam and the game" } else { "Command Center" });
+        hand.press(seg == 1);
     }
 }
 
@@ -354,16 +357,5 @@ mod tests {
             assert!(!t.full && t.px == draw(&b), "{a:?} -> {b:?}");
         }
         assert!(dirty(&key(None), &Key { theme: 1, ..key(None) }).is_none(), "a new theme: all of it");
-    }
-
-    #[test]
-    fn the_input_choice_sticks_until_changed() {
-        assert!(!steam_input(), "Command Center to start with");
-        act(Hit(1, 1));
-        assert!(steam_input());
-        act(Hit(1, 1));
-        assert!(steam_input(), "the same again changes nothing");
-        act(Hit(1, 0));
-        assert!(!steam_input());
     }
 }

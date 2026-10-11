@@ -25,6 +25,7 @@ mod geometry;
 mod gaze;
 mod grab;
 mod gpu;
+mod handoff;
 mod kvm;
 mod kwin;
 mod laser;
@@ -925,7 +926,8 @@ fn run() -> Result<(), String> {
     let _ = vr::MAIN.set(std::thread::current()); // vr::wake ends the wait between ticks
     let mut gaze_tried: Option<Instant> = None;
     let mut gaze_off = false; // a game is running, so the gaze's action set is let go
-    let mut game_hid = false; // the panels are hidden because a VR game is running
+    let mut hand = handoff::Handoff::default(); // who has the input, with a VR or a 2D game running (handoff.rs)
+    handoff::start();
     let mut last_event = 0; // the last SteamVR event's type, for the loop's status line
     let mut was_away = false; // hidden or under a game last tick
     while !QUIT.load(Relaxed) {
@@ -1038,26 +1040,31 @@ fn run() -> Result<(), String> {
         let now = Instant::now();
         let head = vr::head().map(|m| ([0, 1, 2].map(|r| m[r][3] as f64), [0, 1, 2].map(|r| -m[r][2] as f64)));
         let gaze_ray = gaze_seen.filter(|g| now - g.2 < kvm::GAZE_STALE).map(|g| (g.0, g.1));
-        let seen = attention::Seen { hidden: HIDDEN.load(Relaxed), game: bar.game(), on_head, head, gaze: gaze_ray };
+        // A game, VR or 2D, is Command Center's cue to step aside (handoff.rs). The dashboard tab can take it back.
+        hand.step(bar.game(), handoff::flat_game(), dashtab.selected());
+        let seen = attention::Seen { hidden: HIDDEN.load(Relaxed), game: hand.playing(), on_head, head, gaze: gaze_ray };
         attend(&mut att, &seen, &grab, now);
         // click to type: the Desktop hidden or a game starting gives the keyboards back, once on the change
         let away = seen.hidden || seen.game;
         if away && !was_away {
             KVM.lock().unwrap().set_engaged(false, if seen.hidden { "Desktop hidden" } else { "game running" });
         }
-        // A VR game: Command Center steps aside. The mice go to it as well as the keyboards (the
-        // line above), every panel hides, and the panels are paused (attention.rs), until it ends.
-        // ... and so does choosing "Steam / game" on the dashboard tab (control/dashtab.rs)
-        let steam = control::dashtab::steam_input();
-        KVM.lock().unwrap().set_yielded(seen.game || steam, if seen.game { "game running" } else if steam { "Steam / game chosen on the dashboard tab" } else { "no game" });
-        if seen.game && !game_hid && !HIDDEN.load(Relaxed) {
-            game_hid = true;
-            control::show_panels(false);
-            eprintln!("game: a VR game is running, so the Desktop hides and waits");
-        } else if !seen.game && game_hid {
-            game_hid = false;
-            control::show_panels(true); // only what the game hid; one you hid yourself stays hidden
-            eprintln!("game: it ended, so the Desktop is back");
+        // A game: Command Center steps aside. The mice go to it as well as the keyboards (the line
+        // above), every panel hides, and the panels are paused (attention.rs), until it ends, or
+        // until you take it back on the dashboard tab (control/dashtab.rs). Choosing "Steam / game"
+        // there gives the input away without a game too, but leaves the panels showing.
+        let why = if seen.game { "game running" } else if hand.yielded() { "Steam / game chosen on the dashboard tab" } else { "no game" };
+        KVM.lock().unwrap().set_yielded(hand.yielded(), why);
+        match hand.panels(HIDDEN.load(Relaxed)) {
+            Some(false) => {
+                control::show_panels(false);
+                eprintln!("game: {} is running, so the Desktop hides and waits", if bar.game() { "a VR game" } else { "a 2D game" });
+            }
+            Some(true) => {
+                control::show_panels(true); // only what the game hid; one you hid yourself stays hidden
+                eprintln!("game: the Desktop is back");
+            }
+            None => {}
         }
         was_away = away;
         laps.lap("attention");
@@ -1102,7 +1109,7 @@ fn run() -> Result<(), String> {
         laps.lap("machines");
         prefs.tick(&mut grab, &mut windows, &mut bar);
         laps.lap("prefs");
-        dashtab.tick();
+        dashtab.tick(&mut hand);
         laps.lap("dashtab");
         workspace_win.tick(&mut grab, &mut windows, &mut bar);
         laps.lap("workspace");

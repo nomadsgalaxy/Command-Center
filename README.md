@@ -52,11 +52,15 @@ updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
   monitors to put everything where it belongs.
 - **Closing the Desktop** saves which apps were open and frees the memory for a game. Opening
   it again brings them back.
-- **VR games:** while one runs, Command Center steps aside. Its panels hide and pause, and the
-  controllers, mouse and keyboard all go to the game. Everything comes back when the game ends.
+- **Games:** while a game runs, Command Center steps aside. Its panels hide and pause, and the
+  controllers, mouse and keyboard all go to the game. That's true for VR games and for flat Steam
+  games, the ones SteamVR shows on a floating screen. During a flat game you can get Command
+  Center back without quitting it: open SteamVR's dashboard and pick the Command Center tab.
+  Choosing **Steam / game** there hands everything back to the game. When the game ends, whatever
+  it hid comes back.
 - **The dashboard tab:** open SteamVR's dashboard and Command Center has its own tab, next to
   Steam's. It shows or hides the Desktop, and it lets you choose where your mouse and keyboard go:
-  Command Center, or Steam and the game you're in.
+  Command Center, or Steam and your game.
 
 On a computer, `cc-share check` says if anything's wrong and how to fix it, and `cc-share frames`
 lists the Frames paired with it.
