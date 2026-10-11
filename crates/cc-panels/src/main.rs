@@ -30,12 +30,14 @@ mod kvm;
 mod kwin;
 mod laser;
 mod limits;
+mod overlay;
 mod plasmabar;
 mod popout;
 mod rdp;
 mod vnc;
 #[allow(dead_code)] // virtual outputs for desktop mode aren't wired up yet; the spike uses them
 mod session;
+mod stage;
 mod taskbar;
 mod theme;
 mod vr;
@@ -502,8 +504,8 @@ fn update_pointer(cursor: vr::Handle, beam: &mut laser::Beam) {
     let (yaw, pitch) = geometry::angles(&[at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]]);
     let m = panel_matrix(&Pose { centre: at, yaw, pitch, ..Default::default() });
     let d = distance(&at, &eye);
-    call!(ov, SetOverlayWidthInMeters, cursor, (2.0 * d * 0.2f64.to_radians().tan()) as f32); // 0.4 degrees across at any distance
-    vr::place(cursor, &m);
+    // 0.4 degrees across at any distance
+    overlay::apply(&mut overlay::Live, cursor, &overlay::Place::new(overlay::At::Room(m), 2.0 * d * 0.2f64.to_radians().tan()));
     if dot != laser::Dot::Hidden {
         call!(ov, ShowOverlay, cursor);
     }

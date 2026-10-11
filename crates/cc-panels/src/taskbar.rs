@@ -46,8 +46,9 @@
 //! wrist still show, since they're nearer than the backdrop; fixed hides because the Frame
 //! draws by depth, not sort order.
 //! ponytail: no file watch; hand edits to settings.json apply on restart.
-use crate::geometry::{Mat, Placement, Pose, V3, angles, bend, curve_for_width, direction, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
+use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, direction, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
 use crate::limits::{BAR_SCALE, CURVE_NOTCH};
+use crate::overlay::{At, Live, Overlays, Place, apply};
 use crate::grab::{self, Look, TagImg, average, line, over, rbox, tint};
 use crate::theme::{self, Accent, Tokens};
 use crate::kvm::KVM;
@@ -205,6 +206,20 @@ struct Frame {
     row: f64,                    // the chip row's top
     laid: Vec<(Chip, f64, f64)>, // each chip's span
     knob: (f64, f64),            // the curve knob's centre
+}
+
+/// What the frame was last placed as: its matrix, the device it's on (MAX means the room), and its
+/// width and curve radius in millimetres, which is how far it has to move to count as changed.
+type Placed = Option<(Mat, u32, u32, u32)>;
+
+/// Places overlay `ov` as a frame `width` wide bent to radius `r` at `local` on device `dev` (MAX
+/// for the room), unless it's already placed that way to the millimetre.
+fn put_frame(o: &mut impl Overlays, ov: vr::Handle, placed: &mut Placed, width: f64, r: f64, local: &Mat, dev: u32) {
+    let now = Some((*local, dev, (width * 1000.0).round() as u32, (r * 1000.0).round() as u32));
+    if *placed != now {
+        *placed = now;
+        apply(o, ov, &Place::new(At::on(dev, *local), width).curve(r));
+    }
 }
 
 /// Each chip's span (x0, x1) from the row's start, GAP apart, plus the row's width. If they
@@ -669,7 +684,7 @@ pub struct Taskbar {
     scale: f64,          // the user's size for both rows (settings.json taskbar_scale)
     curve: f64,          // the rows' curve radius in metres, 0 for flat (taskbar_curve)
     hover: Option<Part>, // the part under a laser (Plasma's bar included)
-    placed: Option<(Mat, u32, u32, u32)>, // as last placed: its matrix, the device it's on (MAX means the room), its width and curve in mm
+    placed: Placed,
     shown: bool,
     alpha: f32,    // wrist: fading in while you look at it
     game: bool,    // a VR game is running
@@ -1262,18 +1277,7 @@ impl Taskbar {
     /// Puts the frame at `local` on device `dev` (MAX for the room), only when that changed.
     fn put(&mut self, local: &Mat, dev: u32) {
         let (width, r) = (self.frame.w * self.mpp, self.radius());
-        let placed = Some((*local, dev, (width * 1000.0).round() as u32, (r * 1000.0).round() as u32));
-        if self.placed != placed {
-            self.placed = placed;
-            call!(ov, SetOverlayWidthInMeters, self.ov, width as f32);
-            call!(ov, SetOverlayCurvature, self.ov, bend(width, r));
-            if dev == u32::MAX {
-                vr::place(self.ov, local);
-            } else {
-                let mut t = sys::HmdMatrix34_t { m: *local };
-                call!(ov, SetOverlayTransformTrackedDeviceRelative, self.ov, dev, &mut t);
-            }
-        }
+        put_frame(&mut Live, self.ov, &mut self.placed, width, r, local, dev);
     }
 
     pub fn destroy(&self) {
@@ -1285,6 +1289,7 @@ impl Taskbar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::bend;
 
     const PLASMA: (f64, f64) = (891.0, 50.0); // Plasma's floating panel as measured
 
@@ -1798,5 +1803,49 @@ mod tests {
         let p = under(&[flat(-1.0, 1.5, -2.0, 0.8)], &eye).unwrap();
         assert!((p.centre[0] + 1.0).abs() < 1e-6 && p.yaw > 0.0);
         assert!(under(&[], &eye).is_none());
+    }
+
+    // ---- the frame's placement
+
+    mod writing {
+        use super::*;
+        use crate::geometry::bend;
+        use crate::overlay::fake::{Call, Writes};
+
+        const OV: vr::Handle = 5;
+
+        fn at(x: f64) -> Mat {
+            panel_matrix(&Pose { centre: [x, 1.0, -1.0], ..Default::default() })
+        }
+
+        #[test]
+        fn the_frame_is_written_once_in_the_room_and_not_again_until_something_moves_a_millimetre() {
+            let (mut w, mut placed) = (Writes::default(), None);
+            put_frame(&mut w, OV, &mut placed, 1.2341, 2.0, &at(0.0), u32::MAX);
+            assert_eq!(w.0, vec![Call::Width(OV, 1.2341), Call::Curvature(OV, bend(1.2341, 2.0)), Call::Room(OV, at(0.0))]);
+            let n = w.0.len();
+            put_frame(&mut w, OV, &mut placed, 1.2341, 2.0, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2343, 2.0, &at(0.0), u32::MAX);
+            assert_eq!(w.0.len(), n, "the same, and the same to the millimetre: nothing");
+            put_frame(&mut w, OV, &mut placed, 1.2360, 2.0, &at(0.0), u32::MAX);
+            assert_eq!(w.0.len(), 2 * n, "2 mm wider: written");
+            put_frame(&mut w, OV, &mut placed, 1.2360, 2.0004, &at(0.0), u32::MAX);
+            assert_eq!(w.0.len(), 2 * n, "a curve within a millimetre: nothing");
+            put_frame(&mut w, OV, &mut placed, 1.2360, 2.01, &at(0.0), u32::MAX);
+            assert_eq!(w.0.len(), 3 * n, "a curve 1 cm different: written");
+            put_frame(&mut w, OV, &mut placed, 1.2360, 2.01, &at(0.1), u32::MAX);
+            assert_eq!(w.0.len(), 4 * n, "moved: written");
+        }
+
+        #[test]
+        fn a_frame_on_the_wrist_is_placed_on_the_controller_not_in_the_room() {
+            let (mut w, mut placed) = (Writes::default(), None);
+            put_frame(&mut w, OV, &mut placed, 0.4, 0.0, &at(0.0), 3);
+            assert_eq!(w.0.last(), Some(&Call::Device(OV, 3, at(0.0))));
+            assert_eq!(w.room_of(OV), None);
+            assert_eq!(w.curvature_of(OV), Some(0.0), "flat");
+            put_frame(&mut w, OV, &mut placed, 0.4, 0.0, &at(0.0), u32::MAX);
+            assert_eq!(w.room_of(OV), Some(at(0.0)), "the same matrix on the room is a different place");
+        }
     }
 }

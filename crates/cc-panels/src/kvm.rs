@@ -16,7 +16,9 @@
 use crate::config::Viewer;
 use crate::geometry::{Placement, angles, direction, norm, rotate};
 use crate::limits::{KEY_NOTCH, KEY_PUSH_RANGE, MAX_WIDTH, MIN_WIDTH};
-use crate::{QUIT, call, laser, panel, plasmabar, root, vr, windows};
+use crate::overlay::{At, Live, Place, apply};
+use crate::stage::Stage;
+use crate::{QUIT, laser, panel, plasmabar, root, vr, windows};
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
 use std::collections::HashSet;
 use std::fs::File;
@@ -248,69 +250,74 @@ pub struct Kvm {
     pub window_drag: Option<([f64; 3], Instant)>,
 }
 
-pub static KVM: Mutex<Kvm> = Mutex::new(Kvm {
-    place: Vec::new(),
-    ppd: Vec::new(),
-    devices: Vec::new(),
-    engaged: false,
-    yielded: false,
-    awake: false,
-    active: 0,
-    kbd: 0,
-    kbd_shell: false,
-    x: 0.0,
-    y: 0.0,
-    anchor: [0.0; 3],
-    yaw: 0.0,
-    pitch: 0.0,
-    free: None,
-    bar: None,
-    bar_inset: 0.0,
-    on_bar: None,
-    bar_clicks: 0,
-    extra: None,
-    on_extra: false,
-    on_card: false,
-    card_held: false,
-    card_mouse: Vec::new(),
-    card_wheel: 0.0,
-    extra_held: false,
-    extra_mouse: Vec::new(),
-    cards: Vec::new(),
-    plasma: None,
-    on_plasma: false,
-    shell_buttons: 0,
-    plasma_at: (0.0, 0.0),
-    sent: None,
-    depth: FREE_DISTANCE,
-    gaze_lock: false,
-    focus: None,
-    gaze_on: None,
-    gaze_at: None,
-    sensitivity: 0.03,
-    keys: Vec::new(),
-    field: None,
-    field_keys: Vec::new(),
-    field_held: Vec::new(),
-    buttons: 0,
-    beam_buttons: 0,
-    beam_depth: 1.5,
-    dx: 0.0,
-    dy: 0.0,
-    last_used: None,
-    typed: None,
-    pending: (0.0, None),
-    rctrl: None,
-    rctrl_clean: false,
-    shift: false,
-    moves: 0,
-    clicks: 0,
-    keystrokes: 0,
-    wheels: 0,
-    window_drag: None,
-});
+pub static KVM: Mutex<Kvm> = Mutex::new(Kvm::idle());
 
 impl Kvm {
+    /// A Kvm with nothing set. It's const so KVM can be a static, and tests make their own.
+    pub const fn idle() -> Kvm {
+        Kvm {
+            place: Vec::new(),
+            ppd: Vec::new(),
+            devices: Vec::new(),
+            engaged: false,
+            yielded: false,
+            awake: false,
+            active: 0,
+            kbd: 0,
+            kbd_shell: false,
+            x: 0.0,
+            y: 0.0,
+            anchor: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            free: None,
+            bar: None,
+            bar_inset: 0.0,
+            on_bar: None,
+            bar_clicks: 0,
+            extra: None,
+            on_extra: false,
+            on_card: false,
+            card_held: false,
+            card_mouse: Vec::new(),
+            card_wheel: 0.0,
+            extra_held: false,
+            extra_mouse: Vec::new(),
+            cards: Vec::new(),
+            plasma: None,
+            on_plasma: false,
+            shell_buttons: 0,
+            plasma_at: (0.0, 0.0),
+            sent: None,
+            depth: FREE_DISTANCE,
+            gaze_lock: false,
+            focus: None,
+            gaze_on: None,
+            gaze_at: None,
+            sensitivity: 0.03,
+            keys: Vec::new(),
+            field: None,
+            field_keys: Vec::new(),
+            field_held: Vec::new(),
+            buttons: 0,
+            beam_buttons: 0,
+            beam_depth: 1.5,
+            dx: 0.0,
+            dy: 0.0,
+            last_used: None,
+            typed: None,
+            pending: (0.0, None),
+            rctrl: None,
+            rctrl_clean: false,
+            shift: false,
+            moves: 0,
+            clicks: 0,
+            keystrokes: 0,
+            wheels: 0,
+            window_drag: None,
+        }
+    }
+
     pub fn device_count(&self) -> usize {
         self.devices.len()
     }
@@ -546,8 +553,12 @@ impl Kvm {
     /// Restart the ray at the head and aim it where the cursor is, so the cursor doesn't jump
     /// after a panel moved under it.
     fn reaim(&mut self) {
+        self.reaim_from(vr::head_position());
+    }
+
+    fn reaim_from(&mut self, head: [f64; 3]) {
         let p = self.cursor_point();
-        self.anchor = vr::head_position();
+        self.anchor = head;
         (self.yaw, self.pitch) = angles(&[p[0] - self.anchor[0], p[1] - self.anchor[1], p[2] - self.anchor[2]]);
     }
 
@@ -895,26 +906,33 @@ impl Kvm {
     /// Where a panel is (its pose, width in metres, curve radius, 0 = flat). Its height comes
     /// from its picture's pixel aspect.
     pub fn set_pose(&mut self, i: usize, m: &crate::geometry::Mat, width: f64, curve: f64) {
-        let (w, h) = panel(i).size();
-        self.set_place(i, m, width, width * h as f64 / w as f64, curve);
+        self.set_pose_with(&mut Live, i, m, width, curve);
+    }
+
+    /// `set_pose` through `s`: SteamVR for real, or a stand-in in a test.
+    pub fn set_pose_with(&mut self, s: &mut impl Stage, i: usize, m: &crate::geometry::Mat, width: f64, curve: f64) {
+        let (w, h) = s.panel(i).size;
+        self.set_place_with(s, i, m, width, width * h as f64 / w as f64, curve);
     }
 
     /// Like set_pose, but with the height given. A window panel stretched by its bottom-right
     /// corner (grab.rs) keeps the dragged size until its window catches up (windows.rs).
     pub fn set_place(&mut self, i: usize, m: &crate::geometry::Mat, width: f64, height: f64, curve: f64) {
-        let p = panel(i);
-        let pl = Placement { vert: p.vert(), ..Placement::from_matrix(m, width, height / width, curve) };
+        self.set_place_with(&mut Live, i, m, width, height, curve);
+    }
+
+    pub fn set_place_with(&mut self, s: &mut impl Stage, i: usize, m: &crate::geometry::Mat, width: f64, height: f64, curve: f64) {
+        let p = s.panel(i);
+        let pl = Placement { vert: p.vert, ..Placement::from_matrix(m, width, height / width, curve) };
         self.place[i] = pl;
         // SteamVR overlays only curve about their vertical axis, so a panel curved top to bottom
         // becomes the same panel turned a quarter turn, with its picture rotated (gpu.rs).
-        let (o, (w, h)) = if pl.vert { (pl.turned(), (p.size().1, p.size().0)) } else { (pl, p.size()) };
-        call!(ov, SetOverlayWidthInMeters, p.overlay, o.width as f32);
+        let (o, (w, h)) = if pl.vert { (pl.turned(), (p.size.1, p.size.0)) } else { (pl, p.size) };
         // the picture stretched to that height in the meantime (1 when it's the pixels' own)
-        call!(ov, SetOverlayTexelAspect, p.overlay, (o.width * h as f64 / (o.height * w as f64)) as f32);
-        call!(ov, SetOverlayCurvature, p.overlay, crate::geometry::bend(o.width, curve));
-        vr::place(p.overlay, &o.matrix());
+        let texel = (o.width * h as f64 / (o.height * w as f64)) as f32;
+        apply(s, p.overlay, &Place::new(At::Room(o.matrix()), o.width).texel(texel).curve(curve));
         if i == self.active && self.free.is_none() && self.awake {
-            self.reaim(); // the cursor rides along (gestures, presets, the control socket)
+            self.reaim_from(s.head()); // the cursor rides along (gestures, presets, the control socket)
         }
     }
 
@@ -1701,6 +1719,83 @@ mod tests {
     #[test]
     fn input_event_is_24_bytes() {
         assert_eq!(size_of::<libc::input_event>(), 24);
+    }
+
+    // ---- Kvm::set_place, through a stand-in for SteamVR
+
+    mod placing {
+        use super::super::{Kvm, Placement};
+        use crate::geometry::{Pose, bend, panel_matrix};
+        use crate::stage::PanelFacts;
+        use crate::stage::fake::{Fake, apart};
+
+        fn kvm_with(n: usize) -> Kvm {
+            let mut k = Kvm::idle();
+            k.place = vec![Placement::from_matrix(&panel_matrix(&Pose::default()), 1.0, 1.0, 0.0); n];
+            k
+        }
+
+        fn at() -> crate::geometry::Mat {
+            panel_matrix(&Pose { centre: [0.3, 1.4, -1.5], yaw: 12.0, pitch: -4.0, roll: 2.0, ..Default::default() })
+        }
+
+        #[test]
+        fn a_flat_panel_gets_its_width_its_own_shape_and_its_matrix() {
+            let (mut k, mut f) = (kvm_with(1), Fake::with_panels(1));
+            k.set_pose_with(&mut f, 0, &at(), 1.6, 0.0);
+            let h = f.overlay(0);
+            assert_eq!(f.writes.width_of(h), Some(1.6));
+            assert!((f.writes.texel_of(h).unwrap() - 1.0).abs() < 1e-6, "its height comes from the picture, so no stretch");
+            assert_eq!(f.writes.curvature_of(h), Some(0.0), "told it's flat, so a bent one straightens");
+            assert_eq!(f.writes.room_of(h), Some(at()));
+            let pl = k.place[0];
+            assert!((pl.width - 1.6).abs() < 1e-9 && (pl.height - 0.9).abs() < 1e-9, "1920x1080 at 1.6 m wide is 0.9 m high");
+            assert!(!pl.vert);
+        }
+
+        #[test]
+        fn a_curved_panel_is_written_as_steamvrs_fraction_of_its_width() {
+            let (mut k, mut f) = (kvm_with(1), Fake::with_panels(1));
+            k.set_pose_with(&mut f, 0, &at(), 1.6, 2.0);
+            assert_eq!(f.writes.curvature_of(f.overlay(0)), Some(bend(1.6, 2.0)));
+            assert_eq!(k.place[0].curve, 2.0);
+        }
+
+        #[test]
+        fn a_stretched_window_keeps_the_dragged_height_and_stretches_its_picture_to_fit() {
+            let (mut k, mut f) = (kvm_with(1), Fake::with_panels(1));
+            // 1 m by 1 m for a 1920x1080 picture: the picture is stretched to the height
+            k.set_place_with(&mut f, 0, &at(), 1.0, 1.0, 0.0);
+            let texel = f.writes.texel_of(f.overlay(0)).unwrap();
+            assert!((texel - 1080.0 / 1920.0).abs() < 1e-6, "{texel}");
+            assert!((k.place[0].height - 1.0).abs() < 1e-9);
+        }
+
+        #[test]
+        fn a_panel_curved_top_to_bottom_is_written_turned_a_quarter() {
+            let (mut k, mut f) = (kvm_with(1), Fake::with_panels(1));
+            f.panels[0] = PanelFacts { vert: true, ..f.panels[0] };
+            k.set_pose_with(&mut f, 0, &at(), 1.6, 2.0);
+            let h = f.overlay(0);
+            let pl = k.place[0];
+            assert!(pl.vert, "kvm keeps the panel as it is (unturned)");
+            assert!((pl.width - 1.6).abs() < 1e-9);
+            let turned = pl.turned();
+            assert_eq!(f.writes.width_of(h), Some(0.9), "SteamVR gets its height as the width");
+            assert!(apart(&f.writes.room_of(h).unwrap(), &turned.matrix()) < 1e-6, "and the turned matrix");
+            assert!(apart(&f.writes.room_of(h).unwrap(), &at()) > 0.5, "which isn't the panel's own");
+            assert!((f.writes.texel_of(h).unwrap() - 1.0).abs() < 1e-6, "a turned picture is turned too, so it's still its own shape");
+            assert_eq!(f.writes.curvature_of(h), Some(bend(0.9, 2.0)), "bent over the turned width");
+        }
+
+        #[test]
+        fn placing_a_panel_leaves_the_ray_alone_unless_the_mouse_is_awake_on_it() {
+            let (mut k, mut f) = (kvm_with(2), Fake::with_panels(2));
+            f.head = [1.0, 1.7, 0.2];
+            k.set_pose_with(&mut f, 1, &at(), 1.0, 0.0);
+            k.set_pose_with(&mut f, 0, &at(), 1.0, 0.0);
+            assert_eq!(k.anchor, [0.0; 3], "neither the other panel nor the active one with the mouse asleep");
+        }
     }
 }
 

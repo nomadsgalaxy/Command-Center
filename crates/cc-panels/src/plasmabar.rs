@@ -27,6 +27,7 @@
 //! a hover), since KWin sends a window's stream nothing until it changes.
 use crate::geometry::{Mat, Placement, V3, norm};
 use crate::kvm::KVM;
+use crate::overlay::{At, Live, Place, apply};
 use crate::session::{Output, Session, StreamEvent};
 use crate::{call, capture, session, taskbar, vr, windows};
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
@@ -116,6 +117,14 @@ pub(crate) fn global(crop: Rect, fx: f64, fy: f64) -> (f64, f64) {
 /// kvm.rs and the lasers. None while it's hidden.
 pub fn at(fx: f64, fy: f64) -> Option<(f64, f64)> {
     CROP.lock().unwrap().map(|c| global(c.0, fx, fy))
+}
+
+/// Plasma's overlay at `local` on device `dev` (MAX is the room), `width` wide and bent to
+/// `curve`, showing the part of its texture in `b`. The bounds are only sent when they differ from
+/// the last ones (`was`), because the crop moves far more often than it changes.
+fn place_for(local: &Mat, dev: u32, width: f64, curve: f64, b: [f32; 4], was: Option<[f32; 4]>) -> Place {
+    let place = Place::new(At::on(dev, *local), width).curve(curve);
+    if was != Some(b) { place.bounds(b) } else { place }
 }
 
 /// Where a ray from `from` through `to` passes through the overlay (`pl`, as kvm.rs places
@@ -395,18 +404,7 @@ impl Plasma {
             if debug() {
                 eprintln!("plasma-debug: placed crop {c:?} panel {p:?} width {width:.3} m shift {dx:.3},{dy:.3} bounds {b:?} clickable {} on_win {}", self.clickable, self.on_win);
             }
-            if self.placed.is_none_or(|q| q.4 != b) {
-                let mut t = sys::VRTextureBounds_t { uMin: b[0], vMin: b[1], uMax: b[2], vMax: b[3] };
-                call!(ov, SetOverlayTextureBounds, self.ov, &mut t);
-            }
-            call!(ov, SetOverlayWidthInMeters, self.ov, width as f32);
-            call!(ov, SetOverlayCurvature, self.ov, crate::geometry::bend(width, curve));
-            if dev == u32::MAX {
-                vr::place(self.ov, &local);
-            } else {
-                let mut t = sys::HmdMatrix34_t { m: local };
-                call!(ov, SetOverlayTransformTrackedDeviceRelative, self.ov, dev, &mut t);
-            }
+            apply(&mut Live, self.ov, &place_for(&local, dev, width, curve, b, self.placed.map(|q| q.4)));
             self.placed = placed;
         }
         *CROP.lock().unwrap() = Some((c, p));
@@ -619,5 +617,24 @@ mod tests {
         assert!(inside(BAR, 514.0, 1770.0) && inside(BAR, 1404.9, 1819.9));
         assert!(!inside(BAR, 1405.0, 1800.0) && !inside(BAR, 600.0, 1769.0), "its right and top edges are past it");
         assert!(inside(kickoff, 600.0, 1500.0) && !inside(kickoff, 1200.0, 1500.0));
+    }
+
+    #[test]
+    fn plasma_is_placed_where_the_frame_puts_it_and_its_crop_is_only_sent_when_it_changes() {
+        use crate::geometry::{Pose, panel_matrix};
+        use crate::overlay::fake::{Call, Writes};
+        let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let (b0, b1) = ([0.0, 0.1, 0.9, 0.5], [0.0, 0.1, 0.9, 0.6]);
+        let mut w = Writes::default();
+        crate::overlay::apply(&mut w, 4, &place_for(&m, u32::MAX, 0.89, 2.0, b0, None));
+        assert_eq!(w.0.first(), Some(&Call::Bounds(4, b0)), "the first placement sends the crop, before the width");
+        assert_eq!(w.0.last(), Some(&Call::Room(4, m)));
+        let mut w = Writes::default();
+        crate::overlay::apply(&mut w, 4, &place_for(&m, u32::MAX, 0.89, 2.0, b0, Some(b0)));
+        assert!(!w.0.iter().any(|c| matches!(c, Call::Bounds(..))), "the same crop again: not resent");
+        let mut w = Writes::default();
+        crate::overlay::apply(&mut w, 4, &place_for(&m, 2, 0.89, 0.0, b1, Some(b0)));
+        assert!(w.0.contains(&Call::Bounds(4, b1)), "a new crop is");
+        assert_eq!(w.0.last(), Some(&Call::Device(4, 2, m)), "on a controller when the frame is on one");
     }
 }

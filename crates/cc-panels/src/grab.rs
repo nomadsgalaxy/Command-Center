@@ -29,8 +29,10 @@
 //! means a panel costs SteamVR only two overlays of the 128 every app shares. The picture sits
 //! in front and keeps every laser inside it; where on the card a laser lands says whether it's
 //! the bar, an edge or a corner.
-use crate::geometry::{Mat, Placement, Pose, V3, angles, bend, curve_for_width, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
+use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
 use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, ZOOM, ZOOM_NOTCH};
+use crate::overlay::{At, Live, Overlays, Place, apply};
+use crate::stage::Stage;
 use crate::kvm::Kvm;
 use crate::theme::{self, Accent, MAGENTA, Rgb, Theme, Tokens};
 use crate::{HIDDEN, Source, call, panels, vr};
@@ -855,11 +857,9 @@ struct Extra {
 
 impl Extra {
     /// Moves it to m, w wide (keeping its shape) and bent to curve.
-    fn place(&mut self, m: &Mat, w: f64, curve: f64) {
+    fn place(&mut self, o: &mut impl Overlays, m: &Mat, w: f64, curve: f64) {
         self.pl = Placement::from_matrix(m, w, self.pl.height / self.pl.width, curve);
-        call!(ov, SetOverlayWidthInMeters, self.win, w as f32);
-        call!(ov, SetOverlayCurvature, self.win, bend(w, curve));
-        vr::place(self.win, m);
+        apply(o, self.win, &Place::new(At::Room(*m), w).curve(curve));
     }
 }
 
@@ -882,9 +882,7 @@ struct Owner {
 /// theater mode needs it. Its colour gets repainted for each theme (`paint_backdrop`).
 fn backdrop() -> vr::Handle {
     let h = vr::create_overlay("controlcenter.theater", "Command Center theater").unwrap_or(0);
-    call!(ov, SetOverlayWidthInMeters, h, 8.0);
-    let mut t = sys::HmdMatrix34_t { m: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, -2.0]] };
-    call!(ov, SetOverlayTransformTrackedDeviceRelative, h, sys::k_unTrackedDeviceIndex_Hmd as u32, &mut t);
+    apply(&mut Live, h, &Place::new(At::Device(sys::k_unTrackedDeviceIndex_Hmd as u32, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, -2.0]]), 8.0));
     call!(ov, SetOverlayAlpha, h, 0.0);
     h
 }
@@ -925,7 +923,12 @@ pub fn pose_of(dev: u32) -> Option<Mat> {
 /// Where a device's laser meets the panel, in the device's own frame so it rides along like a
 /// carried panel, and how far in front of the panel's middle that point is.
 pub fn taken(pl: &Placement, dev: u32) -> Option<([f64; 3], f64)> {
-    let (l, d) = (laser_of(dev)?, pose_of(dev)?);
+    taken_by(&Live, pl, dev)
+}
+
+/// `taken` through a stage (SteamVR, or a test's stand-in).
+pub fn taken_by(s: &impl Stage, pl: &Placement, dev: u32) -> Option<([f64; 3], f64)> {
+    let (l, d) = (s.laser(dev)?, s.device(dev)?);
     let o = [l[0][3] as f64, l[1][3] as f64, l[2][3] as f64];
     let dir = [-l[0][2] as f64, -l[1][2] as f64, -l[2][2] as f64];
     let (t, _, _) = pl.hit(&o, &dir)?;
@@ -940,7 +943,7 @@ pub fn depth_of(pl: &Placement, m: &Mat, local: &[f64; 3]) -> f64 {
 }
 
 /// A device's laser (vr::laser_pose). For the mouse, the laser is just its pose.
-fn laser_of(dev: u32) -> Option<Mat> {
+pub(crate) fn laser_of(dev: u32) -> Option<Mat> {
     if dev == MOUSE { pose_of(dev) } else { vr::laser_pose(dev) }
 }
 
@@ -952,7 +955,12 @@ fn to_device(d: &Mat, p: &[f64; 3]) -> [f64; 3] {
 
 /// Where a device's laser meets the panel's surface, extended past its edges, as (u, v).
 pub fn laser_on(pl: &Placement, dev: u32) -> Option<(f64, f64)> {
-    let l = laser_of(dev)?;
+    laser_on_by(&Live, pl, dev)
+}
+
+/// `laser_on` through a stage.
+pub fn laser_on_by(s: &impl Stage, pl: &Placement, dev: u32) -> Option<(f64, f64)> {
+    let l = s.laser(dev)?;
     let o = [l[0][3] as f64, l[1][3] as f64, l[2][3] as f64];
     let d = [-l[0][2] as f64, -l[1][2] as f64, -l[2][2] as f64];
     pl.hit(&o, &d).map(|(_, u, v)| (u, v))
@@ -986,8 +994,13 @@ fn stretched(pl: &Placement, cu: f64, cv: f64, aspect: Option<f64>, max: (f64, f
 
 impl Grab {
     pub fn new(n: usize) -> Grab {
+        Grab::with_backdrop(n, backdrop())
+    }
+
+    /// `new` with the theater backdrop's overlay given, so a test can make one without SteamVR.
+    fn with_backdrop(n: usize, dim: vr::Handle) -> Grab {
         let n = n + 1; // plus the Extra's slot
-        Grab { drags: (0..n).map(|_| None).collect(), near: vec![None; n], focus: vec![0; n], fade: vec![0.0; n], hover: vec![None; n], drawn: (0..n).map(|_| None).collect(), hidden: false, shown: vec![true; n], cards: vec![Vec::new(); n], turned: vec![false; n], painter: Painter::new(), pending: (0..n).map(|_| None).collect(), done: vec![None; n], order: Vec::new(), pressed: Vec::new(), dim: backdrop(), dim_alpha: 0.0, dimmed: vec![false; n], theater: usize::MAX, dim_gen: u32::MAX, painted: None, moving: false, released: Vec::new(), extra: None, scanned: Vec::new(), scanned_read: None, stale: Vec::new(), aligns: Vec::new(), backs: Default::default(), game: false }
+        Grab { drags: (0..n).map(|_| None).collect(), near: vec![None; n], focus: vec![0; n], fade: vec![0.0; n], hover: vec![None; n], drawn: (0..n).map(|_| None).collect(), hidden: false, shown: vec![true; n], cards: vec![Vec::new(); n], turned: vec![false; n], painter: Painter::new(), pending: (0..n).map(|_| None).collect(), done: vec![None; n], order: Vec::new(), pressed: Vec::new(), dim, dim_alpha: 0.0, dimmed: vec![false; n], theater: usize::MAX, dim_gen: u32::MAX, painted: None, moving: false, released: Vec::new(), extra: None, scanned: Vec::new(), scanned_read: None, stale: Vec::new(), aligns: Vec::new(), backs: Default::default(), game: false }
     }
 
     /// The Extra's slot, right after the panels'.
@@ -1016,16 +1029,16 @@ impl Grab {
     }
 
     /// Moves slot i's owner to m, w wide and bent to curve. h is its height; None keeps its shape, and the Extra always keeps its shape.
-    fn put(&mut self, i: usize, k: &mut Kvm, m: &Mat, w: f64, h: Option<f64>, curve: f64) {
+    fn put(&mut self, i: usize, k: &mut Kvm, s: &mut impl Stage, m: &Mat, w: f64, h: Option<f64>, curve: f64) {
         if i == self.slot() {
             if let Some(x) = self.extra.as_mut() {
-                x.place(m, w, curve);
+                x.place(s, m, w, curve);
             }
             return;
         }
         match h {
-            Some(h) => k.set_place(i, m, w, h, curve),
-            None => k.set_pose(i, m, w, curve),
+            Some(h) => k.set_place_with(s, i, m, w, h, curve),
+            None => k.set_pose_with(s, i, m, w, curve),
         }
     }
 
@@ -1041,7 +1054,7 @@ impl Grab {
         let card = create(name);
         call!(ov, SetOverlaySortOrder, card, sort);
         let mut x = Extra { name, open, win, card, accent, pl, shown: false }; // its owner's first tick shows it (set_extra_shown)
-        x.place(&pl.matrix(), pl.width, pl.curve);
+        x.place(&mut Live, &pl.matrix(), pl.width, pl.curve);
         self.extra = Some(x);
     }
 
@@ -1061,7 +1074,7 @@ impl Grab {
     /// since it'll open where it was saved anyway.
     pub fn place_extra(&mut self, name: &str, m: &Mat, w: f64, curve: f64) {
         let Some(x) = self.extra.as_mut().filter(|x| x.name == name) else { return };
-        x.place(m, w, curve);
+        x.place(&mut Live, m, w, curve);
         let i = self.slot();
         self.drags[i] = None;
     }
@@ -1125,9 +1138,16 @@ impl Grab {
 
     /// Handles events on every card and on the backs. A press on a back carries the panel, so you can turn it round.
     pub fn poll(&mut self, k: &mut Kvm) {
+        let s = &mut Live;
         for (i, dev, down) in self.backs.events() {
-            if down { self.start(i, Part::Bar, dev, k) } else { self.end_by(dev, k); }
+            if down { self.start(i, Part::Bar, dev, k, s) } else { self.end_by(dev, k); }
         }
+        self.poll_mouse(k, s);
+        self.poll_cards(k, s);
+    }
+
+    /// The mouse's part of `poll`: its presses and wheel on a card when there's no laser.
+    fn poll_mouse(&mut self, k: &mut Kvm, s: &mut impl Stage) {
         *MOUSE_RAY.lock().unwrap() = k.awake.then(|| k.ray());
         // The mouse's presses on a card with no laser (kvm.rs card_mouse) land where its ray meets the card.
         for (i, down) in std::mem::take(&mut k.card_mouse) {
@@ -1137,15 +1157,19 @@ impl Grab {
             }
             let i = if i == usize::MAX { self.slot() } else { i };
             let pl = self.at(i, k);
-            let part = self.drawn[i].as_ref().zip(laser_on(&pl, MOUSE)).and_then(|(d, (u, v))| held_part(&d.spec, pl.width, pl.height, i == self.slot(), self.hover[i], u, v));
+            let part = self.drawn[i].as_ref().zip(laser_on_by(s, &pl, MOUSE)).and_then(|(d, (u, v))| held_part(&d.spec, pl.width, pl.height, i == self.slot(), self.hover[i], u, v));
             eprintln!("{}: card pressed by the mouse on {part:?}", self.owner(i).map_or("", |o| o.name));
             crate::windows::shell_outside();
-            self.press(i, part, MOUSE, k);
+            self.press(i, part, MOUSE, k, s);
         }
         let notches = std::mem::take(&mut k.card_wheel);
         if let Some(i) = (notches != 0.0).then(|| self.drags.iter().position(|d| d.as_ref().is_some_and(|d| d.dev == MOUSE))).flatten() {
-            self.scroll(i, notches, k);
+            self.scroll(i, notches, k, s);
         }
+    }
+
+    /// The lasers' part of `poll`: SteamVR's events on each card.
+    fn poll_cards(&mut self, k: &mut Kvm, s: &mut impl Stage) {
         let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
         for i in 0..self.drags.len() {
             let Some(p) = self.owner(i) else { continue };
@@ -1167,12 +1191,12 @@ impl Grab {
                             if vr::is_real_controller(e.trackedDeviceIndex) && k.awake {
                                 k.set_awake(false); // whichever device was pressed last is primary (R-2)
                             }
-                            self.press(i, part, e.trackedDeviceIndex, k);
+                            self.press(i, part, e.trackedDeviceIndex, k, s);
                         }
                         sys::EVREventType_VREvent_MouseButtonUp => {
                             self.end_by(e.trackedDeviceIndex, k);
                         }
-                        sys::EVREventType_VREvent_ScrollDiscrete => self.scroll(i, unsafe { e.data.scroll.ydelta } as f64, k),
+                        sys::EVREventType_VREvent_ScrollDiscrete => self.scroll(i, unsafe { e.data.scroll.ydelta } as f64, k, s),
                         _ => {}
                     }
                 }
@@ -1182,9 +1206,9 @@ impl Grab {
 
     /// The wheel (or joystick) on slot i while it's held. A carry gets pushed away or pulled
     /// closer, a bend gets 3 cm more (or less) curve a notch, and a zoom changes 10% a notch.
-    fn scroll(&mut self, i: usize, notches: f64, k: &mut Kvm) {
+    fn scroll(&mut self, i: usize, notches: f64, k: &mut Kvm, s: &mut impl Stage) {
         match self.drags[i].as_mut().map(|d| &mut d.mode) {
-            Some(Mode::Move { .. }) => self.push(i, notches, k),
+            Some(Mode::Move { .. }) => self.push(i, notches, k, s),
             Some(Mode::Curve { s0, .. }) => *s0 = (*s0 + CURVE_NOTCH * notches).max(0.0),
             Some(Mode::Zoom { zoom0, .. }) => *zoom0 = (*zoom0 * ZOOM_NOTCH.powf(notches)).clamp(ZOOM.0, ZOOM.1),
             _ => {}
@@ -1192,7 +1216,7 @@ impl Grab {
     }
 
     /// A press on a part of slot i's card: either a button, or the start of a drag on dev.
-    fn press(&mut self, i: usize, part: Option<Part>, dev: u32, k: &mut Kvm) {
+    fn press(&mut self, i: usize, part: Option<Part>, dev: u32, k: &mut Kvm, s: &mut impl Stage) {
         match part {
             // the Extra's close; its window does the closing on its own tick
             Some(Part::Ctl(_)) if i == self.slot() => {
@@ -1201,39 +1225,39 @@ impl Grab {
                 }
             }
             Some(Part::Ctl(c)) => self.pressed.push((i, CTL[c])),
-            Some(Part::Snap) => self.snap(i, k),
-            Some(Part::Face) => self.face(i, k),
-            Some(part) => self.start(i, part, dev, k),
+            Some(Part::Snap) => self.snap(i, k, s),
+            Some(Part::Face) => self.face(i, k, s),
+            Some(part) => self.start(i, part, dev, k, s),
             None => {}
         }
     }
 
-    fn start(&mut self, i: usize, part: Part, dev: u32, k: &Kvm) {
+    fn start(&mut self, i: usize, part: Part, dev: u32, k: &Kvm, s: &impl Stage) {
         let pl = &self.at(i, k);
         let mode = match part {
             // theater mode has its own size, so there this corner works like the others
             Part::Corner(BOTTOM_RIGHT) if crate::THEATER.load(Relaxed) != i => {
-                let Some((u, v)) = laser_on(pl, dev) else { return };
+                let Some((u, v)) = laser_on_by(s, pl, dev) else { return };
                 Mode::Stretch { gx: u - pl.width / 2.0, gy: v + pl.height / 2.0, free: self.owner(i).is_some_and(|o| o.window) }
             }
             Part::Corner(c) => {
                 let (sx, sy) = CORNER_SIGN[c];
-                let Some((u, v)) = laser_on(pl, dev) else { return };
+                let Some((u, v)) = laser_on_by(s, pl, dev) else { return };
                 Mode::Resize { sx, sy, gx: u - sx * pl.width / 2.0, gy: v - sy * pl.height / 2.0 }
             }
             Part::Knob => {
                 // The edges come toward you as far as the point you grabbed does.
-                let Some((local, z0)) = taken(pl, dev) else { return };
+                let Some((local, z0)) = taken_by(s, pl, dev) else { return };
                 let s0 = sagitta(pl.width, pl.curve);
                 Mode::Curve { local, z0, s0 }
             }
             Part::Ctl(_) | Part::Snap | Part::Face => return, // buttons, not drags (poll handles them)
             Part::Zoom => {
-                let Some((local, z0)) = taken(pl, dev) else { return };
+                let Some((local, z0)) = taken_by(s, pl, dev) else { return };
                 Mode::Zoom { local, z0, zoom0: panels()[i].zoom() }
             }
             Part::Bar | Part::Edge => {
-                let Some(d) = pose_of(dev) else { return };
+                let Some(d) = s.device(dev) else { return };
                 Mode::Move { rel: mul(&inv_rigid(&d), &pl.matrix()) }
             }
         };
@@ -1290,14 +1314,14 @@ impl Grab {
     /// An aligned monitor's snap button. It puts the monitor back in its aligned place and saves
     /// that as home, like a move. After a relocalization it asks for an align of that monitor
     /// instead, which machines.rs runs (take_aligns).
-    fn snap(&mut self, i: usize, k: &mut Kvm) {
+    fn snap(&mut self, i: usize, k: &mut Kvm, s: &mut impl Stage) {
         match self.snap_glyph(i, &k.place[i]) {
             Some(Glyph::Align) => self.aligns.push(i),
             Some(_) => {
                 let (Some(pose), p) = (self.scanned[i], &panels()[i]) else { return };
                 self.drags[i] = None;
                 p.set_vert(pose.vert); // curved top to bottom means turned (kvm.rs set_place)
-                k.set_pose(i, &panel_matrix(&pose), pose.width, pose.curve);
+                k.set_pose_with(s, i, &panel_matrix(&pose), pose.width, pose.curve);
                 match p.save_spot(&k.place[i]) {
                     Ok(()) => eprintln!("{}: back to its aligned place, saved to home", p.v.name),
                     Err(e) => eprintln!("{}: back to its aligned place, but saving home failed: {e}", p.v.name),
@@ -1309,10 +1333,11 @@ impl Grab {
 
     /// The face-me button turns slot i in place to face the eye and saves it like a move.
     /// It's instant, since no move here eases.
-    fn face(&mut self, i: usize, k: &mut Kvm) {
+    fn face(&mut self, i: usize, k: &mut Kvm, s: &mut impl Stage) {
         let pl = self.at(i, k);
         self.drags[i] = None;
-        self.put(i, k, &panel_matrix(&facing(&pl, &vr::head_position())), pl.width, Some(pl.height), pl.curve);
+        let eye = s.head();
+        self.put(i, k, s, &panel_matrix(&facing(&pl, &eye)), pl.width, Some(pl.height), pl.curve);
         self.save(i, k);
     }
 
@@ -1375,10 +1400,10 @@ impl Grab {
 
     /// Joystick or wheel while carrying pushes it away or pulls it closer along the line from
     /// the head, 8% a notch.
-    fn push(&mut self, i: usize, notches: f64, k: &mut Kvm) {
+    fn push(&mut self, i: usize, notches: f64, k: &mut Kvm, s: &mut impl Stage) {
         let Some(Drag { dev, mode: Mode::Move { rel }, .. }) = self.drags[i].as_mut() else { return };
-        let Some(d) = pose_of(*dev) else { return };
-        let head = vr::head_position();
+        let Some(d) = s.device(*dev) else { return };
+        let head = s.head();
         let mut p = mul(&d, rel);
         let to = [0, 1, 2].map(|r| p[r][3] as f64 - head[r]);
         let len = norm(&to);
@@ -1388,18 +1413,24 @@ impl Grab {
         }
         *rel = mul(&inv_rigid(&d), &p);
         let pl = self.at(i, k);
-        self.put(i, k, &p, pl.width, None, pl.curve);
+        self.put(i, k, s, &p, pl.width, None, pl.curve);
     }
 
     /// Runs every frame. Carried panels follow their device and resized ones follow their
     /// laser, then the bar and card follow their panel, fade, and take their look.
     pub fn update(&mut self, k: &mut Kvm) {
         let now = Instant::now();
-        let all = poses();
+        self.carry(k, &mut Live, now);
+        self.refresh(k, now);
+    }
+
+    /// The carrying, resizing and bending: each held panel follows its device or laser, and a
+    /// device that's gone untracked for LOST puts it down.
+    fn carry(&mut self, k: &mut Kvm, s: &mut impl Stage, now: Instant) {
         self.moving = self.drags.iter().any(Option::is_some);
         for i in 0..self.drags.len() {
             let Some(drag) = self.drags[i].as_mut() else { continue };
-            let tracked = if drag.dev == MOUSE { pose_of(MOUSE) } else { all.get(drag.dev as usize).filter(|p| p.bPoseIsValid).map(|p| p.mDeviceToAbsoluteTracking.m) };
+            let tracked = s.device(drag.dev);
             if tracked.is_none() {
                 if drag.lost.is_some_and(|t| now - t > LOST) {
                     self.end(i, k);
@@ -1414,22 +1445,22 @@ impl Grab {
             match mode {
                 Mode::Move { rel } => {
                     let m = mul(&tracked.unwrap(), &rel);
-                    self.put(i, k, &m, pl.width, None, pl.curve);
+                    self.put(i, k, s, &m, pl.width, None, pl.curve);
                 }
                 Mode::Resize { sx, sy, gx, gy } => {
-                    let Some((u, v)) = laser_on(&pl, dev) else { continue };
+                    let Some((u, v)) = laser_on_by(s, &pl, dev) else { continue };
                     let aspect = pl.height / pl.width;
                     let width = width_for(sx, sy, u - gx, v - gy, aspect).clamp(MIN_WIDTH, MAX_WIDTH);
                     if (width - pl.width).abs() > 1e-4 {
-                        self.put(i, k, &pl.matrix(), width, None, curve_for_width(pl.curve, width));
+                        self.put(i, k, s, &pl.matrix(), width, None, curve_for_width(pl.curve, width));
                     }
                 }
                 Mode::Stretch { gx, gy, free } => {
-                    let Some((u, v)) = laser_on(&pl, dev) else { continue };
+                    let Some((u, v)) = laser_on_by(s, &pl, dev) else { continue };
                     let max = if free { crate::windows::max_size(&panels()[i]) } else { (MAX_WIDTH, MAX_WIDTH) };
                     let (m, w, h, curve) = stretched(&pl, u - gx, v - gy, (!free).then(|| pl.height / pl.width), max);
                     if (w - pl.width).abs() > 1e-4 || (h - pl.height).abs() > 1e-4 {
-                        self.put(i, k, &m, w, free.then_some(h), curve);
+                        self.put(i, k, s, &m, w, free.then_some(h), curve);
                     }
                 }
                 Mode::Zoom { local, z0, zoom0 } => {
@@ -1443,11 +1474,16 @@ impl Grab {
                     let z = depth_of(&pl, &tracked.unwrap(), &local);
                     let curve = radius_for(s0 + z - z0, pl.width);
                     if (curve - pl.curve).abs() > 1e-3 {
-                        self.put(i, k, &pl.matrix(), pl.width, None, curve);
+                        self.put(i, k, s, &pl.matrix(), pl.width, None, curve);
                     }
                 }
             }
         }
+    }
+
+    /// The rest of the frame's work: what the mouse needs to know about the cards, the aligned
+    /// places, the cards' fades and looks, and the theater backdrop. All of it talks to SteamVR.
+    fn refresh(&mut self, k: &mut Kvm, now: Instant) {
         // The Extra's place and its card's margins, for the mouse (kvm.rs land()). This is as
         // of now, whether it's open, carried, reshaped or closed.
         let slot = self.slot();
@@ -1800,24 +1836,25 @@ impl Grab {
         let placed = Some((pl.matrix(), mm(pl.width), mm(pl.height), mm(pl.curve)));
         if d.placed != placed {
             d.placed = placed;
-            let s = &d.spec;
-            let (top, bottom) = (s.top(), s.bottom()); // the tab's room on top, the bar's below
-            let (fw, fh) = (pl.width + 2.0 * s.g, pl.height + 2.0 * s.g + top + bottom);
-            let (tw, th) = (s.size.0 as f64, s.size.1 as f64);
-            let c = p.card;
-            let at = pl.on_surface(0.0, (top - bottom) / 2.0, -0.002); // 2 mm behind the picture
-            // turned (its panel curves top to bottom): x' is up and y' is left, same as the picture's overlay
-            let (ow, oh, at) = if pl.vert { (fh, fw, [0, 1, 2].map(|r| [at[r][1], -at[r][0], at[r][2], at[r][3]])) } else { (fw, fh, at) };
-            let (tw, th) = if pl.vert { (th, tw) } else { (tw, th) };
-            call!(ov, SetOverlayWidthInMeters, c, ow as f32);
-            call!(ov, SetOverlayTexelAspect, c, (ow * th / (oh * tw)) as f32); // exactly oh high
-            call!(ov, SetOverlayCurvature, c, bend(ow, pl.curve));
-            let mut scale = sys::HmdVector2_t { v: [ow as f32, oh as f32] }; // events in metres
-            call!(ov, SetOverlayMouseScale, c, &mut scale);
-            vr::place(c, &at);
+            apply(&mut Live, p.card, &card_place(&pl, &d.spec));
         }
     }
 
+}
+
+/// Where a panel's card goes and how it's shaped, for panel `pl` and the card drawn for it:
+/// 2 mm behind the picture, as wide as the frame (and as high), bent with the picture, its
+/// mouse events counted in metres.
+fn card_place(pl: &Placement, s: &CardSpec) -> Place {
+    let (top, bottom) = (s.top(), s.bottom()); // the tab's room on top, the bar's below
+    let (fw, fh) = (pl.width + 2.0 * s.g, pl.height + 2.0 * s.g + top + bottom);
+    let (tw, th) = (s.size.0 as f64, s.size.1 as f64);
+    let at = pl.on_surface(0.0, (top - bottom) / 2.0, -0.002); // 2 mm behind the picture
+    // turned (its panel curves top to bottom): x' is up and y' is left, same as the picture's overlay
+    let (ow, oh, at) = if pl.vert { (fh, fw, [0, 1, 2].map(|r| [at[r][1], -at[r][0], at[r][2], at[r][3]])) } else { (fw, fh, at) };
+    let (tw, th) = if pl.vert { (th, tw) } else { (tw, th) };
+    // the texel aspect makes the card exactly oh high; the mouse scale makes events metres
+    Place::new(At::Room(at), ow).texel((ow * th / (oh * tw)) as f32).curve(pl.curve).mouse_scale([ow as f32, oh as f32])
 }
 
 /// The angle in degrees between two poses' rotations.
@@ -2202,6 +2239,298 @@ mod tests {
                 (spec.grip, spec.bar.1, spec.knob, spec.zoom, spec.ctl) = ((l != Look::Rest).then_some(1), l, l, Some(l), Some([l; CTLS]));
                 std::fs::write(format!("{dir}/card_{n}_{scheme}_{kind}_{}x{}.rgba", spec.size.0, spec.size.1), spec.texture()).unwrap();
             }
+        }
+    }
+
+    // ---- carrying, pushing, resizing and bending, with a stand-in for SteamVR's devices and overlays
+
+    mod carrying {
+        use super::*;
+        use crate::geometry::bend;
+        use crate::stage::fake::{Fake, aimed, apart};
+        use std::time::Duration;
+
+        const HAND: u32 = 1;
+        const EYE: V3 = [0.0, 1.6, 0.0]; // where Fake::with_panels puts the head
+
+        fn flat() -> Placement {
+            Placement::from_matrix(&panel_matrix(&Pose { centre: [0.0, 1.4, -1.5], width: 1.6, ..Default::default() }), 1.6, 0.5625, 0.0)
+        }
+
+        fn world(pl: Placement) -> (Grab, Kvm, Fake) {
+            let mut k = Kvm::idle();
+            k.place = vec![pl];
+            (Grab::with_backdrop(1, 0), k, Fake::with_panels(1))
+        }
+
+        /// The hand at `from`, its laser pointing at `at`.
+        fn point(f: &mut Fake, dev: u32, from: V3, at: V3) {
+            f.devices.insert(dev, aimed(from, at));
+        }
+
+        fn surface_point(pl: &Placement, u: f64, v: f64) -> V3 {
+            let m = pl.on_surface(u, v, 0.0);
+            [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64]
+        }
+
+        fn far(a: &V3, b: &V3) -> f64 {
+            norm(&[a[0] - b[0], a[1] - b[1], a[2] - b[2]])
+        }
+
+        fn is_move(g: &Grab) -> bool {
+            matches!(g.drags[0], Some(Drag { mode: Mode::Move { .. }, .. }))
+        }
+
+        #[test]
+        fn a_carried_panel_rides_rigidly_on_the_hand() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+            let before = f.devices[&HAND];
+            g.start(0, Part::Bar, HAND, &k, &f);
+            assert!(is_move(&g), "the bar picks the panel up");
+            // 20 cm right, 10 cm up, turned to look somewhere else
+            let after = aimed([0.5, 1.3, -0.4], [0.2, 1.4, -1.5]);
+            f.devices.insert(HAND, after);
+            g.carry(&mut k, &mut f, Instant::now());
+            let want = mul(&after, &mul(&inv_rigid(&before), &p.matrix()));
+            assert!(apart(&k.place[0].matrix(), &want) < 1e-4, "the panel moved the way the hand did, tilt and all");
+            assert!(apart(&f.writes.room_of(f.overlay(0)).unwrap(), &want) < 1e-4, "and that's what SteamVR was told");
+            assert!((k.place[0].width - 1.6).abs() < 1e-9 && (k.place[0].height - 0.9).abs() < 1e-9, "carrying doesn't resize");
+        }
+
+        #[test]
+        fn the_wheel_pushes_and_pulls_along_the_line_from_the_head_by_8_percent_a_notch() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &f);
+            let d0 = far(&k.place[0].c, &f.head);
+            g.scroll(0, 1.0, &mut k, &mut f);
+            assert!((far(&k.place[0].c, &f.head) - d0 * 1.08).abs() < 1e-4, "away a notch");
+            let d1 = far(&k.place[0].c, &f.head);
+            g.scroll(0, -2.0, &mut k, &mut f);
+            assert!((far(&k.place[0].c, &f.head) - d1 * 0.84).abs() < 1e-4, "closer two");
+            // on the same line from the head
+            let (a, b) = ([0, 1, 2].map(|r| p.c[r] - f.head[r]), [0, 1, 2].map(|r| k.place[0].c[r] - f.head[r]));
+            assert!((crate::geometry::dot(&a, &b) / (norm(&a) * norm(&b)) - 1.0).abs() < 1e-9);
+            // the hand held still keeps it there
+            let pushed = k.place[0].matrix();
+            g.carry(&mut k, &mut f, Instant::now());
+            assert!(apart(&k.place[0].matrix(), &pushed) < 1e-4);
+            assert!(apart(&f.writes.room_of(f.overlay(0)).unwrap(), &pushed) < 1e-4);
+        }
+
+        #[test]
+        fn pushing_stops_at_a_quarter_metre_and_five_metres() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &f);
+            g.scroll(0, 100.0, &mut k, &mut f);
+            assert!((far(&k.place[0].c, &f.head) - LASER_PUSH_RANGE.1).abs() < 1e-4);
+            g.scroll(0, -100.0, &mut k, &mut f);
+            assert!((far(&k.place[0].c, &f.head) - LASER_PUSH_RANGE.0).abs() < 1e-4);
+        }
+
+        #[test]
+        fn dragging_a_corner_resizes_about_the_centre_keeping_the_shape() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, EYE, surface_point(&p, -0.8, 0.45)); // the top-left corner
+            g.start(0, Part::Corner(0), HAND, &k, &f);
+            assert!(matches!(g.drags[0], Some(Drag { mode: Mode::Resize { .. }, .. })));
+            point(&mut f, HAND, EYE, surface_point(&p, -1.2, 0.675)); // 1.5x along the diagonal
+            g.carry(&mut k, &mut f, Instant::now());
+            let n = k.place[0];
+            assert!((n.width - 2.4).abs() < 1e-3 && (n.height / n.width - 0.5625).abs() < 1e-6, "{} x {}", n.width, n.height);
+            assert!(far(&n.c, &p.c) < 1e-6, "the middle stays put");
+            assert!((f.writes.width_of(f.overlay(0)).unwrap() as f64 - n.width).abs() < 1e-6, "and SteamVR was told");
+        }
+
+        #[test]
+        fn a_corner_stops_at_the_least_and_most_a_panel_is_across() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, EYE, surface_point(&p, -0.8, 0.45));
+            g.start(0, Part::Corner(0), HAND, &k, &f);
+            point(&mut f, HAND, EYE, surface_point(&p, -8.0, 4.5));
+            g.carry(&mut k, &mut f, Instant::now());
+            assert_eq!(k.place[0].width, MAX_WIDTH);
+            point(&mut f, HAND, EYE, surface_point(&p, -0.05, 0.028));
+            g.carry(&mut k, &mut f, Instant::now());
+            assert_eq!(k.place[0].width, MIN_WIDTH);
+        }
+
+        #[test]
+        fn a_curved_panel_that_a_corner_grows_keeps_its_curve() {
+            let p = Placement { curve: 1.2, ..flat() };
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, EYE, surface_point(&p, -0.8, 0.45));
+            g.start(0, Part::Corner(0), HAND, &k, &f);
+            point(&mut f, HAND, EYE, surface_point(&p, -1.2, 0.675));
+            g.carry(&mut k, &mut f, Instant::now());
+            assert_eq!(k.place[0].curve, 1.2, "2.4 m wide fits on a 1.2 m radius");
+            assert_eq!(f.writes.curvature_of(f.overlay(0)), Some(bend(k.place[0].width, 1.2)));
+            // (A laser reaches round a curved panel only as far as a half circle, so it can't make one
+            // wider than pi R. The radius growing with the width is Right Ctrl + Shift + wheel's case.)
+        }
+
+        #[test]
+        fn the_bottom_right_corner_stretches_with_the_top_left_held() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, EYE, surface_point(&p, 0.8, -0.45));
+            g.start(0, Part::Corner(BOTTOM_RIGHT), HAND, &k, &f);
+            assert!(matches!(g.drags[0], Some(Drag { mode: Mode::Stretch { free: false, .. }, .. })), "a monitor keeps its shape");
+            point(&mut f, HAND, EYE, surface_point(&p, 1.3, -0.75));
+            g.carry(&mut k, &mut f, Instant::now());
+            let n = k.place[0];
+            assert!(n.width > 2.0 && (n.height / n.width - 0.5625).abs() < 1e-6, "{} x {}", n.width, n.height);
+            let (was, now) = (surface_point(&p, -0.8, 0.45), surface_point(&n, -n.width / 2.0, n.height / 2.0));
+            assert!(far(&was, &now) < 1e-4, "the top-left corner didn't move");
+        }
+
+        #[test]
+        fn pulling_the_curve_button_toward_you_bends_the_panel_and_pushing_it_back_flattens_it() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, EYE, p.c);
+            g.start(0, Part::Knob, HAND, &k, &f);
+            assert!(matches!(g.drags[0], Some(Drag { mode: Mode::Curve { .. }, .. })));
+            // the hand 10 cm toward the user: the edges come 10 cm toward them
+            let mut moved = f.devices[&HAND];
+            for r in 0..3 {
+                moved[r][3] += 0.1 * p.z[r] as f32;
+            }
+            f.devices.insert(HAND, moved);
+            g.carry(&mut k, &mut f, Instant::now());
+            let want = radius_for(0.1, 1.6);
+            assert!(want > 0.0 && (k.place[0].curve - want).abs() < 1e-4, "{} vs {want}", k.place[0].curve);
+            assert!((f.writes.curvature_of(f.overlay(0)).unwrap() - bend(1.6, k.place[0].curve)).abs() < 1e-7, "written as the fraction of the radius it got");
+            assert!(apart(&k.place[0].matrix(), &p.matrix()) < 1e-6, "bending doesn't move it");
+            point(&mut f, HAND, EYE, p.c); // and back
+            g.carry(&mut k, &mut f, Instant::now());
+            assert_eq!(k.place[0].curve, 0.0, "flat again");
+            assert_eq!(f.writes.curvature_of(f.overlay(0)), Some(0.0));
+        }
+
+        #[test]
+        fn grabbing_the_curve_button_of_a_curved_panel_does_not_make_it_jump() {
+            let p = Placement { curve: 2.0, ..flat() };
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, EYE, surface_point(&p, 0.0, 0.0));
+            g.start(0, Part::Knob, HAND, &k, &f);
+            let writes = f.writes.0.len();
+            g.carry(&mut k, &mut f, Instant::now());
+            assert_eq!(f.writes.0.len(), writes, "the hand hasn't moved, so nothing is written");
+            assert_eq!(k.place[0].curve, 2.0);
+        }
+
+        #[test]
+        fn a_hand_that_goes_untracked_puts_the_panel_down_after_half_a_second() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &f);
+            let t = Instant::now();
+            f.devices.remove(&HAND);
+            g.carry(&mut k, &mut f, t);
+            g.carry(&mut k, &mut f, t + Duration::from_millis(400));
+            assert!(is_move(&g), "40% of the way there it still waits");
+            // it comes back: the clock starts over
+            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+            g.carry(&mut k, &mut f, t + Duration::from_millis(450));
+            f.devices.remove(&HAND);
+            g.carry(&mut k, &mut f, t + Duration::from_millis(900));
+            g.carry(&mut k, &mut f, t + Duration::from_millis(1300));
+            assert!(is_move(&g), "400 ms since it went again");
+            g.carry(&mut k, &mut f, t + Duration::from_millis(1500));
+            assert!(g.drags[0].is_none(), "past LOST: put down where it is");
+        }
+
+        #[test]
+        fn the_mouse_picks_up_a_card_when_there_is_no_laser_and_the_wheel_pushes_it() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            let img = Arc::new((80, 12, [200u8, 220, 255, 255].repeat(80 * 12)));
+            let spec = spec_for(p.width, p.height, 0.03, 0.1, Look::Lit, &img, &Theme::default(), REMOTE);
+            let bar_v = spec.bar_box().0;
+            g.drawn[0] = Some(Drawn { spec, dims: [0; 3], card_at: Instant::now(), placed: None, tag: 0, theme: 0 });
+            // the mouse's ray points at the grab bar
+            point(&mut f, MOUSE, EYE, surface_point(&p, 0.0, bar_v));
+            k.card_mouse = vec![(0, true)];
+            g.poll_mouse(&mut k, &mut f);
+            assert!(matches!(g.drags[0], Some(Drag { dev: MOUSE, mode: Mode::Move { .. }, .. })), "the bar, held by the mouse");
+            let d0 = far(&k.place[0].c, &f.head);
+            k.card_wheel = 1.0;
+            g.poll_mouse(&mut k, &mut f);
+            assert!((far(&k.place[0].c, &f.head) - d0 * 1.08).abs() < 1e-4, "the wheel pushes it away");
+            assert_eq!(k.card_wheel, 0.0);
+            k.card_mouse = vec![(0, false)];
+            g.poll_mouse(&mut k, &mut f);
+            assert!(g.drags[0].is_none(), "let go");
+        }
+    }
+
+    // ---- a card's placement
+
+    mod cards {
+        use super::*;
+        use crate::geometry::bend;
+        use crate::overlay::fake::{Call, Writes};
+
+        fn card(vert: bool, curve: f64) -> (Placement, CardSpec) {
+            let img = Arc::new((80, 12, [200u8, 220, 255, 255].repeat(80 * 12)));
+            let spec = spec_for(1.19, 0.34, 0.03, 0.1, Look::Lit, &img, &Theme::default(), REMOTE);
+            let m = panel_matrix(&Pose { centre: [0.2, 1.3, -1.4], yaw: 20.0, pitch: -5.0, roll: 3.0, ..Default::default() });
+            (Placement { vert, ..Placement::from_matrix(&m, 1.19, 0.34 / 1.19, curve) }, spec)
+        }
+
+        #[test]
+        fn a_card_is_as_wide_as_its_frame_2_mm_behind_the_picture_and_counts_events_in_metres() {
+            let (pl, spec) = card(false, 0.0);
+            let (top, bottom) = (spec.top(), spec.bottom());
+            let (fw, fh) = (pl.width + 2.0 * spec.g, pl.height + 2.0 * spec.g + top + bottom);
+            let mut w = Writes::default();
+            apply(&mut w, 7, &card_place(&pl, &spec));
+            let at = pl.on_surface(0.0, (top - bottom) / 2.0, -0.002);
+            let (tw, th) = (spec.size.0 as f64, spec.size.1 as f64);
+            assert_eq!(
+                w.0,
+                vec![
+                    Call::Width(7, fw as f32),
+                    Call::Texel(7, (fw * th / (fh * tw)) as f32),
+                    Call::Curvature(7, 0.0),
+                    Call::MouseScale(7, [fw as f32, fh as f32]),
+                    Call::Room(7, at),
+                ]
+            );
+        }
+
+        #[test]
+        fn a_card_bends_with_its_panel_over_its_own_width() {
+            let (pl, spec) = card(false, 1.5);
+            let mut w = Writes::default();
+            apply(&mut w, 7, &card_place(&pl, &spec));
+            let fw = pl.width + 2.0 * spec.g;
+            assert_eq!(w.curvature_of(7), Some(bend(fw, 1.5)), "the card is wider than the picture, so it bends over more of the circle");
+            assert!(w.curvature_of(7).unwrap() > bend(pl.width, 1.5));
+        }
+
+        #[test]
+        fn a_card_on_a_panel_curved_top_to_bottom_is_turned_with_it() {
+            let (pl, spec) = card(true, 1.5);
+            let (top, bottom) = (spec.top(), spec.bottom());
+            let (fw, fh) = (pl.width + 2.0 * spec.g, pl.height + 2.0 * spec.g + top + bottom);
+            let place = card_place(&pl, &spec);
+            assert_eq!(place.width, fh, "its height is the width SteamVR sees");
+            assert_eq!(place.mouse_scale, Some([fh as f32, fw as f32]), "and events count that way round");
+            let flat = pl.on_surface(0.0, (top - bottom) / 2.0, -0.002);
+            let want = [0, 1, 2].map(|r| [flat[r][1], -flat[r][0], flat[r][2], flat[r][3]]);
+            assert_eq!(place.at, At::Room(want), "x runs up the card and y to its left");
+            let (tw, th) = (spec.size.1 as f64, spec.size.0 as f64);
+            assert_eq!(place.texel, Some((fh * th / (fw * tw)) as f32), "its texture is turned too");
         }
     }
 }

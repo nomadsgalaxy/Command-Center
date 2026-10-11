@@ -22,6 +22,7 @@
 //! A laser press on a back carries its panel (grab.rs poll), so you can grab a panel that was
 //! left backwards and turn it round. The card is one-sided too, so it's no use from behind.
 use crate::geometry::{Mat, Placement, V3, chord, dot, norm};
+use crate::overlay::{At, Live, Place, apply};
 use crate::{call, vr};
 use openvr_sys as sys;
 use std::sync::Mutex;
@@ -95,6 +96,17 @@ pub fn sheet(pl: &Placement) -> (Mat, f64) {
     // a panel curved top to bottom is its picture's overlay a quarter turn round (kvm.rs)
     let o = if pl.vert { pl.turned() } else { *pl };
     (back_matrix(&o.on_surface(0.0, 0.0, 0.0), BEHIND), chord(o.width, o.curve).0)
+}
+
+/// Where a panel's back goes and how its picture is squeezed: the sheet's matrix and width, and
+/// the same height as the picture with its whole width squeezed onto the chord. `front` is the
+/// picture's own texel aspect, which the back's texture shares when it shows it (`tex`). Otherwise
+/// the back is FILL's 4x4.
+fn back_place(pl: &Placement, front: f32, tex: bool) -> Place {
+    let o = if pl.vert { pl.turned() } else { *pl };
+    let (m, w) = sheet(pl);
+    let aspect = if tex { front * (w / o.width) as f32 } else { (w / o.height) as f32 };
+    Place::new(At::Room(m), w).texel(aspect)
 }
 
 /// A panel as the backs see it: its slot, picture overlay and place, whether it can have a back at
@@ -195,12 +207,7 @@ impl Backs {
                 if tex {
                     call!(ov, GetOverlayTexelAspect, b.front, &mut front);
                 }
-                let (m, w) = sheet(&f.pl);
-                // the same height as the picture, its whole width squeezed onto the chord
-                let aspect = if tex { front * (w / o.width) as f32 } else { (w / o.height) as f32 }; // FILL's 4x4
-                call!(ov, SetOverlayWidthInMeters, b.h, w as f32);
-                call!(ov, SetOverlayTexelAspect, b.h, aspect);
-                vr::place(b.h, &m);
+                apply(&mut Live, b.h, &back_place(&f.pl, front, tex));
             }
         }
     }
@@ -324,5 +331,23 @@ mod tests {
             let off = [0, 1, 2].map(|r| col(&b, 3)[r] - col(&mid, 3)[r]);
             assert!(close(&off, &z.map(|v| v * BEHIND)), "vert {vert}: BEHIND the middle");
         }
+    }
+
+    #[test]
+    fn a_back_is_a_sheet_of_the_chord_squeezed_to_the_pictures_height() {
+        use crate::geometry::{Pose, panel_matrix};
+        let m = panel_matrix(&Pose { centre: [0.0, 1.2, -1.0], yaw: 30.0, ..Default::default() });
+        let pl = Placement::from_matrix(&m, 1.6, 0.5625, 1.0);
+        let (sheet_m, w) = sheet(&pl);
+        let p = back_place(&pl, 1.0, true);
+        assert_eq!(p.at, crate::overlay::At::Room(sheet_m));
+        assert_eq!(p.width, w);
+        assert!(w < pl.width, "a curved panel's chord is shorter than its arc");
+        assert_eq!(p.texel, Some((1.0 * (w / pl.width)) as f32), "showing the picture: its own texel aspect, squeezed to the chord");
+        assert_eq!(back_place(&pl, 0.7, true).texel, Some((0.7 * (w / pl.width)) as f32), "whatever the picture's is");
+        assert_eq!(back_place(&pl, 0.7, false).texel, Some((w / pl.height) as f32), "the plain fill is squeezed to the picture's height");
+        assert!(p.curve.is_none(), "a sheet is flat and says nothing about curvature");
+        let turned = Placement { vert: true, ..pl };
+        assert_eq!(back_place(&turned, 1.0, true).width, chord(turned.turned().width, 1.0).0, "a panel curved top to bottom: the chord of its turned width");
     }
 }

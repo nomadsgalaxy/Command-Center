@@ -7,6 +7,7 @@
 //! Both are raw RGBA pictures read from a file, since SteamVR caches SetOverlayFromFile by path.
 //! `hud hide` destroys them, and so does `tick` once one stops being refreshed (a scan that
 //! died). The next `hud` makes them again.
+use crate::overlay::{At, Live, Place, apply};
 use crate::{call, vr};
 use openvr_sys as sys;
 use std::sync::Mutex;
@@ -47,10 +48,8 @@ fn create(kind: Kind) -> Result<vr::Handle, String> {
     };
     call!(ov, SetOverlayAlpha, h, 1.0); // the picture carries its own transparency
     if kind == Kind::Status {
-        call!(ov, SetOverlayWidthInMeters, h, 0.5);
+        apply(&mut Live, h, &Place::new(At::Device(sys::k_unTrackedDeviceIndex_Hmd as u32, status_pose().m), 0.5));
         call!(ov, SetOverlaySortOrder, h, 196); // over the mark, under the cursor (200)
-        let mut t = status_pose();
-        call!(ov, SetOverlayTransformTrackedDeviceRelative, h, sys::k_unTrackedDeviceIndex_Hmd as u32, &mut t);
         // clickable like the cards (grab.rs create), so a laser click can skip the scan's step
         call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
         call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
@@ -86,8 +85,7 @@ pub fn show(kind: Kind, path: &str, w: u32, h: u32, place: Option<(f32, crate::g
         return "error hud SteamVR refused the picture".into();
     }
     if let Some((width, m)) = place {
-        call!(ov, SetOverlayWidthInMeters, hd.overlay, width);
-        vr::place(hd.overlay, &m);
+        apply(&mut Live, hd.overlay, &Place::new(At::Room(m), width as f64));
     }
     if kind == Kind::Status && hd.height != h as f32 {
         let mut scale = sys::HmdVector2_t { v: [w as f32, h as f32] }; // so mouse events arrive in the picture's pixels

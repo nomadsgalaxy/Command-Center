@@ -17,6 +17,8 @@ mod capture;
 mod geometry;
 #[path = "../limits.rs"]
 mod limits; // geometry.rs's numbers
+#[path = "../overlay.rs"]
+mod overlay; // back.rs places its sheets through it
 #[path = "../session.rs"]
 mod session;
 #[path = "../vr.rs"]
