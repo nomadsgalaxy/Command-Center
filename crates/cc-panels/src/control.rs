@@ -42,6 +42,7 @@
 //!   pop <monitor> <{uuid}>   puts that remote's host window in its own panel (popout.rs; `cc-home
 //!                machine window pop`): "ok popping <name>". Errors come later, in the log
 //!                and the Machines window's status
+pub mod dashtab;
 pub mod hud;
 pub mod machines;
 pub mod prefs;

@@ -98,6 +98,16 @@ pub fn create_overlay(key: &str, name: &str) -> Result<Handle, String> {
     }
 }
 
+/// A tab in SteamVR's dashboard: its page (main) and its thumbnail, which is the tab's icon.
+pub fn create_dashboard_overlay(key: &str, name: &str) -> Result<(Handle, Handle), String> {
+    let (k, n) = (CString::new(key).unwrap(), CString::new(name).unwrap());
+    let (mut main, mut thumb) = (0, 0);
+    match call!(ov, CreateDashboardOverlay, k.as_ptr() as *mut _, n.as_ptr() as *mut _, &mut main, &mut thumb) {
+        0 => Ok((main, thumb)),
+        e => Err(error_name(e)),
+    }
+}
+
 pub fn set_from_file(h: Handle, path: &str) {
     let p = CString::new(path).unwrap();
     call!(ov, SetOverlayFromFile, h, p.as_ptr() as *mut _);

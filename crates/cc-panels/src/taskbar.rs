@@ -122,7 +122,7 @@ const PITCH_UP: f64 = 85.0; // and up to this
 const EASE: f64 = 12.0; // the spring's rate (1/s): settles in about 0.4 s
 const NEAR_YAW: f64 = 0.01; // follow's easing stops this close (degrees; 0.1 mm at the bar's edge),
 const NEAR_AT: f64 = 3e-4; // and this close for the head position (m; 0.02 degrees from the eye)
-const GAME_EVERY: Duration = Duration::from_millis(300); // how often we poll for a VR game (GetCurrentSceneProcessId)
+pub const GAME_EVERY: Duration = Duration::from_millis(300); // how often we poll for a VR game (GetCurrentSceneProcessId), and handoff.rs for a 2D one
 const UNDER: f64 = 0.25; // fixed: below the lowest krdp panel's bottom edge
 const WRIST_W: f64 = 0.22; // the wrist bar's width, but never under WRIST_MPP per unit (it widens instead)
 // calibration knob: chip text size at the wrist (2.3 mm caps, read at 30-40 cm). ponytail:

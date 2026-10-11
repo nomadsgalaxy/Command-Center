@@ -25,6 +25,7 @@ mod geometry;
 mod gaze;
 mod grab;
 mod gpu;
+mod handoff;
 mod kvm;
 mod kwin;
 mod laser;
@@ -792,7 +793,7 @@ fn run() -> Result<(), String> {
     }
     let all = config::viewers(&[]);
     let tags: Vec<String> = viewers.iter().flat_map(|v| remote_tags(v, &all)) // each panel's border tag and its taskbar chip's label
-        .chain(control::machines::LABELS.iter().chain(&control::prefs::LABELS).chain(&control::workspace::LABELS).chain(&taskbar::LABELS).map(|(k, text)| format!("tag=ui-{k},{text},frame,0,0,0"))) // the Machines and Preferences windows'
+        .chain(control::machines::LABELS.iter().chain(&control::prefs::LABELS).chain(&control::workspace::LABELS).chain(&control::dashtab::LABELS).chain(&taskbar::LABELS).map(|(k, text)| format!("tag=ui-{k},{text},frame,0,0,0"))) // the Machines and Preferences windows'
         .collect();
     assets::draw(&assets, &font, &tags);
     let _ = std::fs::write(format!("{assets}/font"), &font);
@@ -909,6 +910,7 @@ fn run() -> Result<(), String> {
     let mut bar = taskbar::Taskbar::new(&assets);
     let mut machines = control::machines::Machines::new(&assets);
     let mut prefs = control::prefs::Prefs::new(&assets);
+    let mut dashtab = control::dashtab::Dashtab::new(&assets);
     let mut workspace_win = control::workspace::Workspace::new(&assets);
     let mut buffers: Vec<gpu::Buffers> = panels().iter().map(|_| gpu::Buffers::default()).collect();
     let mut status = Instant::now();
@@ -924,7 +926,8 @@ fn run() -> Result<(), String> {
     let _ = vr::MAIN.set(std::thread::current()); // vr::wake ends the wait between ticks
     let mut gaze_tried: Option<Instant> = None;
     let mut gaze_off = false; // a game is running, so the gaze's action set is let go
-    let mut game_hid = false; // the panels are hidden because a VR game is running
+    let mut hand = handoff::Handoff::default(); // who has the input, with a VR or a 2D game running (handoff.rs)
+    handoff::start();
     let mut last_event = 0; // the last SteamVR event's type, for the loop's status line
     let mut was_away = false; // hidden or under a game last tick
     while !QUIT.load(Relaxed) {
@@ -999,6 +1002,10 @@ fn run() -> Result<(), String> {
             }
             if e.eventType == sys::EVREventType_VREvent_DashboardActivated {
                 KVM.lock().unwrap().set_engaged(false, "dashboard opened"); // click to type: typing goes to it
+                control::dashtab::dashboard(true);
+            }
+            if e.eventType == sys::EVREventType_VREvent_DashboardDeactivated {
+                control::dashtab::dashboard(false);
             }
             if e.eventType == sys::EVREventType_VREvent_ButtonPress && vr::is_real_controller(e.trackedDeviceIndex) {
                 controller_pressed(); // anywhere, not only on our panels
@@ -1033,24 +1040,31 @@ fn run() -> Result<(), String> {
         let now = Instant::now();
         let head = vr::head().map(|m| ([0, 1, 2].map(|r| m[r][3] as f64), [0, 1, 2].map(|r| -m[r][2] as f64)));
         let gaze_ray = gaze_seen.filter(|g| now - g.2 < kvm::GAZE_STALE).map(|g| (g.0, g.1));
-        let seen = attention::Seen { hidden: HIDDEN.load(Relaxed), game: bar.game(), on_head, head, gaze: gaze_ray };
+        // A game, VR or 2D, is Command Center's cue to step aside (handoff.rs). The dashboard tab can take it back.
+        hand.step(bar.game(), handoff::flat_game(), dashtab.selected());
+        let seen = attention::Seen { hidden: HIDDEN.load(Relaxed), game: hand.playing(), on_head, head, gaze: gaze_ray };
         attend(&mut att, &seen, &grab, now);
         // click to type: the Desktop hidden or a game starting gives the keyboards back, once on the change
         let away = seen.hidden || seen.game;
         if away && !was_away {
             KVM.lock().unwrap().set_engaged(false, if seen.hidden { "Desktop hidden" } else { "game running" });
         }
-        // A VR game: Command Center steps aside. The mice go to it as well as the keyboards (the
-        // line above), every panel hides, and the panels are paused (attention.rs), until it ends.
-        KVM.lock().unwrap().set_yielded(seen.game, if seen.game { "game running" } else { "no game" });
-        if seen.game && !game_hid && !HIDDEN.load(Relaxed) {
-            game_hid = true;
-            control::show_panels(false);
-            eprintln!("game: a VR game is running, so the Desktop hides and waits");
-        } else if !seen.game && game_hid {
-            game_hid = false;
-            control::show_panels(true); // only what the game hid; one you hid yourself stays hidden
-            eprintln!("game: it ended, so the Desktop is back");
+        // A game: Command Center steps aside. The mice go to it as well as the keyboards (the line
+        // above), every panel hides, and the panels are paused (attention.rs), until it ends, or
+        // until you take it back on the dashboard tab (control/dashtab.rs). Choosing "Steam / game"
+        // there gives the input away without a game too, but leaves the panels showing.
+        let why = if seen.game { "game running" } else if hand.yielded() { "Steam / game chosen on the dashboard tab" } else { "no game" };
+        KVM.lock().unwrap().set_yielded(hand.yielded(), why);
+        match hand.panels(HIDDEN.load(Relaxed)) {
+            Some(false) => {
+                control::show_panels(false);
+                eprintln!("game: {} is running, so the Desktop hides and waits", if bar.game() { "a VR game" } else { "a 2D game" });
+            }
+            Some(true) => {
+                control::show_panels(true); // only what the game hid; one you hid yourself stays hidden
+                eprintln!("game: the Desktop is back");
+            }
+            None => {}
         }
         was_away = away;
         laps.lap("attention");
@@ -1095,6 +1109,8 @@ fn run() -> Result<(), String> {
         laps.lap("machines");
         prefs.tick(&mut grab, &mut windows, &mut bar);
         laps.lap("prefs");
+        dashtab.tick(&mut hand);
+        laps.lap("dashtab");
         workspace_win.tick(&mut grab, &mut windows, &mut bar);
         laps.lap("workspace");
         if let Some(s) = &control {
@@ -1161,6 +1177,7 @@ fn run() -> Result<(), String> {
             (bar.moving(), "the taskbar"),
             (machines.moving(), "the Machines window"),
             (prefs.moving(), "the Preferences window"),
+            (dashtab.moving(), "the dashboard tab"),
             (workspace_win.moving(), "the Workspace window"),
             (windows.plasma_moving(), "Plasma's bar"),
             (kvm::POKED.swap(false, Relaxed), "input"),
@@ -1193,6 +1210,7 @@ fn run() -> Result<(), String> {
     bar.destroy();
     machines.destroy();
     prefs.destroy();
+    dashtab.destroy();
     workspace_win.destroy();
     windows.stop();
     for (_, t) in threads {
