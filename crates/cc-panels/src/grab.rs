@@ -760,8 +760,8 @@ pub fn set_raw(h: vr::Handle, px: &[u8], w: usize, ht: usize) -> bool {
 }
 
 /// Creates a panel's card overlay. It gets drawn on its first update.
-pub fn create(name: &str) -> vr::Handle {
-    let h = vr::create_overlay(&format!("controlcenter.card.{name}"), &format!("Command Center card {name}")).unwrap_or(0);
+pub fn create(name: &str, slot: Option<usize>) -> vr::Handle {
+    let h = crate::surface::create(crate::surface::Kind::Card, slot, &format!("controlcenter.card.{name}"), &format!("Command Center card {name}")).unwrap_or(0);
     // Sort order puts it under its picture. That's set along with the panels' paint order (paint_order).
     call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
     call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
@@ -881,7 +881,7 @@ struct Owner {
 /// moves with your head so it always fills your view (about ±63°), and it stays hidden until
 /// theater mode needs it. Its colour gets repainted for each theme (`paint_backdrop`).
 fn backdrop() -> vr::Handle {
-    let h = vr::create_overlay("controlcenter.theater", "Command Center theater").unwrap_or(0);
+    let h = crate::surface::create(crate::surface::Kind::Backdrop, None, "controlcenter.theater", "Command Center theater").unwrap_or(0);
     apply(&mut Live, h, &Place::new(At::Device(sys::k_unTrackedDeviceIndex_Hmd as u32, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, -2.0]]), 8.0));
     call!(ov, SetOverlayAlpha, h, 0.0);
     h
@@ -1051,7 +1051,7 @@ impl Grab {
     /// is made under it with sort order `sort`. The card's close stores false in `open`. The slot
     /// has to be free first (extra_taken).
     pub fn open_extra(&mut self, name: &'static str, win: vr::Handle, sort: u32, accent: Rgb, pl: Placement, open: &'static AtomicBool) {
-        let card = create(name);
+        let card = create(name, None);
         call!(ov, SetOverlaySortOrder, card, sort);
         let mut x = Extra { name, open, win, card, accent, pl, shown: false }; // its owner's first tick shows it (set_extra_shown)
         x.place(&mut Live, &pl.matrix(), pl.width, pl.curve);
@@ -1062,7 +1062,7 @@ impl Grab {
     pub fn close_extra(&mut self, name: &str) {
         let Some(x) = self.extra.take_if(|x| x.name == name) else { return };
         crate::gpu::forget(x.card);
-        call!(ov, DestroyOverlay, x.card);
+        crate::surface::destroy(x.card);
         let i = self.slot();
         (self.drags[i], self.drawn[i], self.near[i], self.hover[i], self.fade[i], self.focus[i]) = (None, None, None, None, 0.0, 0);
         (self.pending[i], self.done[i], self.shown[i], self.dimmed[i]) = (None, None, true, false);

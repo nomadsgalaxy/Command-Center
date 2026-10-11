@@ -459,7 +459,7 @@ pub struct Windows {
     plasma: plasmabar::Plasma, // Plasma's own taskbar, placed by taskbar.rs
 }
 
-fn win(i: usize) -> Option<Win> {
+pub fn win(i: usize) -> Option<Win> {
     match &panel(i).src {
         crate::Source::Window(w) => w.lock().unwrap().clone(),
         crate::Source::Rdp => None,

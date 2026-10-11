@@ -80,6 +80,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `limits.rs` | The shared numbers, named once: panel width limits, push/pull steps and ranges, zoom and taskbar-scale ranges, the curve notch. The laser and Right Ctrl keep their different values until the one-manipulator spec merges them. |
 | `overlay.rs` | The one place a placement becomes SteamVR calls: `Place` (matrix or device-relative, width, curve, texel aspect, texture bounds, mouse scale) and `apply`, behind the `Overlays` trait. `Live` makes the real calls; tests use `overlay::fake::Writes`. The panels, the Extra window, the cards, the taskbar, Plasma's bar, the backs, the HUD, the cursor and the theater backdrop all place through it. Callers still decide when something changed. |
 | `stage.rs` | What the manipulation code reads: `Stage` is `Overlays` plus a device's pose and laser, the head, and a panel's overlay, size and whether it's turned. `Live` reads SteamVR and the panel list; `stage::fake::Fake` is a stand-in for tests. `Kvm::set_pose_with`/`set_place_with`/`land_with`/`mv_with`/`recenter_with`/`swing_with`/`scale_with` and `Grab`'s `start`/`carry`/`push`/`put` take one. It also sends the pointer move to a panel (`move_pointer`). |
+| `surface.rs` | The surface registry: every overlay we place, listed once with its kind, what its place is relative to (`Anchor`), where it's saved (`Store`) and how it's moved (`Manip`). Everything is made through `surface::create` and destroyed through `surface::destroy`, and a test reads the sources to keep it that way. `surfaces` on the control socket prints it. A record of today, not a new mechanism. |
 | `grab.rs` | Each panel's card (Breeze-like frame, tabs, grab bar, knobs): drawing, hit-testing, carrying, resizing, curving, snap-back, the `Extra` slot the control windows share, saving the "home" spot on release. |
 | `back.rs` | Dim backs for panels seen from behind, one flat overlay each. |
 | `kvm.rs` | Our mice and keyboards (evdev grab, `input_loop` thread `cc-input`): the 3D pointer ray (`mv`, `land`), click to type (`set_engaged`, `type_to`), Right Ctrl chords, gaze lock, text fields for the control windows. |
@@ -286,6 +287,32 @@ VNC is the same shape: `vnc.rs:run` → libvncclient update callbacks → `gpu::
    right away to tell echoes apart, since each monitor is its own krdpserver on one host clipboard.
 3. Files from a machine stay a descriptor until pasted, then get staged in
    `~/.cache/control-center/clipboard/`.
+
+### Surfaces: anchor and store today
+
+`surfaces` on the control socket lists them live. This is what it says, and it's why the one-manipulator
+spec has some work to do: the same kind of thing is saved in different places.
+
+| Surface | Anchor | Saved in | Moved by |
+| --- | --- | --- | --- |
+| Remote monitor | Room | `spots.home.<viewer name>` in home.json (the active workspace's) | Grab (card: bar, edges, corners, curve), Right Ctrl |
+| Pop-out | Room | `spots.home.pop-<machine>-<uuid>` | Grab, Right Ctrl |
+| Window panel | Room | `spots.home.app:<id>` with its zoom, and `win-poses.json` by window uuid | Grab (plus zoom, free stretch), Right Ctrl |
+| Window popup | Parent: its window | nothing | nothing; it rides its window's panel |
+| Card (frame, bar, tab) | Parent: its panel or Extra | nothing | it is the handle |
+| Machines, Preferences, Workspace | Room | `spots.home.machines` / `prefs` / `workspace` | Grab, in the Extra slot (one at a time) |
+| Taskbar frame | Room (fixed), Head (follow), Device (wrist) | fixed carry: `spots.home.taskbar`; mode, size and curve: settings.json `taskbar`, `taskbar_scale`, `taskbar_curve` (global, not per workspace) | its own Hold (taskbar.rs); carried in fixed mode only |
+| Plasma's bar and popups | Parent: the taskbar frame | nothing | nothing; input is forwarded |
+| A panel's back | Parent: its panel | nothing | a press carries its panel |
+| Scan HUD strip / tag outlines | Head / Room | nothing | nothing |
+| Theater backdrop | Head | nothing | nothing |
+| Cursor | Room (faces the head each frame) | nothing | nothing |
+| Laser-mode overlay | Room (far below the head) | nothing | nothing |
+| Dashboard tab | Dashboard (SteamVR places it) | nothing | nothing |
+
+Things worth knowing: a panel slot is filled with different things over a run, so what it is gets read
+when it's listed; theater mode moves a window panel to a place that isn't saved; and a monitor's older
+spot may be under its screen number, which saving removes.
 
 ### The dashboard tab
 

@@ -208,6 +208,16 @@ struct Frame {
     knob: (f64, f64),            // the curve knob's centre
 }
 
+/// What the frame's place is relative to in each mode (surface.rs): fixed in the room, easing after
+/// the head, or on the off hand's wrist.
+fn anchor_of(mode: Mode) -> crate::surface::Anchor {
+    match mode {
+        Mode::Fixed => crate::surface::Anchor::Room,
+        Mode::Follow => crate::surface::Anchor::Head,
+        Mode::Wrist => crate::surface::Anchor::Device,
+    }
+}
+
 /// What the frame was last placed as: its matrix, the device it's on (MAX means the room), and its
 /// width and curve radius in millimetres, which is how far it has to move to count as changed.
 type Placed = Option<(Mat, u32, u32, u32)>;
@@ -696,7 +706,7 @@ pub struct Taskbar {
 
 impl Taskbar {
     pub fn new(assets: &str) -> Taskbar {
-        let h = vr::create_overlay("controlcenter.taskbar", "Command Center taskbar").unwrap_or_else(|e| {
+        let h = crate::surface::create(crate::surface::Kind::Taskbar, None, "controlcenter.taskbar", "Command Center taskbar").unwrap_or_else(|e| {
             eprintln!("taskbar: no overlay: {e}"); // SteamVR's 128 are shared, and they're used up
             0
         });
@@ -712,6 +722,7 @@ impl Taskbar {
             }),
         };
         eprintln!("taskbar: {}", mode.name());
+        crate::surface::set_anchor(h, anchor_of(mode));
         let names = panels()
             .iter()
             .map(|p| matches!(p.src, Source::Rdp).then(|| crate::load_tag(&format!("{assets}/tag-chip-{}.rgba", p.v.name)).map(Arc::new)).flatten())
@@ -770,6 +781,7 @@ impl Taskbar {
         (self.mode, self.hold, self.placed, self.pose, self.follow) = (m, None, None, None, Follow::default());
         self.alpha = if m == Mode::Wrist { 0.0 } else { 1.0 };
         call!(ov, SetOverlayAlpha, self.ov, self.alpha);
+        crate::surface::set_anchor(self.ov, anchor_of(m));
         eprintln!("taskbar: {}", m.name());
     }
 
@@ -1282,7 +1294,7 @@ impl Taskbar {
 
     pub fn destroy(&self) {
         crate::gpu::forget(self.ov);
-        call!(ov, DestroyOverlay, self.ov);
+        crate::surface::destroy(self.ov);
     }
 }
 

@@ -44,8 +44,8 @@ fn status_pose() -> sys::HmdMatrix34_t {
 
 fn create(kind: Kind) -> Result<vr::Handle, String> {
     let h = match kind {
-        Kind::Status => vr::create_overlay("controlcenter.hud", "Command Center scan")?,
-        Kind::Mark => vr::create_overlay("controlcenter.hud.mark", "Command Center scan tags")?,
+        Kind::Status => crate::surface::create(crate::surface::Kind::HudStrip, None, "controlcenter.hud", "Command Center scan")?,
+        Kind::Mark => crate::surface::create(crate::surface::Kind::HudMark, None, "controlcenter.hud.mark", "Command Center scan tags")?,
     };
     call!(ov, SetOverlayAlpha, h, 1.0); // the picture carries its own transparency
     if kind == Kind::Status {
@@ -107,7 +107,7 @@ pub fn hide() -> String {
     for slot in HUDS.lock().unwrap().iter_mut() {
         if let Some(h) = slot.take() {
             crate::gpu::forget(h.overlay);
-            call!(ov, DestroyOverlay, h.overlay);
+            crate::surface::destroy(h.overlay);
         }
     }
     "ok".into()
@@ -134,7 +134,7 @@ pub fn tick() {
         if slot.as_ref().is_some_and(|h| h.shown.is_none_or(|t| t.elapsed() > STALE)) {
             let o = slot.take().unwrap().overlay;
             crate::gpu::forget(o);
-            call!(ov, DestroyOverlay, o); // the scan died, so free it rather than just hide it
+            crate::surface::destroy(o); // the scan died, so free it rather than just hide it
         }
     }
 }

@@ -214,7 +214,7 @@ impl Dashtab {
     }
 
     fn open(&mut self) {
-        let (h, thumb) = match vr::create_dashboard_overlay("controlcenter.dashboard", "Command Center") {
+        let (h, thumb) = match crate::surface::create_dashboard("controlcenter.dashboard", "Command Center") {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("dashboard tab: no overlay: {e}"); // the key's in use, or the overlays are all taken
@@ -268,8 +268,8 @@ impl Dashtab {
     pub fn destroy(&mut self) {
         if let Some((h, thumb)) = self.ov.take() {
             crate::gpu::forget(h);
-            call!(ov, DestroyOverlay, h);
-            call!(ov, DestroyOverlay, thumb);
+            crate::surface::destroy(h);
+            crate::surface::destroy(thumb);
         }
     }
 }

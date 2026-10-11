@@ -385,7 +385,7 @@ impl Beam {
         hide(); // clear whatever an earlier run left
         // Keeps SteamVR's laser mouse on while the dashboard is closed, with a trick: an
         // invisible interactive overlay far below you, only shown while our laser works.
-        let lasermode = vr::create_overlay("controlcenter.lasermode", "Command Center laser mode").unwrap_or(0);
+        let lasermode = crate::surface::create(crate::surface::Kind::LaserMode, None, "controlcenter.lasermode", "Command Center laser mode").unwrap_or(0);
         let mut px = [0u8; 4 * 4 * 4];
         call!(ov, SetOverlayRaw, lasermode, px.as_mut_ptr() as *mut _, 4, 4, 4);
         call!(ov, SetOverlayWidthInMeters, lasermode, 0.001);

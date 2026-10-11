@@ -1256,7 +1256,7 @@ impl Machines {
             self.hide_keyboard();
             grab.close_extra("machines");
             crate::gpu::forget(h);
-            call!(ov, DestroyOverlay, h);
+            crate::surface::destroy(h);
             (self.shown, self.hover, self.painter, self.offer) = (false, None, ui::Painter::default(), None);
             eprintln!("machines: closed");
         }
@@ -1291,7 +1291,7 @@ impl Machines {
         if grab.extra_taken() {
             return; // Preferences still has the slot: it closes on its tick, and this opens on the next one
         }
-        let h = match vr::create_overlay("controlcenter.machines", "Command Center machines") {
+        let h = match crate::surface::create(crate::surface::Kind::Extra, None, "controlcenter.machines", "machines") {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("machines: no overlay: {e}"); // SteamVR's 128 are shared, so we're out of them
@@ -1873,7 +1873,7 @@ impl Machines {
         if let Some(h) = self.ov.take() {
             self.hide_keyboard();
             crate::gpu::forget(h);
-            call!(ov, DestroyOverlay, h);
+            crate::surface::destroy(h);
         }
     }
 }

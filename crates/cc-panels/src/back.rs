@@ -155,7 +155,7 @@ impl Backs {
         }
         let keep = nearest(want, BACKS);
         for b in self.pool.extract_if(.., |b| !keep.contains(&b.i)) {
-            call!(ov, DestroyOverlay, b.h);
+            crate::surface::destroy(b.h);
             let mut t = TEX.lock().unwrap();
             t.iter_mut().filter(|e| e.2 == b.h).for_each(|e| e.2 = 0);
             t.retain(|e| e.1 != 0 || e.2 != 0); // don't keep entries for pictures from memory, or the Extras' would pile up
@@ -249,7 +249,7 @@ fn nearest(mut want: Vec<(usize, f64)>, budget: usize) -> Vec<usize> {
 /// Makes a back: dim and faint, its texture mirrored left to right (seen through the screen). A
 /// laser press on it starts a carry.
 fn make(i: usize) -> Option<vr::Handle> {
-    let h = vr::create_overlay(&format!("controlcenter.back.{i}"), &format!("Command Center back {i}"))
+    let h = crate::surface::create(crate::surface::Kind::Back, Some(i), &format!("controlcenter.back.{i}"), &format!("Command Center back {i}"))
         .inspect_err(|e| eprintln!("backs: no overlay for panel {i}: {e}"))
         .ok()?;
     call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);

@@ -38,6 +38,7 @@ mod vnc;
 #[allow(dead_code)] // virtual outputs for desktop mode aren't wired up yet; the spike uses them
 mod session;
 mod stage;
+mod surface;
 mod taskbar;
 mod theme;
 mod vr;
@@ -147,11 +148,11 @@ pub struct Panel {
 
 impl Panel {
     fn new(index: usize, v: config::Viewer, src: Source, accent: [f64; 3], tag: Option<&(usize, usize, Vec<u8>)>) -> Result<Panel, String> {
-        let overlay = vr::create_overlay(&format!("controlcenter.panel.{}", v.name), &format!("Command Center {}", v.name))
+        let overlay = surface::create(surface::Kind::Panel, Some(index), &format!("controlcenter.panel.{}", v.name), &format!("Command Center {}", v.name))
             .map_err(|e| format!("{}: can't create its overlay: {e}", v.name))?;
         let p = Panel {
             index,
-            card: grab::create(&v.name),
+            card: grab::create(&v.name, Some(index)),
             live: AtomicBool::new(matches!(src, Source::Rdp)),
             min: AtomicBool::new(false),
             gone: AtomicBool::new(false),
@@ -880,7 +881,7 @@ fn run() -> Result<(), String> {
     }
     let mut windows = windows::Windows::start(first_window);
 
-    let cursor = vr::create_overlay("controlcenter.cursor", "Command Center cursor").unwrap_or(0);
+    let cursor = surface::create(surface::Kind::Cursor, None, "controlcenter.cursor", "Command Center cursor").unwrap_or(0);
     vr::set_from_file(cursor, &format!("{assets}/cursor.png"));
     call!(ov, SetOverlaySortOrder, cursor, 200);
     {
@@ -1210,7 +1211,7 @@ fn run() -> Result<(), String> {
         k.set_engaged(false, "closing");
         k.return_devices();
     }
-    call!(ov, DestroyOverlay, cursor);
+    crate::surface::destroy(cursor);
     bar.destroy();
     machines.destroy();
     prefs.destroy();
@@ -1221,7 +1222,7 @@ fn run() -> Result<(), String> {
         let _ = t.join();
     }
     for p in panels() {
-        call!(ov, DestroyOverlay, p.overlay);
+        crate::surface::destroy(p.overlay);
     }
     for (p, b) in panels().iter().zip(&mut buffers) {
         b.free(&mut p.gpu.lock().unwrap()); // the RDP threads have ended

@@ -249,7 +249,7 @@ pub struct Plasma {
 
 impl Plasma {
     pub fn new() -> Plasma {
-        let h = vr::create_overlay("controlcenter.plasma", "Command Center Plasma taskbar").unwrap_or_else(|e| {
+        let h = crate::surface::create(crate::surface::Kind::Plasma, None, "controlcenter.plasma", "Command Center Plasma taskbar").unwrap_or_else(|e| {
             eprintln!("plasma: no overlay: {e}"); // SteamVR's 128 are shared, and we're out
             0
         });
@@ -550,7 +550,7 @@ impl Plasma {
     pub fn stop(&mut self, cap: &capture::Capture) {
         self.drop_src(false, cap);
         self.drop_src(true, cap);
-        call!(ov, DestroyOverlay, self.ov);
+        crate::surface::destroy(self.ov);
     }
 }
 

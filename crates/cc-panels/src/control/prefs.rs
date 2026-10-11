@@ -278,7 +278,7 @@ impl Prefs {
         } else if !open && let Some(h) = self.ov.take() {
             grab.close_extra("prefs");
             crate::gpu::forget(h);
-            call!(ov, DestroyOverlay, h);
+            crate::surface::destroy(h);
             (self.shown, self.hover, self.painter) = (false, None, ui::Painter::default());
             eprintln!("prefs: closed");
         }
@@ -301,7 +301,7 @@ impl Prefs {
         if grab.extra_taken() {
             return; // the Machines window still has the slot; it closes on its tick and this opens on the next one
         }
-        let h = match vr::create_overlay("controlcenter.prefs", "Command Center preferences") {
+        let h = match crate::surface::create(crate::surface::Kind::Extra, None, "controlcenter.prefs", "prefs") {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("prefs: no overlay: {e}"); // SteamVR's 128 are shared and we're out of them
@@ -410,7 +410,7 @@ impl Prefs {
     pub fn destroy(&mut self) {
         if let Some(h) = self.ov.take() {
             crate::gpu::forget(h);
-            call!(ov, DestroyOverlay, h);
+            crate::surface::destroy(h);
         }
     }
 }

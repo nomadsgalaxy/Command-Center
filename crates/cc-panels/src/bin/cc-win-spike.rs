@@ -21,6 +21,8 @@ mod limits; // geometry.rs's numbers
 mod overlay; // back.rs places its sheets through it
 #[path = "../session.rs"]
 mod session;
+#[path = "../surface.rs"]
+mod surface; // back.rs makes its overlays through it
 #[path = "../vr.rs"]
 mod vr;
 

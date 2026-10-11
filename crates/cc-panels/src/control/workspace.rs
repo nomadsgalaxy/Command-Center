@@ -505,7 +505,7 @@ impl Workspace {
             self.hide_keyboard();
             grab.close_extra("workspace");
             crate::gpu::forget(h);
-            call!(ov, DestroyOverlay, h);
+            crate::surface::destroy(h);
             (self.shown, self.hover, self.painter, self.typing, self.armed) = (false, None, ui::Painter::default(), None, None);
             eprintln!("workspace: closed");
         }
@@ -536,7 +536,7 @@ impl Workspace {
         if grab.extra_taken() {
             return; // another window still has the slot; it closes on its tick and this one opens on the next
         }
-        let h = match vr::create_overlay("controlcenter.workspace", "Command Center workspace") {
+        let h = match crate::surface::create(crate::surface::Kind::Extra, None, "controlcenter.workspace", "workspace") {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("workspace: no overlay: {e}");
@@ -836,7 +836,7 @@ impl Workspace {
         if let Some(h) = self.ov.take() {
             self.hide_keyboard();
             crate::gpu::forget(h);
-            call!(ov, DestroyOverlay, h);
+            crate::surface::destroy(h);
         }
     }
 }

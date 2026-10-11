@@ -7,6 +7,8 @@
 //!   place <name> cx cy cz yaw pitch roll width curve   (cc-home's spot format. The name
 //!                `taskbar` places the taskbar while it's fixed; `machines`, `prefs` and `workspace` place those windows while they're open)
 //!   windows   -> "ok", then one line per Frame window (windows.rs)
+//!   surfaces  -> "ok", then one line per overlay we placed: <key> <kind>[/<role>] anchor=<what it follows>
+//!                store=<where its place is saved> manip=<how it's moved> (surface.rs)
 //!   hide | show
 //!   summon    brings every panel back in sight: nothing minimized (in KWin too), theater
 //!             mode off, nothing hidden
@@ -53,6 +55,7 @@ const HUD_USAGE: &str = "error usage: hud <rgba file> <w> <h> [skip=x0,y0,x1,y1]
 
 use crate::geometry::{Pose, panel_matrix};
 use crate::kvm::KVM;
+use crate::surface;
 use crate::{HIDDEN, Source, call, panels, taskbar};
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
@@ -140,6 +143,20 @@ pub fn handle(s: &UnixDatagram, grab: &mut crate::grab::Grab, windows: &mut crat
         let reply = command(&String::from_utf8_lossy(&buf[..n]), grab, windows, bar);
         let _ = s.send_to_addr(reply.as_bytes(), &from);
     }
+}
+
+/// A panel slot as the surface registry describes it (surface.rs).
+fn panel_now(i: usize) -> Option<surface::PanelNow> {
+    let p = panels().get(i)?;
+    let window = matches!(p.src, crate::Source::Window(_));
+    Some(surface::PanelNow {
+        used: p.used() && !(window && crate::windows::win(i).is_none()),
+        window,
+        popup: window && crate::windows::is_popup(i),
+        popout: p.v.pop.is_some(),
+        spot: p.spot_key(),
+        uuid: window.then(|| crate::windows::win(i).map(|w| w.uuid)).flatten(),
+    })
 }
 
 pub fn show_panels(show: bool) {
@@ -279,6 +296,7 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
             show_panels(w == "show");
             format!("ok {w}")
         }
+        Some("surfaces") => surface::report(panel_now),
         Some("summon") => {
             windows.summon(grab); // un-minimizes its windows in KWin too
             for p in panels() {
