@@ -12,7 +12,7 @@
 //! It's placed the same way as the Machines window (ui::spot, spots.home.prefs), and its labels
 //! are assets.rs's tags (LABELS).
 use super::ui::{self, BTN_H, GAP, MPP, PAD, Px, ROW, Rect, SCALE, SORT, TITLE, text, typed, typed_w};
-use crate::geometry::{Placement, panel_matrix};
+use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, over, tint};
 use crate::kvm::KVM;
 use crate::laser::{self, Hand};
@@ -325,7 +325,7 @@ impl Prefs {
         let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
         while ui::next_event(h, &mut e) {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
-            let at = held(self.hover, m.x as f64, H - m.y as f64); // window units; events count from the bottom left
+            let at = held(self.hover, m.x as f64, from_top(H, m.y as f64)); // window units; events count from the bottom left
             // its card fades in, and a release ends a carry (even one pressed elsewhere and let go over it)
             grab.panel_event(grab.slot(), &e, &mut KVM.lock().unwrap());
             match e.eventType {

@@ -23,6 +23,7 @@
 use super::ui::{self, BTN_H, PAD, Px, ROW, Rect, SCALE, TITLE, text, typed, typed_w};
 use crate::grab::{Paint, TagImg, over, tint};
 use crate::taskbar::tex_scale;
+use crate::geometry::from_top;
 use crate::handoff::Handoff;
 use crate::{HIDDEN, call, theme, vr};
 use openvr_sys as sys;
@@ -237,7 +238,7 @@ impl Dashtab {
         let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
         while call!(ov, PollNextOverlayEvent, h, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let m = unsafe { e.data.mouse };
-            let at = hit(m.x as f64, H - m.y as f64); // page units; events count from the bottom left
+            let at = hit(m.x as f64, from_top(H, m.y as f64)); // page units; events count from the bottom left
             match e.eventType {
                 sys::EVREventType_VREvent_MouseMove => self.hover = at,
                 sys::EVREventType_VREvent_FocusLeave => self.hover = None,

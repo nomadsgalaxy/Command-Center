@@ -29,7 +29,7 @@
 //! means a panel costs SteamVR only two overlays of the 128 every app shares. The picture sits
 //! in front and keeps every laser inside it; where on the card a laser lands says whether it's
 //! the bar, an edge or a corner.
-use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
+use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta, surface_point};
 use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, ZOOM, ZOOM_NOTCH};
 use crate::overlay::{At, Live, Overlays, Place, apply};
 use crate::stage::Stage;
@@ -1131,7 +1131,7 @@ impl Grab {
         let fw = pl.width + 2.0 * g;
         let m = unsafe { e.data.mouse }; // metres from the card's bottom left
         // on a turned card (its panel curves top to bottom), the event's bottom left is the card's bottom right
-        let (mx, my) = if pl.vert { (fw - m.y as f64, m.x as f64) } else { (m.x as f64, m.y as f64) };
+        let (mx, my) = surface_point(pl.vert, fw, m.x as f64, m.y as f64);
         let (u, v) = (mx - fw / 2.0, my - (pl.height / 2.0 + g + spec.bottom()));
         held_part(spec, pl.width, pl.height, i == self.slot(), self.hover[i], u, v)
     }
@@ -1899,7 +1899,7 @@ fn in_front(a: &Placement, ga: f64, b: &Placement, gb: f64, eye: &[f64; 3]) -> b
             }
             let dir = to.map(|x| x / d);
             let Some((t, hu, hv)) = a.hit(eye, &dir) else { continue };
-            if hu.abs() > a.width / 2.0 + ga || hv.abs() > a.height / 2.0 + ga {
+            if !a.covers(hu, hv, ga) {
                 continue; // this sight line misses a
             }
             if t < d { a_first += 1 } else { b_first += 1 }

@@ -211,6 +211,109 @@ impl Placement {
         }
         m
     }
+
+    // ---- points and hits on the surface
+    // u is right of the middle and v up from it, in metres along the surface (the arc, when curved).
+
+    /// Whether (u, v) is on the surface grown by `margin` metres all round (negative: shrunk).
+    pub fn covers(&self, u: f64, v: f64, margin: f64) -> bool {
+        u.abs() <= self.width / 2.0 + margin && v.abs() <= self.height / 2.0 + margin
+    }
+
+    /// (u, v) moved to the nearest point on the surface.
+    pub fn clamped(&self, u: f64, v: f64) -> (f64, f64) {
+        (u.clamp(-self.width / 2.0, self.width / 2.0), v.clamp(-self.height / 2.0, self.height / 2.0))
+    }
+
+    /// Where a ray meets the surface, if that's inside its edges less `inset`: (distance, u, v).
+    pub fn hit_in(&self, o: &V3, d: &V3, inset: f64) -> Option<(f64, f64, f64)> {
+        self.hit(o, d).filter(|&(_, u, v)| self.covers(u, v, -inset))
+    }
+
+    /// Where a ray meets the surface or the card around it, whose margins are at the sides, below
+    /// and above: (distance, u, v).
+    pub fn hit_card(&self, o: &V3, d: &V3, [side, below, above]: [f64; 3]) -> Option<(f64, f64, f64)> {
+        self.hit(o, d).filter(|&(_, u, v)| u.abs() <= self.width / 2.0 + side && v >= -self.height / 2.0 - below && v <= self.height / 2.0 + above)
+    }
+
+    /// The point (u, v) a pixel (x right, y down, from the top left) of a `size` picture is at.
+    pub fn at_pixel(&self, (w, h): (u32, u32), x: f64, y: f64) -> (f64, f64) {
+        ((x / w as f64 - 0.5) * self.width, (0.5 - y / h as f64) * self.height)
+    }
+
+    /// The pixel of a `size` picture that (u, v) is on, held inside the picture.
+    pub fn pixel_at(&self, (w, h): (u32, u32), u: f64, v: f64) -> (f64, f64) {
+        (((u / self.width + 0.5) * w as f64).clamp(0.0, w as f64 - 1.0), ((0.5 - v / self.height) * h as f64).clamp(0.0, h as f64 - 1.0))
+    }
+
+    /// (u, v) as fractions across and up the surface, 0 to 1 over its edges.
+    pub fn fraction(&self, u: f64, v: f64) -> (f64, f64) {
+        (u / self.width + 0.5, v / self.height + 0.5)
+    }
+}
+
+// ------------------------------------------------------------------ rays and overlay events
+
+/// A panel a ray meets, as `nearest` finds it: (slot, distance along the ray, u, v).
+pub type Seen = (usize, f64, f64, f64);
+
+/// The nearest of `places` (slot, placement) that a ray (origin o, unit direction d) meets inside
+/// its edges.
+pub fn nearest<'a>(places: impl Iterator<Item = (usize, &'a Placement)>, o: &V3, d: &V3) -> Option<Seen> {
+    places.filter_map(|(i, pl)| pl.hit_in(o, d, 0.0).map(|(t, u, v)| (i, t, u, v))).min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// Where a ray meets a bar (the taskbar, or Plasma's), if no panel it meets (`seen`) is nearer:
+/// (distance, u, v). The Frame draws by depth, so a nearer panel covers the bar, and SteamVR's laser
+/// sees it that way too. `inset` is the clear margin at its edges that it doesn't take.
+pub fn bar_hit(bar: Option<Placement>, inset: f64, o: &V3, d: &V3, seen: Option<Seen>) -> Option<(f64, f64, f64)> {
+    let b = bar?;
+    b.hit(o, d).filter(|&(t, u, v)| b.covers(u, v, -inset) && seen.is_none_or(|h| h.1 > t))
+}
+
+/// A ray on `pl` or its card (margins: sides, below, above), if it's nearer than `seen` and
+/// `bars` (a distance): (distance, u, v).
+pub fn card_at(pl: &Placement, margins: [f64; 3], o: &V3, d: &V3, seen: Option<Seen>, bars: f64) -> Option<(f64, f64, f64)> {
+    pl.hit_card(o, d, margins).filter(|&(t, _, _)| seen.is_none_or(|h| h.1 > t) && t < bars)
+}
+
+/// An overlay mouse event's point (x right, y up, from the overlay's bottom left, in its mouse
+/// scale) as a point on the surface it shows, still from the surface's bottom left. A panel
+/// curved top to bottom (`vert`) is shown turned a quarter (`Placement::turned`), so its overlay's
+/// x runs up the surface and its y from the surface's right edge, `w` away. For pixel indexes pass
+/// the width less one.
+pub fn surface_point<T: Copy + std::ops::Sub<Output = T>>(vert: bool, w: T, x: T, y: T) -> (T, T) {
+    if vert { (w - y, x) } else { (x, y) }
+}
+
+/// A point `y` up from the bottom of something `h` tall, counted down from its top instead, which
+/// is how the windows' rows and the pictures' pixels run. Overlay mouse events count from the bottom.
+pub fn from_top<T: std::ops::Sub<Output = T>>(h: T, y: T) -> T {
+    h - y
+}
+
+// ------------------------------------------------------------------ in front of the head
+
+/// The headset's pose when it isn't tracked yet: 1.6 m up, looking down -z.
+pub const STAND_IN_HEAD: Mat = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 1.6], [0.0, 0.0, 1.0, 0.0]];
+
+/// The level direction (no up or down) `v` points in, as a unit vector. Straight up or down has
+/// none, and comes out as zeros.
+pub fn level(v: V3) -> V3 {
+    let f = [v[0], 0.0, v[2]];
+    let len = norm(&f).max(1e-6);
+    f.map(|c| c / len)
+}
+
+/// The level direction a head pose faces.
+pub fn level_ahead(head: &Mat) -> V3 {
+    level([-head[0][2] as f64, 0.0, -head[2][2] as f64])
+}
+
+/// The point `dist` metres ahead of `eye` along the level direction `f`, `drop` below it and
+/// `aside` to the left of the line (a staircase of panels uses both).
+pub fn ahead_of(eye: &V3, f: &V3, dist: f64, drop: f64, aside: f64) -> V3 {
+    [eye[0] + f[0] * dist - f[2] * aside, eye[1] - drop, eye[2] + f[2] * dist + f[0] * aside]
 }
 
 // ------------------------------------------------------------------ curves
@@ -408,6 +511,101 @@ mod tests {
         assert!(w.abs() < 1e-9 && (fwd - 2.0 * r).abs() < 1e-12, "{w} {fwd}");
         // short of a half circle, how far the chord sits behind the arc's middle is the sagitta
         assert!((chord(1.2, 2.0).1 - sagitta(1.2, 2.0)).abs() < 1e-12);
+    }
+
+    fn panel(width: f64, height: f64, curve: f64) -> Placement {
+        Placement::from_matrix(&panel_matrix(&Pose { centre: [0.2, 1.3, -1.2], yaw: 15.0, pitch: -3.0, roll: 2.0, ..Default::default() }), width, height / width, curve)
+    }
+
+    #[test]
+    fn covers_clamps_and_maps_pixels_on_the_surface() {
+        let pl = panel(1.6, 0.9, 0.0);
+        assert!(pl.covers(0.8, 0.45, 0.0) && !pl.covers(0.801, 0.0, 0.0) && !pl.covers(0.0, 0.451, 0.0), "its edges");
+        assert!(pl.covers(0.85, 0.0, 0.05) && !pl.covers(0.85, 0.0, 0.04), "grown by a margin");
+        assert!(pl.covers(0.75, 0.0, -0.05) && !pl.covers(0.76, 0.0, -0.05), "and shrunk");
+        assert_eq!(pl.clamped(2.0, -2.0), (0.8, -0.45));
+        assert_eq!(pl.clamped(0.1, 0.2), (0.1, 0.2));
+        // a 1920x1080 picture: the middle pixel is the middle, the top-left pixel is the top-left
+        assert_eq!(pl.at_pixel((1920, 1080), 960.0, 540.0), (0.0, 0.0));
+        assert_eq!(pl.at_pixel((1920, 1080), 0.0, 0.0), (-0.8, 0.45));
+        let (x, y) = pl.pixel_at((1920, 1080), -0.8, 0.45);
+        assert_eq!((x, y), (0.0, 0.0));
+        assert_eq!(pl.pixel_at((1920, 1080), 9.0, -9.0), (1919.0, 1079.0), "held inside the picture");
+        let (u, v) = (0.31, -0.12);
+        let (x, y) = pl.pixel_at((1920, 1080), u, v);
+        let (u2, v2) = pl.at_pixel((1920, 1080), x, y);
+        assert!((u - u2).abs() < 1e-9 && (v - v2).abs() < 1e-9, "and back");
+        assert_eq!(pl.fraction(0.0, 0.0), (0.5, 0.5));
+        assert_eq!(pl.fraction(-0.8, 0.45), (0.0, 1.0));
+    }
+
+    #[test]
+    fn a_ray_hits_inside_the_edges_or_the_card_around_them() {
+        let pl = panel(1.6, 0.9, 0.0);
+        let eye = [0.0, 1.6, 0.0];
+        let toward = |u: f64, v: f64| {
+            let m = pl.on_surface(u, v, 0.0);
+            let d = [m[0][3] as f64 - eye[0], m[1][3] as f64 - eye[1], m[2][3] as f64 - eye[2]];
+            d.map(|x| x / norm(&d))
+        };
+        assert!(pl.hit_in(&eye, &toward(0.7, 0.4), 0.0).is_some() && pl.hit_in(&eye, &toward(0.9, 0.0), 0.0).is_none(), "inside its edges");
+        assert!(pl.hit_in(&eye, &toward(0.79, 0.0), 0.02).is_none() && pl.hit_in(&eye, &toward(0.77, 0.0), 0.02).is_some(), "less a clear margin");
+        let card = [0.02, 0.05, 0.03]; // sides, below, above
+        assert!(pl.hit_card(&eye, &toward(0.81, 0.0), card).is_some() && pl.hit_card(&eye, &toward(0.83, 0.0), card).is_none(), "its sides");
+        assert!(pl.hit_card(&eye, &toward(0.0, -0.49), card).is_some() && pl.hit_card(&eye, &toward(0.0, -0.51), card).is_none(), "below, for the bar");
+        assert!(pl.hit_card(&eye, &toward(0.0, 0.47), card).is_some() && pl.hit_card(&eye, &toward(0.0, 0.49), card).is_none(), "above, for the tab");
+    }
+
+    #[test]
+    fn the_nearest_panel_wins_and_bars_and_cards_give_way_to_a_nearer_one() {
+        let at = |z: f64, w: f64| Placement::from_matrix(&panel_matrix(&Pose { centre: [0.0, 1.0, z], ..Default::default() }), w, 0.5, 0.0);
+        let (far, near, narrow) = (at(-2.0, 2.0), at(-1.0, 2.0), at(-0.5, 0.2));
+        let places = [far, near, narrow];
+        let (o, d) = ([0.0, 1.0, 0.0], [0.0, 0.0, -1.0]);
+        let hit = nearest(places.iter().enumerate(), &o, &d);
+        assert_eq!(hit.map(|h| (h.0, (h.1 * 1000.0).round())), Some((2, 500.0)), "the narrow one in front");
+        let off = [0.3, 0.0, -1.0].map(|x| x / (1.0f64 + 0.09f64).sqrt());
+        assert_eq!(nearest(places.iter().enumerate(), &o, &off).map(|h| h.0), Some(1), "off the narrow one: the next");
+        assert_eq!(nearest(places.iter().enumerate().filter(|&(i, _)| i != 2), &o, &d).map(|h| h.0), Some(1), "the caller says which are reachable");
+        assert!(nearest(std::iter::empty(), &o, &d).is_none());
+        // a bar between: in front of the far one, behind the near one
+        let bar = |z: f64| Some(at(z, 1.0));
+        assert!(bar_hit(bar(-1.5), 0.0, &o, &d, Some((0, 2.0, 0.0, 0.0))).is_some(), "nearer than the panel it would be covered by");
+        assert!(bar_hit(bar(-1.5), 0.0, &o, &d, Some((1, 1.0, 0.0, 0.0))).is_none(), "covered by a nearer panel");
+        assert!(bar_hit(None, 0.0, &o, &d, None).is_none());
+        assert!(bar_hit(bar(-1.5), 0.49, &o, &d, None).is_none(), "the clear margin");
+        let card = [0.02, 0.05, 0.03];
+        assert!(card_at(&near, card, &o, &d, None, f64::INFINITY).is_some());
+        assert!(card_at(&near, card, &o, &d, Some((2, 0.5, 0.0, 0.0)), f64::INFINITY).is_none(), "a nearer panel covers it");
+        assert!(card_at(&near, card, &o, &d, None, 0.9).is_none(), "and a nearer bar");
+    }
+
+    #[test]
+    fn overlay_events_are_counted_from_the_bottom_and_a_turned_panels_run_sideways() {
+        assert_eq!(surface_point(false, 800.0, 30.0, 40.0), (30.0, 40.0));
+        assert_eq!(surface_point(true, 800.0, 30.0, 40.0), (760.0, 30.0), "x runs up the surface, y from its right edge");
+        assert_eq!(from_top(600.0, 40.0), 560.0);
+        // pixel indexes: the last pixel of a 1920x1080 picture is 1919, 1079 from the top left
+        let (x, y) = surface_point(false, 1920.0f32 - 1.0, 5.0, 0.0);
+        assert_eq!((x, from_top(1080.0f32 - 1.0, y)), (5.0, 1079.0));
+        // the turned panel's overlay is 1080 wide and 1920 tall; its bottom-left pixel is the picture's bottom-right
+        let (x, y) = surface_point(true, 1920.0f32 - 1.0, 0.0, 0.0);
+        assert_eq!((x, from_top(1080.0f32 - 1.0, y)), (1919.0, 1079.0));
+    }
+
+    #[test]
+    fn level_directions_ignore_up_and_down_and_points_ahead_stay_on_the_line() {
+        // a head turned to look along -x
+        let m = [[0.0, 0.0, 1.0, 1.0], [0.0, 1.0, 0.0, 1.7], [-1.0, 0.0, 0.0, 2.0]];
+        let f = level_ahead(&m);
+        assert!((f[0] + 1.0).abs() < 1e-9 && f[1] == 0.0 && f[2].abs() < 1e-9, "{f:?}");
+        assert_eq!(level([0.0, 5.0, 0.0]), [0.0, 0.0, 0.0], "straight up has no level direction");
+        assert!((norm(&level([3.0, 9.0, 4.0])) - 1.0).abs() < 1e-12);
+        assert_eq!(level_ahead(&STAND_IN_HEAD), [0.0, 0.0, -1.0], "the stand-in looks down -z");
+        let eye = [1.0, 1.7, 2.0];
+        assert_eq!(ahead_of(&eye, &[0.0, 0.0, -1.0], 1.2, 0.0, 0.0), [1.0, 1.7, 0.8]);
+        let at = ahead_of(&eye, &[0.0, 0.0, -1.0], 1.2, 0.1, 0.1);
+        assert!((at[0] - (1.0 + 0.0 - (-1.0) * 0.1)).abs() < 1e-12 && (at[1] - 1.6).abs() < 1e-12 && (at[2] - 0.8).abs() < 1e-12, "a step down and to the left: {at:?}");
     }
 
     #[test]

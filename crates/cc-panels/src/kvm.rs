@@ -14,7 +14,7 @@
 //! even with gaze lock on, because looking down at the keyboard to find a key is looking away,
 //! and typing would land on the Frame mid-word.
 use crate::config::Viewer;
-use crate::geometry::{Placement, angles, direction, norm, rotate};
+use crate::geometry::{self, Placement, angles, direction, norm, rotate};
 use crate::limits::{KEY_NOTCH, KEY_PUSH_RANGE, MAX_WIDTH, MIN_WIDTH};
 use crate::overlay::{At, Live, Place, apply};
 use crate::stage::Stage;
@@ -536,8 +536,8 @@ impl Kvm {
     /// cursor is on it and no card is held.
     pub fn extra_at(&self) -> Option<(f64, f64)> {
         let (pl, _) = self.extra.filter(|_| self.on_extra && !self.card_held && self.beam_buttons == 0)?;
-        let (_, u, v) = pl.hit(&self.anchor, &direction(self.yaw, self.pitch))?;
-        (u.abs() <= pl.width / 2.0 && v.abs() <= pl.height / 2.0).then_some((u, v))
+        let (_, u, v) = pl.hit_in(&self.anchor, &direction(self.yaw, self.pitch), 0.0)?;
+        Some((u, v))
     }
 
     /// The cursor's point in the room: on the active panel, or floating.
@@ -546,7 +546,8 @@ impl Kvm {
             return f;
         }
         let ((w, h), pl) = (panel(self.active).size(), &self.place[self.active]);
-        let m = pl.on_surface((self.x / w as f64 - 0.5) * pl.width, (0.5 - self.y / h as f64) * pl.height, 0.0);
+        let (u, v) = pl.at_pixel((w, h), self.x, self.y);
+        let m = pl.on_surface(u, v, 0.0);
         [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64]
     }
 
@@ -579,39 +580,20 @@ impl Kvm {
         if crate::HIDDEN.load(Relaxed) {
             return None; // hidden panels catch nothing
         }
-        self.place
-            .iter()
-            .enumerate()
-            .filter(|&(i, _)| reachable(i))
-            .filter_map(|(i, pl)| pl.hit(o, d).filter(|&(_, u, v)| u.abs() <= pl.width / 2.0 && v.abs() <= pl.height / 2.0).map(|(t, u, v)| (i, t, u, v)))
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-    }
-
-    /// Where a ray meets a bar (the taskbar, or Plasma's), if no panel it meets (`hit`) is
-    /// nearer: (distance, u, v). The Frame draws by depth, so a nearer panel covers the bar, and
-    /// SteamVR's laser sees it that way too.
-    /// `inset`: the clear margin at the edges that it doesn't take.
-    fn bar_hit(b: Option<Placement>, inset: f64, o: &[f64; 3], d: &[f64; 3], hit: Option<(usize, f64, f64, f64)>) -> Option<(f64, f64, f64)> {
-        let b = b?;
-        b.hit(o, d).filter(|&(t, u, v)| u.abs() <= b.width / 2.0 - inset && v.abs() <= b.height / 2.0 - inset && hit.is_none_or(|h| h.1 > t))
+        geometry::nearest(self.place.iter().enumerate().filter(|&(i, _)| reachable(i)), o, d)
     }
 
     /// Where a ray meets the Extra window or its card, if no panel or bar it meets is nearer
     /// (a raised wrist bar, or a fixed one put in front): the distance.
     fn extra_hit(&self, o: &[f64; 3], d: &[f64; 3], hit: Option<(usize, f64, f64, f64)>) -> Option<f64> {
         let (pl, m) = self.extra?;
-        Self::card_at(&pl, m, o, d, hit, self.bars(o, d, hit)).map(|h| h.0)
+        geometry::card_at(&pl, m, o, d, hit, self.bars(o, d, hit)).map(|h| h.0)
     }
 
     /// How far along a ray the nearest bar is that no panel it meets (`hit`) covers.
     fn bars(&self, o: &[f64; 3], d: &[f64; 3], hit: Option<(usize, f64, f64, f64)>) -> f64 {
-        let bar = |b, inset| Self::bar_hit(b, inset, o, d, hit).map_or(f64::INFINITY, |h| h.0);
+        let bar = |b, inset| geometry::bar_hit(b, inset, o, d, hit).map_or(f64::INFINITY, |h| h.0);
         bar(self.bar, self.bar_inset).min(bar(self.plasma, 0.0))
-    }
-
-    /// A ray on pl or its card (margins: sides, below, above), if it's nearer than `hit` and `bars`: (t, u, v).
-    fn card_at(pl: &Placement, [side, below, above]: [f64; 3], o: &[f64; 3], d: &[f64; 3], hit: Option<(usize, f64, f64, f64)>, bars: f64) -> Option<(f64, f64, f64)> {
-        pl.hit(o, d).filter(|&(t, u, v)| u.abs() <= pl.width / 2.0 + side && v >= -pl.height / 2.0 - below && v <= pl.height / 2.0 + above && hit.is_none_or(|h| h.1 > t) && t < bars)
     }
 
     /// The nearest panel card a ray meets past the picture, if no panel or bar it meets is
@@ -626,7 +608,7 @@ impl Kvm {
             .zip(&self.cards)
             .enumerate()
             .filter(|&(i, _)| reachable(i))
-            .filter_map(|(i, (pl, &m))| Self::card_at(pl, m, o, d, hit, bars).filter(|&(_, u, v)| u.abs() > pl.width / 2.0 || v.abs() > pl.height / 2.0).map(|h| (i, h.0)))
+            .filter_map(|(i, (pl, &m))| geometry::card_at(pl, m, o, d, hit, bars).filter(|&(_, u, v)| !pl.covers(u, v, 0.0)).map(|h| (i, h.0)))
             // the card sits 2 mm behind its picture (grab.rs), so a near tie (monitors side by
             // side, scan alignment noise) goes to the panel, the way SteamVR's laser sees it
             .filter(|&(_, t)| hit.is_none_or(|h| h.1 > t + 0.01))
@@ -656,7 +638,7 @@ impl Kvm {
         let now = Instant::now();
         self.gaze_at = Some(now);
         let hit = self.nearest(&o, &d);
-        if Self::bar_hit(self.bar, self.bar_inset, &o, &d, hit).is_some() || Self::bar_hit(self.plasma, 0.0, &o, &d, hit).is_some() || self.extra_hit(&o, &d, hit).is_some()
+        if geometry::bar_hit(self.bar, self.bar_inset, &o, &d, hit).is_some() || geometry::bar_hit(self.plasma, 0.0, &o, &d, hit).is_some() || self.extra_hit(&o, &d, hit).is_some()
             // a card in front of another panel counts (a pop-out's frame), the gap between monitors doesn't
             || (hit.is_some() && self.card_hit(&o, &d, hit).is_some())
         {
@@ -696,7 +678,7 @@ impl Kvm {
                 _ => (0.0, 0.0),
             };
             let pl = &self.place[f];
-            let (u, v) = (u.clamp(-pl.width / 2.0, pl.width / 2.0), v.clamp(-pl.height / 2.0, pl.height / 2.0));
+            let (u, v) = pl.clamped(u, v);
             self.anchor = vr::head_position();
             self.aim_at(f, u, v);
         }
@@ -729,7 +711,7 @@ impl Kvm {
         if self.shell_buttons != 0 {
             if let Some(pl) = self.plasma
                 && let Some((t, u, v)) = pl.hit(&o, &d)
-                && let Some(at) = plasmabar::at(u.clamp(-pl.width / 2.0, pl.width / 2.0) / pl.width + 0.5, v.clamp(-pl.height / 2.0, pl.height / 2.0) / pl.height + 0.5)
+                && let Some(at) = { let (fx, fy) = { let (cu, cv) = pl.clamped(u, v); pl.fraction(cu, cv) }; plasmabar::at(fx, fy) }
             {
                 (self.on_plasma, self.free, self.depth) = (true, Some(point(t)), t);
                 self.to_plasma(at);
@@ -766,8 +748,8 @@ impl Kvm {
         // it changes.
         if keep.is_none()
             && let Some(pl) = self.plasma
-            && let Some((t, u, v)) = Self::bar_hit(Some(pl), 0.0, &o, &d, hit)
-            && let Some(at) = plasmabar::at(u / pl.width + 0.5, v / pl.height + 0.5)
+            && let Some((t, u, v)) = geometry::bar_hit(Some(pl), 0.0, &o, &d, hit)
+            && let Some(at) = { let (fx, fy) = pl.fraction(u, v); plasmabar::at(fx, fy) }
         {
             (self.on_plasma, self.free, self.depth) = (true, Some(point(t)), t);
             self.to_plasma(at);
@@ -775,7 +757,7 @@ impl Kvm {
         }
         // The taskbar's frame, in front of the panel it's on, same way.
         if keep.is_none()
-            && let Some((t, u, v)) = Self::bar_hit(self.bar, self.bar_inset, &o, &d, hit)
+            && let Some((t, u, v)) = geometry::bar_hit(self.bar, self.bar_inset, &o, &d, hit)
         {
             (self.on_bar, self.free, self.depth, self.sent) = (Some((u, v)), Some(point(t)), t, None);
             windows::leave();
@@ -792,7 +774,7 @@ impl Kvm {
                     hit = held_on_window(&pl, ru, rv).map(|(u, v)| (k, t, u, v));
                 }
                 Some((t, ru, rv)) => {
-                    let (u, v) = (ru.clamp(-pl.width / 2.0, pl.width / 2.0), rv.clamp(-pl.height / 2.0, pl.height / 2.0));
+                    let (u, v) = pl.clamped(ru, rv);
                     // the ray stops at the edge too, so there's no dead zone coming back. Held, it
                     // carries on toward its machine's other monitors (as far as their middles) so
                     // it can cross to one
@@ -810,15 +792,14 @@ impl Kvm {
                 None if held_window => hit = None,
                 None if keep == focus => {
                     // you turned right away from it (past its curve, or behind), so stay at the cursor
-                    let (w, h) = panel(k).size();
-                    let (u, v) = ((self.x / w as f64 - 0.5) * pl.width, (0.5 - self.y / h as f64) * pl.height);
+                    let (u, v) = pl.at_pixel(panel(k).size(), self.x, self.y);
                     self.aim_at(k, u, v);
                     hit = Some((k, 0.0, u, v));
                 }
                 None if self.buttons != 0 => {
                     // dragging and you turned away from it: the cursor stays where it was
-                    let (w, h) = panel(k).size();
-                    hit = Some((k, self.depth, (self.x / w as f64 - 0.5) * pl.width, (0.5 - self.y / h as f64) * pl.height));
+                    let (u, v) = pl.at_pixel(panel(k).size(), self.x, self.y);
+                    hit = Some((k, self.depth, u, v));
                 }
                 None => {}
             }
@@ -877,10 +858,8 @@ impl Kvm {
             self.active = i;
         }
         let (p, pl) = (panel(i), &self.place[i]);
-        let (w, h) = p.size();
         self.free = None;
-        self.x = ((u / pl.width + 0.5) * w as f64).clamp(0.0, w as f64 - 1.0);
-        self.y = ((0.5 - v / pl.height) * h as f64).clamp(0.0, h as f64 - 1.0);
+        (self.x, self.y) = pl.pixel_at(p.size(), u, v);
         if self.buttons != 0 && window(i) {
             self.window_drag = Some((self.cursor_point(), Instant::now()));
         }
@@ -1491,15 +1470,15 @@ mod tests {
         let pose = Pose { centre: [0.0, 1.0, -1.0], width: 0.5, ..Default::default() };
         k.bar = Some(Placement::from_matrix(&panel_matrix(&pose), 0.5, 0.1, 0.0));
         let (o, d) = ([0.0, 1.0, 0.0], [0.0, 0.0, -1.0]);
-        let t = super::Kvm::bar_hit(k.bar, 0.0, &o, &d, None).expect("on the bar").0;
+        let t = crate::geometry::bar_hit(k.bar, 0.0, &o, &d, None).expect("on the bar").0;
         assert!((t - 1.0).abs() < 1e-6, "{t}");
-        assert!(super::Kvm::bar_hit(k.bar, 0.0, &o, &d, Some((3, 2.0, 0.0, 0.0))).is_some(), "a panel behind it");
-        assert!(super::Kvm::bar_hit(k.bar, 0.0, &o, &d, Some((3, 0.6, 0.0, 0.0))).is_none(), "a panel in front of it");
-        assert!(super::Kvm::bar_hit(k.bar, 0.0, &o, &[0.0, 0.5f64.sin(), -0.5f64.cos()], None).is_none(), "above it");
+        assert!(crate::geometry::bar_hit(k.bar, 0.0, &o, &d, Some((3, 2.0, 0.0, 0.0))).is_some(), "a panel behind it");
+        assert!(crate::geometry::bar_hit(k.bar, 0.0, &o, &d, Some((3, 0.6, 0.0, 0.0))).is_none(), "a panel in front of it");
+        assert!(crate::geometry::bar_hit(k.bar, 0.0, &o, &[0.0, 0.5f64.sin(), -0.5f64.cos()], None).is_none(), "above it");
         // the frame's clear reach isn't the cursor's
         let edge = [0.24, 0.0, -1.0].map(|x: f64| x / (1.0f64 + 0.24 * 0.24).sqrt());
-        assert!(super::Kvm::bar_hit(k.bar, 0.0, &o, &edge, None).is_some(), "near its edge");
-        assert!(super::Kvm::bar_hit(k.bar, 0.02, &o, &edge, None).is_none(), "in its reach");
+        assert!(crate::geometry::bar_hit(k.bar, 0.0, &o, &edge, None).is_some(), "near its edge");
+        assert!(crate::geometry::bar_hit(k.bar, 0.02, &o, &edge, None).is_none(), "in its reach");
         k.bar = None;
     }
 
@@ -1832,7 +1811,7 @@ fn window(i: usize) -> bool {
 /// A drag held on a window panel, with the ray at (u, v) on its plane: where the pointer
 /// stays on it, clamped to its edges, or None past TEAR_OFF (off every window).
 fn held_on_window(pl: &Placement, u: f64, v: f64) -> Option<(f64, f64)> {
-    let (cu, cv) = (u.clamp(-pl.width / 2.0, pl.width / 2.0), v.clamp(-pl.height / 2.0, pl.height / 2.0));
+    let (cu, cv) = pl.clamped(u, v);
     ((u - cu).hypot(v - cv) <= TEAR_OFF).then_some((cu, cv))
 }
 

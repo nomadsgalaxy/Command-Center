@@ -426,7 +426,8 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
         let (w, h) = p.size();
         let (w, h) = (w as f32, h as f32);
         // from the overlay's bottom left; on a turned one x runs up the picture and y from its right
-        let (x, y) = if p.vert() { (w - 1.0 - m.y, h - 1.0 - m.x) } else { (m.x, h - 1.0 - m.y) };
+        let (x, y) = geometry::surface_point(p.vert(), w - 1.0, m.x, m.y);
+        let y = geometry::from_top(h - 1.0, y);
         let (x, y) = (x.clamp(0.0, w - 1.0) as f64, y.clamp(0.0, h - 1.0) as f64);
         match e.eventType {
             sys::EVREventType_VREvent_MouseMove => p.mouse(PTR_FLAGS_MOVE, x, y),
@@ -497,8 +498,8 @@ fn update_pointer(cursor: vr::Handle, beam: &mut laser::Beam) {
         [0, 1, 2].map(|i| p[i] + v[i] / n * 0.006)
     };
     let at = k.free.map(toward_eye).unwrap_or_else(|| {
-        let (w, h) = p.size();
-        let s = pl.on_surface((k.x / w as f64 - 0.5) * pl.width, (0.5 - k.y / h as f64) * pl.height, 0.004);
+        let (u, v) = pl.at_pixel(p.size(), k.x, k.y);
+        let s = pl.on_surface(u, v, 0.004);
         [s[0][3] as f64, s[1][3] as f64, s[2][3] as f64]
     });
     let (yaw, pitch) = geometry::angles(&[at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]]);

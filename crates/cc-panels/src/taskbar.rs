@@ -46,7 +46,7 @@
 //! wrist still show, since they're nearer than the backdrop; fixed hides because the Frame
 //! draws by depth, not sort order.
 //! ponytail: no file watch; hand edits to settings.json apply on restart.
-use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, direction, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
+use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, direction, dot, from_top, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
 use crate::limits::{BAR_SCALE, CURVE_NOTCH};
 use crate::overlay::{At, Live, Overlays, Place, apply};
 use crate::grab::{self, Look, TagImg, average, line, over, rbox, tint};
@@ -914,7 +914,7 @@ impl Taskbar {
         let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
         while call!(ov, PollNextOverlayEvent, self.ov, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
-            let y = self.frame.h - m.y as f64; // its units, from the top
+            let y = from_top(self.frame.h, m.y as f64); // its units, from the top
             let mut part = part_at(&self.frame, m.x as f64, y);
             // Plasma's bar is 2 mm in front of us (FRONT), so a slanted laser goes through it a
             // few pixels from where it hits our well, or over its edge while it hits our padding.

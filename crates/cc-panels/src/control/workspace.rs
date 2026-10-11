@@ -28,7 +28,7 @@
 //! ponytail: the rows are read when it opens and after its own changes (a cc-home change shows
 //! on the next opening); 8 workspaces listed at most.
 use super::ui::{self, BTN_H, Edit, GAP, MPP, PAD, Px, ROW, Rect, SCALE, SORT, TITLE, typed, typed_w};
-use crate::geometry::{Placement, panel_matrix};
+use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, line, over, tint};
 use crate::kvm::KVM;
 use crate::taskbar::{Taskbar, tex_scale};
@@ -564,7 +564,7 @@ impl Workspace {
         while ui::next_event(h, &mut e) {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
             // in units from the bottom left; none while the texture is drawn for a different row count
-            let at = held(self.hover, n, t, m.x as f64, height(n) - m.y as f64).filter(|_| drawn == Some(n));
+            let at = held(self.hover, n, t, m.x as f64, from_top(height(n), m.y as f64)).filter(|_| drawn == Some(n));
             grab.panel_event(grab.slot(), &e, &mut KVM.lock().unwrap());
             match e.eventType {
                 sys::EVREventType_VREvent_MouseMove => self.hover = at,
@@ -843,7 +843,7 @@ impl Workspace {
 
 /// Where the head is and which way it faces (yaw 0 looks down -z). If that's unknown, the room's origin.
 fn head_pose() -> ([f64; 3], f64) {
-    let m = vr::head().unwrap_or([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 1.6], [0.0, 0.0, 1.0, 0.0]]);
+    let m = vr::head().unwrap_or(crate::geometry::STAND_IN_HEAD);
     ([m[0][3] as f64, m[1][3] as f64, m[2][3] as f64], (m[0][2] as f64).atan2(m[2][2] as f64).to_degrees())
 }
 

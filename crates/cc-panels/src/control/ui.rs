@@ -3,7 +3,7 @@
 //! pixel (the taskbar's). It also decides where a window opens and uploads its texture.
 //!
 //! It's free functions, not a framework. Each window keeps its own hits, key and rows.
-use crate::geometry::{Pose, angles};
+use crate::geometry::{Pose, STAND_IN_HEAD, ahead_of, angles, level_ahead};
 use crate::grab::{self, Look, Paint, TagImg, average, line, over, rbox, tint};
 use crate::taskbar::{self, LABEL, TAG_ROOM, TAG_TEXT, text_pixel};
 use crate::{call, config, vr};
@@ -196,11 +196,9 @@ pub fn patch(buf: &mut [u8], tw: usize, th: usize, s: f64, (x0, y0, x1, y1): Rec
 /// else OUT ahead of the eyes and DROP below them, facing you.
 pub fn spot(name: &str, w: f64) -> Pose {
     config::home_pose(name, None).unwrap_or_else(|| {
-        let m = vr::head().unwrap_or([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 1.6], [0.0, 0.0, 1.0, 0.0]]);
-        let f = [-m[0][2] as f64, 0.0, -m[2][2] as f64];
-        let len = crate::geometry::norm(&f).max(1e-6);
+        let m = vr::head().unwrap_or(STAND_IN_HEAD);
         let eye = [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64];
-        let centre = [eye[0] + f[0] / len * OUT, eye[1] - DROP, eye[2] + f[2] / len * OUT];
+        let centre = ahead_of(&eye, &level_ahead(&m), OUT, DROP, 0.0);
         let (yaw, pitch) = angles(&[centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]]);
         Pose { centre, yaw, pitch, width: w, ..Default::default() }
     })

@@ -52,7 +52,7 @@
 //! whole thing, and Align's @progress lines only go to the log.
 use super::ui::{self, BTN_H, Edit, GAP, MPP, PAD, ROW, Rect, SCALE, SORT, TITLE, switch, text, text_w, typed, typed_w};
 use crate::grab::{self, Look, Paint, TagImg, line, over, tint};
-use crate::geometry::{Placement, panel_matrix};
+use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::kvm::KVM;
 use crate::taskbar::{Taskbar, tex_scale};
 use crate::windows::Windows;
@@ -1323,7 +1323,7 @@ impl Machines {
         while ui::next_event(h, &mut e) {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
             // its units, from the bottom left; none while the texture (and its mouse scale) is still another shape's
-            let (x, y) = (m.x as f64, height(n, form) - m.y as f64);
+            let (x, y) = (m.x as f64, from_top(height(n, form), m.y as f64));
             let at = renamed.and_then(|(r, c)| rename_hit(r, c, x, y)).unwrap_or_else(|| held(self.hover, n, form, offer, x, y)).filter(|_| self.drawn_shape() == Some((n, form)));
             // its card fades in, and a release ends a carry (including a press elsewhere let go over it)
             grab.panel_event(grab.slot(), &e, &mut KVM.lock().unwrap());

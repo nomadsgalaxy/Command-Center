@@ -11,7 +11,7 @@
 //! A window minimized in KWin (Plasma's taskbar, a v, a chip) is hidden here, and shown again
 //! when it's back. Plasma's own panel and popups belong to plasmabar.rs, fed from here.
 use crate::attention::{self, Level};
-use crate::geometry::{Mat, Pose, angles, panel_matrix};
+use crate::geometry::{Mat, Pose, STAND_IN_HEAD, ahead_of, angles, level, level_ahead, panel_matrix};
 use crate::kvm::KVM;
 use crate::session::{self, Session, StreamEvent};
 use crate::{HIDDEN, Panel, call, capture, config, grab, kwin, panel, plasmabar, vr};
@@ -365,8 +365,7 @@ struct Slot {
 /// it's in front of the panel the drag was on.
 fn at_cursor(p: [f64; 3]) -> Pose {
     let eye = vr::head_position();
-    let f = [p[0] - eye[0], 0.0, p[2] - eye[2]];
-    let f = f.map(|c| c / crate::geometry::norm(&f).max(1e-6));
+    let f = level([p[0] - eye[0], 0.0, p[2] - eye[2]]);
     let (yaw, pitch) = angles(&f);
     Pose { centre: [p[0] - f[0] * 0.1, p[1], p[2] - f[2] * 0.1], yaw, pitch, width: 1.0, ..Default::default() }
 }
@@ -964,13 +963,10 @@ impl Windows {
         if let Some(w) = win(p.index) {
             self.kwin.send(json!({"c": "place", "uuid": w.uuid, "w": 1600, "h": 900}));
         }
-        let m = vr::head().unwrap_or([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 1.6], [0.0, 0.0, 1.0, 0.0]]);
-        let f = [-m[0][2] as f64, 0.0, -m[2][2] as f64];
-        let len = crate::geometry::norm(&f).max(1e-6);
-        let f = f.map(|c| c / len);
+        let m = vr::head().unwrap_or(STAND_IN_HEAD);
+        let (eye, f) = ([0, 1, 2].map(|i| m[i][3] as f64), level_ahead(&m));
         let (yaw, pitch) = angles(&f);
-        let centre = [m[0][3] as f64 + f[0] * 1.8, m[1][3] as f64, m[2][3] as f64 + f[2] * 1.8];
-        let pose = Pose { centre, yaw, pitch, width: 2.0, curve: 1.8, ..Default::default() };
+        let pose = Pose { centre: ahead_of(&eye, &f, 1.8, 0.0, 0.0), yaw, pitch, width: 2.0, curve: 1.8, ..Default::default() };
         k.set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve);
         crate::THEATER.store(p.index, Relaxed); // tick_slot applies THEATER_FPS: a renegotiation, which the 1600x900 resize brings anyway
     }
@@ -994,14 +990,11 @@ impl Windows {
     /// 1.2 m ahead of the head, level, each new one 8 cm right and down from the last.
     fn ahead(&self) -> Pose {
         let n = (0..SLOTS).filter(|&j| panel(self.first + j).live()).count() % 6;
-        let m = vr::head().unwrap_or([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 1.6], [0.0, 0.0, 1.0, 0.0]]);
-        let f = [-m[0][2] as f64, 0.0, -m[2][2] as f64];
-        let len = crate::geometry::norm(&f).max(1e-6);
-        let f = f.map(|c| c / len);
+        let m = vr::head().unwrap_or(STAND_IN_HEAD);
+        let (eye, f) = ([0, 1, 2].map(|i| m[i][3] as f64), level_ahead(&m));
         let (yaw, pitch) = angles(&f);
         let c = 0.08 * n as f64;
-        let centre = [m[0][3] as f64 + f[0] * 1.2 - f[2] * c, m[1][3] as f64 - c, m[2][3] as f64 + f[2] * 1.2 + f[0] * c];
-        Pose { centre, yaw, pitch, width: 1.0, ..Default::default() }
+        Pose { centre: ahead_of(&eye, &f, 1.2, c, c), yaw, pitch, width: 1.0, ..Default::default() }
     }
 
     /// Its border tag, drawn once per app by assets.rs (off the main thread) and then cached.

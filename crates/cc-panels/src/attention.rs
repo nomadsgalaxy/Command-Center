@@ -69,21 +69,22 @@ pub struct Seen {
 
 /// How far, in degrees, a ray (origin o, unit direction d) passes from a panel; 0 if it goes through it.
 pub fn miss(pl: &Placement, o: &V3, d: &V3) -> f64 {
-    let (w, h) = (pl.width / 2.0, pl.height / 2.0);
     let angle = |p: V3| {
         let v = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
         (dot(&v, d) / norm(&v).max(1e-9)).clamp(-1.0, 1.0).acos().to_degrees()
     };
     match pl.hit(o, d) {
-        Some((_, u, v)) if u.abs() <= w && v.abs() <= h => 0.0,
+        Some((_, u, v)) if pl.covers(u, v, 0.0) => 0.0,
         Some((_, u, v)) => {
-            let m = pl.on_surface(u.clamp(-w, w), v.clamp(-h, h), 0.0); // its nearest edge point
+            let (cu, cv) = pl.clamped(u, v);
+            let m = pl.on_surface(cu, cv, 0.0); // its nearest edge point
             angle([m[0][3] as f64, m[1][3] as f64, m[2][3] as f64])
         }
         None => {
             // pointed away from its surface, so treat it as its bounding circle
             let c = pl.c;
             let dist = norm(&[c[0] - o[0], c[1] - o[1], c[2] - o[2]]).max(1e-9);
+            let (w, h) = (pl.width / 2.0, pl.height / 2.0);
             (angle(c) - (w.hypot(h) / dist).atan().to_degrees()).max(0.0)
         }
     }

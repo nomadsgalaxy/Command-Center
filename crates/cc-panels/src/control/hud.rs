@@ -7,6 +7,7 @@
 //! Both are raw RGBA pictures read from a file, since SteamVR caches SetOverlayFromFile by path.
 //! `hud hide` destroys them, and so does `tick` once one stops being refreshed (a scan that
 //! died). The next `hud` makes them again.
+use crate::geometry::from_top;
 use crate::overlay::{At, Live, Place, apply};
 use crate::{call, vr};
 use openvr_sys as sys;
@@ -124,7 +125,7 @@ pub fn tick() {
         let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
         while call!(ov, PollNextOverlayEvent, h.overlay, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let m = unsafe { e.data.mouse }; // pixels from the bottom left
-            if e.eventType == sys::EVREventType_VREvent_MouseButtonDown && h.skip.is_some_and(|r| on_button(&r, m.x, h.height - m.y)) {
+            if e.eventType == sys::EVREventType_VREvent_MouseButtonDown && h.skip.is_some_and(|r| on_button(&r, m.x, from_top(h.height, m.y))) {
                 SKIP.store(true, Relaxed);
             }
         }
