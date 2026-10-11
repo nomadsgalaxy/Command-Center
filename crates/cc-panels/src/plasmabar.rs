@@ -91,6 +91,13 @@ fn shift(panel: Rect, crop: Rect, mpp: f64) -> (f64, f64) {
     ((mid(crop, 0) - mid(panel, 0)) * mpp, (mid(panel, 1) - mid(crop, 1)) * mpp)
 }
 
+/// A point SteamVR gives in the texture's coordinates (x right, y up, 0 to 1 over the whole
+/// texture) as fractions right and up of the part `b` shows (texture bounds, v down).
+fn in_bounds(b: [f32; 4], x: f64, y: f64) -> (f64, f64) {
+    let [u0, v0, u1, v1] = b.map(f64::from);
+    ((x - u0) / (u1 - u0).max(1e-9), (y - (1.0 - v1)) / (v1 - v0).max(1e-9))
+}
+
 /// The crop as bounds on the output's stream: u, v min, then max (u right, v down, 0 to 1).
 fn bounds(crop: Rect, out: Rect) -> [f32; 4] {
     let (w, h) = (out[2].max(1) as f32, out[3].max(1) as f32);
@@ -446,24 +453,17 @@ impl Plasma {
     fn events(&mut self) {
         let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
         self.moving = self.held != 0;
+        // SteamVR reports overlay mouse events in the whole texture's coordinates, not the part
+        // the bounds show. While a popup is open the texture is the whole output and we show a
+        // crop of it, so the laser moved the pointer ~2.5x too fast. Back to fractions of the crop.
+        let b = self.placed.map_or([0.0, 0.0, 1.0, 1.0], |q| q.4);
         while call!(ov, PollNextOverlayEvent, self.ov, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let m = unsafe { e.data.mouse };
+            let (fx, fy) = in_bounds(b, m.x as f64, m.y as f64);
             if debug() && e.eventType != sys::EVREventType_VREvent_MouseMove {
-                eprintln!("plasma-debug: overlay event {} at {:.3},{:.3} -> {:?} crop {:?}", e.eventType, m.x, m.y, at(m.x as f64, m.y as f64), *CROP.lock().unwrap());
+                eprintln!("plasma-debug: overlay event {} at {:.3},{:.3} (crop {fx:.3},{fy:.3}) -> {:?} crop {:?}", e.eventType, m.x, m.y, at(fx, fy), *CROP.lock().unwrap());
             }
-            if debug() && e.eventType == sys::EVREventType_VREvent_MouseMove {
-                // every 10th move: SteamVR's point on the overlay next to where the laser crosses it by our own placement
-                static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                if N.fetch_add(1, Relaxed) % 10 == 0 {
-                    let ours = vr::laser_pose(e.trackedDeviceIndex).zip(KVM.lock().unwrap().plasma).and_then(|(l, pl)| {
-                        let o = [l[0][3] as f64, l[1][3] as f64, l[2][3] as f64];
-                        let d = [-l[0][2] as f64, -l[1][2] as f64, -l[2][2] as f64];
-                        pl.hit(&o, &d).map(|(_, u, v)| (u / pl.width + 0.5, v / pl.height + 0.5, pl.width, pl.height))
-                    });
-                    eprintln!("plasma-debug: move steamvr {:.3},{:.3} ours {:?} crop {:?}", m.x, m.y, ours, CROP.lock().unwrap().map(|c| c.0));
-                }
-            }
-            self.laser(&e, at(m.x as f64, m.y as f64));
+            self.laser(&e, at(fx, fy));
         }
     }
 
@@ -559,6 +559,18 @@ impl Plasma {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steamvr_points_map_into_the_crop() {
+        // the bar alone: the texture is the bar, so nothing changes
+        assert_eq!(in_bounds([0.0, 0.0, 1.0, 1.0], 0.25, 0.75), (0.25, 0.75));
+        // a popup open: the crop is [658, 841, 919, 599] of a 2560x1440 output
+        let b = bounds([658, 841, 919, 599], [0, 0, 2560, 1440]);
+        let (fx, fy) = in_bounds(b, 658.0 / 2560.0, 0.0); // the crop's bottom-left corner, in texture terms
+        assert!(fx.abs() < 1e-4 && fy.abs() < 1e-4, "{fx} {fy}");
+        let (fx, fy) = in_bounds(b, 1577.0 / 2560.0, 1.0 - 841.0 / 1440.0); // its top-right
+        assert!((fx - 1.0).abs() < 1e-4 && (fy - 1.0).abs() < 1e-4, "{fx} {fy}");
+    }
 
     const WL0: Rect = [0, 740, 1920, 1080];
     const BAR: Rect = [514, 1770, 891, 50]; // Plasma's floating panel, centred at the bottom of WL-0
