@@ -36,11 +36,13 @@ pub struct State {
     /// The last shot, for its outlines: (still, head pose, tags (id, corners px)). The HUD takes it.
     pub shot: Option<(bool, Option<panels::Pose>, Vec<(usize, [(f32, f32); 4])>)>,
     pub still: bool,
+    /// The wanted tags read so far, as the strip's "n tags read" shows.
+    pub read: usize,
 }
 
 impl Default for State {
     fn default() -> State {
-        State { text: String::new(), want: HashSet::new(), sizes: HashMap::new(), button: "skip step".into(), board: None, skip: false, on: true, shot: None, still: false }
+        State { text: String::new(), want: HashSet::new(), sizes: HashMap::new(), button: "skip step".into(), board: None, skip: false, on: true, shot: None, still: false, read: 0 }
     }
 }
 
@@ -138,17 +140,16 @@ impl Hud {
             let mut run = Run { sock, font, folder, camera, steady: (false, 0.0), drawn: None, drawn_board: 0.0, seen: HashMap::new() };
             while !sp.load(Relaxed) && st.lock().unwrap().on {
                 run.answers(&st);
+                let shot = st.lock().unwrap().shot.take(); // The lock is let go before outline takes it.
+                if let Some(shot) = shot {
+                    run.outline(&st, shot);
+                }
                 run.status(&st);
                 let board = st.lock().unwrap().board.clone();
                 if let Some(b) = board {
                     if crate::now() - run.drawn_board > 1.0 {
                         run.send(&format!("hud mark {b}")); // Keep it up, because cc-panels hides anything that isn't refreshed for 5 s.
                         run.drawn_board = crate::now();
-                    }
-                } else {
-                    let shot = st.lock().unwrap().shot.take(); // The lock is let go before outline takes it.
-                    if let Some(shot) = shot {
-                        run.outline(&st, shot);
                     }
                 }
                 std::thread::sleep(Duration::from_millis(200));
@@ -205,6 +206,7 @@ impl Run {
             self.steady = (still, now);
         }
         let n = self.seen.keys().filter(|i| want.contains(i)).count();
+        st.lock().unwrap().read = n;
         let key = (text.clone(), self.steady.0, n, button.clone());
         if self.drawn.as_ref().is_some_and(|(k, t)| *k == key && now - t < 2.0) {
             return;
@@ -231,16 +233,17 @@ impl Run {
     /// Outlines the tags this step wants, as read in a still shot. The outlines sit just outside their
     /// edges, in their white margin, so the camera still reads them. They go on a transparent sheet at
     /// the tags' depth, placed where the camera's eye was. Outlines read in the last 0.6 s from (almost)
-    /// the same place stay, so they don't blink.
+    /// the same place stay, so they don't blink. While the refit's board is up it owns the sheet, so
+    /// the outlines wait, but the tags still count as read.
     fn outline(&mut self, st: &Mutex<State>, shot: (bool, Option<panels::Pose>, Vec<(usize, [(f32, f32); 4])>)) {
         let (still, head, tags) = shot;
-        let (Some(c), Some(head)) = (self.camera.clone(), head) else { return };
+        let Some(head) = head else { return };
         if !still {
             return;
         }
-        let (want, sizes) = {
+        let (want, sizes, board) = {
             let s = st.lock().unwrap();
-            (s.want.clone(), s.sizes.clone())
+            (s.want.clone(), s.sizes.clone(), s.board.is_some())
         };
         let now = crate::now();
         let at = [head[0][3], head[1][3], head[2][3]];
@@ -251,6 +254,10 @@ impl Run {
         }
         let dist = |a: &[f64; 3], b: &[f64; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
         self.seen.retain(|_, v| now - v.1 < HOLD && dist(&v.2, &at) < 0.02);
+        let Some(c) = self.camera.clone() else { return };
+        if board {
+            return;
+        }
         let depths: Vec<f64> = self.seen.iter().filter_map(|(i, v)| {
             let side = ((v.0[1].0 - v.0[0].0).powi(2) + (v.0[1].1 - v.0[0].1).powi(2)).sqrt().max(1.0) as f64;
             sizes.get(i).map(|s| c[0] * s / side)
@@ -300,6 +307,7 @@ mod tests {
     use super::*;
     use std::os::linux::net::SocketAddrExt;
     use std::os::unix::net::SocketAddr;
+    use std::time::Instant;
 
     /// Runs the HUD against a fake cc-panels on a private socket. It checks that the status strip is
     /// written and sent, that a still shot's wanted tags get outlined on a sheet in the room, and that
@@ -345,6 +353,34 @@ mod tests {
         assert_eq!(std::fs::metadata(dir.join("mark.rgba")).unwrap().len(), 960 * 540 * 4);
         std::thread::sleep(Duration::from_millis(500));
         assert!(hud.state.lock().unwrap().skip, "the button's click came back");
+        hud.stop.store(true, Relaxed);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The camera refit puts its board on the sheet. That used to stop the outlines, so the count
+    /// stayed at 0 ("0 tags read" for a whole refit). A steady shot's wanted tag must still count.
+    #[test]
+    fn counts_tags_while_the_board_is_up() {
+        let _env = panels::TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let name = format!("cc-scan-test-hud-board-{}", std::process::id());
+        unsafe { std::env::set_var("CC_PANELS_SOCKET", &name) };
+        let _fake = UnixDatagram::bind_addr(&SocketAddr::from_abstract_name(name.as_bytes()).unwrap()).unwrap();
+        let dir = std::env::temp_dir().join(format!("cc-scan-hud-board-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hud = Hud::start(dir.clone(), Some(vec![1078.0, 1075.0, 958.0, 537.0, 0.0, 0.0, 0.0, -0.032, 0.0, 0.0]));
+        {
+            let mut s = hud.state.lock().unwrap();
+            s.want = [3usize].into_iter().collect();
+            s.board = Some("board.rgba 1 1 0.8".into());
+            s.still = true;
+            let head = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 1.6], [0.0, 0.0, 1.0, 0.0]];
+            s.shot = Some((true, Some(head), vec![(3, [(900.0, 500.0), (1000.0, 500.0), (1000.0, 600.0), (900.0, 600.0)])]));
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while hud.state.lock().unwrap().read == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(hud.state.lock().unwrap().read, 1);
         hud.stop.store(true, Relaxed);
         let _ = std::fs::remove_dir_all(dir);
     }
