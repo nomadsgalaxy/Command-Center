@@ -26,6 +26,8 @@ const CENTRE_PX: (f64, f64) = (960.0, 540.0);
 const CENTRE_PRIOR: f64 = 10.0;
 /// A corner the fit misses by more than this (px) is a bad head pose or misread, not the camera.
 const REJECT_PX: f64 = 30.0;
+/// Head speed (deg/s) under which a frame counts for the camera fit.
+const CAMERA_FIT_TURN: f64 = 1.0;
 
 type Uv = [f64; 2];
 
@@ -249,44 +251,60 @@ fn cam_points(p: &DVector<f64>, heads: &[Matrix4<f64>], world: &[Vector3<f64>]) 
     }).collect()
 }
 
-/// Fits fx fy cx cy, the eye rotation and the eye offset robustly, from virtual corners at known places.
-/// It starts from an eye offset on each side, and keeps the fit with the smaller median.
-/// Then it drops the corners the fit can't place (most likely a head pose the tracking got wrong in a
-/// lean) and fits again.
+/// Fits the eye pose, and with no old camera the intrinsics too, robustly, from virtual corners at known
+/// places. With an old camera (`old`) the intrinsics stay as they were: one flat board at one depth
+/// can't tell them from the eye's offset, so only the eye's rotation and offset are fitted. It starts
+/// from an eye offset on each side and keeps the fit with the smaller median. Then it drops the corners
+/// the fit can't place (most likely a head pose the tracking got wrong in a lean) and fits again.
 /// Returns the camera, the median and p90 error over the corners kept, and how many were kept.
-fn fit_camera(heads: &[Matrix4<f64>], world: &[Vector3<f64>], pixels: &[[f64; 2]]) -> (Vec<f64>, f64, f64, usize) {
-    let (x, f) = fit_seeds(heads, world, pixels);
+fn fit_camera(heads: &[Matrix4<f64>], world: &[Vector3<f64>], pixels: &[[f64; 2]], old: Option<&[f64]>) -> (Vec<f64>, f64, f64, usize) {
+    let (x, f) = fit_seeds(heads, world, pixels, old);
     let keep: Vec<usize> = pixel_errors(&f, pixels.len()).iter().enumerate().filter(|(_, e)| **e < REJECT_PX).map(|(i, _)| i).collect();
     let (x, f, kept) = if keep.len() < pixels.len() && keep.len() >= 40 {
-        let (x, f) = fit_seeds(&pick(heads, &keep), &pick(world, &keep), &pick(pixels, &keep));
+        let (x, f) = fit_seeds(&pick(heads, &keep), &pick(world, &keep), &pick(pixels, &keep), old);
         (x, f, keep.len())
     } else {
         (x, f, pixels.len())
     };
     let e = pixel_errors(&f, kept);
-    (x.as_slice().to_vec(), median(&e), percentile(&e, 90.0), kept)
+    (camera_of(&x, old), median(&e), percentile(&e, 90.0), kept)
+}
+
+/// The full camera from what fit_seeds solved: with an old camera its intrinsics come first, then the eye.
+fn camera_of(x: &DVector<f64>, old: Option<&[f64]>) -> Vec<f64> {
+    match old {
+        Some(o) => o[..4].iter().copied().chain(x.iter().copied()).collect(),
+        None => x.as_slice().to_vec(),
+    }
 }
 
 fn pick<T: Copy>(v: &[T], keep: &[usize]) -> Vec<T> {
     keep.iter().map(|&i| v[i]).collect()
 }
 
-/// One robust fit from each eye seed, and the better of the two (the smaller median).
-fn fit_seeds(heads: &[Matrix4<f64>], world: &[Vector3<f64>], pixels: &[[f64; 2]]) -> (DVector<f64>, DVector<f64>) {
-    // A flat board at one depth can't tell the eye's sideways offset from the principal point or the
-    // eye's yaw: each just shifts the whole image. So the fit is pinned by two weak priors, that the
-    // eye sits on the headset to a few milliradians and that the principal point is near the middle.
-    let res = |p: &DVector<f64>| {
-        let c = cam_points(p, heads, world);
+/// One robust fit from each eye seed, and the better of the two (the smaller median). The unknowns are
+/// the eye's rotation and offset, plus the intrinsics when there's no old camera.
+fn fit_seeds(heads: &[Matrix4<f64>], world: &[Vector3<f64>], pixels: &[[f64; 2]], old: Option<&[f64]>) -> (DVector<f64>, DVector<f64>) {
+    // With no old camera, a flat board at one depth can't tell the eye's sideways offset from the
+    // principal point or the eye's yaw: each just shifts the whole image. So then the fit is pinned by
+    // two weak priors, that the eye sits on the headset to a few milliradians and that the principal
+    // point is near the middle.
+    let res = |x: &DVector<f64>| {
+        let p = DVector::from_vec(camera_of(x, old));
+        let c = cam_points(&p, heads, world);
         let mut r: Vec<f64> = c.iter().zip(pixels).flat_map(|(c, q)| [c.x / c.z * p[0] + p[2] - q[0], c.y / c.z * p[1] + p[3] - q[1]]).collect();
-        r.extend((4..7).map(|i| p[i] * EYE_TILT_PX_PER_RAD));
-        r.extend([(p[2] - CENTRE_PX.0) * CENTRE_PRIOR, (p[3] - CENTRE_PX.1) * CENTRE_PRIOR]);
+        if old.is_none() {
+            r.extend((4..7).map(|i| p[i] * EYE_TILT_PX_PER_RAD));
+            r.extend([(p[2] - CENTRE_PX.0) * CENTRE_PRIOR, (p[3] - CENTRE_PX.1) * CENTRE_PRIOR]);
+        }
         DVector::from_vec(r)
     };
     let fits: Vec<(DVector<f64>, DVector<f64>)> = [EYE_SEED, -EYE_SEED].into_iter().map(|seed| {
-        let mut p0 = vec![1070.0, 1070.0, 960.0, 540.0];
-        p0.extend([0.0, 0.0, 0.0, seed, 0.0, 0.0]);
-        least_squares(&res, DVector::from_vec(p0), 2.0)
+        let x0 = match old {
+            Some(_) => vec![0.0, 0.0, 0.0, seed, 0.0, 0.0],
+            None => vec![1070.0, 1070.0, 960.0, 540.0, 0.0, 0.0, 0.0, seed, 0.0, 0.0],
+        };
+        least_squares(&res, DVector::from_vec(x0), 2.0)
     }).collect();
     fits.into_iter().min_by(|a, b| median(&pixel_errors(&a.1, pixels.len())).total_cmp(&median(&pixel_errors(&b.1, pixels.len())))).expect("two seeds")
 }
@@ -454,7 +472,7 @@ pub fn solve(job: &Value, out: &mut dyn FnMut(String)) -> Result<(), String> {
     let mon_of = |t: &Value| t["id"].as_i64().and_then(|i| by_id.get(&i)).map(|x| x.0);
 
     // 1. The mirror camera.
-    let (mut heads, mut world, mut pixels) = (vec![], vec![], vec![]);
+    let (mut heads, mut world, mut pixels, mut turn) = (vec![], vec![], vec![], vec![]);
     for shot in &vis {
         for t in shot["tags"].as_array().into_iter().flatten() {
             let Some((mi, fr)) = t["id"].as_i64().and_then(|i| by_id.get(&i)) else { continue };
@@ -469,13 +487,18 @@ pub fn solve(job: &Value, out: &mut dyn FnMut(String)) -> Result<(), String> {
                 heads.push(mat34(&shot["head"]));
                 world.push(c + x * p.x + y * p.y + z * p.z);
                 pixels.push(px);
+                turn.push(shot["head_moved"].as_f64().unwrap_or(f64::MAX));
             }
         }
     }
     let mut camera: Option<Vec<f64>> = job["camera"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect());
     let mut cam_note = "the last good one";
     if pixels.len() >= 40 {
-        let (p, med, p90, kept) = fit_camera(&heads, &world, &pixels);
+        // Only steady frames fit the camera: a head moving fast has a pose the tracking got wrong.
+        let steady: Vec<usize> = (0..pixels.len()).filter(|&i| turn[i] < CAMERA_FIT_TURN).collect();
+        let (h, w, q) = if steady.len() >= 40 { (pick(&heads, &steady), pick(&world, &steady), pick(&pixels, &steady)) } else { (heads.clone(), world.clone(), pixels.clone()) };
+        let old = camera.clone().filter(|c| c.len() == 10);
+        let (p, med, p90, kept) = fit_camera(&h, &w, &q, old.as_ref().map(|c| &c[..]));
         let off: Vec<f64> = p[7..10].iter().map(|v| round(v * 1000.0, 1)).collect();
         out(format!("# mirror camera from {} virtual tags ({} corners kept): f {:.0}/{:.0}, centre {:.0},{:.0}, eye offset {:?} mm, tilt {:.2} deg; median {med:.2} px, p90 {p90:.2} px",
             pixels.len() / 4, kept, p[0], p[1], p[2], p[3], off, Vector3::new(p[4], p[5], p[6]).norm().to_degrees(), ));
@@ -756,8 +779,52 @@ mod tests {
                 }
             }
         }
-        let (p, med, _, _) = fit_camera(&heads, &world, &pixels);
+        let (p, med, _, _) = fit_camera(&heads, &world, &pixels, None);
         assert!(med < 2.0 && (p[7] - 0.032).abs() < 0.002, "eye {:?} median {med}", &p[7..10]);
+    }
+
+    /// The refit with the old camera's intrinsics kept: the eye is +32 mm, the fit starts from -32 mm,
+    /// and some lean frames have their head poses wrong by about 100 px. The steady frames have to give
+    /// the eye back to within 2 mm, with a median under 2 px.
+    #[test]
+    fn refit_keeps_the_old_intrinsics() {
+        let old = [1078.3, 1075.3, 958.7, 537.0];
+        let k = K { fx: old[0], fy: old[1], cx: old[2], cy: old[3] };
+        let mut eye = Matrix4::identity();
+        eye[(0, 3)] = 0.032;
+        let mut seed = 5u64;
+        let mut noise = |sd: f64| {
+            let mut s = 0.0;
+            for _ in 0..12 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s += (seed >> 11) as f64 / (1u64 << 53) as f64;
+            }
+            (s - 6.0) * sd
+        };
+        let (mut heads, mut world, mut pixels) = (vec![], vec![], vec![]);
+        // (lean, the head pose error in x): the steady frames are right, the lean ones are ~0.09 m off.
+        for (lean, err) in [(-0.08, 0.0), (0.0, 0.0), (0.08, 0.0), (-0.08, 0.09), (0.08, -0.09)] {
+            for _ in 0..8 {
+                let mut head = Matrix4::identity();
+                head[(0, 3)] = lean + noise(0.001);
+                head[(1, 3)] = 1.5;
+                let cam = flip() * (head * eye).try_inverse().unwrap();
+                let mut seen = head;
+                seen[(0, 3)] += err;
+                for i in 0..6 {
+                    for j in 0..4 {
+                        let w = Vector3::new(-0.4 + 0.16 * i as f64, 1.5 - 0.24 + 0.16 * j as f64, -1.0);
+                        let c = apply(&cam, &w);
+                        heads.push(seen);
+                        world.push(w);
+                        pixels.push([c.x / c.z * k.fx + k.cx + noise(0.3), c.y / c.z * k.fy + k.cy + noise(0.3)]);
+                    }
+                }
+            }
+        }
+        let (p, med, _, kept) = fit_camera(&heads, &world, &pixels, Some(&old));
+        eprintln!("pinned: eye {:?} mm, f {:.1}/{:.1}, median {med:.2} px, kept {kept} of {}", p[7..10].iter().map(|v| v * 1000.0).collect::<Vec<_>>(), p[0], p[1], pixels.len());
+        assert!(med < 2.0 && (p[7] - 0.032).abs() < 0.002 && p[..4] == old, "eye {:?} median {med}", &p[7..10]);
     }
 
     /// How well a few seconds of one monitor pins down where it is, for entering a workspace in a new
