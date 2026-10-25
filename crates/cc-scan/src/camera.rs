@@ -1,8 +1,8 @@
 //! The VR mirror, read continuously by a thread so the newest frame is always at hand, like
-//! scan.py's Camera. The mirror is /dev/video99: SteamVR's v4l2cam forwards the left eye's view
-//! with passthrough, RGB3 1920x1080. It uses V4L2 mmap streaming, so frames (~86 a second) are
-//! taken and handed back without copying. Only a shot copies one. A failed take reopens the
-//! device, and after 10 s without a frame it gives up.
+//! scan.py's Camera. The mirror is /dev/video99: SteamVR's v4l2cam forwards one eye's view
+//! with passthrough (the left eye until 2026-10-24, the right since), RGB3 1920x1080. It uses V4L2
+//! mmap streaming, so frames (~86 a second) are taken and handed back without copying. Only a shot
+//! copies one. A failed take reopens the device, and after 10 s without a frame it gives up.
 use crate::image::Gray;
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
