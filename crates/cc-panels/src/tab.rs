@@ -5,8 +5,10 @@
 //! panels, no mice or keyboards, no laser, no action manifest. Its page is the Desktop's own tab
 //! (control/dashtab.rs) in its closed mode, where Show opens the Desktop.
 //!
-//! The two never fight over the tab's key: this one lets go of it as soon as a Desktop cc-panels
-//! runs, and makes it again once that's gone. The Desktop's tab tries every 2 s until it's free.
+//! The two never fight over the tab's key: a Desktop cc-panels holds an flock on
+//! /run/user/<uid>/control-center-desktop.lock for as long as it runs, and this one tries that
+//! lock every LOOK. It lets go of the tab the moment the lock's taken, and makes it again once
+//! it's free. The Desktop's tab tries every half second until the key's free.
 //!
 //! The manifest is registered once, at install (`--register-tab`, one OpenVR connection) while
 //! SteamVR runs, else by the Desktop's next start (`ensure_registered`, inside the connection it
@@ -18,6 +20,9 @@ use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// How often it looks at the Desktop's lock. A shared try and a let-go cost next to nothing.
+const LOOK: Duration = Duration::from_millis(250);
+
 /// Our app key in SteamVR, as the manifest says.
 pub const APP_KEY: &str = "controlcenter.tab";
 
@@ -26,20 +31,32 @@ pub fn manifest() -> PathBuf {
     crate::root().join("command-center.vrmanifest")
 }
 
-/// Whether a Desktop cc-panels (not one of these) is running, from /proc's command lines.
-fn desktop_running() -> bool {
-    let me = std::process::id();
-    let lines = std::fs::read_dir("/proc").into_iter().flatten().flatten().filter(|e| e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()).is_some_and(|p| p != me));
-    lines.filter_map(|e| std::fs::read(e.path().join("cmdline")).ok()).any(|c| is_desktop(&c))
+/// The Desktop's lock, which a Desktop cc-panels holds for as long as it runs (main.rs). It's in
+/// the Frame's own runtime dir, /run/user/<uid>, which this and the Desktop both see; the
+/// Desktop's nested session has a runtime dir of its own.
+pub fn desktop_lock() -> PathBuf {
+    PathBuf::from(format!("/run/user/{}/control-center-desktop.lock", unsafe { libc::getuid() }))
 }
 
-/// A NUL-separated command line that's cc-panels running the Desktop: its program is cc-panels
-/// and it isn't `--tab` or a one-off (`--assets`, `--register-tab`, `--unregister-tab`).
-fn is_desktop(cmdline: &[u8]) -> bool {
-    let mut args = cmdline.split(|&b| b == 0).filter(|a| !a.is_empty());
-    let Some(prog) = args.next() else { return false };
-    Path::new(std::str::from_utf8(prog).unwrap_or("")).file_name().is_some_and(|n| n == "cc-panels")
-        && !args.any(|a| a.starts_with(b"--tab") || a.starts_with(b"--assets") || a.ends_with(b"register-tab"))
+/// Takes the Desktop's lock for as long as the file stays open. It waits for it: this tab only
+/// ever holds it for the instant it takes to look.
+pub fn hold(path: &Path) -> Result<std::fs::File, String> {
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&f), libc::LOCK_EX) } != 0 {
+        return Err(format!("{}: {}", path.display(), std::io::Error::last_os_error()));
+    }
+    Ok(f)
+}
+
+/// Whether a Desktop holds its lock: try it shared without waiting, and let go at once.
+fn desktop_running(path: &Path) -> bool {
+    let Ok(f) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path) else { return false };
+    let fd = std::os::fd::AsRawFd::as_raw_fd(&f);
+    if unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) } != 0 {
+        return true;
+    }
+    unsafe { libc::flock(fd, libc::LOCK_UN) };
+    false
 }
 
 pub fn run() -> Result<(), String> {
@@ -58,7 +75,7 @@ pub fn run() -> Result<(), String> {
     let mut tab = Dashtab::new(&assets);
     tab.closed = true;
     let mut hand = crate::handoff::Handoff::default();
-    let (mut desktop, mut looked) = (false, None::<Instant>);
+    let (mut desktop, mut looked, lock) = (false, None::<Instant>, desktop_lock());
     eprintln!("tab: up");
     loop {
         let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
@@ -75,13 +92,19 @@ pub fn run() -> Result<(), String> {
                 _ => {}
             }
         }
-        if looked.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
-            (desktop, looked) = (desktop_running(), Some(Instant::now()));
+        if looked.is_none_or(|t| t.elapsed() >= LOOK) {
+            (desktop, looked) = (desktop_running(&lock), Some(Instant::now()));
         }
         if desktop {
             tab.release();
         } else {
             tab.tick(&mut hand);
+        }
+        if tab.quit {
+            tab.destroy();
+            vr::shutdown();
+            eprintln!("tab: closed from SteamVR's bar; SteamVR starts it again with itself next time");
+            return Ok(());
         }
         std::thread::sleep(Duration::from_millis(if tab.moving() { 11 } else { 100 }));
     }
@@ -137,13 +160,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_desktop_cc_panels_counts() {
-        assert!(is_desktop(b"/usr/lib/command-center/target/release/cc-panels\0--for\x000\x00"));
-        assert!(is_desktop(b"cc-panels\0"));
-        assert!(!is_desktop(b"/usr/lib/command-center/target/release/cc-panels\0--tab\0"), "this one");
-        assert!(!is_desktop(b"cc-panels\0--register-tab\0"));
-        assert!(!is_desktop(b"cc-panels\0--assets\0/x\0Noto Sans\0"));
-        assert!(!is_desktop(b"/usr/bin/cc-home\0panels\0"), "cc-home's wrapper isn't it");
-        assert!(!is_desktop(b""));
+    fn the_desktops_lock_says_whether_it_runs() {
+        let dir = std::env::temp_dir().join(format!("cc-tab-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("control-center-desktop.lock");
+        assert!(!desktop_running(&path), "nobody holds it");
+        let held = hold(&path).unwrap();
+        assert!(desktop_running(&path), "a Desktop holds it");
+        assert!(desktop_running(&path), "and looking doesn't take it from the Desktop");
+        drop(held);
+        assert!(!desktop_running(&path), "the Desktop's gone");
+        let again = hold(&path).unwrap(); // a look let go of its try, so a new Desktop gets it straight away
+        drop(again);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

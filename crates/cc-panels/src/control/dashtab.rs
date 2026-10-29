@@ -12,8 +12,8 @@
 //! It's made at start (`CreateDashboardOverlay`, key controlcenter.dashboard) and lives as long as
 //! cc-panels does, so unlike the other windows it has no card and no open/close. While the Desktop
 //! is closed, `cc-panels --tab` (tab.rs) shows the same tab in its `closed` mode, where Show opens
-//! the Desktop. Only one of them holds the key: the tab mode lets go as soon as the Desktop runs,
-//! and the Desktop's tab tries again every RETRY until it gets it. Its
+//! the Desktop. Only one of them holds the key: the tab mode lets go as soon as the Desktop takes
+//! its lock, and the Desktop's tab tries again every RETRY until it gets it. Its
 //! thumbnail is packaging/command-center.png. It's painted with the Preferences window's kit
 //! (ui.rs) and gets laser clicks as mouse events on its overlay, in the page's units.
 //!
@@ -45,7 +45,7 @@ pub const LABELS: [(&str, &str); 6] =
 /// How long the closed tab says it's opening the Desktop after Show.
 const OPENING: Duration = Duration::from_secs(60);
 /// How often making the tab is tried again while its key is taken (tab.rs letting go of it).
-const RETRY: Duration = Duration::from_secs(2);
+const RETRY: Duration = Duration::from_millis(500);
 
 /// SteamVR's dashboard is open (main.rs tells `dashboard`), so the tab is being looked at.
 static OPEN: AtomicBool = AtomicBool::new(false);
@@ -186,6 +186,7 @@ pub struct Dashtab {
     failed: bool,                         // the last try failed, so the next failure isn't logged again
     pub closed: bool,                     // tab.rs's mode: the Desktop isn't running
     opening: Option<Instant>,             // Show pressed in that mode
+    pub quit: bool,                       // ...and SteamVR's close pressed on it, so tab.rs ends
 
     ui: Arc<Ui>,
     hover: Option<Hit>,
@@ -201,6 +202,7 @@ impl Dashtab {
             failed: false,
             closed: false,
             opening: None,
+            quit: false,
             ui: Arc::new(Ui {
                 title: load("dash"),
                 names: ["dashdesktop", "dashinput"].map(load),
@@ -276,13 +278,21 @@ impl Dashtab {
     /// Laser events: hovering, and presses on a choice.
     fn events(&mut self, h: vr::Handle, hand: &mut Handoff) {
         let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut again = false;
         while call!(ov, PollNextOverlayEvent, h, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let m = unsafe { e.data.mouse };
             let at = hit(m.x as f64, from_top(H, m.y as f64)); // page units; events count from the bottom left
             match e.eventType {
                 sys::EVREventType_VREvent_MouseMove => self.hover = at,
                 sys::EVREventType_VREvent_FocusLeave => self.hover = None,
-                // SteamVR's close on the tab quits Command Center, the way it quits any overlay app
+                // SteamVR's close on the tab quits Command Center, the way it quits any overlay app.
+                // Only when you could have pressed it: the dashboard showing, on our tab. Any other
+                // close (a dashboard restart, say) makes the tab again and leaves the Desktop be.
+                sys::EVREventType_VREvent_OverlayClosed if !(call!(ov, IsDashboardVisible) && call!(ov, IsActiveDashboardOverlay, h)) => {
+                    eprintln!("dashboard tab: SteamVR closed it while it wasn't showing, so it's made again");
+                    again = true;
+                }
+                sys::EVREventType_VREvent_OverlayClosed if self.closed => self.quit = true, // tab.rs ends
                 sys::EVREventType_VREvent_OverlayClosed => crate::close_desktop("the dashboard tab's close"),
                 sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => match at {
                     Some(Hit(0, 0)) if self.closed => self.open_desktop(),
@@ -292,6 +302,9 @@ impl Dashtab {
                 },
                 _ => {}
             }
+        }
+        if again {
+            self.remake();
         }
     }
 
@@ -320,10 +333,15 @@ impl Dashtab {
     /// Lets go of the tab and its key (tab.rs, once the Desktop runs). The next tick makes it again.
     pub fn release(&mut self) {
         if self.ov.is_some() {
-            self.destroy();
-            (self.hover, self.painter, self.retry, self.opening) = (None, ui::Painter::default(), None, None);
+            self.remake();
             eprintln!("dashboard tab: handed to the Desktop");
         }
+    }
+
+    /// Destroys the tab so the next tick makes it anew.
+    fn remake(&mut self) {
+        self.destroy();
+        (self.hover, self.painter, self.retry, self.opening) = (None, ui::Painter::default(), None, None);
     }
 
     /// Show in the closed mode: starts the Desktop the way the launcher's tile does (cc-home desktop),

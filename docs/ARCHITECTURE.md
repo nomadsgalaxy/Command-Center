@@ -358,8 +358,12 @@ spot may be under its screen number, which saving removes.
 5. **While the Desktop is closed** (`tab.rs`): SteamVR starts `session/cc-tab` with itself, from
    `command-center.vrmanifest` (`is_dashboard_overlay`, auto-launch), and that's `cc-panels --tab`,
    the same `Dashtab` with `closed` set: Show runs `cc-home desktop` as a systemd unit on the host.
-   It looks in /proc each second, lets go of the key the moment a Desktop cc-panels runs, and makes
-   it again once that's gone. The Desktop's tab tries every 2 s until the key is free.
+   A Desktop cc-panels holds an flock on `/run/user/<uid>/control-center-desktop.lock` for as long
+   as it runs (`tab::hold`); the tab tries it, shared and without waiting, every 250 ms
+   (`desktop_running`), lets go of the key the moment it's taken and makes it again once it's free.
+   The Desktop's tab tries every 500 ms until the key is free. SteamVR's close on the tab counts
+   only while the dashboard shows our tab (`IsDashboardVisible`, `IsActiveDashboardOverlay`): then
+   it closes the Desktop, or ends the tab process; any other close just makes the tab again.
 6. **2D games.** A flat Steam game runs in gamescope (`--backend openvr`) as a SteamVR system
    overlay, so the scene process id stays 0. `handoff::start` runs a thread that reads
    GAMESCOPE_FOCUSED_APP from gamescope's X server on :0, with a small hand-written X11 client
