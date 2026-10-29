@@ -47,6 +47,11 @@ const TRANSFER_WRITE: u32 = 1 << 1;
 /// That's why the turn happens in 32-pixel tiles into a cached buffer first, and dst gets whole
 /// rows in order. Live, writing pixel by pixel straight into it made each desk-portrait upload
 /// take 80-300 ms.
+///
+/// # Safety
+/// `src` has to be readable for `h` rows of `w` 4-byte pixels, `src_stride` bytes apart, and `dst`
+/// writable for its rows the same way: `h` rows of `w` pixels `dst_stride` apart, or, turned, `w`
+/// rows of `h` pixels. The two mustn't overlap. Pixels needn't be aligned.
 pub unsafe fn copy_rect(src: *const u8, src_stride: usize, dst: *mut u8, dst_stride: usize, w: usize, h: usize, turned: bool) {
     if !turned {
         for y in 0..h {
@@ -85,8 +90,19 @@ pub unsafe fn copy_rect(src: *const u8, src_stride: usize, dst: *mut u8, dst_str
 static DEV: std::sync::atomic::AtomicPtr<GbmDevice> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
 pub fn device() -> Option<*mut GbmDevice> {
-    let fd = unsafe { libc::open(c"/dev/dri/renderD128".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
-    let dev = if fd >= 0 { unsafe { gbm_create_device(fd) } } else { std::ptr::null_mut() };
+    use std::os::fd::IntoRawFd;
+    // An OwnedFd, so a gbm_create_device that fails doesn't leave the render node open (RAWFD-001).
+    let fd = std::fs::OpenOptions::new().read(true).write(true).open("/dev/dri/renderD128").ok().map(std::os::fd::OwnedFd::from);
+    let dev = match fd {
+        Some(fd) => match unsafe { gbm_create_device(std::os::fd::AsRawFd::as_raw_fd(&fd)) } {
+            d if d.is_null() => std::ptr::null_mut(), // fd closes here
+            d => {
+                let _ = fd.into_raw_fd(); // the device keeps using it for as long as cc-panels runs
+                d
+            }
+        },
+        None => std::ptr::null_mut(),
+    };
     DEV.store(dev, std::sync::atomic::Ordering::Relaxed);
     (!dev.is_null()).then_some(dev)
 }
