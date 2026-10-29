@@ -82,12 +82,32 @@ enum Pick {
 }
 
 fn pick(current: Option<&str>, ours: &str) -> Pick {
-    match current {
-        Some(u) if u == ours => Pick::Ours,
-        None | Some("") => Pick::Default,
-        Some(u) if u.trim_start_matches("file://") == DEFAULT => Pick::Default,
+    match current.map(plain) {
+        None => Pick::Default,
+        Some(u) if u.is_empty() => Pick::Default,
+        Some(u) if u == plain(ours) => Pick::Ours,
+        Some(u) if u == plain(DEFAULT) => Pick::Default,
         Some(_) => Pick::Theirs,
     }
+}
+
+/// A binding's URL or path as a plain path: no `file://`, no doubled slashes, so the same file
+/// compares equal however SteamVR or we spell it.
+fn plain(u: &str) -> String {
+    let p = u.strip_prefix("file://").unwrap_or(u);
+    let mut out = String::with_capacity(p.len());
+    for c in p.chars() {
+        if !(c == '/' && out.ends_with('/')) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// SteamVR's build (/opt/steamvr/bin/version.txt), for the failed-select marker: a new SteamVR
+/// is worth one more try.
+fn steamvr_build() -> String {
+    fs::read_to_string("/opt/steamvr/bin/version.txt").map(|t| t.trim().to_string()).unwrap_or_default()
 }
 
 /// The Frame controller's current binding for the laser, from getactions' answer.
@@ -219,10 +239,11 @@ fn marker() -> PathBuf {
     PathBuf::from(crate::cache("bumper-select-failed"))
 }
 
-/// What a live select is for: the binding it selects, Valve's manifest version, and our file (FNV-1a).
-fn stamp(target: &str, version: u64, ours: &str) -> String {
+/// What a live select is for: the binding it selects, Valve's manifest version, our file (FNV-1a)
+/// and SteamVR's build.
+fn stamp(target: &str, version: u64, ours: &str, build: &str) -> String {
     let h = ours.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
-    format!("{target} {version} {h:016x}")
+    format!("{target} {version} {h:016x} {build}")
 }
 
 /// Whether to try a live select for `now` (a `stamp`), given the marker's text, if any.
@@ -256,6 +277,7 @@ fn select_once(target: &str, now: &str, by_hand: bool) -> Result<(), String> {
 /// select that failed before.
 pub fn apply(by_hand: bool) -> Result<(Done, String), String> {
     if !wanted() {
+        let _ = fs::remove_file(marker()); // turned on again later, it gets a fresh try
         return restore(by_hand).map(|(d, _)| (d, "the bumper stays left click (settings.json \"bumper_right_click\": false)".into()));
     }
     let default: Value = fs::read(DEFAULT).ok().and_then(|b| serde_json::from_slice(&b).ok()).ok_or(format!("{DEFAULT}: not there or not JSON, so the bumper stays as it is"))?;
@@ -276,7 +298,9 @@ pub fn apply(by_hand: bool) -> Result<(Done, String), String> {
         return match pick(current(&a), &u) {
             Pick::Ours => same("the bumper is right click on SteamVR's laser"),
             Pick::Theirs => same(THEIRS),
-            Pick::Default => select_once(&u, &stamp(&u, version, &text), by_hand).map(|_| (Done::Changed, "the bumper is right click on SteamVR's laser, now (one binding load)".into())),
+            Pick::Default => {
+                select_once(&u, &stamp(&u, version, &text, &steamvr_build()), by_hand).map(|_| (Done::Changed, "the bumper is right click on SteamVR's laser, now (one binding load)".into()))
+            }
         };
     }
     match edit_vrsettings(|v| {
@@ -291,13 +315,14 @@ pub fn apply(by_hand: bool) -> Result<(Done, String), String> {
 }
 
 /// At the Desktop's start: puts the binding back if it went (a steamreset, a deleted file), or
-/// takes ours out if it's been turned off. It only speaks when that changed something, or failed.
+/// takes ours out if it's been turned off. On a thread of its own, so a live select's readback
+/// (up to about 3 s) never holds up the start. It only speaks when that changed something, or failed.
 pub fn check() {
-    match apply(false) {
+    let _ = std::thread::Builder::new().name("cc-binding".into()).spawn(|| match apply(false) {
         Ok((Done::Changed, say)) => eprintln!("{say}"),
         Ok((Done::Unchanged, _)) => {}
         Err(e) => eprintln!("bumper right click: {e}"),
-    }
+    });
 }
 
 /// Undoes it: if the laser's selection is ours, back to Valve's default (through the web API while
@@ -310,7 +335,7 @@ pub fn restore(by_hand: bool) -> Result<(Done, String), String> {
         let a = actions()?;
         if pick(current(&a), &u) == Pick::Ours {
             let target = format!("file://{DEFAULT}");
-            select_once(&target, &stamp(&target, 0, &u), by_hand)?;
+            select_once(&target, &stamp(&target, 0, &u, &steamvr_build()), by_hand)?;
             done = (Done::Changed, "the bumper is left click again (one binding load)");
         }
     } else if edit_vrsettings(|v| {
@@ -382,17 +407,23 @@ mod tests {
         assert_eq!(pick(Some(mine), mine), Pick::Ours, "already ours: nothing to do, no binding load");
         assert_eq!(pick(Some("file:///home/x/steamvr/input/my_own.json"), mine), Pick::Theirs, "the user's: never replaced");
         assert_eq!(pick(None, mine), Pick::Default);
+        // ours as SteamVR reports a personal binding (getactions on the Frame: file:// plus the absolute path)
+        let reported = "file:///home/x/steamvr/input/openvr.component.vrcompositor_frame_controller.json";
+        assert_eq!(pick(Some(reported), "/home/x//steamvr/input/openvr.component.vrcompositor_frame_controller.json"), Pick::Ours, "spelled differently, the same file");
+        assert_eq!(pick(Some(DEFAULT), mine), Pick::Default, "Valve's as a bare path");
     }
 
     #[test]
     fn a_live_select_that_never_took_isnt_tried_again_by_itself() {
-        let now = stamp("file:///home/x/steamvr/input/ours.json", 0, "{ ours }");
+        let at = |v: u64, ours: &str, build: &str| stamp("file:///home/x/steamvr/input/ours.json", v, ours, build);
+        let now = at(0, "{ ours }", "1791331621");
         assert!(try_live(None, &now), "never tried: go");
         assert!(!try_live(Some(&now), &now), "it failed for exactly this: no more binding loads");
         assert!(!try_live(Some(&format!("{now}\n")), &now), "a trailing newline is the same");
-        assert!(try_live(Some(&stamp("file:///home/x/steamvr/input/ours.json", 1, "{ ours }")), &now), "Valve's manifest moved on: try again");
-        assert!(try_live(Some(&stamp("file:///home/x/steamvr/input/ours.json", 0, "{ ours, changed }")), &now), "our binding changed: try again");
-        assert!(try_live(Some(&stamp("file:///opt/steamvr/default.json", 0, "{ ours }")), &now), "a different target");
+        assert!(try_live(Some(&at(1, "{ ours }", "1791331621")), &now), "Valve's manifest moved on: try again");
+        assert!(try_live(Some(&at(0, "{ ours, changed }", "1791331621")), &now), "our binding changed: try again");
+        assert!(try_live(Some(&at(0, "{ ours }", "1791400000")), &now), "a new SteamVR: try again");
+        assert!(try_live(Some(&stamp("file:///opt/steamvr/default.json", 0, "{ ours }", "1791331621")), &now), "a different target");
     }
 
     #[test]
