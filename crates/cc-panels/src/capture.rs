@@ -85,6 +85,13 @@ impl Capture {
         Capture { tx }
     }
 
+    /// A Capture with no PipeWire thread, for tests (docs/vr-harness.md): what it's sent goes nowhere.
+    #[cfg(test)]
+    pub fn idle() -> Capture {
+        let (tx, _) = pw::channel::channel();
+        Capture { tx }
+    }
+
     /// Streams a node (from KWin's `created`) into a new Feed at up to `fps` frames a second.
     /// KWin holds back the rest. `name` labels its log lines.
     pub fn open(&self, key: u64, node: u32, name: &str, fps: u32) -> Arc<Feed> {

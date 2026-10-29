@@ -1147,7 +1147,7 @@ impl Grab {
     }
 
     /// `new` with the theater backdrop's overlay given, so a test can make one without SteamVR.
-    fn with_backdrop(n: usize, dim: vr::Handle) -> Grab {
+    pub(crate) fn with_backdrop(n: usize, dim: vr::Handle) -> Grab {
         let n = n + 1; // plus the Extra's slot
         Grab {
             drags: (0..n).map(|_| None).collect(),

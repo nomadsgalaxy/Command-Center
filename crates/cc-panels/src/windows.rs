@@ -547,6 +547,35 @@ impl Windows {
         }
     }
 
+    /// Windows without KWin, capture or a session, for the fake-SteamVR replays (docs/vr-harness.md):
+    /// the taskbar's events() takes one. Needs vr::fake installed, for Plasma's overlay.
+    #[cfg(test)]
+    pub fn for_test(first: usize) -> Windows {
+        let (_, sessions) = mpsc::channel();
+        Windows {
+            first,
+            slots: (0..SLOTS).map(|_| Slot::default()).collect(),
+            unslotted: Vec::new(),
+            session: None,
+            sessions,
+            kwin: kwin::Kwin::idle(),
+            cap: capture::Capture::idle(),
+            saved: Map::new(),
+            poses: Map::new(),
+            resumed: Map::new(),
+            seen: HashSet::new(),
+            lost: None,
+            density: 1400.0,
+            plasma: plasmabar::Plasma::new(),
+        }
+    }
+
+    /// Plasma's bar, for a replay to set up the way its tick() left it.
+    #[cfg(test)]
+    pub fn plasma_mut(&mut self) -> &mut plasmabar::Plasma {
+        &mut self.plasma
+    }
+
     fn slot_of(&self, uuid: &str) -> Option<usize> {
         (0..SLOTS).find(|&i| win(self.first + i).is_some_and(|w| w.uuid == uuid))
     }

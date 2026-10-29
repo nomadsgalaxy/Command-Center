@@ -126,6 +126,19 @@ pub fn state(key: &str, v: Value) {
     }
 }
 
+/// `state`, but only when it's changed since `key`'s last line (the taskbar's, made every frame).
+pub fn changed(key: &str, v: Value) {
+    static LAST: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
+    let mut last = LAST.lock().unwrap();
+    if last.iter().any(|(k, l)| k == key && *l == v) {
+        return;
+    }
+    last.retain(|(k, _)| k != key);
+    last.push((key.into(), v.clone()));
+    drop(last);
+    state(key, v);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

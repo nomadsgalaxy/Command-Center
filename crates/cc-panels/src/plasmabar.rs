@@ -593,9 +593,10 @@ impl Plasma {
     }
 
     /// The overlay as a placement line says tick() placed it.
-    fn replay_placed(&mut self, v: &Value) {
+    pub(crate) fn replay_placed(&mut self, v: &Value) {
         let rect = |k: &str| -> Rect { serde_json::from_value(v[k].clone()).unwrap() };
         let (c, p) = (rect("crop"), rect("panel"));
+        self.panel = Some(("replay".into(), p)); // what on_bar maps the frame's points through
         let b: [f32; 4] = serde_json::from_value(v["bounds"].clone()).unwrap();
         let world: Mat = serde_json::from_value(v["world"].clone()).unwrap();
         let (width, aspect, curve) = (v["width"].as_f64().unwrap(), v["aspect"].as_f64().unwrap(), v["curve"].as_f64().unwrap());

@@ -86,6 +86,13 @@ impl Kwin {
         Kwin { events, queue }
     }
 
+    /// A Kwin with no connection, for tests (docs/vr-harness.md): no events, and commands queue up unsent.
+    #[cfg(test)]
+    pub fn idle() -> Kwin {
+        let (_, events) = mpsc::channel();
+        Kwin { events, queue: Queue::default() }
+    }
+
     pub fn send(&self, cmd: Value) {
         self.queue.lock().unwrap().push(cmd);
         kick();

@@ -923,6 +923,11 @@ impl Taskbar {
         let mut k = crate::kvm::lock();
         k.bar = at.map(|(m, ..)| Placement::from_matrix(&m, w * self.mpp, h / w, r));
         k.bar_inset = REACH * self.mpp; // for the cursor; the clear reach does nothing for it
+        drop(k);
+        if crate::trace::on() {
+            let v = serde_json::json!({"bar": at.map(|(m, ..)| m), "width": w * self.mpp, "aspect": h / w, "curve": r, "plasma": windows.plasma_size()});
+            crate::trace::changed("taskbar", v);
+        }
         self.moving = self.hold.is_some() || self.hover.is_some() || (self.placed, self.alpha) != before;
     }
 
@@ -1304,10 +1309,95 @@ impl Taskbar {
     }
 }
 
+/// Replays a trace (trace.rs) through the real events() and the fake SteamVR (vr::fake), the
+/// taskbar's side of plasmabar.rs's Plasma::replay: its lines set the frame and Plasma's bar up
+/// as their ticks left them, and each taskbar pass's events go through in one go
+/// (docs/vr-harness.md). The frame is laid out with Plasma's bar and no chips, since the trace
+/// doesn't carry them.
+#[cfg(test)]
+impl Taskbar {
+    fn replay(&mut self, trace: &str, grab: &mut grab::Grab, windows: &mut Windows) {
+        let lines: Vec<serde_json::Value> = trace.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+        let mut i = 0;
+        while i < lines.len() {
+            let l = &lines[i];
+            i += 1;
+            if let Some(v) = l.get("taskbar") {
+                let plasma: Option<(f64, f64)> = serde_json::from_value(v["plasma"].clone()).ok().flatten();
+                self.frame = frame(plasma, &[]);
+                let bar: Option<Mat> = serde_json::from_value(v["bar"].clone()).ok().flatten();
+                let (width, aspect, curve) = (v["width"].as_f64().unwrap(), v["aspect"].as_f64().unwrap(), v["curve"].as_f64().unwrap());
+                crate::kvm::lock().bar = bar.map(|m| Placement::from_matrix(&m, width, aspect, curve));
+            } else if let Some(v) = l.get("plasma") {
+                windows.plasma_mut().replay_placed(v);
+            } else if let Some((dev, m)) = crate::trace::pose_from(l) {
+                let mut s = vr::fake::SCRIPT.lock().unwrap();
+                let s = s.get_or_insert_with(Default::default);
+                s.poses.retain(|p| p.0 != dev);
+                s.poses.extend(m.map(|m| (dev, m)));
+            } else if l["tick"] == "taskbar" {
+                while i < lines.len() && lines[i].get("tick").is_none() && lines[i].get("taskbar").is_none() && lines[i].get("plasma").is_none() {
+                    if lines[i]["ev"] == "taskbar"
+                        && let Some(e) = crate::trace::event_from(&lines[i])
+                    {
+                        vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).events.push_back(e);
+                    }
+                    i += 1;
+                }
+                self.events(grab, windows);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::geometry::bend;
+
+    #[test]
+    fn a_laser_on_plasmas_bar_through_the_frame_replays_onto_the_panel() {
+        use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
+        let _vr = vr::fake::install(vr::fake::Script::default());
+        let dir = std::env::temp_dir().join(format!("cc-taskbar-replay-{}", std::process::id()));
+        let mut bar = Taskbar::new(dir.to_str().unwrap()); // no assets there: no labels, which events() doesn't need
+        let mut windows = Windows::for_test(0);
+        let mut grab = grab::Grab::with_backdrop(0, 0);
+        crate::windows::SHELL_SENT.lock().unwrap().clear();
+        // Plasma's 891x50 bar in the frame's well, nothing open, and the frame in the room
+        let panel = [514, 1770, 891, 50];
+        let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let f = frame(Some((891.0, 50.0)), &[]);
+        let plasma = serde_json::json!({"crop": panel, "panel": panel, "bounds": [0.0, 0.0, 1.0, 1.0], "world": m, "width": 891.0 * MPP, "aspect": 50.0 / 891.0, "curve": 0.0, "clickable": false});
+        let taskbar = serde_json::json!({"bar": m, "width": f.w * MPP, "aspect": f.h / f.w, "curve": 0.0, "plasma": [891, 50]});
+        // a laser with no pose (the frame's own point counts) a tenth of the way along the bar, halfway up
+        let r = f.well.unwrap();
+        let (x, y) = (r[0] + 0.1 * r[2], f.h - (r[1] + 0.5 * r[3])); // events count from the bottom left
+        let ev = |t: u32| {
+            let mut e: vr::VREvent_t = Default::default();
+            (e.eventType, e.trackedDeviceIndex) = (t, 3);
+            e.data.mouse = sys::VREvent_Mouse_t { x: x as f32, y: y as f32, button: sys::EVRMouseButton_VRMouseButton_Left, cursorIndex: 0 };
+            crate::trace::event_line("taskbar", &e).to_string()
+        };
+        let trace = [
+            serde_json::json!({ "plasma": plasma }).to_string(),
+            serde_json::json!({ "taskbar": taskbar }).to_string(),
+            serde_json::json!({"tick": "taskbar"}).to_string(),
+            ev(sys::EVREventType_VREvent_MouseMove),
+            ev(sys::EVREventType_VREvent_MouseButtonDown),
+            ev(sys::EVREventType_VREvent_MouseButtonUp),
+        ]
+        .join("\n");
+        bar.replay(&trace, &mut grab, &mut windows);
+        let sent = std::mem::take(&mut *crate::windows::SHELL_SENT.lock().unwrap());
+        let flags: Vec<u32> = sent.iter().map(|s| s.0).collect();
+        assert_eq!(flags, [PTR_FLAGS_MOVE, PTR_FLAGS_BUTTON1 | PTR_FLAGS_DOWN, PTR_FLAGS_BUTTON1], "a move, the press, its release: {sent:?}");
+        let want = (514.0 + 0.1 * 890.0, 1770.0 + 0.5 * 49.0);
+        for (_, at) in &sent {
+            let at = at.unwrap();
+            assert!((at.0 - want.0).abs() < 1.0 && (at.1 - want.1).abs() < 1.0, "{at:?}, the bar's point is {want:?}");
+        }
+    }
 
     const PLASMA: (f64, f64) = (891.0, 50.0); // Plasma's floating panel as measured
 

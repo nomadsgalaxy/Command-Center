@@ -58,11 +58,22 @@ open, a laser's move, press and release on an item, and the press lands on the i
 the headset becomes a test the same way. Put the lines in a test, replay them, and assert on
 `SHELL_SENT`.
 
+## The taskbar's loop
+
+`Taskbar::replay(trace, grab, windows)` does the same for the taskbar's `events()`. The trace's
+`{"taskbar":{"bar":…,"width":…,"aspect":…,"curve":…,"plasma":[w,h]}}` lines (written when the
+frame's placement changes) lay the frame out around Plasma's bar and set Kvm's placement of it.
+Its `plasma` lines set Plasma's bar up through `windows`. It needs a `Windows`, and
+`Windows::for_test` makes one with no KWin connection, no screen capture and no session
+(`Kwin::idle`, `Capture::idle`). `Grab::with_backdrop(n, 0)` makes the grab side without SteamVR.
+
+`a_laser_on_plasmas_bar_through_the_frame_replays_onto_the_panel` is its first test: a laser with
+no pose on the frame over Plasma's bar moves, presses and releases on the bar's point.
+
 ## Not done yet
 
-- **The taskbar's loop.** Its `events()` records the same way, but replaying it needs a `Windows`
-  (it hands Plasma's events on through it), and `Windows::start` starts the KWin connection,
-  screen capture and the session's discovery thread. The next step is a `Windows` for tests
-  without those, then `Taskbar::replay`. grab.rs and osk.rs come after, the same way.
+- **Chips.** The trace doesn't carry the taskbar's chips, so a replayed frame has Plasma's bar and
+  no chips. A chip bug needs the chips' widths in the `taskbar` line.
+- **grab.rs and osk.rs**, the same way, after that.
 - **CI.** The replay tests are ordinary cc-panels tests, so they run in its CI job, which doesn't
   block a merge yet (docs/ci.md).
