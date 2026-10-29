@@ -157,10 +157,6 @@ fn read(p: &Path) -> Option<String> {
     std::fs::read_to_string(p).ok().map(|s| s.trim_end_matches('\n').to_owned())
 }
 
-fn valid_frame(f: &str) -> bool {
-    cc_proto::server::valid_name(f)
-}
-
 fn notify(text: &str) {
     if have("notify-send") {
         let _ = run("notify-send", &["-a", "Command Center", "Command Center", text]);
@@ -1320,7 +1316,7 @@ fn frame_run(e: &Env, inst: &str) -> i32 {
         eprintln!("bad instance: {inst}");
         return 2;
     };
-    if !valid_frame(f) || m.len() != 1 || !m.bytes().all(|b| b.is_ascii_digit()) {
+    if !cc_proto::server::valid_name(f) || m.len() != 1 || !m.bytes().all(|b| b.is_ascii_digit()) {
         eprintln!("bad instance: {inst}");
         return 2;
     }
@@ -1350,7 +1346,7 @@ fn window_run(e: &Env, inst: &str) -> i32 {
     let (rest, uuid) = inst.split_at(inst.len() - 36);
     let Some(rest) = rest.strip_suffix('-') else { return bad() };
     let Some((f, k)) = rest.rsplit_once('-') else { return bad() };
-    if !valid_frame(f) || !matches!(k, "0" | "1" | "2" | "3" | "4") || !crate::work::valid_uuid(&format!("{{{uuid}}}")) || uuid.chars().any(|c| c.is_ascii_uppercase()) {
+    if !cc_proto::server::valid_name(f) || !matches!(k, "0" | "1" | "2" | "3" | "4") || !crate::work::valid_uuid(&format!("{{{uuid}}}")) || uuid.chars().any(|c| c.is_ascii_uppercase()) {
         return bad();
     }
     if !e.dir.join("windows-on").exists() {
@@ -1408,7 +1404,7 @@ fn windows_cmd(e: &Env, what: &str) -> i32 {
 }
 
 fn unpair(e: &Env, f: &str, flag: &str) -> i32 {
-    if !valid_frame(f) {
+    if !cc_proto::server::valid_name(f) {
         eprintln!("usage: cc-share unpair <frame>  (cc-share frames lists them)");
         return 2;
     }
