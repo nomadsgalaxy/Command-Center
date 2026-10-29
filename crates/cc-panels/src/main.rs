@@ -31,6 +31,7 @@ mod kvm;
 mod kwin;
 mod laser;
 mod limits;
+mod notify;
 mod osk;
 mod overlay;
 mod plasmabar;
@@ -1170,6 +1171,7 @@ fn run() -> Result<(), String> {
         prefs.tick(&mut grab, &mut windows, &mut bar);
         laps.lap("prefs");
         dashtab.tick(&mut hand);
+        notify::tick(dashtab.page());
         laps.lap("dashtab");
         workspace_win.tick(&mut grab, &mut windows, &mut bar);
         laps.lap("workspace");

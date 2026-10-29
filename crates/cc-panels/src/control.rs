@@ -39,6 +39,9 @@
 //!   hud hide  hides both
 //!   taskbar [fixed|follow|wrist]   sets the taskbar's placement, now and in settings.json
 //!                (with no argument: "ok <placement>")
+//!   notify test [text]   sends a notification the way pairing and host health do (notify.rs: the
+//!                Frame's user bus, or SteamVR's toast if that refuses it)
+//!   notify toast [text]   shows SteamVR's own toast straight away, the fallback on its own
 //!   quit      closes Desktop, same as the taskbar's power chip or Right Ctrl + Esc. cc-panels ends
 //!                and the desktop session stops (session/cc-rest; programs named in `rest_nice` keep running at nice 10).
 //!                The next open restores your apps but not their contents (cc-home hibernate)
@@ -400,6 +403,18 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
                 None => "error usage: taskbar fixed|follow|wrist".into(),
             },
         },
+        Some("notify") => match words.get(1..) {
+            Some(["toast", text @ ..]) => {
+                crate::notify::toast(&or_test(text));
+                "ok".into()
+            }
+            Some(["test", text @ ..]) => {
+                let t = or_test(text);
+                crate::notify::send(&format!("test {t}"), &t); // a test says the same thing at most every 30 s, like any subject
+                "ok sent: it shows unless settings.json has notifications off, and the log says if the bus refused it".into()
+            }
+            _ => "error usage: notify test|toast [text]".into(),
+        },
         Some("quit") => {
             crate::close_desktop("control");
             "ok quitting".into()
@@ -410,6 +425,11 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
         },
         _ => "error unknown command".into(),
     }
+}
+
+/// The words after `notify test|toast`, or a line saying it's a test.
+fn or_test(words: &[&str]) -> String {
+    if words.is_empty() { "Command Center: a test notification".into() } else { words.join(" ") }
 }
 
 #[cfg(test)]

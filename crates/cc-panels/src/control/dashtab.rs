@@ -197,6 +197,11 @@ impl Dashtab {
     }
 
     /// Every frame: makes the tab the first time, then handles its events and draws it.
+    /// The tab's page overlay, once it's made (notify.rs hangs SteamVR's toasts off it).
+    pub fn page(&self) -> Option<vr::Handle> {
+        self.ov.map(|(h, _)| h)
+    }
+
     pub fn tick(&mut self, hand: &mut Handoff) {
         if self.ov.is_none() && !self.tried {
             self.tried = true;

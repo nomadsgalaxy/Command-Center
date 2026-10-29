@@ -97,6 +97,8 @@ demand: panels stay free to move.
   cc-home refit                           fit the VR mirror camera again from a tag board shown 1 m ahead
                                           (look at it from three spots); kept only if it fits well
   cc-home selftest                        check the geometry
+  cc-home notify-test [toast] [text]      send a test notification to the headset the way pairing and
+                                          host health do, or with `toast` SteamVR's own toast
 
 Saved in ~/.config/control-center/home.json, per workspace. If SteamVR's room origin moves (room setup
 redone), save or calibrate again."#;
@@ -319,6 +321,20 @@ impl Panels {
             .map_err(|e| format!("cc-panels didn't answer ({})", py_err(&e)))?;
         let reply = String::from_utf8_lossy(&buf[..n]).into_owned();
         if reply.starts_with("ok") { Ok(reply) } else { Err(reply) }
+    }
+}
+
+/// `notify-test [toast] [text]`: asks cc-panels for a test notification (control.rs `notify`).
+fn notify_test(args: &[&str]) {
+    let (how, text) = match args.split_first() {
+        Some((&"toast", rest)) => ("toast", rest),
+        _ => ("test", args),
+    };
+    let Some(p) = panels_socket() else { die("cc-panels isn't running: open the Desktop first") };
+    let cmd = format!("notify {how} {}", text.join(" "));
+    match p.ask(cmd.trim_end(), 2.0) {
+        Ok(r) => println!("{}", r.trim_start_matches("ok").trim()),
+        Err(e) => die(e),
     }
 }
 
@@ -815,6 +831,7 @@ fn main() {
         ("calibrate", 1..) => scan::calibrate(args[0], args.get(1).copied().unwrap_or("any")),
         ("refit", _) => scan::refit(),
         ("selftest", _) => selftest(),
+        ("notify-test", _) => notify_test(args),
         _ => usage(),
     }
 }

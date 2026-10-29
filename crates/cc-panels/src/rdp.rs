@@ -244,6 +244,24 @@ pub fn host_health(status: &serde_json::Value, index: u32) -> u8 {
     }
 }
 
+/// Sets what the host says of p's server, with a notification when that changes (notify.rs).
+fn set_health(p: &Panel, h: u8) {
+    let was = p.host_health.swap(h, Relaxed);
+    if let Some(t) = health_note(&p.v.name, was, h) {
+        crate::notify::send(&format!("health {}", p.v.name), &t);
+    }
+}
+
+/// What to say when a monitor's host health goes from was to now, if anything.
+fn health_note(name: &str, was: u8, now: u8) -> Option<String> {
+    match (was, now) {
+        _ if was == now => None,
+        (_, HOST_DOWN) => Some(format!("{name}: its computer stopped sharing this screen. Command Center asks again in 5 minutes, or press Connect.")),
+        (_, HOST_DEGRADED) => Some(format!("{name}: its computer's screen sharing keeps restarting.")),
+        _ => Some(format!("{name} is back.")),
+    }
+}
+
 /// After a failed start, asks the agent why, at most every 30 s, so the machines window can say the
 /// host's server is broken instead of the panel retrying quietly.
 fn ask_health(p: &Panel, last: &mut Option<std::time::Instant>) {
@@ -253,9 +271,10 @@ fn ask_health(p: &Panel, last: &mut Option<std::time::Instant>) {
     *last = Some(std::time::Instant::now());
     if let Ok(st) = agent(crate::config::machine_of(&p.v), "status", serde_json::json!({})) {
         let h = host_health(&st, (p.v.port - 3400) % 10);
-        if p.host_health.swap(h, Relaxed) != h && h != HOST_OK {
+        if p.host_health.load(Relaxed) != h && h != HOST_OK {
             eprintln!("{}: its host says its server is {}", p.v.name, if h == HOST_DOWN { "down (it gave up restarting)" } else { "restarting again and again" });
         }
+        set_health(p, h);
     }
 }
 
@@ -363,13 +382,14 @@ pub fn run(p: &'static Panel) {
         let port = match session(p, true) {
             Ok(n) => {
                 (said, changed) = (false, false);
-                p.host_health.store(HOST_OK, Relaxed);
+                set_health(p, HOST_OK);
                 n
             }
             // another key at its address: we never connect unpinned, so not until it's paired again
             Err(why) if why == "host-changed" => {
                 if !std::mem::replace(&mut changed, true) {
                     eprintln!("{}: host changed: pair again", p.v.name);
+                    crate::notify::send(&format!("host-changed {}", p.v.name), &format!("{}: a different computer answers at its address. Pair it again in Machines.", p.v.name));
                 }
                 if pop {
                     return crate::popout::failed(p, &why);
@@ -380,7 +400,8 @@ pub fn run(p: &'static Panel) {
             // Its host's server gave up. Asking every few seconds would restart it and fail again,
             // so wait (DOWN_RETRY, or until Connect), showing it as down meanwhile.
             Err(why) if why == "down" && !pop => {
-                if p.host_health.swap(HOST_DOWN, Relaxed) != HOST_DOWN {
+                if p.host_health.load(Relaxed) != HOST_DOWN {
+                    set_health(p, HOST_DOWN);
                     eprintln!("{}: its host's server gave up; asking again in {} min, or at Connect", p.v.name, DOWN_RETRY.as_secs() / 60);
                 }
                 let t0 = std::time::Instant::now();
@@ -616,6 +637,10 @@ mod tests {
             {"index": 0, "health": "ok"}, {"index": 1, "health": "down", "restarts": 5}, {"index": 2, "health": "degraded"}]});
         assert_eq!((host_health(&st, 0), host_health(&st, 1), host_health(&st, 2)), (HOST_OK, HOST_DOWN, HOST_DEGRADED));
         assert_eq!(host_health(&st, 3), HOST_OK, "a monitor it doesn't list");
+        assert_eq!(health_note("desk", HOST_OK, HOST_OK), None);
+        assert!(health_note("desk", HOST_OK, HOST_DOWN).is_some_and(|t| t.starts_with("desk: its computer stopped")));
+        assert!(health_note("desk", HOST_DOWN, HOST_DEGRADED).is_some_and(|t| t.contains("keeps restarting")));
+        assert_eq!(health_note("desk", HOST_DEGRADED, HOST_OK).as_deref(), Some("desk is back."));
         assert_eq!(host_health(&serde_json::json!({"ok": true}), 0), HOST_OK, "an older agent says nothing");
     }
 }

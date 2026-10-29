@@ -85,6 +85,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `surface.rs` | The surface registry: every overlay we place, listed once with its kind, what its place is relative to (`Anchor`), where it's saved (`Store`) and how it's moved (`Manip`). Everything is made through `surface::create` and destroyed through `surface::destroy`, and a test reads the sources to keep it that way. `surfaces` on the control socket prints it. A record of today, not a new mechanism. |
 | `grab.rs` | Each panel's card (Breeze-like frame, tabs, grab bar, knobs): drawing, hit-testing, carrying, resizing, curving, snap-back, the `Extra` slot the control windows share, saving the "home" spot on release. |
 | `osk.rs` | SteamVR's keyboard for typing to a panel from a controller (the card's keyboard button). |
+| `notify.rs` | Notifications: pairing results, errors and host health, sent to org.freedesktop.Notifications on the Frame's main user bus (thread `cc-notify`), rate-limited, with SteamVR's toast as the fallback. |
 | `back.rs` | Dim backs for panels seen from behind, one flat overlay each. |
 | `kvm.rs` | Our mice and keyboards (evdev grab, `input_loop` thread `cc-input`): the 3D pointer ray (`mv`, `land`), click to type (`set_engaged`, `type_to`), Right Ctrl chords, gaze lock, text fields for the control windows. |
 | `laser.rs` | The SteamVR laser off our panels: which hand to lease, raw-space poses, the lease protocol to cc_pointer (`lease_thread`, thread `cc-lease`), `Beam` for the dot. |

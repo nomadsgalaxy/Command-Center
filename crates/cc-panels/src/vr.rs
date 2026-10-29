@@ -12,7 +12,8 @@ pub struct Vr {
     pub ipc: &'static sys::VR_IVRIPCResourceManagerClient_FnTable,
     pub input: &'static sys::VR_IVRInput_FnTable,
     pub rm: &'static sys::VR_IVRRenderModels_FnTable,
-    pub apps: &'static sys::VR_IVRApplications_FnTable, // only for GetCurrentSceneProcessId (taskbar.rs)
+    pub apps: &'static sys::VR_IVRApplications_FnTable,           // only for GetCurrentSceneProcessId (taskbar.rs)
+    pub notes: Option<&'static sys::VR_IVRNotifications_FnTable>, // SteamVR's toasts (notify.rs); start-up doesn't need it
 }
 
 static VR: OnceLock<Vr> = OnceLock::new();
@@ -50,6 +51,7 @@ pub fn init() -> Result<(), String> {
         input: table(sys::IVRInput_Version)?,
         rm: table(sys::IVRRenderModels_Version)?,
         apps: table(sys::IVRApplications_Version)?,
+        notes: table(sys::IVRNotifications_Version).ok(),
     };
     let _ = VR.set(vr);
     Ok(())

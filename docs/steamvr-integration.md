@@ -41,3 +41,29 @@ What it can't do:
 The text fields in the Machines and Workspace windows open SteamVR's keyboard when you click
 them. If you've pressed a key on a real keyboard in the last minute, they don't, and the real
 keyboard types into the field instead.
+
+## Notifications
+
+Command Center tells you in the headset when:
+
+- a pairing worked, or didn't, and why;
+- something in the Machines window failed (adding, removing or renaming a machine);
+- a computer stopped sharing a screen (it gave up restarting it), keeps restarting it, or is back;
+- a different computer answers at a paired machine's address, so it needs pairing again.
+
+They're ordinary desktop notifications, sent to Steam's own notification service on the Frame
+(org.freedesktop.Notifications on your user bus), the same way other apps on the device notify
+you. If that service doesn't answer, the note shows as a SteamVR toast instead.
+
+They don't pile up. One thing, like a screen's health, says something at most every 30 seconds,
+and if it changes again meanwhile you get only the latest. No more than four go out in a minute.
+
+To turn them off, add this to `~/.config/control-center/settings.json` (it applies straight away):
+
+```json
+{ "notifications": false }
+```
+
+Whether they show in the headset hasn't been checked on every SteamOS version yet. To try it,
+open the Desktop and run `cc-home notify-test` for a notification, or `cc-home notify-test toast`
+for SteamVR's toast on its own.

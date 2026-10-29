@@ -1212,6 +1212,7 @@ impl Machines {
                 (Job::Pair(name), Err(e)) => {
                     self.status = pair_status(&self.pair_state, Some(&e));
                     eprintln!("machines: pairing with {name}: {}", self.status);
+                    crate::notify::send("pairing", &format!("Pairing with {name} didn't work: {}", self.status));
                 }
                 // its tags got drawn or not (it shows without them)
                 (Job::Paired(names), _) => {
@@ -1241,7 +1242,10 @@ impl Machines {
                     self.status = format!("moved everything with {m}");
                     eprintln!("machines: {}", self.status);
                 }
-                (_, Err(e)) => self.status = e,
+                (_, Err(e)) => {
+                    crate::notify::send("machines", &format!("Machines: {e}"));
+                    self.status = e;
+                }
                 (Job::Set | Job::Line(_), Ok(())) => {}
             }
             if self.pending == 0 {
@@ -1712,6 +1716,7 @@ impl Machines {
             self.status = "paired; cc-home didn't say which host".into();
             return;
         };
+        crate::notify::send("pairing", &format!("Paired with {host}."));
         let vs: Vec<_> = config::viewers(&[]).into_iter().filter(|v| v.machine == machine).collect();
         // a live panel's viewer is fixed at start, so a line cc-home re-aimed (another slot) needs a restart
         if vs.iter().any(|v| panels().iter().any(|p| p.used() && p.v.name == v.name && (&p.v.user, &p.v.host, p.v.port) != (&v.user, &v.host, v.port))) {
