@@ -79,6 +79,8 @@ pub struct Kwin {
 
 impl Kwin {
     pub fn start() -> Kwin {
+        #[cfg(test)]
+        assert!(!crate::vr::fake::on(), "a replay can't connect to KWin (Kwin::idle)");
         let (tx, events) = mpsc::channel();
         let queue = Queue::default();
         let q = queue.clone();

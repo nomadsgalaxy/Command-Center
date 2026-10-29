@@ -308,6 +308,13 @@ pub mod fake {
     }
 
     pub static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
+    /// The fake's been put in place: from then on this test process has no real SteamVR, and
+    /// Windows::start, Kwin::start and Capture::start refuse to run.
+    static ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    pub fn on() -> bool {
+        ON.load(std::sync::atomic::Ordering::Relaxed)
+    }
     /// Held by a test for as long as it uses the fake, since there's one SteamVR per process.
     pub static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
@@ -365,9 +372,13 @@ pub mod fake {
     }
 
     /// Puts the fake in place of SteamVR, once for the process, and starts `s` as its script.
-    /// Returns the guard that keeps other fake-SteamVR tests out until it drops.
+    /// Returns the guard that keeps other fake-SteamVR tests out until it drops. VR is a OnceLock,
+    /// and no test calls vr::init (it needs vrserver), so the fake is the only thing ever set in
+    /// it; each install replaces the last test's script. Use trace::fake_vr, which also clears
+    /// what a replay leaves outside the script.
     pub fn install(s: Script) -> std::sync::MutexGuard<'static, ()> {
         let guard = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        ON.store(true, std::sync::atomic::Ordering::Relaxed);
         fn leak<T>(t: T) -> &'static T {
             Box::leak(Box::new(t))
         }

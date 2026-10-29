@@ -76,6 +76,8 @@ pub struct Capture {
 
 impl Capture {
     pub fn start() -> Capture {
+        #[cfg(test)]
+        assert!(!crate::vr::fake::on(), "a replay can't start PipeWire capture (Capture::idle)");
         let (tx, rx) = pw::channel::channel();
         std::thread::spawn(move || {
             if let Err(e) = pw_thread(rx) {

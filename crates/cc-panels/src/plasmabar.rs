@@ -559,6 +559,12 @@ impl Plasma {
     }
 }
 
+/// Clears the crop a replay left (trace::fake_vr).
+#[cfg(test)]
+pub fn reset_for_test() {
+    *CROP.lock().unwrap() = None;
+}
+
 /// Replays a trace (trace.rs) through the real events() and the fake SteamVR (vr::fake): each
 /// placement line sets the overlay up as tick() left it, and each tick's events and poses go
 /// through events() in one pass, the way they were polled (docs/vr-harness.md).
@@ -615,9 +621,8 @@ mod tests {
 
     #[test]
     fn a_recorded_trace_replays_through_the_real_event_loop() {
-        let _vr = vr::fake::install(vr::fake::Script::default());
+        let _vr = crate::trace::fake_vr();
         let mut p = Plasma::new();
-        windows::SHELL_SENT.lock().unwrap().clear();
         // Kickoff open over the bar on WL-0, as plasmabar's tick() would record it
         let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
         let b = bounds(grown, WL0);
@@ -630,7 +635,7 @@ mod tests {
             let mut e: vr::VREvent_t = Default::default();
             (e.eventType, e.trackedDeviceIndex) = (t, 3);
             e.data.mouse = sys::VREvent_Mouse_t { x: x as f32, y: y as f32, button: sys::EVRMouseButton_VRMouseButton_Left, cursorIndex: 0 };
-            crate::trace::event_line("plasma", &e).to_string()
+            crate::trace::event_line("plasma", &e).unwrap().to_string()
         };
         let trace = [
             serde_json::json!({ "plasma": placed }).to_string(),

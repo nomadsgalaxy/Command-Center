@@ -24,8 +24,15 @@ they didn't cover is the event path, polling and the laser's pose, and that's wh
 `fake::install` returns a guard, since there's one SteamVR per process, so fake-SteamVR tests take
 turns.
 
-What the loop sends on goes to `windows::SHELL_SENT` in tests (every `shell_mouse` call: its
-flags and point), so a test can check where a laser's press landed.
+In tests, `shell_mouse` puts its flags and point on `windows::SHELL_SENT` and returns: nothing
+goes to a session or fake input. Once the fake is in, `Windows::start`, `Kwin::start` and
+`Capture::start` panic, so a replay can't connect to KWin, start capture or a session, or send
+real input (a test checks all four).
+
+`trace::fake_vr()` is what a replay test calls. It installs the fake with an empty script, clears
+what the last replay left (Plasma's crop, Kvm's placements of both bars, `SHELL_SENT`), and
+returns the guard. `VR` is a `OnceLock` and no test ever calls `vr::init`, which needs vrserver,
+so the fake is the only thing set in it, and each install replaces the last script.
 
 ## Recording a trace
 
@@ -33,15 +40,23 @@ With `~/.cache/control-center/vr-trace` there when cc-panels starts (`touch` it,
 Desktop), cc-panels writes `~/.cache/control-center/vr-trace.jsonl` (`trace.rs`), up to 64 MB.
 Each line is one JSON object:
 
-- `{"tick":"plasma"}` or `{"tick":"taskbar"}`: an events() pass starting.
-- `{"ev":"plasma","type":…,"dev":…,"age":…,"data":[6 numbers],"x":…,"y":…}`: one polled event.
-  `data` is the event's union exactly as SteamVR gave it; `x` and `y` are only there to read.
+- `{"tick":"plasma","t":12.5,"dropped":0}` (or `"taskbar"`): an events() pass starting, with the
+  seconds since the trace began and how many events were left out so far.
+- `{"ev":"plasma","type":300,"dev":3,"age":0,"x":…,"y":…,"button":…,"cursor":…}`: a pointer move,
+  press or release. A scroll has `dx`, `dy`, `scale` and `cursor` instead, and focus coming or
+  going has nothing past `age` (SteamVR's own age of the event).
 - `{"pose":3,"m":[[…],[…],[…]]}`: a laser's pose as `laser_pose` gave it (`null`: not tracked).
 - `{"plasma":{"crop":…,"panel":…,"bounds":…,"world":…,"width":…,"aspect":…,"curve":…,"clickable":…}}`:
   Plasma's overlay, each time tick() places it somewhere new.
 
-Delete the flag file afterwards. The trace has every laser event, which shows where you pointed,
-but nothing you typed.
+Only the events a replay needs go in, with only their own fields: pointer moves, presses and
+releases, focus coming and going, and scrolls. Anything else, keyboard events included, is left
+out and only counted. Even so, a trace is a record of what you did with the lasers and where you
+pointed, so treat it as sensitive: it's only written when you ask for it, it stays on the Frame,
+and you should delete the flag file and the trace when you're done.
+
+It's written through a 1 MB buffer flushed once a pass, so the disk never stalls a frame, and at
+64 MB it stops with one line in the log.
 
 ## Replaying one
 

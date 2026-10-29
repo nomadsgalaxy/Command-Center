@@ -264,7 +264,8 @@ fn park(ses: &Session) -> bool {
 /// they're above every window. Coming back onto a window panel raises that window again.
 pub fn shell_mouse(flags: u32, at: Option<(f64, f64)>) {
     #[cfg(test)]
-    SHELL_SENT.lock().unwrap().push((flags, at));
+    return SHELL_SENT.lock().unwrap().push((flags, at)); // in tests it goes nowhere else: no session, no fake_input
+    #[cfg_attr(test, allow(unreachable_code))]
     let mut s = INPUT.lock().unwrap();
     let Some(ses) = s.session.clone() else { return };
     s.hover = Some(SHELL);
@@ -517,6 +518,8 @@ fn read_map(path: &str) -> Map<String, Value> {
 
 impl Windows {
     pub fn start(first: usize) -> Windows {
+        #[cfg(test)]
+        assert!(!crate::vr::fake::on(), "a replay can't start KWin, capture or a session (Windows::for_test)");
         let (tx, sessions) = mpsc::channel();
         let kwin = kwin::Kwin::start();
         {

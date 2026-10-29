@@ -1358,12 +1358,11 @@ mod tests {
     #[test]
     fn a_laser_on_plasmas_bar_through_the_frame_replays_onto_the_panel() {
         use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
-        let _vr = vr::fake::install(vr::fake::Script::default());
+        let _vr = crate::trace::fake_vr();
         let dir = std::env::temp_dir().join(format!("cc-taskbar-replay-{}", std::process::id()));
         let mut bar = Taskbar::new(dir.to_str().unwrap()); // no assets there: no labels, which events() doesn't need
         let mut windows = Windows::for_test(0);
         let mut grab = grab::Grab::with_backdrop(0, 0);
-        crate::windows::SHELL_SENT.lock().unwrap().clear();
         // Plasma's 891x50 bar in the frame's well, nothing open, and the frame in the room
         let panel = [514, 1770, 891, 50];
         let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
@@ -1377,7 +1376,7 @@ mod tests {
             let mut e: vr::VREvent_t = Default::default();
             (e.eventType, e.trackedDeviceIndex) = (t, 3);
             e.data.mouse = sys::VREvent_Mouse_t { x: x as f32, y: y as f32, button: sys::EVRMouseButton_VRMouseButton_Left, cursorIndex: 0 };
-            crate::trace::event_line("taskbar", &e).to_string()
+            crate::trace::event_line("taskbar", &e).unwrap().to_string()
         };
         let trace = [
             serde_json::json!({ "plasma": plasma }).to_string(),
