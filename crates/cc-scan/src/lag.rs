@@ -129,7 +129,7 @@ impl Lag {
             self.frames.pop_front();
         }
         self.frames.push_back((t, shrink(g)));
-        if self.frames.len() >= 12 && self.frames.len() % 4 == 0 {
+        if self.frames.len() >= 12 && self.frames.len().is_multiple_of(4) {
             self.estimate(head);
         }
     }

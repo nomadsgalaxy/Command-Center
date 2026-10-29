@@ -21,6 +21,7 @@ pub fn band(h: i64) -> i64 {
     24.max(h / 36)
 }
 
+#[allow(clippy::too_many_arguments)] // where the tag goes and the layout it goes into: grouping them would only rename them
 fn put(tags: &mut Map<String, Value>, rects: &mut Vec<(usize, i64, i64, i64)>, id: usize, x: i64, y: i64, side: i64, w: i64, h: i64) {
     let (wf, hf) = (w as f64, h as f64);
     let c = |px: i64, py: i64| json!([px as f64 / wf, py as f64 / hf]);

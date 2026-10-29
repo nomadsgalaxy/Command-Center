@@ -387,16 +387,8 @@ fn parse_lease(msg: &str) -> Option<Lease> {
         return None;
     }
     l.hand = hand;
-    let clamp = |v: f32| {
-        if v < -1. {
-            -1.
-        } else if v > 1. {
-            1.
-        } else {
-            v
-        }
-    }; // NaN passes; finite() rejects it
-    (l.sx, l.sy) = (clamp(l.sx), clamp(l.sy));
+    // NaN passes through clamp; finite() rejects it
+    (l.sx, l.sy) = (l.sx.clamp(-1., 1.), l.sy.clamp(-1., 1.));
     l.hidden = false;
     Some(l)
 }
@@ -668,7 +660,7 @@ fn listen() {
             msg.msg_iov = &mut iov;
             msg.msg_iovlen = 1;
             msg.msg_control = ctrl.as_mut_ptr().cast();
-            msg.msg_controllen = libc::CMSG_SPACE(size_of::<libc::ucred>() as u32) as usize;
+            msg.msg_controllen = libc::CMSG_SPACE(size_of::<libc::ucred>() as u32) as _; // usize on glibc, u32 on musl
             let n = libc::recvmsg(sock, &mut msg, 0);
             if n <= 0 || msg.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 {
                 continue;
@@ -688,6 +680,10 @@ fn listen() {
 }
 
 /// The driver's entry point: SteamVR asks for the provider by interface version.
+///
+/// # Safety
+/// `interface_name` is null or a NUL-terminated string, and `return_code` is null or writable,
+/// as SteamVR passes them.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HmdDriverFactory(interface_name: *const c_char, return_code: *mut i32) -> *mut c_void {
     if !interface_name.is_null() && unsafe { CStr::from_ptr(interface_name) } == PROVIDER_VERSION {

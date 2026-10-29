@@ -22,8 +22,7 @@ fn main() {
         let px: Vec<u8> = (0..w * hgt).flat_map(|_| [125u8, 249, 255, 255]).collect();
         overlay.SetOverlayRaw.unwrap()(h, px.as_ptr() as *mut _, w, hgt, 4);
         overlay.SetOverlayWidthInMeters.unwrap()(h, 0.2);
-        let mut m = vr::HmdMatrix34_t::default();
-        m.m = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 1.5], [0.0, 0.0, 1.0, -1.5]];
+        let mut m = vr::HmdMatrix34_t { m: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 1.5], [0.0, 0.0, 1.0, -1.5]] };
         overlay.SetOverlayTransformAbsolute.unwrap()(h, vr::ETrackingUniverseOrigin_TrackingUniverseStanding, &mut m);
         overlay.ShowOverlay.unwrap()(h);
         println!("overlay {h} shown");

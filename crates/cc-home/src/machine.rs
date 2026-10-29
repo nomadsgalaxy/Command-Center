@@ -458,7 +458,7 @@ pub(crate) fn pair(addr: &str, key: &str, replace: bool) -> Result<(), String> {
         .filter(|(_, t)| t["addr"].as_str() == Some(addr) && truthy(&t["host_pk"]))
         .filter_map(|(_, t)| B64.decode(t["host_pk"].as_str()?).ok())
         .map(|b| b.try_into().unwrap_or([0u8; 32]))
-        .last();
+        .next_back();
     let sk = agent::frame_key_or_new(&conf).map_err(|e| format!("pairing: this Frame's key: {e}"))?;
     println!("@pair {addr} state=waiting");
     let s = std::net::ToSocketAddrs::to_socket_addrs(&(addr, agent::PORT)).into_iter().flatten().find_map(|a| std::net::TcpStream::connect_timeout(&a, cc_proto::pair::STEP).ok());
@@ -677,19 +677,19 @@ pub fn main(argv: &[&str]) {
         die(super::machine_usage());
     }
     let (vs, hs) = (viewers(), hosts());
-    if ["set", "remove", "connect"].contains(&cmd) {
-        if let Some(v) = conf::find_viewer(&rest[0], vs, &hs) {
-            rest[0] = v.name.clone(); // also find a monitor by the name the user sees
-        }
+    if ["set", "remove", "connect"].contains(&cmd)
+        && let Some(v) = conf::find_viewer(&rest[0], vs, &hs)
+    {
+        rest[0] = v.name.clone(); // also find a monitor by the name the user sees
     }
     if (cmd == "unpair" || cmd == "align" || cmd == "imu") && conf::find_viewer(&rest[0], vs, &hs).is_none() {
         if let Some(m) = conf::find_machine(&rest[0], vs, &hs) {
             rest[0] = m;
         }
-    } else if cmd == "align" {
-        if let Some(v) = conf::find_viewer(&rest[0], vs, &hs) {
-            rest[0] = v.name.clone();
-        }
+    } else if cmd == "align"
+        && let Some(v) = conf::find_viewer(&rest[0], vs, &hs)
+    {
+        rest[0] = v.name.clone();
     }
     match cmd {
         "discover" => discover_cmd(&rest),

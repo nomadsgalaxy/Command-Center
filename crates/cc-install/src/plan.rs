@@ -296,7 +296,7 @@ fn free_gb(p: &Path) -> u64 {
     if unsafe { libc::statvfs(c.as_ptr(), &mut s) } != 0 {
         return u64::MAX; // can't tell, so don't block on it
     }
-    s.f_bavail as u64 * s.f_frsize as u64 >> 30
+    (s.f_bavail as u64 * s.f_frsize as u64) >> 30
 }
 
 /// The package command for this distro, worded the way cc-host's need() says it.

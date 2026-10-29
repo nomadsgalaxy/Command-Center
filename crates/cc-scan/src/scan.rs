@@ -72,6 +72,10 @@ fn tags_json(tags: &[Tag]) -> Value {
     )
 }
 
+/// keyread's answer: the key if three tags were read, the address if four were, whether the shot
+/// was usable, and skip.
+pub type KeyRead = (Option<String>, Option<[u8; 4]>, bool, bool);
+
 impl Scan {
     /// Opens a session that writes its shots to `path` (shots.json). The head track goes to
     /// <path>-head.json, and the usable frames' JPEGs go next to them. conf is ~/.config/control-center,
@@ -173,7 +177,7 @@ impl Scan {
             }
             self.shots.push(s);
         }
-        if self.shots.len() % 20 == 0 {
+        if self.shots.len().is_multiple_of(20) {
             self.save(); // Save now and then. Everything gets saved at the end.
         }
         found.sort();
@@ -183,7 +187,7 @@ impl Scan {
 
     /// Takes one shot for the pairing key's tags and the host's address tags. Returns (the key if three were read,
     /// the address if four were, whether the shot was usable, skip).
-    pub fn keyread(&mut self) -> Result<(Option<String>, Option<[u8; 4]>, bool, bool), String> {
+    pub fn keyread(&mut self) -> Result<KeyRead, String> {
         let (_, s, tags) = self.shot(&dict::DICT_4X4_1000)?;
         Ok((read_key(&tags), read_addr(&tags), s["still"] == json!(true), self.take_skip()))
     }

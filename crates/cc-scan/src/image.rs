@@ -20,7 +20,7 @@ impl Gray {
 
     /// Converts packed RGB (the mirror's RGB3, or a decoded JPEG) with cvtColor's fixed-point weights.
     pub fn from_rgb(w: usize, h: usize, rgb: &[u8]) -> Gray {
-        let px = rgb.chunks_exact(3).map(|p| ((p[0] as u32 * 19595 + p[1] as u32 * 38470 + p[2] as u32 * 7471 + 32768) >> 16) as u8).collect();
+        let px = rgb.as_chunks::<3>().0.iter().map(|p| ((p[0] as u32 * 19595 + p[1] as u32 * 38470 + p[2] as u32 * 7471 + 32768) >> 16) as u8).collect();
         Gray { w, h, px }
     }
 }
@@ -71,7 +71,7 @@ fn sat_u8(v: f32) -> u8 {
 /// Same as createCLAHE(clip, (tiles, tiles)).apply.
 pub fn clahe(g: &Gray, clip: f64, tiles: usize) -> Gray {
     let (tw, th) = (g.w.div_ceil(tiles), g.h.div_ceil(tiles));
-    let (tw, th) = if g.w % tiles == 0 && g.h % tiles == 0 { (g.w / tiles, g.h / tiles) } else { (tw, th) };
+    let (tw, th) = if g.w.is_multiple_of(tiles) && g.h.is_multiple_of(tiles) { (g.w / tiles, g.h / tiles) } else { (tw, th) };
     let total = (tw * th) as i32;
     let lut_scale = 255.0f32 / total as f32;
     let limit = ((clip * total as f64 / 256.0) as i32).max(1);
@@ -126,9 +126,8 @@ pub fn clahe(g: &Gray, clip: f64, tiles: usize) -> Gray {
         let t1 = tyf.floor() as isize;
         let ya = tyf - t1 as f32;
         let (p1, p2) = (t1.max(0) as usize * tiles, ((t1 + 1) as usize).min(tiles - 1) * tiles);
-        for x in 0..g.w {
+        for (x, &(a, b, xa)) in xs.iter().enumerate().take(g.w) {
             let v = g.at(x, y) as usize;
-            let (a, b, xa) = xs[x];
             let l = |p: usize, t: usize| lut[(p + t) * 256 + v] as f32;
             // Fuse the multiply-adds the way GCC fuses OpenCV's on aarch64, so every pixel matches.
             let xa1 = 1.0 - xa;
@@ -184,8 +183,8 @@ pub fn otsu(px: &[u8]) -> u8 {
     let mu: f64 = (0..256).map(|i| i as f64 * hist[i] as f64).sum::<f64>() * scale;
     let (mut mu1, mut q1, mut best, mut thr) = (0.0f64, 0.0f64, 0.0f64, 0u8);
     let eps = f32::EPSILON as f64;
-    for i in 0..256 {
-        let p = hist[i] as f64 * scale;
+    for (i, &h) in hist.iter().enumerate() {
+        let p = h as f64 * scale;
         mu1 *= q1;
         q1 += p;
         let q2 = 1.0 - q1;

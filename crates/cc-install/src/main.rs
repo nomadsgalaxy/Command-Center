@@ -327,22 +327,21 @@ fn tui(f: Facts, log: Arc<Log>, work_dir: PathBuf) -> i32 {
     let mut tx = Some(tx);
     let after = loop {
         let _ = term.draw(|fr| ui::draw(fr, &app));
-        if event::poll(Duration::from_millis(120)).unwrap_or(false) {
-            if let Ok(Event::Key(k)) = event::read() {
-                if k.kind == KeyEventKind::Press {
-                    match app.key(k.code) {
-                        Some(ui::Out::Start) => {
-                            let (f, action, steps, log, tx) = (app.f.clone(), app.action, app.steps.clone(), log.clone(), tx.take().expect("started once"));
-                            std::thread::spawn(move || {
-                                work(&f, action, &steps, &log, &|e| {
-                                    let _ = tx.send(e);
-                                })
-                            });
-                        }
-                        Some(o) => break o,
-                        None => {}
-                    }
+        if event::poll(Duration::from_millis(120)).unwrap_or(false)
+            && let Ok(Event::Key(k)) = event::read()
+            && k.kind == KeyEventKind::Press
+        {
+            match app.key(k.code) {
+                Some(ui::Out::Start) => {
+                    let (f, action, steps, log, tx) = (app.f.clone(), app.action, app.steps.clone(), log.clone(), tx.take().expect("started once"));
+                    std::thread::spawn(move || {
+                        work(&f, action, &steps, &log, &|e| {
+                            let _ = tx.send(e);
+                        })
+                    });
                 }
+                Some(o) => break o,
+                None => {}
             }
         }
         while let Ok(e) = rx.try_recv() {

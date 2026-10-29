@@ -57,7 +57,7 @@ pub const KEY_BASE: usize = 900; // Same as pair.py's KEY_TAG_BASE. Ids 900-999 
 pub const ADDR_BASE: usize = 300; // The host's address: four tags, ids 300-555, each one octet (id - 300). Clear of align's 0-249 and the key's 900-999.
 
 /// Orders tags along their own x axis (by their centres, on the mean of their top edges' direction), so a turned head or a portrait monitor reads the same.
-fn along_x<'a>(mut tags: Vec<&'a Tag>) -> Vec<&'a Tag> {
+fn along_x(mut tags: Vec<&Tag>) -> Vec<&Tag> {
     let axis = tags.iter().fold((0.0f32, 0.0f32), |a, t| (a.0 + t.corners[1].0 - t.corners[0].0, a.1 + t.corners[1].1 - t.corners[0].1));
     let along = |t: &Tag| {
         let (mx, my) = (t.corners.iter().map(|c| c.0).sum::<f32>() / 4.0, t.corners.iter().map(|c| c.1).sum::<f32>() / 4.0);
@@ -110,9 +110,9 @@ mod key_tests {
         let tag = |k: usize| -> Vec<Vec<u8>> {
             let bits = dict::CODES[KEY_BASE + key[2 * k..2 * k + 2].parse::<usize>().unwrap()];
             let mut t = vec![vec![1u8; 8]; 8];
-            for y in 1..7 {
-                for x in 1..7 {
-                    t[y][x] = if (2..6).contains(&y) && (2..6).contains(&x) { ((bits >> (15 - 4 * (y - 2) - (x - 2))) & 1) as u8 } else { 0 };
+            for (y, row) in t.iter_mut().enumerate().take(7).skip(1) {
+                for (x, cell) in row.iter_mut().enumerate().take(7).skip(1) {
+                    *cell = if (2..6).contains(&y) && (2..6).contains(&x) { ((bits >> (15 - 4 * (y - 2) - (x - 2))) & 1) as u8 } else { 0 };
                 }
             }
             t

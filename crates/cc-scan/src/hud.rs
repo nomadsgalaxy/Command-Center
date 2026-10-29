@@ -23,6 +23,13 @@ pub const SKIP_BUTTON: (usize, usize, usize, usize) = (700, 54, 890, 94);
 const STRIP: (usize, usize) = (900, 100);
 const SHEET: (usize, usize) = (960, 540);
 
+/// What the status strip shows: its text, steady, how many read, and the button's label.
+type StripKey = (String, bool, usize, String);
+/// A tag's four corners in the frame, in pixels.
+pub type Corners = [(f32, f32); 4];
+/// A shot for the outlines: still, the head pose, and the tags read (id, corners).
+pub type Shot = (bool, Option<panels::Pose>, Vec<(usize, Corners)>);
+
 /// What the scan tells the HUD. The HUD tells the scan one thing back: skip.
 pub struct State {
     pub text: String,
@@ -34,7 +41,7 @@ pub struct State {
     pub skip: bool,
     pub on: bool,
     /// The last shot, for its outlines: (still, head pose, tags (id, corners px)). The HUD takes it.
-    pub shot: Option<(bool, Option<panels::Pose>, Vec<(usize, [(f32, f32); 4])>)>,
+    pub shot: Option<Shot>,
     pub still: bool,
     /// The wanted tags read so far, as the strip's "n tags read" shows.
     pub read: usize,
@@ -72,13 +79,14 @@ impl Rgba {
             return;
         }
         let i = (y as usize * self.w + x as usize) * 4;
-        for k in 0..3 {
-            self.px[i + k] = (c[k] as f32 * a + self.px[i + k] as f32 * (1.0 - a)) as u8;
+        for (k, &ck) in c.iter().take(3).enumerate() {
+            self.px[i + k] = (ck as f32 * a + self.px[i + k] as f32 * (1.0 - a)) as u8;
         }
         self.px[i + 3] = (c[3] as f32 * a + self.px[i + 3] as f32 * (1.0 - a)).max(self.px[i + 3] as f32) as u8;
     }
 
     /// Draws text with its baseline at (x, y), `size` px, shrunk to fit `max_w`.
+    #[allow(clippy::too_many_arguments)] // the text, where it goes and how it looks: grouping them would only rename them
     fn text(&mut self, font: &fontdue::Font, s: &str, x: f32, y: f32, size: f32, max_w: f32, c: [u8; 4]) {
         let width = |sz: f32| s.chars().map(|ch| font.metrics(ch, sz).advance_width).sum::<f32>();
         let size = if width(size) > max_w { size * max_w / width(size) } else { size };
@@ -146,11 +154,11 @@ impl Hud {
                 }
                 run.status(&st);
                 let board = st.lock().unwrap().board.clone();
-                if let Some(b) = board {
-                    if crate::now() - run.drawn_board > 1.0 {
-                        run.send(&format!("hud mark {b}")); // Keep it up, because cc-panels hides anything that isn't refreshed for 5 s.
-                        run.drawn_board = crate::now();
-                    }
+                if let Some(b) = board
+                    && crate::now() - run.drawn_board > 1.0
+                {
+                    run.send(&format!("hud mark {b}")); // Keep it up, because cc-panels hides anything that isn't refreshed for 5 s.
+                    run.drawn_board = crate::now();
                 }
                 std::thread::sleep(Duration::from_millis(200));
             }
@@ -172,9 +180,9 @@ struct Run {
     folder: PathBuf,
     camera: Option<Vec<f64>>,
     steady: (bool, f64),
-    drawn: Option<((String, bool, usize, String), f64)>,
+    drawn: Option<(StripKey, f64)>, // what the strip last showed, and when
     drawn_board: f64,
-    seen: HashMap<usize, ([(f32, f32); 4], f64, [f64; 3])>,
+    seen: HashMap<usize, (Corners, f64, [f64; 3])>, // id: its corners, when, and where the head was
 }
 
 impl Run {
@@ -235,7 +243,7 @@ impl Run {
     /// the tags' depth, placed where the camera's eye was. Outlines read in the last 0.6 s from (almost)
     /// the same place stay, so they don't blink. While the refit's board is up it owns the sheet, so
     /// the outlines wait, but the tags still count as read.
-    fn outline(&mut self, st: &Mutex<State>, shot: (bool, Option<panels::Pose>, Vec<(usize, [(f32, f32); 4])>)) {
+    fn outline(&mut self, st: &Mutex<State>, shot: Shot) {
         let (still, head, tags) = shot;
         let Some(head) = head else { return };
         if !still {

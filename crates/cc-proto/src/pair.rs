@@ -223,12 +223,16 @@ pub enum Outcome {
     Nothing,  // junk, a bad name, a taken name or a refused reply: not a try
 }
 
+/// host_one's reply: the sealed answer for a Frame and its key, or a refusal.
+pub type Reply<'a> = dyn Fn(&str, &[u8; 32]) -> Result<Value, String> + 'a;
+
 /// The host's half of one connection.
 /// - `trusted(frame)`: the key paired before under that name.
 /// - `confirm_replace(frame)`: asks the person at the host whether a new key can take that name.
 /// - `reply(frame, frame_pk)`: the sealed answer (the Frame's login and ports), or a refusal ("full").
 /// - `tries_left`: how many tries the key has left after this one, if this one was wrong (0 means
 ///   locked).
+#[allow(clippy::too_many_arguments)] // the stream, the key, and the host's answers to each of its questions
 pub fn host_one<S: Read + Write>(
     s: S,
     key: &str,
@@ -237,7 +241,7 @@ pub fn host_one<S: Read + Write>(
     tries_left: u32,
     trusted: &dyn Fn(&str) -> Option<[u8; 32]>,
     confirm_replace: &dyn Fn(&str) -> bool,
-    reply: &dyn Fn(&str, &[u8; 32]) -> Result<Value, String>,
+    reply: &Reply<'_>,
 ) -> Result<Outcome, Fail> {
     let mut ln = Line::new(s);
     let m1 = ln.recv(&["v", "frame", "frame_pk", "spake"])?;

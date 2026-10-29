@@ -500,10 +500,8 @@ fn setup_done(name: &str) -> bool {
 fn boxed(args: &[OsString]) -> i32 {
     let name = var_or("CC_CONTAINER", "control-center");
     let native = native(&root());
-    if !native {
-        if let Err(c) = container_up(&name) {
-            return c;
-        }
+    if !native && let Err(c) = container_up(&name) {
+        return c;
     }
     // Gentle by default for builds and tools, since the headset is rendering VR too. cc-panels
     // passes CC_NICE=0.
@@ -895,9 +893,9 @@ mod tests {
 
     #[test]
     fn panels_match_and_session_env() {
-        assert!(is_panels(b"/home/u/control-center/target/release/cc-panels\0--for\00\0"));
-        assert!(!is_panels(b"/home/u/control-center/cc-panels\0--for\00\0")); // the wrapper itself
-        assert!(!is_panels(b"nice\0-n\00\0/x/distrobox\0enter\0control-center\0--\0/x/target/release/cc-panels\0"));
+        assert!(is_panels(b"/home/u/control-center/target/release/cc-panels\0--for\x000\0"));
+        assert!(!is_panels(b"/home/u/control-center/cc-panels\0--for\x000\0")); // the wrapper itself
+        assert!(!is_panels(b"nice\0-n\x000\0/x/distrobox\0enter\0control-center\0--\0/x/target/release/cc-panels\0"));
         assert!(!is_panels(b"/bin/sh\0/x/target/release/cc-panels\0"));
         let p = fake_proc(
             "env",

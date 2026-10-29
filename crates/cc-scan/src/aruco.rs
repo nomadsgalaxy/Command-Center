@@ -405,14 +405,15 @@ pub fn perspective(src: &[Pt; 4], dst: &[Pt; 4]) -> [f64; 9] {
         if d.abs() < 1e-12 {
             return [0.0; 9];
         }
-        for k in c..9 {
-            a[c][k] /= d;
+        for v in &mut a[c][c..] {
+            *v /= d;
         }
-        for r in 0..8 {
+        let pivot = a[c];
+        for (r, row) in a.iter_mut().enumerate() {
             if r != c {
-                let f = a[r][c];
-                for k in c..9 {
-                    a[r][k] -= f * a[c][k];
+                let f = row[c];
+                for (x, p) in row[c..].iter_mut().zip(&pivot[c..]) {
+                    *x -= f * p;
                 }
             }
         }
@@ -643,8 +644,8 @@ pub fn detect(img: &Gray, dict: &Dict, p: &Params) -> Vec<Marker> {
         if p.subpix {
             let module = perimeter(&c) / (4.0 * (marker_size + 2) as f32);
             let win = ((p.relative_refine_win * module).round_ties_even() as i32).max(1).min(p.refine_win);
-            for k in 0..4 {
-                c[k] = corner_subpix(img, c[k], win, p.refine_iters, p.refine_accuracy);
+            for q in c.iter_mut() {
+                *q = corner_subpix(img, *q, win, p.refine_iters, p.refine_accuracy);
             }
         }
         let _ = sel[i].contour_len;

@@ -150,7 +150,10 @@ fn skipped_why(why: &str) -> &str {
 /// The monitors whose tag screen went away (Esc over there, an agent's refusal, a viewer that
 /// died), and why.
 #[derive(Clone, Default)]
-pub struct Gone(Arc<Mutex<Vec<(String, Option<String>)>>>);
+pub struct Gone(Arc<Mutex<Vec<Lost>>>);
+
+/// A monitor Gone holds: its name, and why it went (None: Esc over there).
+type Lost = (String, Option<String>);
 
 impl Gone {
     fn add(&self, name: &str, why: Option<String>) {
@@ -240,7 +243,7 @@ struct AgentView {
 fn on_event(e: &Value, peers: &[(String, i64)], gone: &Gone) {
     let ev = e["event"].as_str().unwrap_or("");
     for (name, index) in peers {
-        if (ev == "escaped" || ev == "blocked") && e.get("index").map_or(true, |i| i.as_i64() == Some(*index)) {
+        if (ev == "escaped" || ev == "blocked") && e.get("index").is_none_or(|i| i.as_i64() == Some(*index)) {
             gone.add(name, Some(ev.to_owned()));
         }
     }
@@ -811,7 +814,9 @@ fn look(names: &[String], want: Mode, quick: Option<&Json>) -> (Vec<String>, Pan
     let sock = target();
     let gone = Gone::default();
     let mut views = vec![];
-    let peers: Vec<(Option<Arc<Mutex<Client>>>, String, i64)> = mons.iter().map(|m| (m.agent.clone(), m.name.clone(), m.index)).collect();
+    // each monitor's agent (if it has one), name and index, for the views to reach the others
+    type Peer = (Option<Arc<Mutex<Client>>>, String, i64);
+    let peers: Vec<Peer> = mons.iter().map(|m| (m.agent.clone(), m.name.clone(), m.index)).collect();
     for m in mons.iter_mut() {
         views.push(match m.agent.take() {
             Some(c) => {
@@ -1306,6 +1311,12 @@ pub fn pair_scan(addr: Option<&str>, replace: bool) {
     println!("@done pair total_s={total:.1} ready_s={ready:.1} scan_s={:.1} pair_s={:.1}", scanned - ready, total - scanned);
 }
 
+/// The last `n` characters of s.
+fn tail(s: &str, n: usize) -> &str {
+    let k = s.chars().count();
+    s.char_indices().nth(k.saturating_sub(n)).map_or(s, |(i, _)| &s[i..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1525,6 +1536,7 @@ mod tests {
         v.close();
         w.close();
         let _ = fake.kill();
+        let _ = fake.wait();
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1534,10 +1546,4 @@ mod tests {
     fn geometry() {
         super::super::selftest();
     }
-}
-
-/// The last `n` characters of s.
-fn tail(s: &str, n: usize) -> &str {
-    let k = s.chars().count();
-    s.char_indices().nth(k.saturating_sub(n)).map_or(s, |(i, _)| &s[i..])
 }

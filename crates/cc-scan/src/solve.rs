@@ -556,7 +556,9 @@ pub fn solve(job: &Value, out: &mut dyn FnMut(String)) -> Result<(), String> {
         let cv = Vector3::new(tv.x, -tv.y, -tv.z); // OpenCV -> OpenVR axes.
         Some((apply(&(mat34(&shot["head"]) * eye), &cv), tv.norm()))
     };
-    let mut readings: BTreeMap<i64, Vec<(usize, Vector3<f64>, f64)>> = BTreeMap::new();
+    // tag id -> its readings: (shot, where it was, how far)
+    type Reading = (usize, Vector3<f64>, f64);
+    let mut readings: BTreeMap<i64, Vec<Reading>> = BTreeMap::new();
     for (si, shot) in hid.iter().enumerate() {
         for t in shot["tags"].as_array().into_iter().flatten() {
             let Some(mi) = mon_of(t) else { continue };
@@ -570,7 +572,7 @@ pub fn solve(job: &Value, out: &mut dyn FnMut(String)) -> Result<(), String> {
     }
     let mut good: HashSet<(usize, i64)> = HashSet::new();
     for mi in 0..monitors.len() {
-        let seen: Vec<(&i64, &Vec<(usize, Vector3<f64>, f64)>)> = readings.iter().filter(|(tid, _)| by_id[tid].0 == mi).collect();
+        let seen: Vec<(&i64, &Vec<Reading>)> = readings.iter().filter(|(tid, _)| by_id[tid].0 == mi).collect();
         if seen.is_empty() {
             continue;
         }

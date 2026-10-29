@@ -5,6 +5,7 @@
 //!   hand-added one on that host's shared login, then a removed one brought back.
 //! - A pre-id host migrated to its id (files, machine=, a workspace's primary, its label).
 //! - viewers.removed.
+//!
 //! cc-home's tests/cross.rs checks each case against what cc-home.py wrote (tests/fixtures/conf-cross).
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -1010,6 +1011,7 @@ fn make_temporary(data: &mut Json, from: &str) {
 ///    that one, bound to this room.
 /// 4. Otherwise (travelling, or no dedicated workspace yet): Temporary, made from the active one's
 ///    layout if it's missing.
+///
 /// Returns its name and whether Temporary was just made.
 pub fn choose_workspace(data: &mut Json, universe: u64, hint: Option<&str>) -> (String, bool) {
     let (universe, active) = (room(universe), active_workspace(data));

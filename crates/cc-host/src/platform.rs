@@ -216,11 +216,14 @@ mod kwin {
 
 /// The conformance suite's host. It has one 1920x1080 monitor, a unit "starts" when its port starts
 /// listening 0.3 s later (slot 1's ports), and nobody watches.
+/// A Fake unit, as `systemctl show` reports it: (ActiveState, NRestarts, Result).
+pub type FakeUnit = (String, u64, String);
+
 #[derive(Default)]
 pub struct Fake {
     up: Arc<Mutex<HashSet<u16>>>,
     /// What `systemctl show` says for a unit: (ActiveState, NRestarts, Result). Units not in it are inactive.
-    pub units: Arc<Mutex<std::collections::HashMap<String, (String, u64, String)>>>,
+    pub units: Arc<Mutex<std::collections::HashMap<String, FakeUnit>>>,
     /// Every systemctl call, its arguments joined with spaces.
     pub calls: Arc<Mutex<Vec<String>>>,
     /// `systemctl show` fails (says nothing), as when the user manager doesn't answer.

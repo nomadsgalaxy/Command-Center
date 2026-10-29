@@ -97,7 +97,7 @@ fn remove() -> Result<(), String> {
     // image's driver was registered because SteamVR runs from somewhere else (steamos.rs), that goes too.
     let script = root.join("driver/cc_pointer/install.sh");
     if script.is_file() {
-        ok(&mut Command::new(script).arg("uninstall"), false)?;
+        ok(Command::new(script).arg("uninstall"), false)?;
     }
     if crate::steamos::forget_driver(crate::session::unregister_driver) {
         println!("unregistered the image's pointer driver from vrpathreg");

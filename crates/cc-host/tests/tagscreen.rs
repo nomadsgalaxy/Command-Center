@@ -10,11 +10,12 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-struct Group(i32);
+struct Group(std::process::Child);
 
 impl Drop for Group {
     fn drop(&mut self) {
-        unsafe { libc::kill(-self.0, libc::SIGKILL) }; // Kill KWin and its session bus, all of it.
+        unsafe { libc::kill(-(self.0.id() as i32), libc::SIGKILL) }; // Kill KWin and its session bus, all of it.
+        let _ = self.0.wait();
     }
 }
 
@@ -32,7 +33,7 @@ fn tag_screen_survives_three_pictures() {
         .process_group(0)
         .spawn()
         .expect("dbus-run-session kwin_wayland");
-    let _group = Group(kwin.id() as i32);
+    let _group = Group(kwin);
     let up = Instant::now() + Duration::from_secs(20);
     while !run.join(&sock).exists() {
         assert!(Instant::now() < up, "KWin didn't come up");

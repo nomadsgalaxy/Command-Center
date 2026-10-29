@@ -715,14 +715,15 @@ fn avahi_publishing_on(conf: &str) -> String {
             let l = raw.trim();
             if l.starts_with('[') {
                 publish = l == "[publish]";
-            } else if publish && !l.starts_with('#') && !l.starts_with(';') {
-                if let Some((k, v)) = l.split_once('=')
-                    && matches!(k.trim(), "disable-publishing" | "disable-user-service-publishing")
-                    && v.trim() == "yes"
-                {
-                    let end = &raw[raw.trim_end().len()..];
-                    return format!("{}{}=no{end}", &raw[..raw.len() - raw.trim_start().len()], k.trim());
-                }
+            } else if publish
+                && !l.starts_with('#')
+                && !l.starts_with(';')
+                && let Some((k, v)) = l.split_once('=')
+                && matches!(k.trim(), "disable-publishing" | "disable-user-service-publishing")
+                && v.trim() == "yes"
+            {
+                let end = &raw[raw.trim_end().len()..];
+                return format!("{}{}=no{end}", &raw[..raw.len() - raw.trim_start().len()], k.trim());
             }
             raw.to_owned()
         })
@@ -1836,7 +1837,6 @@ pub fn pair_precheck(e: &Env, flag: &str) -> Result<(), i32> {
     Ok(())
 }
 
-/// Runs cc-share's commands. Returns None if it isn't one of them.
 // ---------------------------------------------------------------- the units' health
 
 /// The units' ExecStartPre: runs the krdp that frame-run (or window-run, with `window`) would run,
@@ -2017,6 +2017,7 @@ fn no_dropins(e: &Env) -> bool {
     false
 }
 
+/// Runs cc-share's commands. Returns None if it isn't one of them.
 pub fn main(cmd: &str, args: &[String]) -> Option<i32> {
     let e = env();
     let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or("");
