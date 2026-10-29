@@ -602,13 +602,22 @@ pub(crate) fn try_discover(wait: f64) -> Result<Vec<Found>, String> {
     let route = route.map(|r| String::from_utf8_lossy(&r.stdout).into_owned()).unwrap_or_default();
     let route: Vec<&str> = route.split_whitespace().collect();
     let lan = route.iter().position(|w| *w == "dev").and_then(|i| route.get(i + 1)).copied();
+    Ok(browsed(&out, lan))
+}
+
+/// The hosts in avahi-browse -rpt's answer, the best address of each. An announcement anyone on
+/// the network can make, so one whose TXT doesn't parse is skipped, not the end of discovery.
+fn browsed(out: &str, lan: Option<&str>) -> Vec<Found> {
     let mut hosts: Vec<Found> = Vec::new();
     for line in out.lines() {
         let f: Vec<&str> = line.splitn(10, ';').collect();
         if f.len() < 10 || f[0] != "=" || f[7].starts_with("127.") {
             continue;
         }
-        let txt = shlex(f[9]).unwrap_or_else(|| die("can't read avahi-browse's answer: No closing quotation")); // (a ValueError in Python)
+        let Some(txt) = shlex(f[9]) else {
+            eprintln!("{}: its announcement's TXT doesn't parse (an unclosed quote), so it's skipped", f[3]);
+            continue;
+        };
         let txt: Vec<(String, String)> = txt.iter().filter_map(|t| t.split_once('=')).map(|(k, v)| (k.into(), v.into())).collect();
         let rank = (f[2] == "IPv4") as i32 * 2 + (Some(f[1]) == lan) as i32;
         let mut h = Found { key: f[3].into(), rank, name: f[3].into(), addr: f[7].into(), port: f[8].into(), txt };
@@ -619,7 +628,7 @@ pub(crate) fn try_discover(wait: f64) -> Result<Vec<Found>, String> {
             None => hosts.push(h),
         }
     }
-    Ok(hosts)
+    hosts
 }
 
 fn discover_cmd(rest: &[String]) {
@@ -900,5 +909,9 @@ mod tests {
         assert_eq!(splitlines("a\r\nb\n\nc"), ["a", "b", "", "c"]);
         assert_eq!(shlex(r#""host=a b" 'm0=x' pair=1 "q=\"\\x""#).unwrap(), ["host=a b", "m0=x", "pair=1", "q=\"\\x"]);
         assert_eq!(shlex("\"open"), None);
+        // A broken announcement on the network is skipped; the good one next to it is still found.
+        let out = "=;eth0;IPv4;bad;_controlcenter._tcp;local;bad.local;192.168.1.9;3399;\"host=bad\n=;eth0;IPv4;desk;_controlcenter._tcp;local;desk.local;192.168.1.5;3399;\"host=desk\" \"id=7\"";
+        let found = browsed(out, Some("eth0"));
+        assert_eq!(found.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["desk"]);
     }
 }
