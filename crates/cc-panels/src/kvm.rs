@@ -47,6 +47,8 @@ const KEY_F1: u16 = 59;
 const KEY_F4: u16 = 62;
 const KEY_F12: u16 = 88;
 const KEY_RIGHTCTRL: u16 = 97;
+/// The key strip's sticky modifiers (osk.rs), in its order: Ctrl, Alt, Super.
+pub const MODS: [u16; 3] = [29, 56, 125];
 const KEY_HOME: u16 = 102;
 const KEY_G: u16 = 34;
 const KEY_D: u16 = 32;
@@ -240,6 +242,8 @@ pub struct Kvm {
     last_used: Option<Instant>,      // the mouse's last use while awake, for the idle sleep
     typed: Option<Instant>,          // the last key typed into a panel
     pub key_at: Option<Instant>,     // the last physical key pressed, wherever it went
+    pub latched: [bool; 3],          // the key strip's Ctrl, Alt and Super (MODS), for the next key or click
+    synth: Vec<u16>,                 // modifiers we're holding down on the typing panel for a click
     pending: (f64, Option<Instant>), // motion counted toward waking, and since when
     rctrl: Option<Instant>,          // when Right Ctrl went down, to spot the tap
     rctrl_clean: bool,
@@ -311,6 +315,8 @@ impl Kvm {
             last_used: None,
             typed: None,
             key_at: None,
+            latched: [false; 3],
+            synth: Vec::new(),
             pending: (0.0, None),
             rctrl: None,
             rctrl_clean: false,
@@ -355,15 +361,28 @@ impl Kvm {
         self.buttons = 0;
     }
 
-    /// Let go of the keys held on the typing machine, because typing moves or we're releasing.
+    /// Let go of the keys held on the typing machine, because typing moves or we're releasing,
+    /// the modifiers we held for a click among them.
     pub fn release_keys(&mut self) {
+        self.release_synth();
         for code in std::mem::take(&mut self.keys) {
+            self.send_key(code, 0);
+        }
+    }
+
+    /// Lets go of the modifiers we're holding for a click. Called when the click ends, when typing
+    /// moves, and when the panel keyboard closes (osk.rs, which also clears `latched`).
+    pub fn release_synth(&mut self) {
+        for code in std::mem::take(&mut self.synth).into_iter().rev() {
             self.send_key(code, 0);
         }
     }
 
     /// Send a key to the typing panel, or to the session after a click on Plasma's bar.
     fn send_key(&self, code: u16, value: i32) {
+        #[cfg(test)]
+        tests::SENT.with(|s| s.borrow_mut().push((code, value)));
+        #[cfg(not(test))]
         if self.kbd_shell { windows::key(code, value) } else { panel(self.kbd).key(code, value) }
     }
 
@@ -382,27 +401,68 @@ impl Kvm {
         self.key_at.is_some_and(|t| t.elapsed() < KEYBOARD_IN_USE)
     }
 
+    /// Whether SteamVR's keyboard may open now. You `asked` for it (a panel's keyboard button)
+    /// always opens it; only a popup nobody asked for (a field's) waits out a real keyboard.
+    pub fn popup_ok(&self, asked: bool) -> bool {
+        asked || !self.keyboard_in_use()
+    }
+
     /// Types text to panel i (SteamVR's keyboard, osk.rs) as key presses on a US layout, the way
-    /// a physical keyboard's keys would go. "\b" is Backspace and "\n" Enter.
+    /// a physical keyboard's keys would go. "\b" is Backspace and "\n" Enter. Returns how many
+    /// characters it couldn't type. It never logs the text, which may be a password.
     /// shortcut: characters a US keyboard can't type are dropped; RDP's Unicode input could send them.
-    pub fn type_text(&mut self, i: usize, text: &str) {
+    pub fn type_text(&mut self, i: usize, text: &str) -> usize {
         self.type_to(i);
+        let mut missed = 0;
         for c in text.chars() {
-            let Some((code, shift)) = crate::control::ui::key_for(c) else {
-                eprintln!("SteamVR keyboard: {c:?} isn't on a US keyboard, so it isn't sent");
-                continue;
-            };
-            if shift {
-                self.send_key(KEY_LEFTSHIFT, 1);
+            match crate::control::ui::key_for(c) {
+                Some((code, shift)) => self.tap(code, shift),
+                None => missed += 1,
             }
-            self.send_key(code, 1);
-            self.send_key(code, 0);
-            if shift {
-                self.send_key(KEY_LEFTSHIFT, 0);
-            }
-            self.keystrokes += 1;
         }
         self.typed = Some(Instant::now());
+        missed
+    }
+
+    /// A key from the key strip (Esc, Tab, an arrow) to panel i.
+    pub fn strip_key(&mut self, i: usize, code: u16) {
+        self.type_to(i);
+        self.tap(code, false);
+        self.typed = Some(Instant::now());
+    }
+
+    /// Presses and lets go of code, with Shift if asked and the sticky modifiers, which it uses up.
+    /// Every modifier pressed here is let go here, so none is left down.
+    fn tap(&mut self, code: u16, shift: bool) {
+        let latched = std::mem::take(&mut self.latched);
+        let mods: Vec<u16> = MODS.iter().zip(latched).filter(|(_, on)| *on).map(|(m, _)| *m).chain(shift.then_some(KEY_LEFTSHIFT)).collect();
+        for &m in &mods {
+            self.send_key(m, 1);
+        }
+        self.send_key(code, 1);
+        self.send_key(code, 0);
+        for &m in mods.iter().rev() {
+            self.send_key(m, 0);
+        }
+        self.keystrokes += 1;
+    }
+
+    /// A laser click on panel i starts (down) or ends while the panel keyboard is open there: the
+    /// sticky modifiers are held down through it (a Ctrl-click), and let go when it ends.
+    pub fn click_mods(&mut self, i: usize, down: bool) {
+        if !down {
+            return self.release_synth();
+        }
+        if !self.latched.contains(&true) {
+            return;
+        }
+        self.type_to(i);
+        for (m, on) in MODS.iter().zip(std::mem::take(&mut self.latched)) {
+            if on {
+                self.send_key(*m, 1);
+                self.synth.push(*m);
+            }
+        }
     }
 
     /// Typing goes to the session's focused window (a click on Plasma's bar, for Kickoff's search).
@@ -1473,6 +1533,82 @@ pub fn input_loop() {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    thread_local! {
+        /// The keys send_key sent on this test's thread: code, value.
+        pub static SENT: std::cell::RefCell<Vec<(u16, i32)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn sent() -> Vec<(u16, i32)> {
+        SENT.with(|s| std::mem::take(&mut *s.borrow_mut()))
+    }
+
+    /// Every key pressed was let go again.
+    fn all_up(keys: &[(u16, i32)]) -> bool {
+        let mut down = std::collections::HashSet::new();
+        for &(k, v) in keys {
+            if v == 1 {
+                down.insert(k)
+            } else {
+                down.remove(&k)
+            };
+        }
+        down.is_empty()
+    }
+
+    #[test]
+    fn a_sticky_modifier_and_shift_wrap_the_next_key_and_are_let_go() {
+        let mut k = Kvm::idle();
+        k.latched = [true, false, false]; // Ctrl
+        assert_eq!(k.type_text(0, "A"), 0);
+        assert_eq!(sent(), [(29, 1), (KEY_LEFTSHIFT, 1), (KEY_A, 1), (KEY_A, 0), (KEY_LEFTSHIFT, 0), (29, 0)]);
+        assert_eq!(k.latched, [false; 3], "used up");
+        k.strip_key(0, KEY_ESC);
+        assert_eq!(sent(), [(KEY_ESC, 1), (KEY_ESC, 0)]);
+    }
+
+    #[test]
+    fn a_held_modifier_is_let_go_when_the_click_ends_or_typing_moves() {
+        let mut k = Kvm::idle();
+        k.latched = [false, true, true]; // Alt and Super
+        k.click_mods(0, true);
+        assert_eq!(sent(), [(56, 1), (125, 1)]);
+        k.click_mods(0, false);
+        assert_eq!(sent(), [(125, 0), (56, 0)]);
+        k.latched = [true, false, false];
+        k.click_mods(0, true);
+        k.type_to(1); // the click never ended here, and typing went elsewhere
+        let keys = sent();
+        assert!(keys.contains(&(29, 0)) && all_up(&keys), "{keys:?}");
+        k.click_mods(0, false);
+        assert!(sent().is_empty(), "nothing held twice");
+    }
+
+    #[test]
+    fn what_a_us_keyboard_cant_type_is_counted_not_sent() {
+        let mut k = Kvm::idle();
+        // AltGr on other layouts: ¤ € £ é ß. None is guessed at as some other key.
+        assert_eq!(k.type_text(0, "€£é¤ß"), 5);
+        assert!(sent().is_empty());
+        assert_eq!(k.type_text(0, "a@é"), 1);
+        let keys = sent();
+        assert!(keys.contains(&(KEY_LEFTSHIFT, 1)) && keys.contains(&(3, 1)) && all_up(&keys), "@ is Shift+2 on a US keyboard: {keys:?}");
+    }
+
+    #[test]
+    fn a_real_keyboard_holds_off_a_field_s_popup_but_not_the_button() {
+        let mut k = Kvm::idle();
+        assert!(k.popup_ok(false) && k.popup_ok(true));
+        k.key(KEY_A, 1, false); // typed on a real keyboard just now
+        assert!(!k.popup_ok(false), "a field doesn't pop it up");
+        assert!(k.popup_ok(true), "the panel's button still opens it");
+        k.key(0x110, 1, false); // a mouse button (BTN_LEFT) isn't typing
+        let mut m = Kvm::idle();
+        m.key(0x110, 1, false);
+        assert!(m.popup_ok(false));
+    }
+
     #[test]
     fn ioctl_numbers_match_linux() {
         assert_eq!(super::EVIOCGRAB, 0x40044590);

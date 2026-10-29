@@ -965,6 +965,7 @@ fn run() -> Result<(), String> {
     let mut machines = control::machines::Machines::new(&assets);
     let mut prefs = control::prefs::Prefs::new(&assets);
     let mut dashtab = control::dashtab::Dashtab::new(&assets);
+    let mut keys = osk::Keys::new(&assets);
     let mut workspace_win = control::workspace::Workspace::new(&assets);
     let mut buffers: Vec<gpu::Buffers> = panels().iter().map(|_| gpu::Buffers::default()).collect();
     let mut status = Instant::now();
@@ -1155,7 +1156,7 @@ fn run() -> Result<(), String> {
         }
         laps.lap("grab");
         windows.tick(&mut grab);
-        osk::tick(&mut grab);
+        keys.tick(&mut grab);
         laps.lap("windows");
         bar.tick(&mut grab, &mut windows);
         laps.lap("taskbar");
@@ -1242,6 +1243,7 @@ fn run() -> Result<(), String> {
             (machines.moving(), "the Machines window"),
             (prefs.moving(), "the Preferences window"),
             (dashtab.moving(), "the dashboard tab"),
+            (keys.moving(), "the key strip"),
             (workspace_win.moving(), "the Workspace window"),
             (windows.plasma_moving(), "Plasma's bar"),
             (kvm::POKED.swap(false, Relaxed), "input"),
@@ -1275,6 +1277,7 @@ fn run() -> Result<(), String> {
     machines.destroy();
     prefs.destroy();
     dashtab.destroy();
+    keys.destroy();
     workspace_win.destroy();
     windows.stop();
     for (_, t) in threads {

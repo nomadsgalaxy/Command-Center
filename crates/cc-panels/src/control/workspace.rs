@@ -635,7 +635,7 @@ impl Workspace {
         tp.editing = true;
         let mut k = KVM.lock().unwrap();
         k.focus_field("workspace", true);
-        if k.keyboard_in_use() {
+        if !k.popup_ok(false) {
             return; // you're typing on a real keyboard, and it types here now
         }
         drop(k);

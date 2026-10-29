@@ -84,7 +84,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `stage.rs` | What the manipulation code reads: `Stage` is `Overlays` plus a device's pose and laser, the head, and a panel's overlay, size and whether it's turned. `Live` reads SteamVR and the panel list; `stage::fake::Fake` is a stand-in for tests. `Kvm::set_pose_with`/`set_place_with`/`land_with`/`mv_with`/`recenter_with`/`swing_with`/`scale_with` and `Grab`'s `start`/`carry`/`push`/`put` take one. It also sends the pointer move to a panel (`move_pointer`). |
 | `surface.rs` | The surface registry: every overlay we place, listed once with its kind, what its place is relative to (`Anchor`), where it's saved (`Store`) and how it's moved (`Manip`). Everything is made through `surface::create` and destroyed through `surface::destroy`, and a test reads the sources to keep it that way. `surfaces` on the control socket prints it. A record of today, not a new mechanism. |
 | `grab.rs` | Each panel's card (Breeze-like frame, tabs, grab bar, knobs): drawing, hit-testing, carrying, resizing, curving, snap-back, the `Extra` slot the control windows share, saving the "home" spot on release. |
-| `osk.rs` | SteamVR's keyboard for typing to a panel from a controller (the card's keyboard button). |
+| `osk.rs` | SteamVR's keyboard for typing to a panel from a controller (the card's keyboard button), and the key strip with the keys it lacks. |
 | `notify.rs` | Notifications: pairing results, errors and host health, sent to org.freedesktop.Notifications on the Frame's main user bus (thread `cc-notify`), rate-limited, with SteamVR's toast as the fallback. |
 | `back.rs` | Dim backs for panels seen from behind, one flat overlay each. |
 | `kvm.rs` | Our mice and keyboards (evdev grab, `input_loop` thread `cc-input`): the 3D pointer ray (`mv`, `land`), click to type (`set_engaged`, `type_to`), Right Ctrl chords, gaze lock, text fields for the control windows. |
@@ -232,8 +232,13 @@ VNC is the same shape: `vnc.rs:run` → libvncclient update callbacks → `gpu::
    `take_keyboards`) opens it in minimal mode on the panel's overlay (`osk.rs`). Its
    `KeyboardCharInput` events come in with the panel's own user value, and `kvm.rs:type_text`
    turns each character into US-layout key presses through the same `Panel::key`. A physical key
-   (`Kvm::key_at`) closes it. The Machines and Workspace fields skip SteamVR's keyboard while
-   `keyboard_in_use` (a physical key in the last 60 s).
+   (`Kvm::key_at`) closes it. While it's open, `osk::Keys` draws a key strip (`Kind::Keys`) under the
+   panel's card: Esc, Tab and the arrows (`Kvm::strip_key`), and sticky Ctrl, Alt and Super
+   (`Kvm::latched`) that `tap` wraps around the next key, or `click_mods` holds through the next
+   click. Held modifiers (`synth`) are let go when the click ends, typing moves, the laser leaves
+   the panel, the session drops, or the keyboard closes. The Machines and Workspace fields skip
+   SteamVR's keyboard while `keyboard_in_use` (a physical key in the last 60 s, `popup_ok(false)`);
+   the panel's button always opens it (`popup_ok(true)`).
 
 ### Window panels
 
@@ -320,6 +325,7 @@ spec has some work to do: the same kind of thing is saved in different places.
 | Taskbar frame | Room (fixed), Head (follow), Device (wrist) | fixed carry: `spots.home.taskbar`; mode, size and curve: settings.json `taskbar`, `taskbar_scale`, `taskbar_curve` (global, not per workspace) | its own Hold (taskbar.rs); carried in fixed mode only |
 | Plasma's bar and popups | Parent: the taskbar frame | nothing | nothing; input is forwarded |
 | A panel's back | Parent: its panel | nothing | a press carries its panel |
+| Key strip | Parent: its panel (under its card, while SteamVR's keyboard types to it) | nothing | nothing (it rides its panel) |
 | Scan HUD strip / tag outlines | Head / Room | nothing | nothing |
 | Theater backdrop | Head | nothing | nothing |
 | Cursor | Room (faces the head each frame) | nothing | nothing |

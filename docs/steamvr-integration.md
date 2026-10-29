@@ -29,14 +29,24 @@ opens for that panel. Each key goes to the computer or window the moment you pre
 way a real keyboard's keys go, and Backspace and Enter work too. Press the button on another panel
 to type there instead.
 
+SteamVR's keyboard has no Esc, Tab, arrow keys, Ctrl, Alt or Super, so while it's open a key
+strip of ours sits under the panel with those. Ctrl, Alt and Super are sticky: press one (it
+lights up) and it goes with your next key, from either keyboard, or your next click on that
+panel, so Ctrl and then C on SteamVR's keyboard is Ctrl+C. Anything Command Center holds down
+for you is let go when the key or click ends, when the keyboard closes, when you type somewhere
+else, and when the panel's connection drops.
+
 What it can't do:
 
-- SteamVR's keyboard has no Esc, arrow keys, Ctrl, Alt or function keys. Use a real keyboard for
-  those.
-- It types as a US keyboard does. A character that isn't on one (an accented letter, an emoji)
-  isn't sent.
+- Function keys. Use a real keyboard for those.
+- It types as a US keyboard does. A character that isn't on one (an accented letter, the euro
+  sign, an emoji) isn't sent, and the strip says "Couldn't type 1 character" for a few seconds.
+  It never says which character, and neither does the log, since you might be typing a password.
+- The remote computer reads the keys with its own layout, the same as a real keyboard's keys. If
+  it isn't set to US, some punctuation comes out as what's on that key in its layout.
 - Press a key on a real keyboard while it's open and it closes, since you've gone back to the
-  real one.
+  real one. Pressing the keyboard button always opens it, even right after you typed on a real
+  keyboard.
 
 The text fields in the Machines and Workspace windows open SteamVR's keyboard when you click
 them. If you've pressed a key on a real keyboard in the last minute, they don't, and the real

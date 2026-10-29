@@ -815,6 +815,13 @@ fn chrome(pl: &Placement) -> (f64, f64) {
     (bar, 1.4 * (bar * 0.13).max(dist * 0.018))
 }
 
+/// How far under panel pl's picture its card reaches (its frame, or its grab bar where that's
+/// lower), so osk.rs's key strip goes just under it.
+pub fn card_below(pl: &Placement) -> f64 {
+    let (bw, g) = chrome(pl);
+    (0.6 * g + bw * (12.0 + BAR_H as f64 / 2.0) / BAR_W as f64).max(g)
+}
+
 // ------------------------------------------------------------------ carrying and resizing
 
 #[derive(Clone, Copy)]

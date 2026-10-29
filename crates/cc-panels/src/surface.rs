@@ -22,6 +22,7 @@
 //! | Taskbar frame | Room (fixed), Head (follow), Device (wrist) | fixed carry: spots.home.`taskbar`; mode, size and curve: settings.json `taskbar`, `taskbar_scale`, `taskbar_curve` | its own Hold (taskbar.rs), fixed mode only for carrying |
 //! | Plasma's bar and popups | Parent: the taskbar frame | nothing | nothing (input is forwarded) |
 //! | A panel's back | Parent: its panel | nothing | a press carries its panel |
+//! | Key strip | Parent: its panel (under its card, while SteamVR's keyboard types to it) | nothing | nothing (it rides its panel) |
 //! | Scan HUD strip | Head | nothing | nothing (its skip button is clicked) |
 //! | Scan HUD tag outlines | Room (from `hud mark`) | nothing | nothing |
 //! | Theater backdrop | Head | nothing | nothing |
@@ -57,6 +58,7 @@ pub enum Kind {
     Cursor,
     LaserMode,
     Dashtab,
+    Keys, // the key strip under a panel while SteamVR's keyboard types to it (osk.rs)
 }
 
 /// What a surface's place is relative to. Follow mode eases after the head, so it's `Head` even
@@ -202,7 +204,7 @@ fn anchor_of(kind: Kind, slot: Option<usize>) -> Anchor {
         Kind::Card if slot.is_some() => Anchor::Parent(Parent::Panel),
         Kind::Card => Anchor::Parent(Parent::Extra),
         Kind::Plasma => Anchor::Parent(Parent::Taskbar),
-        Kind::Back => Anchor::Parent(Parent::Panel),
+        Kind::Back | Kind::Keys => Anchor::Parent(Parent::Panel),
         Kind::HudStrip | Kind::Backdrop => Anchor::Head,
         Kind::Dashtab => Anchor::Dashboard,
     }
@@ -281,7 +283,7 @@ pub fn describe(e: &Entry, now: Option<&PanelNow>) -> Surface {
         }
         Kind::Extra => (vec![Store::Spot(e.name.clone())], Manip::Grab),
         Kind::Taskbar => (vec![Store::Spot("taskbar".into()), Store::Setting("taskbar"), Store::Setting("taskbar_scale"), Store::Setting("taskbar_curve")], Manip::Own),
-        Kind::Back => (vec![], Manip::ViaParent),
+        Kind::Back | Kind::Keys => (vec![], Manip::ViaParent),
         Kind::Card | Kind::Plasma | Kind::HudStrip | Kind::HudMark | Kind::Backdrop | Kind::Cursor | Kind::LaserMode | Kind::Dashtab => (vec![], Manip::None),
     };
     Surface { entry: e.clone(), role, anchor, store, manip }
@@ -367,6 +369,7 @@ mod tests {
             (Kind::Card, None, Anchor::Parent(Parent::Extra), Manip::None),
             (Kind::Plasma, None, Anchor::Parent(Parent::Taskbar), Manip::None),
             (Kind::Back, Some(1), Anchor::Parent(Parent::Panel), Manip::ViaParent),
+            (Kind::Keys, Some(1), Anchor::Parent(Parent::Panel), Manip::ViaParent),
             (Kind::HudStrip, None, Anchor::Head, Manip::None),
             (Kind::HudMark, None, Anchor::Room, Manip::None),
             (Kind::Backdrop, None, Anchor::Head, Manip::None),
