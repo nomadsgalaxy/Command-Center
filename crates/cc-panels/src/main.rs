@@ -41,6 +41,7 @@ mod rdp;
 mod session;
 mod stage;
 mod surface;
+mod tab;
 mod taskbar;
 mod theme;
 mod vnc;
@@ -731,6 +732,23 @@ fn main() -> std::process::ExitCode {
         assets::draw(&args[2], &args[3], &args[4..]); // `--assets <dir> <font> tag=...` draws the Machines window's new tags
         return std::process::ExitCode::SUCCESS;
     }
+    // The dashboard tab on its own while the Desktop is closed, and its manifest (tab.rs). None
+    // of these is the Desktop, so they don't take its lock.
+    let one_off = match args.get(1).map(String::as_str) {
+        Some("--tab") => Some(tab::run()),
+        Some("--register-tab") => Some(tab::register(true)),
+        Some("--unregister-tab") => Some(tab::register(false)),
+        _ => None,
+    };
+    if let Some(r) = one_off {
+        return r.map_or_else(
+            |e| {
+                eprintln!("{e}");
+                std::process::ExitCode::FAILURE
+            },
+            |_| std::process::ExitCode::SUCCESS,
+        );
+    }
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
@@ -854,6 +872,7 @@ fn run() -> Result<(), String> {
     let _give_back = GiveBack;
 
     vr::init().map_err(|e| format!("SteamVR: {e}"))?;
+    tab::ensure_registered(); // in this connection, not one of its own (the binding-load budget)
     let dev = gpu::device().ok_or("no GPU buffers (GBM on renderD128)")?;
     // The workspace for this room (its SteamVR tracking universe). Its spots place the panels.
     let mut err = 0;

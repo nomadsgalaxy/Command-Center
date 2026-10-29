@@ -12,7 +12,7 @@ pub struct Vr {
     pub ipc: &'static sys::VR_IVRIPCResourceManagerClient_FnTable,
     pub input: &'static sys::VR_IVRInput_FnTable,
     pub rm: &'static sys::VR_IVRRenderModels_FnTable,
-    pub apps: &'static sys::VR_IVRApplications_FnTable,           // only for GetCurrentSceneProcessId (taskbar.rs)
+    pub apps: &'static sys::VR_IVRApplications_FnTable,           // GetCurrentSceneProcessId (taskbar.rs), and the tab's manifest (tab.rs)
     pub notes: Option<&'static sys::VR_IVRNotifications_FnTable>, // SteamVR's toasts (notify.rs); start-up doesn't need it
 }
 
@@ -39,8 +39,13 @@ fn table<T>(version: &[u8]) -> Result<&'static T, String> {
 }
 
 pub fn init() -> Result<(), String> {
+    init_as(sys::EVRApplicationType_VRApplication_Overlay)
+}
+
+/// init as another kind of app (tab.rs registers the manifest as a utility).
+pub fn init_as(kind: sys::EVRApplicationType) -> Result<(), String> {
     let mut err = 0;
-    unsafe { sys::VR_InitInternal2(&mut err, sys::EVRApplicationType_VRApplication_Overlay, std::ptr::null()) };
+    unsafe { sys::VR_InitInternal2(&mut err, kind, std::ptr::null()) };
     if err != 0 {
         return Err(unsafe { CStr::from_ptr(sys::VR_GetVRInitErrorAsEnglishDescription(err)) }.to_string_lossy().into());
     }

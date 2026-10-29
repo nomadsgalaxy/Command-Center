@@ -21,6 +21,20 @@ To turn the bar off, put this in `~/.config/control-center/settings.json` and re
 { "steamvr_bar": false }
 ```
 
+## The dashboard tab, always there
+
+Command Center's tab sits in SteamVR's dashboard next to Steam's whether the Desktop is open or
+not. With the Desktop closed it's a small process SteamVR starts with itself, and the tab says
+"The Desktop is closed. Show opens it." Pressing **Show** opens the Desktop the same way the
+launcher's tile does, and once it's up the Desktop's own tab takes over in the same spot.
+
+It gets set up the first time you open the Desktop (or by `cc-home install` while SteamVR runs).
+If you'd rather SteamVR didn't start it, turn it off in SteamVR's settings, under its startup
+apps, and it stays off. `cc-home install remove` takes it out.
+
+What it costs: one OpenVR connection each time SteamVR starts, and the memory of one idle process.
+It has no action manifest and takes no controller input except the laser on its own page.
+
 ## SteamVR's keyboard
 
 Every live panel (a computer's screen, a window, a pop-out) has a keyboard button on its bar,

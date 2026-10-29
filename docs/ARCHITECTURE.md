@@ -84,6 +84,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `stage.rs` | What the manipulation code reads: `Stage` is `Overlays` plus a device's pose and laser, the head, and a panel's overlay, size and whether it's turned. `Live` reads SteamVR and the panel list; `stage::fake::Fake` is a stand-in for tests. `Kvm::set_pose_with`/`set_place_with`/`land_with`/`mv_with`/`recenter_with`/`swing_with`/`scale_with` and `Grab`'s `start`/`carry`/`push`/`put` take one. It also sends the pointer move to a panel (`move_pointer`). |
 | `surface.rs` | The surface registry: every overlay we place, listed once with its kind, what its place is relative to (`Anchor`), where it's saved (`Store`) and how it's moved (`Manip`). Everything is made through `surface::create` and destroyed through `surface::destroy`, and a test reads the sources to keep it that way. `surfaces` on the control socket prints it. A record of today, not a new mechanism. |
 | `grab.rs` | Each panel's card (Breeze-like frame, tabs, grab bar, knobs): drawing, hit-testing, carrying, resizing, curving, snap-back, the `Extra` slot the control windows share, saving the "home" spot on release. |
+| `tab.rs` | `cc-panels --tab`: the dashboard tab while the Desktop is closed (SteamVR starts it from command-center.vrmanifest), and registering that manifest (`--register-tab`, `ensure_registered` at the Desktop's start). |
 | `osk.rs` | SteamVR's keyboard for typing to a panel from a controller (the card's keyboard button), and the key strip with the keys it lacks. |
 | `notify.rs` | Notifications: pairing results, errors and host health, sent to org.freedesktop.Notifications on the Frame's main user bus (thread `cc-notify`), rate-limited, with SteamVR's toast as the fallback. |
 | `back.rs` | Dim backs for panels seen from behind, one flat overlay each. |
@@ -338,7 +339,7 @@ spot may be under its screen number, which saving removes.
 
 ### The dashboard tab
 
-1. `Dashtab::tick` (`control/dashtab.rs`, called from the main loop) makes the tab once at start with
+1. `Dashtab::tick` (`control/dashtab.rs`, called from the main loop) makes the tab at start (again every 2 s while its key is taken) with
    `vr::create_dashboard_overlay` (key `controlcenter.dashboard`, icon `packaging/command-center.png`).
    After that it polls the page's laser events and redraws it with the Preferences window's kit
    (`control/ui.rs`).
@@ -354,7 +355,12 @@ spot may be under its screen number, which saving removes.
    `VREvent_OverlayClosed`, and that calls `close_desktop`. settings.json `"steamvr_bar": false`
    turns the bar off. The floating windows don't get it: see
    [steamvr-integration.md](steamvr-integration.md).
-5. **2D games.** A flat Steam game runs in gamescope (`--backend openvr`) as a SteamVR system
+5. **While the Desktop is closed** (`tab.rs`): SteamVR starts `session/cc-tab` with itself, from
+   `command-center.vrmanifest` (`is_dashboard_overlay`, auto-launch), and that's `cc-panels --tab`,
+   the same `Dashtab` with `closed` set: Show runs `cc-home desktop` as a systemd unit on the host.
+   It looks in /proc each second, lets go of the key the moment a Desktop cc-panels runs, and makes
+   it again once that's gone. The Desktop's tab tries every 2 s until the key is free.
+6. **2D games.** A flat Steam game runs in gamescope (`--backend openvr`) as a SteamVR system
    overlay, so the scene process id stays 0. `handoff::start` runs a thread that reads
    GAMESCOPE_FOCUSED_APP from gamescope's X server on :0, with a small hand-written X11 client
    because no X crate is in the tree, and falls back to a `reaper SteamLaunch AppId=` process. A real
@@ -363,7 +369,7 @@ spot may be under its screen number, which saving removes.
    mice go back to the Frame. Picking our tab (`IsActiveDashboardOverlay`, only the moment it's
    picked) or pressing Command Center takes the Desktop back for the rest of that game, and Steam /
    game hands it to the game again. When the game ends, only what it hid comes back.
-6. Not built yet: handing the input to Steam by itself when the dashboard merely opens. main.rs
+7. Not built yet: handing the input to Steam by itself when the dashboard merely opens. main.rs
    already calls `dashtab::dashboard` on `DashboardActivated`/`DashboardDeactivated`, which is where
    it goes.
 

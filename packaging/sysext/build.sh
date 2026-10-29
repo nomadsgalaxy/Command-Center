@@ -34,7 +34,7 @@ install -Dm755 "$root/target/release/cc-panels" "$s/$lib/target/release/cc-panel
 ln -s cc-home "$s/$lib/cc-panels"
 ln -s cc-home "$s/$lib/cc-box"
 mkdir -p "$s/$lib/session" "$s/$lib/panels/third_party/prefix/lib64" "$s/$lib/crates/cc-panels/actions" "$s/usr/bin"
-for c in cc-launch cc-desktop cc-rest; do ln -s ../cc-home "$s/$lib/session/$c"; done
+for c in cc-launch cc-desktop cc-rest cc-tab; do ln -s ../cc-home "$s/$lib/session/$c"; done
 for c in cc-home cc-panels; do ln -s "../lib/command-center/$c" "$s/usr/bin/$c"; done
 cp -P "$root"/panels/third_party/prefix/lib64/lib{freerdp3,freerdp-client3,winpr3}.so.3* "$s/$lib/panels/third_party/prefix/lib64/"
 # Says the build is native, so cc-box runs things directly (session.rs, native()). A container
@@ -42,6 +42,12 @@ cp -P "$root"/panels/third_party/prefix/lib64/lib{freerdp3,freerdp-client3,winpr
 [ -f "$root/panels/third_party/prefix/steamos-release" ] && install -m644 "$root/panels/third_party/prefix/steamos-release" "$s/$lib/panels/third_party/prefix/"
 install -m644 "$root"/panels/cc-windows.js "$root"/panels/cc-restore.js "$s/$lib/panels/"
 install -m644 "$root"/crates/cc-panels/actions/*.json "$s/$lib/crates/cc-panels/actions/"
+# The dashboard tab's icon (dashtab.rs reads it from root/packaging), and the manifest SteamVR
+# starts the tab from while the Desktop is closed (tab.rs). It sits at this fixed path, which the
+# Desktop's start registers with SteamVR if it isn't yet (cc-home install renders the same template).
+install -Dm644 "$root/packaging/command-center.png" "$s/$lib/packaging/command-center.png"
+sed -e "s|@TAB@|/$lib/session/cc-tab|" -e "s|@ICON@|/$lib/packaging/command-center.png|" \
+  "$root/packaging/command-center.vrmanifest.in" >"$s/$lib/command-center.vrmanifest"
 strip --strip-debug "$s/$lib/cc-home" "$s/$lib/target/release/cc-panels" "$s/$lib"/panels/third_party/prefix/lib64/*.so.*.*
 
 # The pointer driver goes where SteamVR's own drivers are. vrserver loads every folder in

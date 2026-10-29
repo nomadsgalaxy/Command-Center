@@ -9,8 +9,11 @@
 //! hand the Desktop back and forth with the game (handoff.rs), and picking this tab does what
 //! pressing "Command Center" does. What it shows is who has the input right now, game or not.
 //!
-//! It's made once at start (`CreateDashboardOverlay`, key controlcenter.dashboard) and lives as
-//! long as cc-panels does, so unlike the other windows it has no card and no open/close. Its
+//! It's made at start (`CreateDashboardOverlay`, key controlcenter.dashboard) and lives as long as
+//! cc-panels does, so unlike the other windows it has no card and no open/close. While the Desktop
+//! is closed, `cc-panels --tab` (tab.rs) shows the same tab in its `closed` mode, where Show opens
+//! the Desktop. Only one of them holds the key: the tab mode lets go as soon as the Desktop runs,
+//! and the Desktop's tab tries again every RETRY until it gets it. Its
 //! thumbnail is packaging/command-center.png. It's painted with the Preferences window's kit
 //! (ui.rs) and gets laser clicks as mouse events on its overlay, in the page's units.
 //!
@@ -32,11 +35,17 @@ use crate::{HIDDEN, call, theme, vr};
 use openvr_sys as sys;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::time::{Duration, Instant};
 
 /// Its labels, drawn by assets.rs at start as tag-ui-<key>.rgba. "dash" is both the title and the
 /// first choice of where the mouse and keyboard go.
 pub const LABELS: [(&str, &str); 6] =
     [("dash", "Command Center"), ("dashdesktop", "Desktop"), ("dashshow", "Show"), ("dashhide", "Hide"), ("dashinput", "Mouse and keyboard"), ("dashsteam", "Steam / game")];
+
+/// How long the closed tab says it's opening the Desktop after Show.
+const OPENING: Duration = Duration::from_secs(60);
+/// How often making the tab is tried again while its key is taken (tab.rs letting go of it).
+const RETRY: Duration = Duration::from_secs(2);
 
 /// SteamVR's dashboard is open (main.rs tells `dashboard`), so the tab is being looked at.
 static OPEN: AtomicBool = AtomicBool::new(false);
@@ -92,7 +101,7 @@ fn whole_row(i: usize) -> Rect {
 
 /// The areas to redraw going from a to b. None means redraw all of it.
 fn dirty(a: &Key, b: &Key) -> Option<Vec<Rect>> {
-    if a.theme != b.theme {
+    if a.theme != b.theme || a.closed != b.closed || a.opening != b.opening {
         return None;
     }
     let mut r: Vec<Rect> = if a.hover != b.hover { [a.hover, b.hover].into_iter().flatten().map(rect).collect() } else { Vec::new() };
@@ -112,6 +121,8 @@ struct Key {
     steam: bool,
     hover: Option<Hit>,
     theme: u32,
+    closed: bool,  // the Desktop isn't running (tab.rs): Show opens it, and the input row isn't there
+    opening: bool, // ...and Show was pressed
 }
 
 /// Its labels, plus ascii.rgba for the line about the choice.
@@ -134,8 +145,16 @@ impl Scene<'_> {
     fn row(&self, i: usize, x: f64, y: f64) -> Px {
         let (t, k, ui, cy) = (&self.p.t, self.k, self.ui, row_y(i));
         let ink = |px: Px, c| tint(px, c, c, c);
+        if k.closed && i == 1 {
+            return ([0.0; 3], 0.0); // nothing to choose with no Desktop
+        }
         if i == 2 {
-            let line = if k.steam { "Your mouse and keyboard go to Steam and your game." } else { "Your mouse and keyboard work Command Center." };
+            let line = match (k.closed, k.opening, k.steam) {
+                (true, true, _) => "Opening the Desktop...",
+                (true, false, _) => "The Desktop is closed. Show opens it.",
+                (false, _, true) => "Your mouse and keyboard go to Steam and your game.",
+                (false, _, false) => "Your mouse and keyboard work Command Center.",
+            };
             let left = (PAD + 4.0).min(W - PAD - typed_w(ui.ascii.as_ref(), line)); // a long one shows its end
             return if x < W - PAD { ink(typed(ui.ascii.as_ref(), line, x, y, left, cy), t.wdim) } else { ([0.0; 3], 0.0) };
         }
@@ -163,7 +182,11 @@ impl Scene<'_> {
 
 pub struct Dashtab {
     ov: Option<(vr::Handle, vr::Handle)>, // the page and its thumbnail
-    tried: bool,
+    retry: Option<Instant>,               // when to try making it again, after a try that failed
+    failed: bool,                         // the last try failed, so the next failure isn't logged again
+    pub closed: bool,                     // tab.rs's mode: the Desktop isn't running
+    opening: Option<Instant>,             // Show pressed in that mode
+
     ui: Arc<Ui>,
     hover: Option<Hit>,
     painter: ui::Painter<Key>,
@@ -174,7 +197,10 @@ impl Dashtab {
         let load = |k: &str| crate::load_tag(&format!("{assets}/tag-ui-{k}.rgba"));
         Dashtab {
             ov: None,
-            tried: false,
+            retry: None,
+            failed: false,
+            closed: false,
+            opening: None,
             ui: Arc::new(Ui {
                 title: load("dash"),
                 names: ["dashdesktop", "dashinput"].map(load),
@@ -203,8 +229,8 @@ impl Dashtab {
 
     /// Every frame: makes the tab the first time, then handles its events and draws it.
     pub fn tick(&mut self, hand: &mut Handoff) {
-        if self.ov.is_none() && !self.tried {
-            self.tried = true;
+        if self.ov.is_none() && self.retry.is_none_or(|t| Instant::now() >= t) {
+            self.retry = Some(Instant::now() + RETRY);
             self.open();
         }
         let Some((h, _)) = self.ov else { return };
@@ -222,10 +248,13 @@ impl Dashtab {
         let (h, thumb) = match crate::surface::create_dashboard("controlcenter.dashboard", "Command Center") {
             Ok(h) => h,
             Err(e) => {
-                eprintln!("dashboard tab: no overlay: {e}"); // the key's in use, or the overlays are all taken
+                if !std::mem::replace(&mut self.failed, true) {
+                    eprintln!("dashboard tab: no overlay yet: {e}; trying again every {} s", RETRY.as_secs()); // the key's in use (tab.rs), or the overlays are all taken
+                }
                 return;
             }
         };
+        self.failed = false;
         let logo = crate::root().join("packaging/command-center.png");
         if logo.exists() {
             vr::set_from_file(thumb, &logo.to_string_lossy());
@@ -255,11 +284,12 @@ impl Dashtab {
                 sys::EVREventType_VREvent_FocusLeave => self.hover = None,
                 // SteamVR's close on the tab quits Command Center, the way it quits any overlay app
                 sys::EVREventType_VREvent_OverlayClosed => crate::close_desktop("the dashboard tab's close"),
-                sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
-                    if let Some(a) = at {
-                        act(a, hand);
-                    }
-                }
+                sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => match at {
+                    Some(Hit(0, 0)) if self.closed => self.open_desktop(),
+                    Some(_) if self.closed => {}
+                    Some(a) => act(a, hand),
+                    None => {}
+                },
                 _ => {}
             }
         }
@@ -267,7 +297,8 @@ impl Dashtab {
 
     /// Redraws it off the main thread when anything changed, and only the parts that did.
     fn paint(&mut self, h: vr::Handle, steam: bool) {
-        let key = Key { shown: !HIDDEN.load(Relaxed), steam, hover: self.hover, theme: theme::generation() };
+        let opening = self.opening.is_some_and(|t| t.elapsed() < OPENING);
+        let key = Key { shown: !HIDDEN.load(Relaxed) && !self.closed, steam, hover: self.hover, theme: theme::generation(), closed: self.closed, opening };
         self.painter.paint(h, key, || {
             let (ui, p) = (self.ui.clone(), Paint::new(&theme::get(), theme::VIOLET));
             move |was: Option<Key>, px, k: &Key| {
@@ -283,6 +314,38 @@ impl Dashtab {
             crate::gpu::forget(h);
             crate::surface::destroy(h);
             crate::surface::destroy(thumb);
+        }
+    }
+
+    /// Lets go of the tab and its key (tab.rs, once the Desktop runs). The next tick makes it again.
+    pub fn release(&mut self) {
+        if self.ov.is_some() {
+            self.destroy();
+            (self.hover, self.painter, self.retry, self.opening) = (None, ui::Painter::default(), None, None);
+            eprintln!("dashboard tab: handed to the Desktop");
+        }
+    }
+
+    /// Show in the closed mode: starts the Desktop the way the launcher's tile does (cc-home desktop),
+    /// as a systemd unit of its own on the host, so it outlives this process. The unit's fixed name
+    /// keeps a second press from starting a second one.
+    fn open_desktop(&mut self) {
+        if self.opening.is_some_and(|t| t.elapsed() < OPENING) {
+            return;
+        }
+        let cc_home = crate::root().join("cc-home");
+        let mut argv: Vec<std::ffi::OsString> = ["systemd-run", "--user", "--collect", "--quiet", "--unit=command-center-open"].map(Into::into).into();
+        argv.extend([cc_home.into_os_string(), "desktop".into()]);
+        if std::path::Path::new("/run/.containerenv").exists() {
+            argv.insert(0, format!("{}/.local/bin/distrobox-host-exec", crate::config::home_dir()).into()); // the container's way to the host (machines.rs on_host)
+        }
+        let started = std::process::Command::new(&argv[0]).args(&argv[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).spawn();
+        match started {
+            Ok(_) => {
+                self.opening = Some(Instant::now());
+                eprintln!("dashboard tab: opening the Desktop");
+            }
+            Err(e) => eprintln!("dashboard tab: can't open the Desktop: {e}"),
         }
     }
 }
@@ -309,7 +372,7 @@ mod tests {
     use crate::grab;
 
     fn key(hover: Option<Hit>) -> Key {
-        Key { shown: true, steam: false, hover, theme: 0 }
+        Key { shown: true, steam: false, hover, theme: 0, closed: false, opening: false }
     }
 
     #[test]
@@ -343,6 +406,17 @@ mod tests {
         assert!(near(sc.pixel(seg(1), row_y(0)).0, p.acc.line), "Hide: chosen while they're hidden");
         assert!(near(sc.pixel(seg(1), row_y(1)).0, p.acc.line) && near(sc.pixel(seg(0), row_y(1)).0, p.t.raised), "Steam / game");
         assert_eq!(sc.pixel(0.2, 0.2).1, 0.0, "round corners: clear");
+    }
+
+    #[test]
+    fn closed_it_offers_only_show() {
+        let (ui, p) = (Ui::default(), Paint::new(&theme::Theme::default(), theme::VIOLET));
+        let seg = |s: usize| span().0 + SEG * (s as f64 + 0.5);
+        let k = Key { closed: true, shown: false, ..key(None) };
+        let sc = Scene { k: &k, p, ui: &ui };
+        assert_eq!(sc.row(1, seg(0), row_y(1)).1, 0.0, "no input row with no Desktop");
+        assert!(sc.row(0, seg(0), row_y(0)).1 > 0.0, "Show is there");
+        assert!(dirty(&key(None), &k).is_none() && dirty(&k, &Key { opening: true, ..k.clone() }).is_none(), "the mode and its line: all of it");
     }
 
     #[test]

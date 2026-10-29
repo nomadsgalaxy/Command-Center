@@ -170,7 +170,9 @@ keep working without changes.
 /usr/lib/command-center/
   cc-home                                   static musl, the multi-call binary
   cc-panels, cc-box -> cc-home
-  session/cc-launch, cc-desktop, cc-rest -> ../cc-home
+  session/cc-launch, cc-desktop, cc-rest, cc-tab -> ../cc-home
+  command-center.vrmanifest                 the dashboard tab's SteamVR app manifest → session/cc-tab
+  packaging/command-center.png              the tab's icon
   target/release/cc-panels                  RUNPATH /opt/steamvr/bin/linuxarm64:$ORIGIN/../../panels/third_party/prefix/lib64
   panels/cc-windows.js, cc-restore.js       the KWin scripts
   panels/third_party/prefix/lib64/          libfreerdp3, libfreerdp-client3, libwinpr3 (.so.3, 3.31.1)
@@ -214,6 +216,26 @@ The hash-named folders were there so a loaded driver never gets replaced underne
 sysext, a running vrserver keeps the `.so` it mapped from the old image, and the new one loads on the
 next SteamVR start, same as today. `install.sh check`'s "needs a SteamVR restart" logic carries over:
 compare the mapped path's image against the merged one.
+
+### The dashboard tab's manifest
+
+Command Center's tab in SteamVR's dashboard is there even while the Desktop is closed. SteamVR
+starts a small process for it with itself: `/usr/lib/command-center/command-center.vrmanifest`
+says app `controlcenter.tab` is a dashboard overlay (`is_dashboard_overlay`) that runs
+`session/cc-tab`, which runs `cc-panels --tab` (crates/cc-panels/src/tab.rs). The path is fixed, so
+it means the same thing in every image version.
+
+A manifest only counts once SteamVR has it in its appconfig (`~/.config/openvr/config/appconfig.json`),
+and that's per user, so the image alone can't do it. The Desktop's start checks
+`IsApplicationInstalled` inside the OpenVR connection it opens anyway, and if SteamVR doesn't have
+the manifest (a first start, or after a `steamreset`) it adds it with `AddApplicationManifest` and
+turns on its auto-launch with `SetApplicationAutoLaunch`. Auto-launch is only set then, so turning
+it off in SteamVR's settings sticks. Nothing opens a connection of its own for this at launch,
+because every connection spends SteamVR's binding loads. A checkout install (`cc-home install`)
+writes the same manifest with its own paths and registers it right away if SteamVR is running, with
+one connection.
+
+`packaging/command-center.vrmanifest.in` is the one template, like the tile's.
 
 ### The launcher entry
 
@@ -363,7 +385,9 @@ sudo systemd-sysext refresh
 ```
 
 That's everything system-wide gone: the commands, the driver, both `.desktop` files and the polkit
-action. `systemd-sysext.service` can stay enabled, since with nothing in the extension dirs its
+action. SteamVR's per-user list still names the tab's manifest, so run `cc-home install remove`
+first: with SteamVR running it removes it (`RemoveApplicationManifest`), and with SteamVR off it
+takes the one line out of appconfig.json. A path SteamVR can't find again just isn't listed. `systemd-sysext.service` can stay enabled, since with nothing in the extension dirs its
 conditions skip it. cc-install's Remove does this, then asks before deleting `~/.config/control-center`
 and `~/.cache/control-center`. The Desktop tile is SteamOS's again on its own.
 

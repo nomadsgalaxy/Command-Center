@@ -13,6 +13,8 @@
 //!   cc-home rest                session/cc-rest: hibernate save, the session stopped, and the
 //!                               programs named in `rest_nice` at nice 10 and idle-ish IO
 //!   cc-home session             session/cc-desktop: Plasma in a headless KWin (the cc-desktop unit)
+//!   cc-home tab                 session/cc-tab: what SteamVR starts with itself, the dashboard tab
+//!                               while the Desktop is closed (cc-panels --tab in cc-box)
 //!   cc-home box <cmd> [args...] cc-box: a command in the control-center container, or right
 //!                               here when the build is native (native())
 //! With CC_DRY=1, desktop, panels, rest and box print the commands that would change something
@@ -39,6 +41,7 @@ pub fn dispatch(name: &str, args: &[OsString]) -> Option<i32> {
         "panels" | "cc-panels" => panels(rest),
         "rest" | "cc-rest" => rest_now(),
         "session" | "cc-desktop" => session(),
+        "tab" | "cc-tab" => tab(),
         "box" | "cc-box" => boxed(&args[usize::from(name == "cc-home")..]),
         "kwin_wayland_wrapper" => kwin_wrapper(args),
         "flatpak-bwrap" => flatpak_bwrap(args),
@@ -276,6 +279,35 @@ fn desktop(args: &[String]) -> i32 {
         rest_now();
     }
     status
+}
+
+// ---- cc-tab
+
+/// session/cc-tab: what SteamVR starts with itself (command-center.vrmanifest): `cc-panels --tab`,
+/// the dashboard tab while the Desktop is closed (crates/cc-panels/src/tab.rs). It goes through
+/// cc-box like the Desktop's cc-panels, its output in ~/.cache/control-center/cc-tab.log. It execs,
+/// so on a native build SteamVR's own child is the tab.
+fn tab() -> i32 {
+    let (root, cache) = (root(), PathBuf::from(cache("")));
+    let _ = fs::create_dir_all(&cache);
+    let log = cache.join("cc-tab.log");
+    if fs::metadata(&log).map_or(0, |m| m.len()) > 1_000_000 {
+        let _ = fs::rename(&log, cache.join("cc-tab.log.1"));
+    }
+    let mut c = Command::new(root.join("cc-box"));
+    c.env("CC_NICE", "0").arg(root.join("target/release/cc-panels")).arg("--tab");
+    if DRY.load(Relaxed) {
+        println!("dry: {c:?} >> {}", log.display());
+        return 0;
+    }
+    if let Ok(f) = fs::OpenOptions::new().append(true).create(true).open(&log)
+        && let Ok(g) = f.try_clone()
+    {
+        c.stdout(f).stderr(g);
+    }
+    let e = c.exec();
+    eprintln!("{}: {e}", root.join("cc-box").display());
+    127
 }
 
 // ---- cc-rest
