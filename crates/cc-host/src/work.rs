@@ -732,7 +732,9 @@ pub fn check_tags(p: &Value, w: i64, h: i64) -> Result<(), String> {
         let v: Vec<i64> = t.as_array().filter(|a| a.len() == 4 && a.iter().all(|x| x.is_i64())).map(|a| a.iter().map(|x| x.as_i64().unwrap()).collect()).ok_or("bad-tag")?;
         let (id, x, y, side) = (v[0], v[1], v[2], v[3]);
         let q = side / 4;
-        if !(0..250).contains(&id) || side < 12 || x < 0 || y < 0 || x + side > w || y + side > h {
+        // checked, since a huge side or x from the Frame would wrap past the screen's edge (ARITHOFL-003)
+        let inside = |at: i64, len: i64| at.checked_add(side).is_some_and(|end| end <= len);
+        if !(0..250).contains(&id) || side < 12 || x < 0 || y < 0 || !inside(x, w) || !inside(y, h) {
             return Err("tag-outside".into());
         }
         if y - q < band {
@@ -845,6 +847,14 @@ mod tests {
         assert_eq!(health("unknown", 0, false, 0.0), "unknown", "systemd didn't say");
         assert_eq!(health("active", 0, false, 30.0), "starting");
         assert_eq!(health("active", 0, false, 61.0), "degraded", "running without listening for a minute");
+    }
+
+    /// A side or a position big enough to wrap past i64 is refused, not let through.
+    #[test]
+    fn huge_tags_dont_wrap() {
+        for t in [json!([1, 100, 200, i64::MAX]), json!([1, i64::MAX - 10, 200, 240]), json!([1, 100, i64::MAX - 10, 240])] {
+            assert_eq!(check_tags(&json!({"bg": "white", "tags": [t]}), 1920, 1080), Err("tag-outside".into()), "{t}");
+        }
     }
 
     #[test]
