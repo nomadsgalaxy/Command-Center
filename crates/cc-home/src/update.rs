@@ -18,7 +18,12 @@
 //!    new image is merged at the next boot or the next update with the Desktop closed.
 //!
 //! It takes no arguments, reads no paths from anywhere, follows no symlink it makes or empties,
-//! and runs every program by its full path with an empty environment. Signing a release is
+//! and runs every program by its full path with an empty environment. It's a copy of cc-home
+//! (not a link, so polkit's exec.path matches it and its name is its own), and as root under
+//! pkexec cc-home refuses to be anything else (`root_ok`). The downloads' size caps hold during
+//! the transfer too: the Frame's curl is 8.7, and --max-filesize covers transfers of unknown size
+//! from 8.4 on; each file's size is checked again after. sysupdate itself never installs an older
+//! version than the newest installed one unless asked for a version, which this never does. Signing a release is
 //! Anthony's, by hand, with the key's secret half; nothing here touches that.
 use std::fs;
 use std::io::Read;
@@ -128,6 +133,42 @@ fn run(o: &mut impl Ops, dir: &Path) -> Result<String, String> {
     Ok(format!("{name} is installed and loaded"))
 }
 
+/// What a process running as root under pkexec may be: only the helper, by its own name. If
+/// polkit or a link ever handed root some other name (cc-home itself), its normal commands must
+/// not run as root.
+pub fn root_ok(euid: u32, under_pkexec: bool, name: &str) -> bool {
+    !(euid == 0 && under_pkexec) || name == "cc-sysext-update"
+}
+
+/// Programs that run from the image: refreshing would swap their files under them.
+fn from_image(exe: &Path) -> bool {
+    exe.starts_with("/usr/lib/command-center") || exe.parent() == Some(Path::new("/usr/bin")) && exe.file_name().is_some_and(|n| n.to_string_lossy().starts_with("cc-"))
+}
+
+/// Whether anything but `ours` (this helper and who started it) runs a program from the image,
+/// going by `proc`'s `<pid>/exe` links: the Desktop's cc-panels, the dashboard tab's, cc-home.
+fn image_in_use(proc: &Path, ours: &[u32]) -> bool {
+    let Ok(dir) = fs::read_dir(proc) else { return true }; // can't tell: don't refresh
+    dir.flatten().filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok()).filter(|p| !ours.contains(p)).any(|p| fs::read_link(proc.join(format!("{p}/exe"))).is_ok_and(|x| from_image(&x)))
+}
+
+/// This process and its parents, up to init: pkexec, and the `cc-home update` that ran it.
+fn ancestors(proc: &Path, me: u32) -> Vec<u32> {
+    let mut out = vec![me];
+    let mut p = me;
+    for _ in 0..16 {
+        let Ok(stat) = fs::read_to_string(proc.join(format!("{p}/stat"))) else { break };
+        // after the last ')', so a program name with spaces or brackets can't move the fields
+        let Some(ppid) = stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(1)?.parse::<u32>().ok()) else { break };
+        if ppid <= 1 {
+            break;
+        }
+        out.push(ppid);
+        p = ppid;
+    }
+    out
+}
+
 /// The real steps.
 struct Live {
     dir: PathBuf,
@@ -178,6 +219,12 @@ impl Ops for Live {
     }
 
     fn desktop_running(&self) -> bool {
+        // Anything running from the image counts, the dashboard tab's process too, besides this
+        // helper and the cc-home update that started it.
+        let proc = Path::new("/proc");
+        if image_in_use(proc, &ancestors(proc, std::process::id())) {
+            return true;
+        }
         // Not knowing who asked (no PKEXEC_UID) counts as running: never refresh under a Desktop.
         let Some(uid) = self.user else { return true };
         let Ok(f) = fs::File::open(format!("/run/user/{uid}/control-center-desktop.lock")) else { return false };
@@ -356,6 +403,35 @@ mod tests {
         assert!(prepare(&l, me).is_err(), "the directory itself a symlink");
         let _ = fs::remove_file(&l);
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn root_under_pkexec_is_only_ever_the_helper() {
+        assert!(root_ok(0, true, "cc-sysext-update"));
+        assert!(!root_ok(0, true, "cc-home"), "a link that resolved back to cc-home: refused");
+        assert!(root_ok(1000, true, "cc-home") && root_ok(0, false, "cc-home"), "not pkexec's root: cc-home as usual");
+    }
+
+    #[test]
+    fn nothing_refreshes_while_anything_runs_from_the_image() {
+        let proc = scratch("proc");
+        let pid = |n: u32, exe: &str, ppid: u32| {
+            let d = proc.join(n.to_string());
+            fs::create_dir_all(&d).unwrap();
+            std::os::unix::fs::symlink(exe, d.join("exe")).unwrap();
+            fs::write(d.join("stat"), format!("{n} (a (b) c) S {ppid} 0 0")).unwrap();
+        };
+        pid(10, "/usr/lib/command-center/cc-sysext-update", 9); // us
+        pid(9, "/usr/bin/pkexec", 8);
+        pid(8, "/usr/lib/command-center/cc-home", 1); // cc-home update
+        pid(20, "/usr/bin/bash", 1);
+        let ours = ancestors(&proc, 10);
+        assert_eq!(ours, [10, 9, 8]);
+        assert!(!image_in_use(&proc, &ours), "only us and who started us");
+        pid(30, "/usr/lib/command-center/target/release/cc-panels", 1); // the dashboard tab
+        assert!(image_in_use(&proc, &ours), "the tab runs from the image");
+        assert!(from_image(Path::new("/usr/bin/cc-home")) && !from_image(Path::new("/usr/bin/curl")));
+        let _ = fs::remove_dir_all(&proc);
     }
 
     #[test]

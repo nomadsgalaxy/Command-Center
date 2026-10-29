@@ -811,6 +811,10 @@ fn main() {
     if name == "cc-sysext-update" {
         std::process::exit(update::helper(&raw.collect::<Vec<_>>()));
     }
+    if !update::root_ok(unsafe { libc::geteuid() }, std::env::var_os("PKEXEC_UID").is_some(), &name) {
+        eprintln!("cc-home: run as root by pkexec under another name ({name}), so nothing's done");
+        std::process::exit(1);
+    }
     let name = if name.starts_with("cc-home") { "cc-home".into() } else { name };
     if let Some(code) = session::dispatch(&name, &raw.collect::<Vec<_>>()) {
         std::process::exit(code)

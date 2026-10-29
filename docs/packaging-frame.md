@@ -336,8 +336,9 @@ and cc-install checks it against a key compiled into cc-install.
 run `/usr/lib/command-center/cc-sysext-update` (action `org.controlcenter.update`, in the image at
 `/usr/share/polkit-1/actions/org.controlcenter.update.policy`), which is allowed for the user at
 the device only: `allow_active=yes`, `allow_inactive` and `allow_any` no. That's the same pattern
-as Valve's `steamos-update`. The helper is cc-home under another name (static, no libraries), and
-as root it does one thing, in this order (`crates/cc-home/src/update.rs`):
+as Valve's `steamos-update`. The helper is a copy of cc-home under its own name (static, no
+libraries; a copy rather than a link, so polkit's `exec.path` and its own name both match, and as
+root under pkexec cc-home refuses to be anything else), and as root it does one thing, in this order (`crates/cc-home/src/update.rs`):
 
 1. Its work directory, `/var/lib/command-center/update`: root's, 0700, a real directory and not a
    symlink, emptied first; anything in it that isn't a plain file stops the update.
@@ -353,9 +354,13 @@ as root it does one thing, in this order (`crates/cc-home/src/update.rs`):
    `/usr/lib/sysupdate.command-center.d/50-command-center.transfer` (source: the work directory,
    `InstancesMax=2`). `--verify=no` because steps 3 and 4 did the checking. A plain
    `command-center.raw` from the first install is removed once the `.raw.v/` directory exists.
-6. `systemd-sysext refresh` only if the Desktop isn't running (its lock in `/run/user/<uid>`, for
-   the user pkexec says asked). Otherwise the new image is loaded at the next boot, or by running
-   `cc-home update` again with the Desktop closed. It never stops a running Desktop.
+6. `systemd-sysext refresh` only if nothing runs from the image: no Desktop (its lock in
+   `/run/user/<uid>`, for the user pkexec says asked) and no other process whose program is under
+   `/usr/lib/command-center` or a `/usr/bin/cc-*` (the dashboard tab's runs with the Desktop
+   closed), apart from the helper and the `cc-home update` that started it. Otherwise the new image
+   is loaded at the next boot, or by running `cc-home update` again once those have closed. It never
+   stops anything. sysupdate never installs an older version than the newest one installed unless
+   it's asked for one, which the helper never does.
 
 The helper takes no arguments and reads no paths from anywhere, and every program it runs is
 called by its full path with an empty environment. Signing a release stays a step done by hand,
