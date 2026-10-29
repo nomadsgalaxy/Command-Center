@@ -148,7 +148,9 @@ for good.
 What it costs: SteamVR has a budget of binding loads, and running out of it stops the lasers
 until SteamVR restarts. Selecting the binding is one binding load, once. Checking it at a Desktop
 start costs none: it only reads what's selected, and selects only if ours isn't. Taking it out is
-one more.
+one more. If SteamVR ever takes the selection but doesn't switch to it, Command Center notes that
+and doesn't try again by itself (each try would cost another load) until SteamVR's binding or ours
+changes, or you run `cc-home install` again.
 
 If you've picked your own binding for SteamVR's laser in Controller Bindings, Command Center
 leaves it: the bumper does whatever your binding says.

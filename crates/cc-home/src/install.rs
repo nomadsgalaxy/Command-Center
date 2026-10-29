@@ -169,8 +169,8 @@ fn remove() -> Result<(), String> {
     if let Err(e) = tab_in_steamvr(false) {
         eprintln!("the dashboard tab: {e}"); // the rest is removed either way
     }
-    match crate::binding::restore() {
-        Ok(say) => println!("{say}"),
+    match crate::binding::restore(true) {
+        Ok((_, say)) => println!("{say}"),
         Err(e) => eprintln!("bumper right click: {e}"),
     }
     if !crate::session::native(&root) {
@@ -318,8 +318,8 @@ fn commands() -> Result<(), String> {
         eprintln!("the dashboard tab: {e}; the Desktop's next start tries again");
     }
     // The bumper as right click on SteamVR's laser (binding.rs).
-    match crate::binding::apply() {
-        Ok(say) => println!("{say}"),
+    match crate::binding::apply(true) {
+        Ok((_, say)) => println!("{say}"),
         Err(e) => eprintln!("bumper right click: {e}"),
     }
     println!("a Nomads Galaxy project");
