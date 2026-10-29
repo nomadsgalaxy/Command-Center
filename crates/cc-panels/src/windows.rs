@@ -263,6 +263,8 @@ fn park(ses: &Session) -> bool {
 /// session (None: wherever it is), with a button in RDP's flags. There's no raise gate because
 /// they're above every window. Coming back onto a window panel raises that window again.
 pub fn shell_mouse(flags: u32, at: Option<(f64, f64)>) {
+    #[cfg(test)]
+    SHELL_SENT.lock().unwrap().push((flags, at));
     let mut s = INPUT.lock().unwrap();
     let Some(ses) = s.session.clone() else { return };
     s.hover = Some(SHELL);
@@ -273,6 +275,13 @@ pub fn shell_mouse(flags: u32, at: Option<(f64, f64)>) {
         s.button(&ses, b, flags & PTR_FLAGS_DOWN != 0);
     }
 }
+
+/// What shell_mouse was asked to send, for the fake-SteamVR replays (docs/vr-harness.md).
+#[cfg(test)]
+pub static SHELL_SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
+/// One shell_mouse call: its RDP pointer flags and the session point.
+#[cfg(test)]
+pub type Sent = (u32, Option<(f64, f64)>);
 
 /// A press outside Plasma's open popup (on a krdp panel, a card, our taskbar, or a window
 /// panel whose window may be under it) clicks on the park output, so Plasma closes the popup

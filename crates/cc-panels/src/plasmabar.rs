@@ -559,9 +559,97 @@ impl Plasma {
     }
 }
 
+/// Replays a trace (trace.rs) through the real events() and the fake SteamVR (vr::fake): each
+/// placement line sets the overlay up as tick() left it, and each tick's events and poses go
+/// through events() in one pass, the way they were polled (docs/vr-harness.md).
+#[cfg(test)]
+impl Plasma {
+    fn replay(&mut self, trace: &str) {
+        let lines: Vec<Value> = trace.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+        let mut i = 0;
+        while i < lines.len() {
+            let l = &lines[i];
+            i += 1;
+            if let Some(v) = l.get("plasma") {
+                self.replay_placed(v);
+            } else if let Some((dev, m)) = crate::trace::pose_from(l) {
+                let mut s = vr::fake::SCRIPT.lock().unwrap();
+                let s = s.get_or_insert_with(Default::default);
+                s.poses.retain(|p| p.0 != dev);
+                s.poses.extend(m.map(|m| (dev, m)));
+            } else if l["tick"] == "plasma" {
+                // this pass's events, up to the next pass or placement
+                while i < lines.len() && lines[i].get("tick").is_none() && lines[i].get("plasma").is_none() {
+                    if lines[i]["ev"] == "plasma"
+                        && let Some(e) = crate::trace::event_from(&lines[i])
+                    {
+                        vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).events.push_back(e);
+                    }
+                    i += 1;
+                }
+                self.events();
+            }
+        }
+    }
+
+    /// The overlay as a placement line says tick() placed it.
+    fn replay_placed(&mut self, v: &Value) {
+        let rect = |k: &str| -> Rect { serde_json::from_value(v[k].clone()).unwrap() };
+        let (c, p) = (rect("crop"), rect("panel"));
+        let b: [f32; 4] = serde_json::from_value(v["bounds"].clone()).unwrap();
+        let world: Mat = serde_json::from_value(v["world"].clone()).unwrap();
+        let (width, aspect, curve) = (v["width"].as_f64().unwrap(), v["aspect"].as_f64().unwrap(), v["curve"].as_f64().unwrap());
+        (self.visible, self.clickable, self.live) = (true, v["clickable"].as_bool().unwrap_or(true), true);
+        self.placed = Some((world, u32::MAX, c, (width * 1000.0).round() as u32, b, (curve * 1000.0).round() as u32));
+        *CROP.lock().unwrap() = Some((c, p));
+        let mut k = crate::kvm::lock();
+        k.plasma = Some(Placement::from_matrix(&world, width, aspect, curve));
+        k.awake = false; // the lasers have the pointer
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recorded_trace_replays_through_the_real_event_loop() {
+        let _vr = vr::fake::install(vr::fake::Script::default());
+        let mut p = Plasma::new();
+        windows::SHELL_SENT.lock().unwrap().clear();
+        // Kickoff open over the bar on WL-0, as plasmabar's tick() would record it
+        let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
+        let b = bounds(grown, WL0);
+        let world = crate::geometry::panel_matrix(&crate::geometry::Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let placed = serde_json::json!({"crop": grown, "panel": BAR, "bounds": b, "world": world, "width": 0.6, "aspect": grown[3] as f64 / grown[2] as f64, "curve": 0.0, "clickable": true});
+        // a laser on an item in Kickoff's list: SteamVR's point is of the whole texture, y up
+        let item = (600.0, 1200.0);
+        let (x, y) = ((item.0 - WL0[0] as f64) / 1920.0, 1.0 - (item.1 - WL0[1] as f64) / 1080.0);
+        let ev = |t: u32| {
+            let mut e: vr::VREvent_t = Default::default();
+            (e.eventType, e.trackedDeviceIndex) = (t, 3);
+            e.data.mouse = sys::VREvent_Mouse_t { x: x as f32, y: y as f32, button: sys::EVRMouseButton_VRMouseButton_Left, cursorIndex: 0 };
+            crate::trace::event_line("plasma", &e).to_string()
+        };
+        let trace = [
+            serde_json::json!({ "plasma": placed }).to_string(),
+            serde_json::json!({"tick": "plasma"}).to_string(),
+            ev(sys::EVREventType_VREvent_MouseMove),
+            ev(sys::EVREventType_VREvent_MouseButtonDown),
+            serde_json::json!({"tick": "plasma"}).to_string(),
+            ev(sys::EVREventType_VREvent_MouseButtonUp),
+        ]
+        .join("\n");
+        p.replay(&trace);
+        let sent = std::mem::take(&mut *windows::SHELL_SENT.lock().unwrap());
+        let flags: Vec<u32> = sent.iter().map(|s| s.0).collect();
+        assert_eq!(flags, [PTR_FLAGS_MOVE, PTR_FLAGS_BUTTON1 | PTR_FLAGS_DOWN, PTR_FLAGS_BUTTON1], "a move, the press, its release");
+        for (_, at) in &sent {
+            let at = at.unwrap();
+            assert!((at.0 - item.0).abs() < 1.5 && (at.1 - item.1).abs() < 1.5, "{at:?} is the item at {item:?}");
+        }
+        assert_eq!(p.held, 0, "nothing left held");
+    }
 
     #[test]
     fn steamvr_points_map_into_the_crop() {

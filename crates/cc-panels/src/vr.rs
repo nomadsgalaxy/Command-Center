@@ -290,6 +290,116 @@ pub fn tip(hand: &str) -> Option<([f64; 3], &'static str)> {
     })
 }
 
+/// A fake SteamVR for tests (docs/vr-harness.md): OpenVR's own function tables, filled with
+/// functions that answer from a script instead of vrserver, so every `call!` runs unchanged. Only
+/// what a replay reaches is filled in; anything else is None, and its `call!` panics naming it.
+#[cfg(test)]
+pub mod fake {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// What the fake answers with.
+    #[derive(Default)]
+    pub struct Script {
+        pub events: VecDeque<sys::VREvent_t>,
+        pub poses: Vec<(u32, Mat)>, // each device's pose; a device not here isn't tracked
+        next: u64,                  // the next overlay handle
+    }
+
+    pub static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
+    /// Held by a test for as long as it uses the fake, since there's one SteamVR per process.
+    pub static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    fn script<R>(f: impl FnOnce(&mut Script) -> R) -> R {
+        f(SCRIPT.lock().unwrap().get_or_insert_with(Script::default))
+    }
+
+    unsafe extern "C" fn poll(_h: Handle, e: *mut sys::VREvent_t, _size: u32) -> bool {
+        script(|s| s.events.pop_front()).map(|ev| unsafe { *e = ev }).is_some()
+    }
+    unsafe extern "C" fn create(_k: *mut std::os::raw::c_char, _n: *mut std::os::raw::c_char, h: *mut Handle) -> sys::EVROverlayError {
+        unsafe {
+            *h = script(|s| {
+                s.next += 1;
+                s.next
+            })
+        };
+        0
+    }
+    unsafe extern "C" fn flag(_h: Handle, _f: sys::VROverlayFlags, _on: bool) -> sys::EVROverlayError {
+        0
+    }
+    unsafe extern "C" fn sort(_h: Handle, _o: u32) -> sys::EVROverlayError {
+        0
+    }
+    unsafe extern "C" fn mouse_scale(_h: Handle, _s: *mut sys::HmdVector2_t) -> sys::EVROverlayError {
+        0
+    }
+    unsafe extern "C" fn input_method(_h: Handle, _m: sys::VROverlayInputMethod) -> sys::EVROverlayError {
+        0
+    }
+    unsafe extern "C" fn show(_h: Handle) -> sys::EVROverlayError {
+        0
+    }
+    unsafe extern "C" fn poses(_o: sys::ETrackingUniverseOrigin, _t: f32, out: *mut sys::TrackedDevicePose_t, n: u32) {
+        let out = unsafe { std::slice::from_raw_parts_mut(out, n as usize) };
+        script(|s| {
+            for (dev, m) in &s.poses {
+                if let Some(p) = out.get_mut(*dev as usize) {
+                    p.mDeviceToAbsoluteTracking.m = *m;
+                    p.bPoseIsValid = true;
+                }
+            }
+        });
+    }
+    // no render model, so laser_pose gives the pose as it is: a trace records the laser itself
+    unsafe extern "C" fn string_prop(_d: u32, _p: sys::ETrackedDeviceProperty, buf: *mut std::os::raw::c_char, size: u32, _e: *mut sys::ETrackedPropertyError) -> u32 {
+        if size > 0 {
+            unsafe { *buf = 0 };
+        }
+        0
+    }
+    unsafe extern "C" fn class(_d: u32) -> sys::ETrackedDeviceClass {
+        sys::ETrackedDeviceClass_TrackedDeviceClass_Controller
+    }
+
+    /// Puts the fake in place of SteamVR, once for the process, and starts `s` as its script.
+    /// Returns the guard that keeps other fake-SteamVR tests out until it drops.
+    pub fn install(s: Script) -> std::sync::MutexGuard<'static, ()> {
+        let guard = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        fn leak<T>(t: T) -> &'static T {
+            Box::leak(Box::new(t))
+        }
+        VR.get_or_init(|| Vr {
+            ov: leak(sys::VR_IVROverlay_FnTable {
+                PollNextOverlayEvent: Some(poll),
+                CreateOverlay: Some(create),
+                SetOverlayFlag: Some(flag),
+                SetOverlaySortOrder: Some(sort),
+                SetOverlayMouseScale: Some(mouse_scale),
+                SetOverlayInputMethod: Some(input_method),
+                ShowOverlay: Some(show),
+                HideOverlay: Some(show),
+                ..Default::default()
+            }),
+            sys: leak(sys::VR_IVRSystem_FnTable {
+                GetDeviceToAbsoluteTrackingPose: Some(poses),
+                GetStringTrackedDeviceProperty: Some(string_prop),
+                GetTrackedDeviceClass: Some(class),
+                ..Default::default()
+            }),
+            ipc: leak(Default::default()),
+            input: leak(Default::default()),
+            rm: leak(Default::default()),
+            apps: leak(Default::default()),
+            notes: None,
+        });
+        *SCRIPT.lock().unwrap() = Some(s);
+        guard
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// A NUL in an overlay's name or a picture's path is an error, not a panic.
