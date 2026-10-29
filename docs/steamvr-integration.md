@@ -35,6 +35,22 @@ apps, and it stays off. `cc-home install remove` takes it out.
 What it costs: one OpenVR connection each time SteamVR starts, and the memory of one idle process.
 It has no action manifest and takes no controller input except the laser on its own page.
 
+## The look
+
+Command Center uses SteamVR's own colours: its dark greys (#24272d, #3d4450, #464d58), its light
+text (#dfe3e6), its blue (#1a9fff) on the dashboard tab, and its orange-red (#ff4500) for close.
+Text is in Noto Sans and typed text in Source Code Pro, both from the system's fonts. Valve's own
+font, logos and icons aren't used anywhere: our buttons' glyphs (curve, zoom, face me, snap back,
+the keyboard) are our own, drawn flat. The panels keep their own accents, cyan for a computer's
+screens and violet for the Frame's windows, so you can still tell them apart.
+
+To have it follow your Plasma session's colour scheme and font instead, as it used to, put this
+in `~/.config/control-center/settings.json` and restart the Desktop:
+
+```json
+{ "look": "plasma" }
+```
+
 ## SteamVR's keyboard
 
 Every live panel (a computer's screen, a window, a pop-out) has a keyboard button on its bar,

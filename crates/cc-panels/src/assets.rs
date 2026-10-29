@@ -15,6 +15,10 @@ const BASE: i32 = 46; // baseline in the 64 px tall tag: caps sit on 15..46, des
 const H: usize = 64;
 const SIZE: f32 = 44.0;
 
+/// Typed text's family (ascii.rgba): the system's own Source Code Pro, as SteamOS ships it.
+/// fc-match falls back to the nearest monospace font where it's missing.
+pub const MONO: &str = "Source Code Pro";
+
 /// Looks up `family` through fontconfig (fc-match) and falls back to the system's Noto Sans.
 fn font(family: &str) -> Option<fontdue::Font> {
     let matched = std::process::Command::new("fc-match").args(["-f", "%{file}", family]).output().ok();
@@ -207,7 +211,7 @@ pub fn draw(dir: &str, family: &str, tags: &[String]) {
     }
     if !std::path::Path::new(&format!("{dir}/ascii.rgba")).exists() {
         let ascii: String = (32u8..127).map(char::from).collect(); // machines.rs expects this exact order
-        if let Some(mono) = font("monospace") {
+        if let Some(mono) = font(MONO) {
             write(&format!("{dir}/ascii.rgba"), &glyphs(&mono, &ascii));
         }
     }

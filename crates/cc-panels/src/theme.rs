@@ -1,4 +1,6 @@
-//! The Plasma session's look (docs/plasma-look-design.md (a)). We read its active colour scheme
+//! Command Center's look. By default it's SteamVR's own palette (`steamvr`) in the system's Noto
+//! Sans, so it sits with the rest of the Frame. With settings.json `"look": "plasma"` it's the
+//! Plasma session's look instead (docs/plasma-look-design.md (a)): we read its active colour scheme
 //! the way KConfig cascades it and boil it down to the few tokens our cards, tabs, bar, knobs
 //! and taskbar paint with. That way Command Center matches whichever Plasma style is on (Breeze
 //! Dark, Breeze Light, Breeze Classic, Twilight, Vapor, VGUI, a user scheme), light or dark.
@@ -23,6 +25,20 @@ pub type Rgb = [f64; 3];
 pub const CYAN: Rgb = [125.0, 249.0, 255.0]; // Warp Cyan #7DF9FF: remote machines
 pub const VIOLET: Rgb = [164.0, 139.0, 255.0]; // #A48BFF: Frame windows
 pub const MAGENTA: Rgb = [255.0, 92.0, 243.0]; // #FF5CF3: close
+
+/// SteamVR's own palette, counted in its dashboard CSS (/opt/steamvr/resources/webinterface/
+/// dashboard/css; Planning/SteamOS Integration Research.md, section 4). It's Command Center's
+/// look unless settings.json says `"look": "plasma"`. Colours aren't trademarks; Valve's font
+/// (Motiva Sans), logos and icons are used nowhere, and our glyphs are our own.
+pub mod steamvr {
+    use super::Rgb;
+    pub const ACCENT: Rgb = [26.0, 159.0, 255.0]; // #1a9fff: SteamVR's blue
+    pub const BACKGROUND: Rgb = [36.0, 39.0, 45.0]; // #24272d: windows
+    pub const HEADER: Rgb = [61.0, 68.0, 80.0]; // #3d4450: title bars, the card's frame and tabs
+    pub const RAISED: Rgb = [70.0, 77.0, 88.0]; // #464d58: buttons, the grab bar, outlines
+    pub const TEXT: Rgb = [223.0, 227.0, 230.0]; // #dfe3e6
+    pub const ALERT: Rgb = [255.0, 69.0, 0.0]; // #ff4500: close, and anything that ends something
+}
 
 /// One set of colours, either a scheme's (for cards) or Plasma's panel's (for the taskbar).
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -52,6 +68,16 @@ pub struct Theme {
     pub win: Tokens,
     pub shell: Tokens,
     pub radius: f64, // corner radii in Breeze pixels: 5 for the Breeze widget style, 2 for square ones (VGUI's Windows)
+    pub alert: Rgb,  // close's colour: the brand's magenta, or SteamVR's orange-red
+    pub accent: Rgb, // the dashboard tab's accent: the brand's violet, or SteamVR's blue
+}
+
+/// SteamVR's look (`steamvr`): its dark neutrals and light text, the same for cards and taskbar.
+pub fn steamvr_theme() -> Theme {
+    use steamvr::*;
+    let dim = mix(TEXT, BACKGROUND, 0.35);
+    let t = Tokens { frame: HEADER, surface: BACKGROUND, raised: RAISED, text: TEXT, dim, wtext: TEXT, wdim: dim, border: RAISED, dark: true };
+    Theme { win: t, shell: t, radius: 5.0, alert: ALERT, accent: ACCENT }
 }
 
 /// WCAG relative luminance of an sRGB colour (0..255).
@@ -209,7 +235,7 @@ fn load(dir: &Path, data: &[PathBuf]) -> (Theme, String, String) {
     let radius = if style.eq_ignore_ascii_case("breeze") { 5.0 } else { 2.0 };
     let w = tokens(&win);
     shell.extend(win);
-    let t = Theme { win: w, shell: tokens(&shell), radius };
+    let t = Theme { win: w, shell: tokens(&shell), radius, alert: MAGENTA, accent: VIOLET };
     let font = lookup(&shell, "General", "font").and_then(|f| f.split(',').next()).filter(|f| !f.is_empty()).unwrap_or("Noto Sans");
     let say = format!(
         "theme: {} ({}), panel {panel}{}",
@@ -224,7 +250,7 @@ impl Default for Theme {
     /// Breeze Dark.
     fn default() -> Theme {
         let t = tokens(&[]);
-        Theme { win: t, shell: t, radius: 5.0 }
+        Theme { win: t, shell: t, radius: 5.0, alert: MAGENTA, accent: VIOLET }
     }
 }
 
@@ -261,20 +287,30 @@ fn set(t: Theme, say: &str) {
     GEN.fetch_add(1, Relaxed);
 }
 
-/// Reads the session's theme. This runs at startup, before assets.rs, since that needs the font.
+/// Reads the look: SteamVR's palette in Noto Sans, or with settings.json `"look": "plasma"` the
+/// session's theme and font, followed as it changes. This runs at startup, before assets.rs,
+/// since that needs the font.
 pub fn init() -> Watch {
     let (dir, data) = session();
-    let (t, say, font) = load(&dir, &data);
-    let _ = FONT.set(font); // changing the family needs a restart, since the tags are drawn with it
-    set(t, &say);
-    Watch::new(dir, data)
+    let plasma = crate::config::settings()["look"] == "plasma";
+    let mut w = Watch::new(dir.clone(), data.clone());
+    if plasma {
+        let (t, say, font) = load(&dir, &data);
+        let _ = FONT.set(font); // changing the family needs a restart, since the tags are drawn with it
+        set(t, &say);
+    } else {
+        let _ = FONT.set("Noto Sans".into());
+        set(steamvr_theme(), "theme: SteamVR's palette, Noto Sans (settings.json \"look\": \"plasma\" follows the Plasma session's)");
+        w.off = true;
+    }
+    w
 }
 
 /// A test hook: one scheme file as the whole chain (the dumps' CC_SCHEME).
 #[cfg(test)]
 pub fn from_scheme(path: &str) -> Theme {
     let t = tokens(&[read(Path::new(path))]);
-    Theme { win: t, shell: t, radius: if path.contains("VGUI") { 2.0 } else { 5.0 } }
+    Theme { win: t, shell: t, radius: if path.contains("VGUI") { 2.0 } else { 5.0 }, alert: MAGENTA, accent: VIOLET }
 }
 
 /// A test hook: a desktop theme's `colors` in front of a scheme, the way Plasma's panel paints
@@ -290,11 +326,12 @@ pub struct Watch {
     data: Vec<PathBuf>,
     seen: Vec<Option<SystemTime>>,
     pending: bool,
+    off: bool, // SteamVR's look, which doesn't follow the session's
 }
 
 impl Watch {
     fn new(dir: PathBuf, data: Vec<PathBuf>) -> Watch {
-        let mut w = Watch { dir, data, seen: Vec::new(), pending: false };
+        let mut w = Watch { dir, data, seen: Vec::new(), pending: false, off: false };
         w.seen = w.stamps();
         w
     }
@@ -318,6 +355,9 @@ impl Watch {
     }
 
     pub fn poll(&mut self) {
+        if self.off {
+            return;
+        }
         if let Some((t, say, _)) = self.check() {
             if t != get() {
                 set(t, &say);
@@ -433,6 +473,12 @@ mod tests {
         let cyan = light.accent(CYAN).line;
         assert!(cyan[0] < cyan[1] && cyan[1] < cyan[2] + 1.0 && cyan[1] < 200.0, "darkened, still cyan: {cyan:?}");
         assert_eq!(dark.accent(MAGENTA).ink, DARK_TEXT, "close-hover: a dark x on magenta");
+        // SteamVR's look: its own colours, readable, and its blue and orange-red as they are
+        let s = steamvr_theme();
+        assert_eq!((s.win.frame, s.win.surface, s.win.raised, s.win.text), (steamvr::HEADER, steamvr::BACKGROUND, steamvr::RAISED, steamvr::TEXT));
+        assert!(s.win.dark && contrast(s.win.text, s.win.surface) >= 4.5 && contrast(s.win.text, s.win.frame) >= 4.5);
+        assert_eq!(s.win.accent(s.accent).line, steamvr::ACCENT, "SteamVR's blue reads on its own background as is");
+        assert!(contrast(s.win.accent(s.alert).line, s.win.surface) >= 3.0);
     }
 
     #[test]

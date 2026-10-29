@@ -837,12 +837,13 @@ fn run() -> Result<(), String> {
     let mut look = theme::init();
     let assets = format!("{cache}/assets");
     let font = theme::font();
+    let stamp = format!("{font}\nmono: {}", assets::MONO); // both families the cached pictures were drawn in
     // Windows' tags are cached by app (windows.rs), and assets.rs only draws the glyphs when
     // they're missing, so they get redrawn for a new font (or the first time masks are drawn, with no stamp yet).
-    if std::fs::read_to_string(format!("{assets}/font")).ok().as_deref() != Some(font.as_str()) {
+    if std::fs::read_to_string(format!("{assets}/font")).ok().as_deref() != Some(stamp.as_str()) {
         for e in std::fs::read_dir(&assets).into_iter().flatten().flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
-            if n.starts_with("tag-app-") || n == "glyphs.rgba" {
+            if n.starts_with("tag-app-") || n == "glyphs.rgba" || n == "ascii.rgba" {
                 let _ = std::fs::remove_file(e.path());
             }
         }
@@ -862,7 +863,7 @@ fn run() -> Result<(), String> {
         ) // the Machines and Preferences windows'
         .collect();
     assets::draw(&assets, &font, &tags);
-    let _ = std::fs::write(format!("{assets}/font"), &font);
+    let _ = std::fs::write(format!("{assets}/font"), &stamp);
     {
         let mut k = KVM.lock().unwrap();
         if let Some(s) = std::env::var("CC_SENSITIVITY").ok().and_then(|s| s.parse().ok()) {

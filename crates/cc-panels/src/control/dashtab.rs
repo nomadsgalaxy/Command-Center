@@ -313,7 +313,8 @@ impl Dashtab {
         let opening = self.opening.is_some_and(|t| t.elapsed() < OPENING);
         let key = Key { shown: !HIDDEN.load(Relaxed) && !self.closed, steam, hover: self.hover, theme: theme::generation(), closed: self.closed, opening };
         self.painter.paint(h, key, || {
-            let (ui, p) = (self.ui.clone(), Paint::new(&theme::get(), theme::VIOLET));
+            let th = theme::get();
+            let (ui, p) = (self.ui.clone(), Paint::new(&th, th.accent)); // SteamVR's blue in its look: the tab sits in SteamVR's dashboard
             move |was: Option<Key>, px, k: &Key| {
                 let sc = Scene { k, p, ui: &ui };
                 let s = tex_scale(W, H, SCALE);

@@ -1197,7 +1197,7 @@ impl Taskbar {
                     Chip::More(n) => (grab::VIOLET, None, format!("+{n}")),
                     Chip::Workspace => (grab::REMOTE, self.machines.clone(), String::new()),
                     Chip::Prefs => (grab::VIOLET, None, String::new()),
-                    Chip::Power => (if s.lit { theme::MAGENTA } else { grab::VIOLET }, self.close.clone(), String::new()),
+                    Chip::Power => (if s.lit { theme::get().alert } else { grab::VIOLET }, self.close.clone(), String::new()),
                 };
                 Item { s, accent, label, text }
             })

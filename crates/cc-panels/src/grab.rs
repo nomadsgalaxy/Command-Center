@@ -34,7 +34,7 @@ use crate::kvm::Kvm;
 use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, ZOOM, ZOOM_NOTCH};
 use crate::overlay::{At, Live, Overlays, Place, apply};
 use crate::stage::Stage;
-use crate::theme::{self, Accent, MAGENTA, Rgb, Theme, Tokens};
+use crate::theme::{self, Accent, Rgb, Theme, Tokens};
 use crate::{HIDDEN, Source, call, panels, vr};
 use openvr_sys as sys;
 use std::collections::BTreeMap;
@@ -151,7 +151,7 @@ pub(crate) struct Paint {
 
 impl Paint {
     pub(crate) fn new(th: &Theme, accent: Rgb) -> Paint {
-        Paint { t: th.win, acc: th.win.accent(accent), mag: th.win.accent(MAGENTA), radius: th.radius }
+        Paint { t: th.win, acc: th.win.accent(accent), mag: th.win.accent(th.alert), radius: th.radius }
     }
 }
 
@@ -2261,7 +2261,7 @@ mod tests {
             border: mix([222.0, 224.0, 226.0], [35.0, 38.0, 41.0], 0.25),
             dark: false,
         };
-        Theme { win: t, shell: t, radius: 5.0 }
+        Theme { win: t, shell: t, radius: 5.0, alert: theme::MAGENTA, accent: theme::VIOLET }
     }
 
     #[test]

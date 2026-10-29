@@ -111,7 +111,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `control/workspace.rs` | The Workspace window: rows per workspace, Use/Load/Save as/Rename/Forget, machines per workspace; `switched` reconnects to match. |
 | `control/ui.rs` | The drawing kit those windows share (chrome, buttons, switches, typed text), window placement. |
 | `control/hud.rs` | The camera scan's status strip and tag outlines in the headset. |
-| `theme.rs` | Reads the session's Plasma colour scheme (KConfig cascade) into the tokens everything paints with; `poll` redraws on a theme switch. |
+| `theme.rs` | The tokens everything paints with: SteamVR's palette (`steamvr`, the default), or with settings.json `"look": "plasma"` the session's Plasma colour scheme (KConfig cascade), where `poll` redraws on a theme switch. |
 | `assets.rs` | Draws the cursor, border tags, glyphs and UI labels into `~/.cache/control-center/assets`. |
 | `config.rs` | The Frame's files as cc-panels sees them: `Viewer` and viewers.conf parsing, home.json spots, workspaces, settings, passwords, pins, autoconnect. |
 | `clipboard/mod.rs` | The clipboard hub (`HUB`): who owns the copy, echo suppression, lazy fetch on paste. |
