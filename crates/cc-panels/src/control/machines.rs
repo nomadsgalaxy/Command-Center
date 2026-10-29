@@ -53,7 +53,6 @@
 use super::ui::{self, BTN_H, Edit, GAP, MPP, PAD, ROW, Rect, SCALE, SORT, TITLE, switch, text, text_w, typed, typed_w};
 use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, line, over, tint};
-use crate::kvm::KVM;
 use crate::taskbar::{Taskbar, tex_scale};
 use crate::windows::Windows;
 use crate::{HIDDEN, Source, call, config, panel, panels, theme, vr};
@@ -1357,13 +1356,13 @@ impl Machines {
             let (x, y) = (m.x as f64, from_top(height(n, form), m.y as f64));
             let at = renamed.and_then(|(r, c)| rename_hit(r, c, x, y)).unwrap_or_else(|| held(self.hover, n, form, offer, x, y)).filter(|_| self.drawn_shape() == Some((n, form)));
             // its card fades in, and a release ends a carry (including a press elsewhere let go over it)
-            grab.panel_event(grab.slot(), &e, &mut KVM.lock().unwrap());
+            grab.panel_event(grab.slot(), &e, &mut crate::kvm::lock());
             match e.eventType {
                 sys::EVREventType_VREvent_MouseMove => self.hover = at,
                 sys::EVREventType_VREvent_FocusLeave => self.hover = None,
                 sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
                     if vr::is_real_controller(dev) {
-                        let mut k = KVM.lock().unwrap();
+                        let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed is primary (R-2)
                         }
@@ -1794,7 +1793,7 @@ impl Machines {
             }
             f.field(j).clone()
         };
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         k.focus_field("machines", true);
         if !k.popup_ok(false) {
             return; // you're typing on a real keyboard, and it types here now
@@ -1823,7 +1822,7 @@ impl Machines {
         if let Some((_, r)) = self.rename.as_mut() {
             r.editing = false;
         }
-        KVM.lock().unwrap().focus_field("machines", false);
+        crate::kvm::lock().focus_field("machines", false);
     }
 
     /// Closes SteamVR's keyboard and keeps its text, since without Done it only hands it over when asked.
@@ -1850,7 +1849,7 @@ impl Machines {
         if !editing(self) {
             return;
         }
-        let keys = KVM.lock().unwrap().field_keys("machines");
+        let keys = crate::kvm::lock().field_keys("machines");
         let Some(keys) = keys else { return self.hide_keyboard() };
         for (code, value, shift) in keys {
             let Some(e) = ui::edit(code, value, shift) else { continue };

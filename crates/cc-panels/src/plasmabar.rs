@@ -26,7 +26,6 @@
 //! ponytail: an idle panel keeps the output's stream going until it next repaints (its clock,
 //! a hover), since KWin sends a window's stream nothing until it changes.
 use crate::geometry::{Mat, Placement, V3, norm};
-use crate::kvm::KVM;
 use crate::overlay::{At, Live, Place, apply};
 use crate::session::{Output, Session, StreamEvent};
 use crate::{call, capture, session, taskbar, vr, windows};
@@ -146,7 +145,7 @@ pub(crate) fn panel_at(pl: &Placement, crop: Rect, panel: Rect, from: &V3, to: &
 /// `panel_at` for a laser from `from` that hit the taskbar's frame at `to`: Some(None) if it
 /// passes Plasma's bar by, None while the bar isn't showing.
 pub fn laser_on_panel(from: &V3, to: &V3) -> Option<Option<(f64, f64)>> {
-    let pl = KVM.lock().unwrap().plasma?;
+    let pl = crate::kvm::lock().plasma?;
     let (crop, panel) = (*CROP.lock().unwrap())?;
     Some(panel_at(&pl, crop, panel, from, to))
 }
@@ -408,7 +407,7 @@ impl Plasma {
             self.placed = placed;
         }
         *CROP.lock().unwrap() = Some((c, p));
-        KVM.lock().unwrap().plasma = Some(Placement::from_matrix(&world, width, c[3] as f64 / c[2].max(1) as f64, curve));
+        crate::kvm::lock().plasma = Some(Placement::from_matrix(&world, width, c[3] as f64 / c[2].max(1) as f64, curve));
     }
 
     /// Points one stream at what it should be of (None closes it), opening it no sooner than its
@@ -496,7 +495,7 @@ impl Plasma {
         if !self.visible {
             return;
         }
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         if t == sys::EVREventType_VREvent_MouseButtonDown && vr::is_real_controller(e.trackedDeviceIndex) && k.awake {
             k.set_awake(false); // the last device pressed is primary (R-2)
         }
@@ -529,7 +528,7 @@ impl Plasma {
         call!(ov, HideOverlay, self.ov);
         (self.visible, self.placed) = (false, None);
         *CROP.lock().unwrap() = None;
-        KVM.lock().unwrap().plasma = None;
+        crate::kvm::lock().plasma = None;
         self.release_held();
     }
 

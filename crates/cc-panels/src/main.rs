@@ -50,7 +50,6 @@ mod windows;
 
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
 use geometry::{Pose, panel_matrix};
-use kvm::KVM;
 use openvr_sys as sys;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering::*;
@@ -289,7 +288,7 @@ impl Panel {
         call!(ov, HideOverlay, self.overlay);
         call!(ov, ClearOverlayTexture, self.overlay); // so the next fill shows nothing until its own first frame
         {
-            let mut k = KVM.lock().unwrap();
+            let mut k = crate::kvm::lock();
             if k.kbd == self.index {
                 let from = self.v.pop.as_ref().and_then(|(m, _)| panels().iter().position(|q| q.used() && q.v.name == *m));
                 k.type_to(from.unwrap_or(0));
@@ -446,7 +445,7 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
         if osk::event(p, &e) {
             continue; // typed on SteamVR's keyboard, for this panel
         }
-        if grab.panel_event(p.index, &e, &mut KVM.lock().unwrap()) {
+        if grab.panel_event(p.index, &e, &mut crate::kvm::lock()) {
             continue; // the release of a drag, not meant for the remote
         }
         if *mouse_has_it && e.eventType == sys::EVREventType_VREvent_MouseButtonDown {
@@ -462,7 +461,7 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
             continue;
         }
         if window && e.eventType == sys::EVREventType_VREvent_MouseButtonDown {
-            let mut k = KVM.lock().unwrap();
+            let mut k = crate::kvm::lock();
             k.type_to(p.index); // typing follows the laser's click too
             if !k.engaged {
                 k.set_engaged(true, &format!("clicked {} with a controller", p.v.name));
@@ -508,7 +507,7 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
 
 /// A real controller's button was pressed, so it's the primary device now.
 fn controller_pressed() {
-    let mut k = KVM.lock().unwrap();
+    let mut k = crate::kvm::lock();
     if k.awake {
         eprintln!("controller button: the controller has the pointer");
         k.set_awake(false);
@@ -523,7 +522,7 @@ fn distance(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 /// per degree from where the head is now.
 fn update_pointer(cursor: vr::Handle, beam: &mut laser::Beam) {
     let eye = vr::head_position();
-    let mut k = KVM.lock().unwrap();
+    let mut k = crate::kvm::lock();
     for (i, p) in panels().iter().enumerate() {
         let d = distance(&k.place[i].c, &eye).max(0.2);
         k.ppd[i] = p.size().0 as f64 / (2.0 * (k.place[i].width / 2.0 / d).atan()).to_degrees();
@@ -573,7 +572,7 @@ fn update_pointer(cursor: vr::Handle, beam: &mut laser::Beam) {
 /// shows and your input refine it.
 fn attend(att: &mut [attention::Attention], seen: &attention::Seen, grab: &grab::Grab, now: Instant) {
     use attention::Level;
-    let k = KVM.lock().unwrap(); // held throughout; the input thread never takes a window's lock under it
+    let k = crate::kvm::lock(); // held throughout; the input thread never takes a window's lock under it
     let theater = THEATER.load(Relaxed);
     for p in panels() {
         let i = p.index;
@@ -744,7 +743,7 @@ struct GiveBack;
 impl Drop for GiveBack {
     fn drop(&mut self) {
         laser::hide();
-        KVM.lock().unwrap_or_else(|e| e.into_inner()).return_devices();
+        crate::kvm::lock().return_devices();
         kwin::restore();
     }
 }
@@ -801,7 +800,7 @@ pub fn place_remote(p: &Panel) -> (Pose, bool) {
     let saved = config::home_pose(&p.v.name, Some(p.v.screen));
     let pose = saved.unwrap_or_else(|| geometry::new_pose(&vr::head().unwrap_or(geometry::STAND_IN_HEAD), 1.2, 0.0, 0.0));
     p.set_vert(pose.vert); // curved top to bottom means turned (kvm.rs set_place)
-    KVM.lock().unwrap().set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve);
+    crate::kvm::lock().set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve);
     (pose, saved.is_some())
 }
 
@@ -890,7 +889,7 @@ fn run() -> Result<(), String> {
     assets::draw(&assets, &font, &tags);
     let _ = std::fs::write(format!("{assets}/font"), &stamp);
     {
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         if let Some(s) = std::env::var("CC_SENSITIVITY").ok().and_then(|s| s.parse().ok()) {
             k.sensitivity = s;
         }
@@ -948,7 +947,7 @@ fn run() -> Result<(), String> {
     let _ = PANELS.set(list);
     clipboard::start(); // the Frame session's clipboard; each RDP session brings its own channel
     {
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         k.place = vec![geometry::Placement::from_matrix(&[[0.0; 4]; 3], 1.0, 1.0, 0.0); panels().len()];
         k.ppd = vec![30.0; panels().len()];
     }
@@ -981,7 +980,7 @@ fn run() -> Result<(), String> {
     vr::set_from_file(cursor, &format!("{assets}/cursor.png"));
     call!(ov, SetOverlaySortOrder, cursor, 200);
     {
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         let (w, h) = panel(0).size();
         (k.x, k.y) = (w as f64 / 2.0, h as f64 / 2.0);
         if k.device_count() > 0 {
@@ -1046,7 +1045,7 @@ fn run() -> Result<(), String> {
         }
         if status.elapsed() > Duration::from_secs(5) {
             status = Instant::now();
-            let k = KVM.lock().unwrap();
+            let k = crate::kvm::lock();
             for (p, b) in panels()[..first_window].iter().zip(&mut buffers).filter(|(p, _)| p.used()) {
                 eprintln!(
                     "{}: {}, {:.1} frames/s, visible {}, {}, {:.0} px/deg",
@@ -1061,7 +1060,7 @@ fn run() -> Result<(), String> {
             }
             drop(k);
             windows.status();
-            let mut k = KVM.lock().unwrap();
+            let mut k = crate::kvm::lock();
             eprintln!(
                 "kvm: {} on {} at {:.0},{:.0}, typing to {}, looking at {} (gaze lock {}); sent {} moves, {} clicks, {} keys, {} wheel; {} devices",
                 match (k.awake, k.engaged) {
@@ -1104,7 +1103,7 @@ fn run() -> Result<(), String> {
                 close_desktop("SteamVR quit it"); // e.g. a game launched over the Desktop
             }
             if e.eventType == sys::EVREventType_VREvent_DashboardActivated {
-                KVM.lock().unwrap().set_engaged(false, "dashboard opened"); // click to type: typing goes to it
+                crate::kvm::lock().set_engaged(false, "dashboard opened"); // click to type: typing goes to it
                 control::dashtab::dashboard(true);
             }
             if e.eventType == sys::EVREventType_VREvent_DashboardDeactivated {
@@ -1150,7 +1149,7 @@ fn run() -> Result<(), String> {
         // click to type: the Desktop hidden or a game starting gives the keyboards back, once on the change
         let away = seen.hidden || seen.game;
         if away && !was_away {
-            KVM.lock().unwrap().set_engaged(false, if seen.hidden { "Desktop hidden" } else { "game running" });
+            crate::kvm::lock().set_engaged(false, if seen.hidden { "Desktop hidden" } else { "game running" });
         }
         // A game: Command Center steps aside. The mice go to it as well as the keyboards (the line
         // above), every panel hides, and the panels are paused (attention.rs), until it ends, or
@@ -1163,7 +1162,7 @@ fn run() -> Result<(), String> {
         } else {
             "no game"
         };
-        KVM.lock().unwrap().set_yielded(hand.yielded(), why);
+        crate::kvm::lock().set_yielded(hand.yielded(), why);
         match hand.panels(HIDDEN.load(Relaxed)) {
             Some(false) => {
                 control::show_panels(false);
@@ -1185,7 +1184,7 @@ fn run() -> Result<(), String> {
         }
         gpu::raw_tick(); // UI overlays' pictures that waited a tick (gpu::show_raw)
         laps.lap("uploads");
-        let mut mouse_has_it = KVM.lock().unwrap().awake;
+        let mut mouse_has_it = crate::kvm::lock().awake;
         let mut lasered = 0;
         for p in panels() {
             let (n, worked) = laser(p, &mut mouse_has_it, &mut grab);
@@ -1196,7 +1195,7 @@ fn run() -> Result<(), String> {
         }
         laps.lap("lasers");
         {
-            let mut k = KVM.lock().unwrap(); // the input thread may hold it
+            let mut k = crate::kvm::lock(); // the input thread may hold it
             laps.lap("kvm-lock");
             grab.poll(&mut k);
             grab.game = bar.game(); // as of its last tick
@@ -1239,14 +1238,14 @@ fn run() -> Result<(), String> {
                 threads.push((i, connect(&panels()[i], Duration::ZERO)));
             }
         }
-        popout::tick(&mut KVM.lock().unwrap());
+        popout::tick(&mut crate::kvm::lock());
         laps.lap("control");
         // Not under a game: the gaze's action set is global priority, so it took the game's controllers.
         if bar.game() != gaze_off {
             gaze_off = bar.game();
             if let (true, Some(g)) = (gaze_off, &gaze) {
                 g.release();
-                KVM.lock().unwrap().gaze(None);
+                crate::kvm::lock().gaze(None);
             }
         }
         if let Some(g) = gaze.as_ref().filter(|_| !gaze_off)
@@ -1257,7 +1256,7 @@ fn run() -> Result<(), String> {
             if let Some((o, d)) = sample {
                 gaze_seen = Some((o, d, Instant::now())); // where you look decides the levels (attend)
             }
-            KVM.lock().unwrap().gaze(sample);
+            crate::kvm::lock().gaze(sample);
         }
         laps.lap("gaze");
         update_pointer(cursor, &mut beam);
@@ -1279,7 +1278,7 @@ fn run() -> Result<(), String> {
             attention::WARM.store(false, Relaxed);
             eprintln!("warm-up over after {:.1} s: panels at their own rates", start.elapsed().as_secs_f64());
         }
-        let awake = KVM.lock().unwrap().awake;
+        let awake = crate::kvm::lock().awake;
         let why = [
             (awake, "the pointer (awake)"),
             (lasered > 0, "a laser on a panel"),
@@ -1315,7 +1314,7 @@ fn run() -> Result<(), String> {
     let _ = leases.join(); // it sends the driver "hide" as it ends
     {
         // give the devices back straight away, not after slow sessions have ended
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         k.set_awake(false);
         k.set_engaged(false, "closing");
         k.return_devices();

@@ -48,7 +48,6 @@
 //! ponytail: no file watch; hand edits to settings.json apply on restart.
 use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, direction, dot, from_top, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
 use crate::grab::{self, Look, TagImg, average, line, over, rbox, tint};
-use crate::kvm::KVM;
 use crate::laser::{self, Hand};
 use crate::limits::{BAR_SCALE, CURVE_NOTCH};
 use crate::overlay::{At, Live, Overlays, Place, apply};
@@ -815,7 +814,7 @@ impl Taskbar {
         }
         let eye = vr::head_position();
         let rdp: Vec<Placement> = {
-            let k = KVM.lock().unwrap();
+            let k = crate::kvm::lock();
             panels().iter().filter(|p| matches!(p.src, Source::Rdp) && p.used()).map(|p| k.place[p.index]).collect()
         };
         let pose = match under(&rdp, &eye) {
@@ -879,7 +878,7 @@ impl Taskbar {
         self.holding(now);
         // The mouse's cursor on it: its hover, and its clicks.
         let (on, clicks) = {
-            let mut k = KVM.lock().unwrap();
+            let mut k = crate::kvm::lock();
             (k.on_bar.filter(|_| self.shown), std::mem::take(&mut k.bar_clicks)) // (stale while it's hidden)
         };
         let mouse = on.and_then(|(u, v)| chip_at(&self.frame, u / self.mpp + self.frame.w / 2.0, self.frame.h / 2.0 - v / self.mpp));
@@ -921,7 +920,7 @@ impl Taskbar {
             };
         }
         let (w, h) = (self.frame.w, self.frame.h);
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         k.bar = at.map(|(m, ..)| Placement::from_matrix(&m, w * self.mpp, h / w, r));
         k.bar_inset = REACH * self.mpp; // for the cursor; the clear reach does nothing for it
         self.moving = self.hold.is_some() || self.hover.is_some() || (self.placed, self.alpha) != before;
@@ -938,7 +937,7 @@ impl Taskbar {
             // few pixels from where it hits our well, or over its edge while it hits our padding.
             // On it and where goes by that, the way the mouse's ray sees it (plasmabar.rs).
             let pointer = [sys::EVREventType_VREvent_MouseMove, sys::EVREventType_VREvent_MouseButtonDown, sys::EVREventType_VREvent_MouseButtonUp].contains(&e.eventType);
-            let bar = if pointer && self.frame.well.is_some() { KVM.lock().unwrap().bar } else { None }; // (unlocked again: laser_on_panel takes it)
+            let bar = if pointer && self.frame.well.is_some() { crate::kvm::lock().bar } else { None }; // (unlocked again: laser_on_panel takes it)
             if let Some(bar) = bar
                 && let Some(l) = vr::laser_pose(dev)
                 && let Some(on) = crate::plasmabar::laser_on_panel(&[l[0][3] as f64, l[1][3] as f64, l[2][3] as f64], &frame_point(&bar, &self.frame, m.x as f64, m.y as f64))
@@ -972,7 +971,7 @@ impl Taskbar {
                 }
                 sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
                     if vr::is_real_controller(dev) {
-                        let mut k = KVM.lock().unwrap();
+                        let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed is primary (R-2)
                         }
@@ -994,7 +993,7 @@ impl Taskbar {
                 // press on Plasma's bar or a panel that's let go over the frame ends here too
                 sys::EVREventType_VREvent_MouseButtonUp => {
                     windows.plasma_release();
-                    grab.end_by(dev, &KVM.lock().unwrap());
+                    grab.end_by(dev, &crate::kvm::lock());
                     if self.hold.as_ref().is_some_and(|h| h.dev == dev) {
                         self.let_go();
                     }
@@ -1047,7 +1046,7 @@ impl Taskbar {
 
     /// A press on an edge, a corner or the knob by a device's laser: held from now.
     fn take(&mut self, t: Take, dev: u32) {
-        let Some(pl) = KVM.lock().unwrap().bar else { return };
+        let Some(pl) = crate::kvm::lock().bar else { return };
         let kind = match t {
             Take::Carry => {
                 let (Some(d), Some(b)) = (grab::pose_of(dev), self.pose) else { return };
@@ -1080,7 +1079,7 @@ impl Taskbar {
         };
         h.lost = None;
         let (dev, kind) = (h.dev, h.kind);
-        let Some(pl) = KVM.lock().unwrap().bar else { return };
+        let Some(pl) = crate::kvm::lock().bar else { return };
         match kind {
             Kind::Carry { rel } => self.pose = Some(mul(&d, &rel)),
             Kind::Resize { k, gx, gy, s0, w0 } => {
@@ -1125,7 +1124,7 @@ impl Taskbar {
     /// ponytail: labels are app names (tags); no Icon= icons, and no caption on hover yet.
     fn paint(&mut self, windows: &Windows, mouse: Option<Chip>, mouse_on: bool) {
         let (kbd, engaged) = {
-            let k = KVM.lock().unwrap();
+            let k = crate::kvm::lock();
             (if k.kbd_shell { usize::MAX } else { k.kbd }, k.engaged)
         };
         let mut chips = Vec::new();

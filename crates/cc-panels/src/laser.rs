@@ -249,22 +249,22 @@ fn send(msg: &str) {
 
 /// Gives the hand back now (startup, exit, panic), so the driver doesn't wait for its watchdog.
 pub fn hide() {
-    SNAP.lock().unwrap_or_else(|e| e.into_inner()).hand = None;
+    crate::ffi::lock(&SNAP).hand = None;
     send(HIDE);
 }
 
 pub fn press(bit: u32, down: bool) {
-    let mut s = SNAP.lock().unwrap();
+    let mut s = crate::ffi::lock(&SNAP);
     if down { s.held |= bit } else { s.held &= !bit }
 }
 
 pub fn pulse(bit: u32) {
-    SNAP.lock().unwrap().pulse = (bit, Instant::now() + Duration::from_millis(60));
+    crate::ffi::lock(&SNAP).pulse = (bit, Instant::now() + Duration::from_millis(60));
 }
 
 /// A wheel notch: the joystick held over for 80 ms, which SteamVR turns into a scroll step.
 pub fn scroll(dir: f64) {
-    SNAP.lock().unwrap().scroll = (dir.signum(), Instant::now() + Duration::from_millis(80));
+    crate::ffi::lock(&SNAP).scroll = (dir.signum(), Instant::now() + Duration::from_millis(80));
 }
 
 /// Runs on its own thread, every 20 ms while leasing, so a slow frame in the main loop can't trip
@@ -274,7 +274,7 @@ pub fn lease_thread() {
     let (mut seq, mut sent) = (0u32, false);
     while !crate::QUIT.load(Relaxed) {
         let msg = {
-            let s = SNAP.lock().unwrap();
+            let s = crate::ffi::lock(&SNAP);
             let now = Instant::now();
             s.hand.filter(|_| s.at.elapsed() < Duration::from_secs(1)).map(|h| {
                 let buttons = s.held | if now < s.pulse.1 { s.pulse.0 } else { 0 };
@@ -294,7 +294,7 @@ pub fn lease_thread() {
             }
             None => {}
         }
-        let s = SNAP.lock().unwrap();
+        let s = crate::ffi::lock(&SNAP);
         if s.hand.is_none() && !sent {
             drop(WANTED.wait_timeout(s, Duration::from_secs(1)));
             continue;
@@ -439,7 +439,7 @@ impl Beam {
             let origin = laser_origin(&eye, &cursor, on_ours);
             let aim = [cursor[0] - origin[0], cursor[1] - origin[1], cursor[2] - origin[2]];
             let pose = raw_pose(&s, &r, &origin, &aim);
-            let mut snap = SNAP.lock().unwrap();
+            let mut snap = crate::ffi::lock(&SNAP);
             if snap.hand.is_none() {
                 WANTED.notify_one();
             }

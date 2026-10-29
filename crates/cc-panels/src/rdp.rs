@@ -623,8 +623,10 @@ pub fn text(p: &Panel, c: char) -> bool {
 }
 
 /// Presses and lets go of each unit through `send` (flags, unit). The release always goes, even
-/// when its press failed, so nothing stays down; after a failure no further unit is pressed, so a
-/// surrogate pair never goes out half. True only if every press and release went.
+/// when its press failed, and a release that fails is tried once more; after a failure no further
+/// unit is pressed, so a surrogate pair never goes out half. True only if every press and release
+/// went. If a release fails twice, that unit stays down at the host until its session ends or the
+/// next key from this Frame comes in; it's counted as missed, so the strip says so.
 fn send_units(units: &[u16], mut send: impl FnMut(u16, u16) -> bool) -> bool {
     let mut ok = true;
     for &u in units {
@@ -632,7 +634,7 @@ fn send_units(units: &[u16], mut send: impl FnMut(u16, u16) -> bool) -> bool {
             break;
         }
         let down = send(0, u);
-        let up = send(KBD_FLAGS_RELEASE as u16, u);
+        let up = send(KBD_FLAGS_RELEASE as u16, u) || send(KBD_FLAGS_RELEASE as u16, u);
         ok = down && up;
     }
     ok
@@ -670,6 +672,13 @@ mod tests {
             f != 0 // every press fails
         }));
         assert_eq!(sent, [(0, 0xd83d), (rel, 0xd83d)], "its release still went, and the low half was never pressed");
+        let (mut sent, mut tries) = (Vec::new(), 0);
+        assert!(send_units(&[0x61], |f, u| {
+            sent.push((f, u));
+            tries += (f != 0) as u32;
+            f == 0 || tries > 1 // the first release fails, the second goes
+        }));
+        assert_eq!(sent, [(0, 0x61), (rel, 0x61), (rel, 0x61)], "a failed release is tried once more");
     }
 
     #[test]

@@ -14,7 +14,6 @@
 use super::ui::{self, BTN_H, GAP, MPP, PAD, Px, ROW, Rect, SCALE, SORT, TITLE, text, typed, typed_w};
 use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, over, tint};
-use crate::kvm::KVM;
 use crate::laser::{self, Hand};
 use crate::taskbar::{Mode, Taskbar, tex_scale};
 use crate::windows::Windows;
@@ -331,13 +330,13 @@ impl Prefs {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
             let at = held(self.hover, m.x as f64, from_top(H, m.y as f64)); // window units; events count from the bottom left
             // its card fades in, and a release ends a carry (even one pressed elsewhere and let go over it)
-            grab.panel_event(grab.slot(), &e, &mut KVM.lock().unwrap());
+            grab.panel_event(grab.slot(), &e, &mut crate::kvm::lock());
             match e.eventType {
                 sys::EVREventType_VREvent_MouseMove => self.hover = at,
                 sys::EVREventType_VREvent_FocusLeave => self.hover = None,
                 sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
                     if vr::is_real_controller(dev) {
-                        let mut k = KVM.lock().unwrap();
+                        let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed becomes primary (R-2)
                         }

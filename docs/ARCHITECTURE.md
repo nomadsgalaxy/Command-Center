@@ -401,6 +401,22 @@ spot may be under its screen number, which saving removes.
   `.github/workflows/release.yml` builds static musl cc-install and cc-host for both arches on a
   `v*` tag. The signing key's public half is `packaging/command-center.asc`.
 
+### Locks: what a poisoned one does
+
+A panic inside a C callback is caught (`ffi::guard`) and the program carries on, so a lock held at
+that moment can be poisoned. Each piece of shared state has one rule for that, used at every place
+it's locked:
+
+| Rule | Means | State |
+| --- | --- | --- |
+| recover | take the state as it is (`ffi::lock`) | `KVM` (only through `kvm::lock()`), laser.rs `SNAP`, vnc.rs `INPUT`, osk.rs `MISSED`, popout.rs `FOCUS`, gpu.rs `GBM`, clipboard `LOCAL`, `NEWS`, `PENDING`, `PIPES`, `SIZED`, `STAGED`; cc-pointer's `DEVICE`, `SHARED` and `LISTENER` (its own `lock()`: a panic must never take vrserver down) |
+| reset | put it back to a known start, then go on (`ffi::lock_or_reset`) | clipboard `HUB` (a new hub), cliprdr.rs `CHANS` (none), frame.rs `FRAME` (no connection; its thread connects again), since their fields only make sense together |
+| fail | `.lock().unwrap()`: a poisoned lock is a bug, and that thread stops | everything else: state only the main loop or one thread touches (`REGISTRY`, `TOASTS`, `THEME`, `OPEN`, windows.rs `INPUT`, ...) |
+
+A new piece of shared state that a C callback or another thread can reach takes recover or reset,
+and goes in this table. cc-host's work.rs is all `.lock().unwrap()`: it has no C callbacks, so a
+panic there is a bug that ends that connection's thread, which is the rule it follows.
+
 ## Files on disk
 
 **Frame, `~/.config/control-center/`** (always under `$HOME`, never `XDG_CONFIG_HOME`):

@@ -16,7 +16,6 @@
 //! physical key never closes theirs by mistake.
 use crate::control::ui::{self, BTN_H, GAP, MPP, PAD, Px, SORT};
 use crate::grab::{Look, Paint, TagImg, line, over, rbox, tint};
-use crate::kvm::KVM;
 use crate::{Panel, call, panel, theme, vr};
 use openvr_sys as sys;
 use std::ffi::CString;
@@ -36,7 +35,7 @@ const MISSED_FOR: Duration = Duration::from_secs(5); // how long the strip says 
 /// n characters couldn't be typed: the strip says so for MISSED_FOR. Any thread (a VNC session's
 /// send that failed counts too).
 pub fn missed(n: usize) {
-    let mut m = MISSED.lock().unwrap();
+    let mut m = crate::ffi::lock(&MISSED);
     *m = (if m.1.is_some_and(|t| t.elapsed() < MISSED_FOR) { m.0 } else { 0 } + n, Some(Instant::now()));
 }
 
@@ -54,7 +53,7 @@ fn real_key_since(key_at: Option<Instant>, at: Instant) -> bool {
 /// It closed, however it did: no sticky modifier left, none held down.
 fn closed() {
     if OPEN.lock().unwrap().take().is_some() {
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         k.latched = [false; 3];
         k.release_synth();
     }
@@ -67,14 +66,14 @@ fn show(p: &Panel) {
     let mode = sys::EGamepadTextInputMode_k_EGamepadTextInputModeNormal;
     let lines = sys::EGamepadTextInputLineMode_k_EGamepadTextInputLineModeSingleLine;
     let flags = sys::EKeyboardFlags_KeyboardFlag_Minimal;
-    if !KVM.lock().unwrap().popup_ok(true) {
+    if !crate::kvm::lock().popup_ok(true) {
         return; // never: you asked (here for the record, since the fields ask with false)
     }
     let e = call!(ov, ShowKeyboardForOverlay, p.overlay, mode, lines, flags, hint.as_ptr() as *mut _, 1024, c"".as_ptr() as *mut _, USER | p.index as u64);
     if e == 0 {
         closed(); // another panel's, if it was open there
         *OPEN.lock().unwrap() = Some((p.index, Instant::now()));
-        KVM.lock().unwrap().type_to(p.index);
+        crate::kvm::lock().type_to(p.index);
         eprintln!("{}: SteamVR keyboard open", p.v.name);
     } else {
         eprintln!("{}: no SteamVR keyboard ({})", p.v.name, vr::error_name(e));
@@ -95,7 +94,7 @@ pub fn event(p: &Panel, e: &vr::VREvent_t) -> bool {
     match e.eventType {
         sys::EVREventType_VREvent_KeyboardCharInput if ours => {
             if let Some(text) = typed(&k.cNewInput) {
-                let n = KVM.lock().unwrap().type_text(p.index, &text);
+                let n = crate::kvm::lock().type_text(p.index, &text);
                 if n > 0 {
                     missed(n);
                     eprintln!("{}: {n} character(s) from SteamVR's keyboard couldn't be typed", p.v.name);
@@ -108,11 +107,11 @@ pub fn event(p: &Panel, e: &vr::VREvent_t) -> bool {
             }
         }
         t @ (sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp) if open_for(p.index) => {
-            KVM.lock().unwrap().click_mods(p.index, t == sys::EVREventType_VREvent_MouseButtonDown);
+            crate::kvm::lock().click_mods(p.index, t == sys::EVREventType_VREvent_MouseButtonDown);
             return false;
         }
         sys::EVREventType_VREvent_FocusLeave if open_for(p.index) => {
-            KVM.lock().unwrap().release_synth();
+            crate::kvm::lock().release_synth();
             return false;
         }
         _ => return false,
@@ -216,9 +215,9 @@ impl Keys {
         if let Some((i, at)) = open {
             let p = panel(i);
             if !p.connected.load(std::sync::atomic::Ordering::Acquire) {
-                KVM.lock().unwrap().release_synth(); // its session dropped: nothing stays held for the next one
+                crate::kvm::lock().release_synth(); // its session dropped: nothing stays held for the next one
             }
-            let why = if real_key_since(KVM.lock().unwrap().key_at, at) {
+            let why = if real_key_since(crate::kvm::lock().key_at, at) {
                 Some("for the physical one")
             } else if !p.live() {
                 Some("as its panel disconnected")
@@ -242,7 +241,7 @@ impl Keys {
         }
         let Some((h, i)) = self.ov else { return };
         self.events(h, i);
-        if let Some(pl) = KVM.lock().unwrap().place.get(i) {
+        if let Some(pl) = crate::kvm::lock().place.get(i) {
             let drop = pl.height / 2.0 + crate::grab::card_below(pl) + H * MPP / 2.0;
             let mut m = pl.matrix();
             for (r, row) in m.iter_mut().enumerate() {
@@ -287,9 +286,9 @@ impl Keys {
                 sys::EVREventType_VREvent_MouseMove => self.hover = at,
                 sys::EVREventType_VREvent_FocusLeave => self.hover = None,
                 sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => match at {
-                    Some(b) if KEYS[b].1 != 0 => KVM.lock().unwrap().strip_key(i, KEYS[b].1),
+                    Some(b) if KEYS[b].1 != 0 => crate::kvm::lock().strip_key(i, KEYS[b].1),
                     Some(b) => {
-                        let mut k = KVM.lock().unwrap();
+                        let mut k = crate::kvm::lock();
                         k.latched[b + 3 - KEYS.len()] ^= true;
                     }
                     None => {}
@@ -300,10 +299,10 @@ impl Keys {
     }
 
     fn paint(&mut self, h: vr::Handle, accent: theme::Rgb) {
-        let missed = MISSED.lock().unwrap();
+        let missed = crate::ffi::lock(&MISSED);
         let missed = if missed.1.is_some_and(|t| t.elapsed() < MISSED_FOR) { missed.0 } else { 0 };
         let us = self.ov.is_some_and(|(_, i)| panel(i).text_mode() == crate::kvm::TextMode::UsKeys);
-        let key = Key { hover: self.hover, latched: KVM.lock().unwrap().latched, missed, us, theme: theme::generation() };
+        let key = Key { hover: self.hover, latched: crate::kvm::lock().latched, missed, us, theme: theme::generation() };
         self.painter.paint(h, key, || {
             let (ascii, p) = (self.ascii.clone(), Paint::new(&theme::get(), accent));
             move |_: Option<Key>, px, k: &Key| {
