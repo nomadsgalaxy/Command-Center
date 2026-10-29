@@ -142,6 +142,17 @@ pub(crate) fn panel_at(pl: &Placement, crop: Rect, panel: Rect, from: &V3, to: &
     ((0.0..=1.0).contains(&fx) && (0.0..=1.0).contains(&fy)).then_some((fx, fy))
 }
 
+/// Where a ray from `o` along unit `d` crosses the overlay as kvm.rs places it (`pl`, showing
+/// `crop`), in the session, clamped to its edges. It's the mouse's mapping (kvm.rs), and a laser
+/// on this overlay goes by it too, so both land on what's drawn there now, whatever crop or
+/// bounds SteamVR had when it made the event.
+pub(crate) fn ray_at(pl: &Placement, crop: Rect, o: &V3, d: &V3) -> Option<(f64, f64)> {
+    let (_, u, v) = pl.hit(o, d)?;
+    let (cu, cv) = pl.clamped(u, v);
+    let (fx, fy) = pl.fraction(cu, cv);
+    Some(global(crop, fx, fy))
+}
+
 /// `panel_at` for a laser from `from` that hit the taskbar's frame at `to`: Some(None) if it
 /// passes Plasma's bar by, None while the bar isn't showing.
 pub fn laser_on_panel(from: &V3, to: &V3) -> Option<Option<(f64, f64)>> {
@@ -455,23 +466,24 @@ impl Plasma {
     fn events(&mut self) {
         let mut e: vr::VREvent_t = Default::default();
         self.moving = self.held != 0;
-        // SteamVR reports overlay mouse events in the whole texture's coordinates, not the part
-        // the bounds show. While a popup is open the texture is the whole output and we show a
-        // crop of it, so the laser moved the pointer ~2.5x too fast. Back to fractions of the crop.
+        // A laser goes where its ray crosses the overlay as placed now (ray_at), the way the
+        // mouse does. SteamVR's own point is only the fallback, for a device with no pose: it's
+        // in the whole texture's coordinates (c937884), so with a popup open, and the texture the
+        // whole output, it's turned into fractions of the crop. That point depends on which
+        // texture and bounds SteamVR had when it made the event, and right after a menu opens
+        // that isn't always what's drawn.
         let b = self.placed.map_or([0.0, 0.0, 1.0, 1.0], |q| q.4);
+        let (pl, crop) = (crate::kvm::lock().plasma, CROP.lock().unwrap().map(|c| c.0));
         crate::trace::tick("plasma");
         while crate::trace::poll("plasma", self.ov, &mut e) {
             let m = unsafe { e.data.mouse };
             let (fx, fy) = in_bounds(b, m.x as f64, m.y as f64);
+            let ray = crate::trace::laser_pose(e.trackedDeviceIndex).map(|l| ([l[0][3], l[1][3], l[2][3]].map(f64::from), [-l[0][2], -l[1][2], -l[2][2]].map(f64::from)));
+            let by_ray = pl.zip(crop).zip(ray).and_then(|((pl, c), (o, d))| ray_at(&pl, c, &o, &d));
             if debug() && e.eventType != sys::EVREventType_VREvent_MouseMove {
-                eprintln!("plasma-debug: overlay event {} at {:.3},{:.3} (crop {fx:.3},{fy:.3}) -> {:?} crop {:?}", e.eventType, m.x, m.y, at(fx, fy), *CROP.lock().unwrap());
+                eprintln!("plasma-debug: overlay event {} at {:.3},{:.3} (crop {fx:.3},{fy:.3}) -> {:?}, by its ray {by_ray:?}, crop {:?}", e.eventType, m.x, m.y, at(fx, fy), *CROP.lock().unwrap());
             }
-            // while a trace runs, the laser SteamVR hit-tested for this event, so its point can be
-            // checked against where that ray meets the overlay (docs/vr-harness.md)
-            if crate::trace::on() && matches!(e.eventType, sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp) {
-                crate::trace::laser_pose(e.trackedDeviceIndex);
-            }
-            self.laser(&e, at(fx, fy));
+            self.laser(&e, by_ray.or_else(|| at(fx, fy)));
         }
     }
 
@@ -839,6 +851,69 @@ mod tests {
 
     const WL0: Rect = [0, 740, 1920, 1080];
     const BAR: Rect = [514, 1770, 891, 50]; // Plasma's floating panel, centred at the bottom of WL-0
+
+    /// The overlay as tick() places it for `crop`, in a frame at `m`: shifted so the bar stays put.
+    fn placed_for(m: &Mat, crop: Rect, mpp: f64, curve: f64) -> Placement {
+        let (dx, dy) = shift(BAR, crop, mpp);
+        let world = taskbar::in_well(m, curve, dx, 0.1 + dy);
+        Placement::from_matrix(&world, crop[2] as f64 * mpp, crop[3] as f64 / crop[2] as f64, curve)
+    }
+
+    /// A laser 0.6 m back from where session point `p` is drawn on `pl` (showing `crop`), aimed
+    /// at it a little from below, the way a hand holds it: its origin and direction.
+    fn laser_at(pl: &Placement, crop: Rect, p: (f64, f64)) -> (V3, V3) {
+        let fx = (p.0 - crop[0] as f64) / (crop[2] - 1) as f64;
+        let fy = 1.0 - (p.1 - crop[1] as f64) / (crop[3] - 1) as f64;
+        let t = pl.on_surface((fx - 0.5) * pl.width, (fy - 0.5) * pl.height, 0.0);
+        let to = [t[0][3], t[1][3], t[2][3]].map(f64::from);
+        let n = [t[0][2], t[1][2], t[2][2]].map(f64::from); // out of the surface
+        let from = [to[0] + n[0] * 0.6, to[1] + n[1] * 0.6 - 0.2, to[2] + n[2] * 0.6];
+        let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+        let l = norm(&d);
+        (from, d.map(|x| x / l))
+    }
+
+    #[test]
+    fn a_laser_lands_on_the_start_menu_where_its_drawn_as_it_opens() {
+        use crate::geometry::{Pose, panel_matrix};
+        let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let (mpp, kickoff) = (0.0006, [514, 1100, 650, 660]);
+        let grown = crop(BAR, &[kickoff], WL0).unwrap();
+        let item = (600.0, 1200.0); // an app in Kickoff's list, near its top left
+        let close = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1.5 && (a.1 - b.1).abs() < 1.5;
+        for curve in [0.0, 2.0] {
+            // 1. the bar alone, from the window's stream: the launcher on the bar
+            let bar = placed_for(&m, BAR, mpp, curve);
+            let (o, d) = laser_at(&bar, BAR, (540.0, 1795.0));
+            assert!(close(ray_at(&bar, BAR, &o, &d).unwrap(), (540.0, 1795.0)), "curve {curve}");
+            // 2. Kickoff's open, but the output's stream has no frame yet: the overlay still
+            //    shows only the bar, and a laser on it still lands on the bar
+            let (o, d) = laser_at(&bar, BAR, (900.0, 1780.0));
+            assert!(close(ray_at(&bar, BAR, &o, &d).unwrap(), (900.0, 1780.0)));
+            // 3. the output's frame is up and the crop has grown: the menu's item, where it's drawn
+            let pl = placed_for(&m, grown, mpp, curve);
+            let (o, d) = laser_at(&pl, grown, item);
+            assert!(close(ray_at(&pl, grown, &o, &d).unwrap(), item), "curve {curve}: {:?}", ray_at(&pl, grown, &o, &d));
+            // and the bar is where it was, so the launcher's still under the same laser
+            let (o, d) = laser_at(&bar, BAR, (540.0, 1795.0));
+            assert!(close(ray_at(&pl, grown, &o, &d).unwrap(), (540.0, 1795.0)), "curve {curve}");
+        }
+        // SteamVR's own point for that item, in the whole texture's coordinates (y up)
+        let b = bounds(grown, WL0);
+        let tex = ((item.0 - WL0[0] as f64) / 1920.0, 1.0 - (item.1 - WL0[1] as f64) / 1080.0);
+        let (fx, fy) = in_bounds(b, tex.0, tex.1);
+        assert!(close(global(grown, fx, fy), item), "mapped with the bounds on screen, it's right");
+        // with the bounds from the frame before the switch (the bar's window, [0,0,1,1]), the
+        // first events after the menu opens land off it
+        let (fx, fy) = in_bounds([0.0, 0.0, 1.0, 1.0], tex.0, tex.1);
+        let stale = global(grown, fx, fy);
+        assert!((stale.0 - item.0).abs() > 50.0 || (stale.1 - item.1).abs() > 50.0, "{stale:?}");
+        // and if SteamVR's point were already of the part shown, in_bounds maps it twice
+        let shown = ((item.0 - grown[0] as f64) / (grown[2] - 1) as f64, 1.0 - (item.1 - grown[1] as f64) / (grown[3] - 1) as f64);
+        let (fx, fy) = in_bounds(b, shown.0, shown.1);
+        let twice = global(grown, fx, fy);
+        assert!((twice.0 - item.0).abs() > 50.0 || (twice.1 - item.1).abs() > 50.0, "{twice:?}");
+    }
 
     #[test]
     fn the_crop_grows_with_open_popups_on_the_output_only() {
