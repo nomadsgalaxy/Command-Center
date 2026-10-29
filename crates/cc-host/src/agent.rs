@@ -8,7 +8,7 @@ use crate::platform::Platform;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use cc_proto::agent::{VERSION, canon};
-use cc_proto::server::{authenticate, valid_name};
+use cc_proto::server::authenticate;
 use ed25519_dalek::SigningKey;
 use ed25519_dalek::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
@@ -465,11 +465,6 @@ fn io_loop(mut tls: StreamOwned<ServerConnection, TcpStream>, mut buf: Vec<u8>, 
     tls.conn.send_close_notify();
     let _ = tls.flush();
     let _ = tls.sock.shutdown(Shutdown::Both);
-}
-
-#[allow(dead_code)]
-fn _names(n: &str) -> bool {
-    valid_name(n)
 }
 
 #[allow(dead_code)]
