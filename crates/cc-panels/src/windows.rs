@@ -12,7 +12,6 @@
 //! when it's back. Plasma's own panel and popups belong to plasmabar.rs, fed from here.
 use crate::attention::{self, Level};
 use crate::geometry::{Mat, Pose, STAND_IN_HEAD, ahead_of, angles, level, level_ahead, panel_matrix};
-use crate::kvm::KVM;
 use crate::session::{self, Session, StreamEvent};
 use crate::{HIDDEN, Panel, call, capture, config, grab, kwin, panel, plasmabar, vr};
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN};
@@ -763,7 +762,7 @@ impl Windows {
             Some((pose, zoom)) => (pose, zoom, "where it was"),
             None => match config::home_pose(&w.key, None).filter(|_| !app_open) {
                 Some(pose) => (pose, config::home_zoom(&w.key), "its spot"),
-                None => match KVM.lock().unwrap().window_drag.filter(|d| d.1.elapsed() < DRAGGED) {
+                None => match crate::kvm::lock().window_drag.filter(|d| d.1.elapsed() < DRAGGED) {
                     Some((p, _)) => (at_cursor(p), None, "where the drag was"),
                     None => (self.ahead(), None, "ahead"),
                 },
@@ -771,7 +770,7 @@ impl Windows {
         };
         p.set_zoom(zoom.unwrap_or(1.0));
         grab.cancel(p.index);
-        KVM.lock().unwrap().set_pose(p.index, &panel_matrix(&pose), cw as f64 / self.density(p), pose.curve);
+        crate::kvm::lock().set_pose(p.index, &panel_matrix(&pose), cw as f64 / self.density(p), pose.curve);
         eprintln!("{}: {} {:?} ({}x{}), {from}", p.v.name, w.key, w.caption, cw, ch);
         let (app, min) = (w.app.clone(), w.minimized);
         set_win(p.index, Some(w));
@@ -818,7 +817,7 @@ impl Windows {
                 _ => {
                     p.set_minimized(true);
                     // like free(): its held keys go up; typing stays put until a panel is clicked
-                    let mut k = KVM.lock().unwrap();
+                    let mut k = crate::kvm::lock();
                     if k.kbd == i {
                         k.release_keys();
                     }
@@ -837,7 +836,7 @@ impl Windows {
             _ => p.set_minimized(false),
         }
         self.end_theater(grab);
-        KVM.lock().unwrap().type_to(i);
+        crate::kvm::lock().type_to(i);
         eprintln!("{}: shown", p.v.name);
     }
 
@@ -860,7 +859,7 @@ impl Windows {
         self.close_stream(i);
         p.set_live(false);
         // like free(): its held keys go up; typing stays put until a panel is clicked
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         if k.kbd == p.index {
             k.release_keys();
         }
@@ -935,7 +934,7 @@ impl Windows {
     fn theater(&mut self, i: usize, grab: &mut grab::Grab) {
         let p = panel(self.first + i);
         grab.cancel(p.index);
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         if let Some((before, height)) = self.slots[i].theater.take() {
             crate::THEATER.store(usize::MAX, Relaxed);
             k.set_place(p.index, &panel_matrix(&before), before.width, height, before.curve); // its rate comes back in tick_slot
@@ -1040,7 +1039,7 @@ impl Windows {
         let Some(w) = win(p.index) else { return };
         if let Some((before, height)) = self.slots[i].theater.take() {
             crate::THEATER.store(usize::MAX, Relaxed);
-            KVM.lock().unwrap().set_place(p.index, &panel_matrix(&before), before.width, height, before.curve);
+            crate::kvm::lock().set_place(p.index, &panel_matrix(&before), before.width, height, before.curve);
         }
         self.keep_pose(i, &w.uuid);
         call!(ov, HideOverlay, p.overlay); // hide before its buffers go
@@ -1050,7 +1049,7 @@ impl Windows {
         p.set_tag(None);
         grab.cancel(p.index);
         {
-            let mut k = KVM.lock().unwrap();
+            let mut k = crate::kvm::lock();
             if k.active == p.index {
                 k.active = 0;
             }
@@ -1074,7 +1073,7 @@ impl Windows {
     fn keep_pose(&mut self, i: usize, uuid: &str) {
         let p = panel(self.first + i);
         if p.live() && !is_popup(p.index) {
-            let pl = KVM.lock().unwrap().place[p.index];
+            let pl = crate::kvm::lock().place[p.index];
             let mut v = config::pose_json(&pl.pose(), pl.height);
             v["zoom"] = json!(p.zoom());
             v["room"] = json!(config::UNIVERSE.load(Relaxed)); // where it was put: it only comes back there (same_room)
@@ -1087,7 +1086,7 @@ impl Windows {
         let p = panel(self.first + i);
         let Some(w) = win(p.index) else { return };
         let Some(pw) = self.slot_of(&w.parent).map(|j| self.first + j).and_then(|j| Some((j, win(j)?))) else { return };
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         let at = popup_place(&k.place[pw.0], pw.1.cg, w.cg);
         if self.slots[i].follow != Some(at) {
             self.slots[i].follow = Some(at);
@@ -1228,7 +1227,7 @@ impl Windows {
         let (sw, sh) = s.shown.size;
         if sw > 0 && (sw, sh) != p.size() {
             p.set_size(sw, sh);
-            let mut k = KVM.lock().unwrap();
+            let mut k = crate::kvm::lock();
             let pl = k.place[p.index];
             let asked = s.placing.is_some_and(|(t, sent)| sent != (sw, sh) && t.elapsed() < SETTLE);
             if grab.stretching(p.index) || asked {
@@ -1244,7 +1243,7 @@ impl Windows {
         // Done once the window is the panel's size (not the size sent, since a panel bigger than the
         // output snaps back to the window after SETTLE).
         let (pw, ph) = p.size();
-        let pl = KVM.lock().unwrap().place[p.index];
+        let pl = crate::kvm::lock().place[p.index];
         let fits = |m: f64, px: u32| ((m * density).round() as u32).abs_diff(px) <= 2;
         if !p.live() || (fits(pl.width, pw) && fits(pl.height, ph)) || s.theater.is_some() {
             s.placing = None;
@@ -1260,7 +1259,7 @@ impl Windows {
             Some((t, _)) => {
                 if t.elapsed() >= SETTLE {
                     s.placing = None; // it didn't take that size (a minimum, the output's edge), so snap back
-                    let mut k = KVM.lock().unwrap();
+                    let mut k = crate::kvm::lock();
                     let pl = k.place[p.index];
                     let (nw, nh) = (pw as f64 / density, ph as f64 / density);
                     k.set_pose(p.index, &resized(&pl, nw, nh, std::mem::take(&mut s.anchored)), nw, pl.curve);

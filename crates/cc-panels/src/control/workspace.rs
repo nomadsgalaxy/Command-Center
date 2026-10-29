@@ -30,7 +30,6 @@
 use super::ui::{self, BTN_H, Edit, GAP, MPP, PAD, Px, ROW, Rect, SCALE, SORT, TITLE, typed, typed_w};
 use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, line, over, tint};
-use crate::kvm::KVM;
 use crate::taskbar::{Taskbar, tex_scale};
 use crate::windows::Windows;
 use crate::{HIDDEN, Source, call, config, panels, theme, vr};
@@ -589,13 +588,13 @@ impl Workspace {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
             // in units from the bottom left; none while the texture is drawn for a different row count
             let at = held(self.hover, n, t, m.x as f64, from_top(height(n), m.y as f64)).filter(|_| drawn == Some(n));
-            grab.panel_event(grab.slot(), &e, &mut KVM.lock().unwrap());
+            grab.panel_event(grab.slot(), &e, &mut crate::kvm::lock());
             match e.eventType {
                 sys::EVREventType_VREvent_MouseMove => self.hover = at,
                 sys::EVREventType_VREvent_FocusLeave => self.hover = None,
                 sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
                     if vr::is_real_controller(dev) {
-                        let mut k = KVM.lock().unwrap();
+                        let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed is primary (R-2)
                         }
@@ -633,7 +632,7 @@ impl Workspace {
             return;
         }
         tp.editing = true;
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         k.focus_field("workspace", true);
         if !k.popup_ok(false) {
             return; // you're typing on a real keyboard, and it types here now
@@ -664,7 +663,7 @@ impl Workspace {
         if let Some(tp) = self.typing.as_mut() {
             tp.editing = false;
         }
-        KVM.lock().unwrap().focus_field("workspace", false);
+        crate::kvm::lock().focus_field("workspace", false);
     }
 
     /// Physical keyboard keys in the field. Enter saves, Escape cancels.
@@ -672,7 +671,7 @@ impl Workspace {
         if !self.typing.as_ref().is_some_and(|t| t.editing) {
             return;
         }
-        let Some(keys) = KVM.lock().unwrap().field_keys("workspace") else { return self.hide_keyboard() };
+        let Some(keys) = crate::kvm::lock().field_keys("workspace") else { return self.hide_keyboard() };
         for (code, value, shift) in keys {
             let Some(e) = ui::edit(code, value, shift) else { continue };
             if std::mem::take(&mut self.osk) {

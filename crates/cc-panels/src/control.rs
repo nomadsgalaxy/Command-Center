@@ -58,7 +58,6 @@ pub mod workspace;
 const HUD_USAGE: &str = "error usage: hud <rgba file> <w> <h> [skip=x0,y0,x1,y1] | hud mark <rgba file> <w> <h> <width> <12 numbers> | hud hide";
 
 use crate::geometry::{Pose, panel_matrix};
-use crate::kvm::KVM;
 use crate::surface;
 use crate::{HIDDEN, Source, call, panels, taskbar};
 use std::os::linux::net::SocketAddrExt;
@@ -250,7 +249,7 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
     let words: Vec<&str> = cmd.split_whitespace().collect();
     match words.first().copied() {
         Some("panels") => {
-            let k = KVM.lock().unwrap();
+            let k = crate::kvm::lock();
             let mut out = String::from("ok");
             for (p, l) in panels().iter().zip(&k.place).filter(|(p, _)| p.live()) {
                 out += &format!(
@@ -295,8 +294,8 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
                     // remote screen's comes from its monitor's shape
                     p.set_vert(pose.vert && matches!(p.src, Source::Rdp)); // set_pose turns the panel for that
                     match (n.get(8).filter(|&&h| h > 0.0), &p.src) {
-                        (Some(&h), Source::Window(_)) => KVM.lock().unwrap().set_place(p.index, &panel_matrix(&pose), pose.width, h, pose.curve),
-                        _ => KVM.lock().unwrap().set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve),
+                        (Some(&h), Source::Window(_)) => crate::kvm::lock().set_place(p.index, &panel_matrix(&pose), pose.width, h, pose.curve),
+                        _ => crate::kvm::lock().set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve),
                     }
                     if matches!(p.src, Source::Rdp) {
                         bar.refix(); // a spot was applied, so the fixed taskbar goes back under the panels

@@ -322,7 +322,7 @@ pub fn next_event(h: vr::Handle, e: &mut vr::VREvent_t) -> bool {
         *sent = None; // the laser sends its own events now
         return false;
     }
-    let mut k = crate::kvm::KVM.lock().unwrap();
+    let mut k = crate::kvm::lock();
     let mut scale = sys::HmdVector2_t { v: [0.0; 2] };
     call!(ov, GetOverlayMouseScale, h, &mut scale);
     let at = k.extra.zip(k.extra_at()).map(|((pl, _), (u, v))| (((u / pl.width + 0.5) * scale.v[0] as f64) as f32, ((v / pl.height + 0.5) * scale.v[1] as f64) as f32));

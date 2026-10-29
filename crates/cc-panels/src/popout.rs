@@ -8,7 +8,7 @@
 //! The card's x or `viewer disconnect` stops the window's server and frees the slot. The window
 //! closing on the host does the same, after showing "window closed" for a few seconds.
 use crate::geometry::{Placement, Pose, angles, panel_matrix};
-use crate::kvm::{KVM, Kvm};
+use crate::kvm::Kvm;
 use crate::limits::POPOUT_WIDTH;
 use crate::{Panel, QUIT, Source, config, panel, panels};
 use std::sync::Mutex;
@@ -93,7 +93,7 @@ pub fn pop(monitor: &str, uuid: &str) -> String {
         f.iter_mut().filter(|e| e.1 == src.index).for_each(|e| e.1 = p.index);
     }
     {
-        let mut k = crate::ffi::lock(&KVM);
+        let mut k = crate::kvm::lock();
         let pose = config::home_pose(&name, None).unwrap_or_else(|| in_front(&k.place[src.index], crate::vr::head_position()));
         p.set_vert(pose.vert);
         k.set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve);

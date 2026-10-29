@@ -47,6 +47,11 @@ struct Frame {
 }
 
 static FRAME: Mutex<Option<Frame>> = Mutex::new(None);
+/// FRAME, reset to no connection if a caught panic poisoned it, like the hub and the channels:
+/// its fields go together, and the thread connects again from nothing.
+fn frame() -> std::sync::MutexGuard<'static, Option<Frame>> {
+    crate::ffi::lock_or_reset(&FRAME, |f| *f = None)
+}
 /// Frame apps' pipes waiting on a paste, by token.
 static PIPES: Mutex<Vec<(u64, OwnedFd)>> = Mutex::new(Vec::new());
 static TOKEN: AtomicU64 = AtomicU64::new(1);
@@ -82,17 +87,17 @@ fn serve(path: &std::path::Path) -> Result<(), String> {
     let seat: WlSeat = globals.bind(&qh, 1..=1, ()).map_err(|_| "no seat")?;
     let mgr: ZwlrDataControlManagerV1 = globals.bind(&qh, 1..=2, ()).map_err(|_| "no zwlr_data_control_manager_v1")?;
     let dev = mgr.get_data_device(&seat, &qh, ());
-    *crate::ffi::lock(&FRAME) = Some(Frame { conn: conn.clone(), qh, mgr, dev, offer: None, ours: None, starting: true });
+    *frame() = Some(Frame { conn: conn.clone(), qh, mgr, dev, offer: None, ours: None, starting: true });
     let mut st = St;
     let r = queue.roundtrip(&mut st); // takes in the selection that was already there
-    if let Some(f) = crate::ffi::lock(&FRAME).as_mut() {
+    if let Some(f) = frame().as_mut() {
         f.starting = false;
     }
     eprintln!("clipboard: Frame session up");
     if r.is_ok() {
         while queue.blocking_dispatch(&mut st).is_ok() {}
     }
-    *crate::ffi::lock(&FRAME) = None;
+    *frame() = None;
     Err("connection lost".into())
 }
 
@@ -101,7 +106,7 @@ fn offered(o: &Offer) -> Vec<String> {
 }
 
 fn selection(id: Option<Offer>) {
-    let mut g = crate::ffi::lock(&FRAME);
+    let mut g = frame();
     let Some(f) = g.as_mut() else { return };
     if let Some(old) = f.offer.take() {
         old.destroy();
@@ -126,7 +131,7 @@ fn selection(id: Option<Offer>) {
 
 /// Makes a machine's copy the Frame session's selection.
 pub fn offer(fmts: &[Fmt]) {
-    let mut g = crate::ffi::lock(&FRAME);
+    let mut g = frame();
     let Some(f) = g.as_mut() else { return };
     let src = f.mgr.create_data_source(&f.qh, ());
     for m in fmts.iter().flat_map(|f| mimes(*f)) {
@@ -141,7 +146,7 @@ pub fn offer(fmts: &[Fmt]) {
 
 /// Reads a format from the Frame selection, off this thread; it goes to the hub as frame_data.
 pub fn fetch(copy: u64, fmt: Fmt) {
-    let g = crate::ffi::lock(&FRAME);
+    let g = frame();
     let target = g.as_ref().and_then(|f| {
         let o = f.offer.as_ref()?;
         let types = offered(o);
@@ -218,7 +223,7 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for St {
         match e {
             device::Event::Selection { id } => selection(id),
             device::Event::PrimarySelection { id: Some(o) } => o.destroy(), // middle-click paste stays the Frame's own
-            device::Event::Finished => *crate::ffi::lock(&FRAME) = None,
+            device::Event::Finished => *frame() = None,
             _ => {}
         }
     }
@@ -246,7 +251,7 @@ impl Dispatch<Source, ()> for St {
                 run(acts);
             }
             source::Event::Cancelled => {
-                let mut g = crate::ffi::lock(&FRAME);
+                let mut g = frame();
                 if let Some(f) = g.as_mut().filter(|f| f.ours.as_ref() == Some(src)) {
                     f.ours = None; // someone copied, so the next selection is theirs
                 }
@@ -316,7 +321,7 @@ mod tests {
         let path = std::path::PathBuf::from(std::env::var("CC_CLIP_TEST_WAYLAND").expect("CC_CLIP_TEST_WAYLAND: a private KWin's socket"));
         let p = path.clone();
         std::thread::spawn(move || serve(&p));
-        wait_for("our connection", || crate::ffi::lock(&FRAME).as_ref().is_some_and(|f| !f.starting));
+        wait_for("our connection", || frame().as_ref().is_some_and(|f| !f.starting));
 
         let conn = Connection::from_socket(UnixStream::connect(&path).unwrap()).unwrap();
         let (globals, mut q) = registry_queue_init::<App>(&conn).unwrap();

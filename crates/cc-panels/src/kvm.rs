@@ -288,6 +288,14 @@ pub struct Kvm {
 
 pub static KVM: Mutex<Kvm> = Mutex::new(Kvm::idle());
 
+/// KVM, recovered if a caught panic (a C callback's, ffi::guard) poisoned it: the input loop,
+/// the main loop and the session threads all lock it, and one bad callback mustn't take the
+/// mice and keyboards down with it. Every lock of KVM goes through here (docs/ARCHITECTURE.md,
+/// "Locks").
+pub fn lock() -> std::sync::MutexGuard<'static, Kvm> {
+    crate::ffi::lock(&KVM)
+}
+
 impl Kvm {
     /// A Kvm with nothing set. It's const so KVM can be a static, and tests make their own.
     pub const fn idle() -> Kvm {
@@ -1510,22 +1518,22 @@ pub fn input_loop() {
                 again = true;
             }
             if again {
-                let known = KVM.lock().unwrap().paths();
+                let known = crate::kvm::lock().paths();
                 let (found, busy) = probe(INPUT, &known, &mut rejected);
                 again = busy;
                 if !found.is_empty() {
-                    KVM.lock().unwrap().take_in(found);
+                    crate::kvm::lock().take_in(found);
                 }
             }
         }
         let mut fds: Vec<libc::pollfd> = {
-            let k = KVM.lock().unwrap();
+            let k = crate::kvm::lock();
             k.devices.iter().map(|d| libc::pollfd { fd: d.file.as_raw_fd(), events: libc::POLLIN, revents: 0 }).collect()
         };
         // 500 ms: a timeout only runs tick (the 30 s idle sleep) and the rescan's 2 s check. A
         // key coming up (a keyboard waiting to be grabbed) is an event anyway (efficiency-plan.md 5)
         let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 500) };
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         k.tick();
         if ready <= 0 {
             continue;
@@ -1808,7 +1816,7 @@ mod tests {
     #[test]
     fn a_nearer_panel_covers_the_bar() {
         use crate::geometry::{Placement, Pose, panel_matrix};
-        let mut k = super::KVM.lock().unwrap();
+        let mut k = super::lock();
         let pose = Pose { centre: [0.0, 1.0, -1.0], width: 0.5, ..Default::default() };
         k.bar = Some(Placement::from_matrix(&panel_matrix(&pose), 0.5, 0.1, 0.0));
         let (o, d) = ([0.0, 1.0, 0.0], [0.0, 0.0, -1.0]);
@@ -1827,7 +1835,7 @@ mod tests {
     #[test]
     fn the_extra_window_and_its_card_take_the_ray() {
         use crate::geometry::{Placement, Pose, panel_matrix};
-        let mut k = super::KVM.lock().unwrap();
+        let mut k = super::lock();
         let pose = Pose { centre: [0.0, 1.0, -0.6], width: 0.5, ..Default::default() };
         let pl = Placement::from_matrix(&panel_matrix(&pose), 0.5, 0.6, 0.0); // 0.3 high
         k.extra = Some((pl, [0.02, 0.05, 0.03])); // its card: 2 cm each side, 5 below, 3 above
@@ -1878,7 +1886,7 @@ mod tests {
     #[test]
     fn a_panels_card_in_front_of_another_takes_the_ray() {
         use crate::geometry::{Placement, Pose, panel_matrix};
-        let mut k = super::KVM.lock().unwrap();
+        let mut k = super::lock();
         let place = |z: f64, w: f64, aspect: f64| Placement::from_matrix(&panel_matrix(&Pose { centre: [0.0, 1.0, z], width: w, ..Default::default() }), w, aspect, 0.0);
         // a pop-out (0.4 by 0.2) in front of its monitor (1 by 0.6), both with 2 cm card sides
         let saved = (std::mem::take(&mut k.place), std::mem::take(&mut k.cards), k.anchor, k.yaw, k.pitch, k.free, k.active, k.depth);
@@ -1946,7 +1954,7 @@ mod tests {
 
     #[test]
     fn a_window_field_takes_the_keyboards_until_typing_goes_to_a_remote() {
-        let mut k = super::KVM.lock().unwrap();
+        let mut k = super::lock();
         let (engaged, kbd) = (k.engaged, k.kbd);
         k.engaged = false;
         k.focus_field("machines", true);
@@ -1980,7 +1988,7 @@ mod tests {
     #[test]
     fn click_to_type() {
         use super::*;
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         let saved = (k.engaged, k.kbd, k.kbd_shell, k.awake, k.free, k.on_plasma, k.on_card, k.on_extra, k.gaze_lock);
         // kbd_shell sends keys to the session (none in tests), since a panel's need a live panel
         (k.engaged, k.kbd_shell, k.awake) = (false, true, true);
