@@ -1,0 +1,18 @@
+# systemd-sysupdate's transfer for Command Center's image (component "command-center"). Only the
+# root helper runs it (crates/cc-home/src/update.rs), and only after it has checked the release's
+# signature and the image's hash itself, which is why Verify=no: the source is the helper's own
+# private work directory, not the network.
+[Transfer]
+Verify=no
+
+[Source]
+Type=regular-file
+Path=/var/lib/command-center/update
+MatchPattern=command-center_@v.raw
+
+[Target]
+Type=regular-file
+Path=/var/lib/extensions/command-center.raw.v
+MatchPattern=command-center_@v.raw
+Mode=0444
+InstancesMax=2

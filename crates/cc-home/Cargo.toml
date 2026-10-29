@@ -12,6 +12,7 @@ description = "Command Center's cc-home: spots, workspaces, machines, pairing, n
 cc-proto = { path = "../cc-proto" }
 cc-scan = { path = "../cc-scan" }
 serde_json.workspace = true
+sha2.workspace = true # the image update's hash check (update.rs)
 base64.workspace = true
 libc.workspace = true
 zbus.workspace = true

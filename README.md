@@ -71,6 +71,10 @@ updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
   coming back show as notifications in the headset. `"notifications": false` in settings.json
   turns them off.
 
+On the Frame, `cc-home update` updates Command Center's system image to the latest release
+without a password, after checking the release's signature
+([docs/packaging-frame.md](docs/packaging-frame.md#updates-without-a-password-after-that)).
+
 On a computer, `cc-share check` says if anything's wrong and how to fix it, and `cc-share frames`
 lists the Frames paired with it.
 

@@ -36,6 +36,14 @@ ln -s cc-home "$s/$lib/cc-box"
 mkdir -p "$s/$lib/session" "$s/$lib/panels/third_party/prefix/lib64" "$s/$lib/crates/cc-panels/actions" "$s/usr/bin"
 for c in cc-launch cc-desktop cc-rest cc-tab; do ln -s ../cc-home "$s/$lib/session/$c"; done
 for c in cc-home cc-panels; do ln -s "../lib/command-center/$c" "$s/usr/bin/$c"; done
+# The update helper is cc-home under another name, run as root by pkexec (update.rs), with its
+# polkit action, sysupdate's transfer, and our release key in the binary form gpgv reads (the
+# public half only, from packaging/command-center.asc).
+ln -s cc-home "$s/$lib/cc-sysext-update"
+install -Dm644 "$root/packaging/sysext/org.controlcenter.update.policy" "$s/usr/share/polkit-1/actions/org.controlcenter.update.policy"
+install -Dm644 "$root/packaging/sysext/50-command-center.transfer" "$s/usr/lib/sysupdate.command-center.d/50-command-center.transfer"
+gpg --dearmor <"$root/packaging/command-center.asc" >"$s/$lib/release-key.gpg"
+chmod 644 "$s/$lib/release-key.gpg"
 cp -P "$root"/panels/third_party/prefix/lib64/lib{freerdp3,freerdp-client3,winpr3}.so.3* "$s/$lib/panels/third_party/prefix/lib64/"
 # Says the build is native, so cc-box runs things directly (session.rs, native()). A container
 # build has none, and the check below would fail it anyway.

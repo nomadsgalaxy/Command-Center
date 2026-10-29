@@ -223,7 +223,7 @@ fn desktop(args: &[String]) -> i32 {
     // A native build (the sysext image) against a SteamOS it wasn't built on: it starts if its
     // libraries still load, and says what's wrong if they don't (steamos.rs).
     if native(&root) {
-        if let Err(msg) = crate::steamos::check_abi(&root) {
+        if let Err(msg) = crate::steamos::check_release().and_then(|_| crate::steamos::check_abi(&root)) {
             eprintln!("{msg}");
             return 1;
         }

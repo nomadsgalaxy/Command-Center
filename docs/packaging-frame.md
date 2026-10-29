@@ -270,6 +270,12 @@ IMAGE_ID=command-center
 IMAGE_VERSION=<git describe>
 ```
 
+systemd-sysext loads an image only if its release file matches the running OS: `ID` (or `_any`,
+which matches every OS), then `SYSEXT_LEVEL` if both sides have one, else `VERSION_ID`, but neither
+is compared under `_any`; and `ARCHITECTURE`, if it's set. `IMAGE_ID` and `IMAGE_VERSION` aren't
+matched, they only say which image it is. So ours is matched on `ID=_any` and `ARCHITECTURE=arm64`
+only, and cc-launch refuses to start from an image without both.
+
 SteamOS has no `SYSEXT_LEVEL`, so with `ID=steamos` systemd matches `VERSION_ID` exactly, and that
 moves every few days (0.3.0 on Oct 3, 0.4.5 on Oct 7). I stamped it that way first, expecting it to
 last through a release line, and an image stamped 0.3.0 was silently ignored on 0.4.5. So the image is
@@ -326,56 +332,47 @@ and cc-install checks it against a key compiled into cc-install.
 
 ### Updates without a password after that
 
-The image can ship its own polkit action, `/usr/share/polkit-1/actions/org.controlcenter.update.policy`,
-with `allow_active=yes` for one root helper, `/usr/lib/command-center/cc-sysext-update`. That's the same
-pattern as Valve's `steamos-update`. The helper downloads only from our release URL, checks the
-signature, writes the new image to a temp file, then renames it into place. After the first install,
-updates don't need the password.
+`cc-home update` updates the image with no password, from the latest release. It asks polkit to
+run `/usr/lib/command-center/cc-sysext-update` (action `org.controlcenter.update`, in the image at
+`/usr/share/polkit-1/actions/org.controlcenter.update.policy`), which is allowed for the user at
+the device only: `allow_active=yes`, `allow_inactive` and `allow_any` no. That's the same pattern
+as Valve's `steamos-update`. The helper is cc-home under another name (static, no libraries), and
+as root it does one thing, in this order (`crates/cc-home/src/update.rs`):
 
-Applying an update works like this:
+1. Its work directory, `/var/lib/command-center/update`: root's, 0700, a real directory and not a
+   symlink, emptied first; anything in it that isn't a plain file stops the update.
+2. `SHA256SUMS` and `SHA256SUMS.sig` from the release URL, which is fixed in the helper. curl only
+   speaks HTTPS, also on redirects, with a time limit and a size cap on each file.
+3. `gpgv --keyring /usr/lib/command-center/release-key.gpg` checks the signature. That keyring
+   is our release key, the public half of `packaging/command-center.asc`, put in the image by
+   build.sh; no system keyring is used or touched. Nothing in SHA256SUMS counts before this passes.
+4. The one `command-center_<version>.raw` the signed list names (letters, digits and `._+~-`
+   only, so never a path), downloaded the same way and checked against its SHA-256.
+5. Then `systemd-sysupdate --component=command-center --verify=no update` copies it into
+   `/var/lib/extensions/command-center.raw.v/`, with the transfer file in
+   `/usr/lib/sysupdate.command-center.d/50-command-center.transfer` (source: the work directory,
+   `InstancesMax=2`). `--verify=no` because steps 3 and 4 did the checking. A plain
+   `command-center.raw` from the first install is removed once the `.raw.v/` directory exists.
+6. `systemd-sysext refresh` only if the Desktop isn't running (its lock in `/run/user/<uid>`, for
+   the user pkexec says asked). Otherwise the new image is loaded at the next boot, or by running
+   `cc-home update` again with the Desktop closed. It never stops a running Desktop.
 
-- `systemd-sysext refresh` right away if the Desktop isn't running (`cc-desktop` inactive). Per
-  "don't restart a closed Desktop", it never stops a running Desktop to do it.
-- Otherwise it waits for the next boot. `systemd-sysext.service` merges whatever's in
-  `/var/lib/extensions` at boot.
-- The driver updates on the next SteamVR start either way.
+The helper takes no arguments and reads no paths from anywhere, and every program it runs is
+called by its full path with an empty environment. Signing a release stays a step done by hand,
+with the key's secret half, which nothing here touches: each release needs `SHA256SUMS.sig`, a
+detached signature over `SHA256SUMS` made with that key.
 
-### systemd-sysupdate, natively
+Still to try on the Frame: the `.raw.v/` directory (sysext picks the newest version inside it,
+"vpick", since systemd 256); the transfer from a local directory; and the polkit prompt not
+appearing for the user at the device.
 
-It can do the whole download step, and I'd like it as phase 2. The transfer file ships inside the
-image as its own component, so removing the image removes it too:
+### When the image isn't loaded
 
-```
-# /usr/lib/sysupdate.command-center.d/50-command-center.transfer
-[Transfer]
-Verify=yes
-
-[Source]
-Type=url-file
-Path=https://github.com/nomadsgalaxy/Command-Center/releases/latest/download/
-MatchPattern=command-center_@v.raw
-
-[Target]
-Type=regular-file
-Path=/var/lib/extensions/command-center.raw.v/
-MatchPattern=command-center_@v.raw
-InstancesMax=2
-```
-
-Run it with `/usr/lib/systemd/systemd-sysupdate --component=command-center update`, from the helper or
-a timer. Here's what I found:
-
-- **GitHub's `releases/latest/download/`** works as the source, since sysupdate only needs a
-  `SHA256SUMS` next to the files, and that already exists. Each release just has to list its own `.raw`.
-- **Two versions can't sit loose in `/var/lib/extensions`,** because sysext would merge both. The
-  `.raw.v/` directory solves that: since systemd 256, sysext picks the newest version inside it
-  ("vpick"). **I haven't tried that on the Frame yet.** It's the first thing to test, and plain
-  `command-center.raw` replaced by the helper works without it.
-- **`Verify=yes` checks `SHA256SUMS.gpg`** against `/etc/systemd/import-pubring.gpg`, falling back to
-  `/usr/lib/systemd/import-pubring.gpg`. That's one keyring shared with `systemd-pull` and importd.
-  Ours would have to go in `/etc` (plus a keep-list line) or shadow the `/usr/lib` one from inside the
-  image. Neither is lovely. Nothing on SteamOS uses that keyring today, but I'd still rather verify in
-  our helper, which is why the helper is phase 1.
+If the image is in `/var/lib/extensions` but systemd-sysext didn't load it, nothing of Command
+Center is there to run, the launcher tile included, so it can't say so itself. The installer
+(cc-install, which runs from its own download) checks for that and says how to load it:
+`sudo systemd-sysext refresh`, or a restart. When the image is loaded, `cc-home desktop`
+(cc-launch) checks that its extension-release file is ours before it starts anything.
 
 ### Uninstall
 

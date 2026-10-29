@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Command Center's image updates without a password, for the user at the device only
+     (crates/cc-home/src/update.rs). The helper takes no arguments. -->
+<policyconfig>
+  <vendor>Command Center</vendor>
+  <action id="org.controlcenter.update">
+    <description>Update Command Center's system image</description>
+    <message>Command Center wants to install its latest signed release</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/command-center/cc-sysext-update</annotate>
+  </action>
+</policyconfig>
