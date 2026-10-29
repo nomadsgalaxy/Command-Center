@@ -9,11 +9,14 @@
 //! 3. `gpgv` checks the signature against our release key, pinned in the image
 //!    (/usr/lib/command-center/release-key.gpg, from packaging/command-center.asc). No shared
 //!    keyring is used or touched. Nothing in SHA256SUMS is trusted before this passes.
-//! 4. The one `command-center_<version>.raw` SHA256SUMS lists (a strict name, no paths), fetched
-//!    the same way, and its SHA-256 checked against the signed list.
+//! 4. The one `command-center_<version>.raw` SHA256SUMS lists (a strict name, no paths). Already
+//!    in .raw.v and loaded: it stops, up to date. In .raw.v but not loaded (the Desktop was open
+//!    last time): straight to 6. Otherwise fetched the same way, and its SHA-256 checked against
+//!    the signed list.
 //! 5. Only then `systemd-sysupdate --component=command-center --verify=no update`, which copies it
 //!    from the work directory into /var/lib/extensions/command-center.raw.v/ (the transfer file in
-//!    /usr/lib/sysupdate.command-center.d/). --verify=no because the checking is done above.
+//!    /usr/lib/sysupdate.command-center.d/). --verify=no because the checking is done above. The
+//!    work directory is emptied after, since sysupdate copies.
 //! 6. `systemd-sysext refresh` only with the Desktop's lock (tab.rs) taken and held across the
 //!    check and the refresh, so a Desktop starting meanwhile waits for it, and with nothing else
 //!    running from the image. Otherwise the new image is merged at the next boot or the next update
@@ -71,6 +74,10 @@ trait Ops {
     /// sysupdate, then (only if it exited 0 and `name` is now in the .raw.v directory) the first
     /// install's plain command-center.raw out of the way.
     fn sysupdate(&mut self, name: &str) -> Result<(), String>;
+    /// `name` is already a plain file in the .raw.v directory.
+    fn installed(&self, name: &str) -> bool;
+    /// The IMAGE_VERSION of the image that's merged now, if ours is.
+    fn loaded(&self) -> Option<String>;
     /// Takes the Desktop's lock and holds it until `release`, so a Desktop that starts meanwhile
     /// waits for it. False if a Desktop holds it, or who asked isn't known.
     fn claim(&mut self) -> bool;
@@ -150,11 +157,16 @@ fn run(o: &mut impl Ops, dir: &Path) -> Result<String, String> {
     o.verify_signature().map_err(|e| format!("the release's signature doesn't check out ({e}), so nothing's installed"))?;
     let sums = fs::read_to_string(dir.join("SHA256SUMS")).map_err(|e| format!("SHA256SUMS: {e}"))?;
     let (name, hash) = image_entry(&sums).ok_or("the signed SHA256SUMS doesn't list exactly one command-center_<version>.raw, so nothing's installed")?;
-    o.fetch(&name, IMAGE_MAX, IMAGE_SECS)?;
-    if !hash_ok(&dir.join(&name), &hash)? {
-        return Err(format!("{name} doesn't match its signed hash, so it isn't installed"));
-    }
-    o.sysupdate(&name)?;
+    let version = name.strip_prefix("command-center_").and_then(|v| v.strip_suffix(".raw")).unwrap_or_default();
+    if !o.installed(&name) {
+        o.fetch(&name, IMAGE_MAX, IMAGE_SECS)?;
+        if !hash_ok(&dir.join(&name), &hash)? {
+            return Err(format!("{name} doesn't match its signed hash, so it isn't installed"));
+        }
+        o.sysupdate(&name)?;
+    } else if o.loaded().as_deref() == Some(version) {
+        return Ok(format!("{name} is already installed and loaded: Command Center is up to date"));
+    } // else an earlier run installed it but couldn't load it then, so this only loads it
     let later = format!("{name} is installed; it's loaded at the next boot, or run cc-home update again with the Desktop closed");
     if !o.claim() {
         return Ok(later);
@@ -196,19 +208,20 @@ fn image_in_use(proc: &Path, ours: &[u32]) -> bool {
     dir.flatten().filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok()).filter(|p| !ours.contains(p)).any(|p| fs::read_link(proc.join(format!("{p}/exe"))).is_ok_and(|x| from_image(&x)))
 }
 
-/// This process and its parents, up to init: pkexec, and the `cc-home update` that ran it.
+/// The processes running this update: this helper, the pkexec that started it, and the
+/// `cc-home update` that ran pkexec, if its parent is cc-home. Nothing further up, so a cc-box from
+/// the image above the terminal still counts as in use.
 fn ancestors(proc: &Path, me: u32) -> Vec<u32> {
-    let mut out = vec![me];
-    let mut p = me;
-    for _ in 0..16 {
-        let Ok(stat) = fs::read_to_string(proc.join(format!("{p}/stat"))) else { break };
+    let parent = |p: u32| {
+        let stat = fs::read_to_string(proc.join(format!("{p}/stat"))).ok()?;
         // after the last ')', so a program name with spaces or brackets can't move the fields
-        let Some(ppid) = stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(1)?.parse::<u32>().ok()) else { break };
-        if ppid <= 1 {
-            break;
-        }
-        out.push(ppid);
-        p = ppid;
+        stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(1)?.parse::<u32>().ok()).filter(|&pp| pp > 1)
+    };
+    let cc_home = |p: u32| fs::read_link(proc.join(format!("{p}/exe"))).is_ok_and(|x| from_image(&x) && x.file_name() == Some("cc-home".as_ref()));
+    let mut out = vec![me];
+    if let Some(pkexec) = parent(me) {
+        out.push(pkexec);
+        out.extend(parent(pkexec).filter(|&h| cc_home(h)));
     }
     out
 }
@@ -328,6 +341,7 @@ impl Ops for Live {
 
     fn sysupdate(&mut self, name: &str) -> Result<(), String> {
         ran(tool("/usr/lib/systemd/systemd-sysupdate").args(["--component=command-center", "--verify=no", "update"]), "systemd-sysupdate")?;
+        prepare(&self.dir, 0)?; // sysupdate copied the verified image, so its download can go
         // The first install put a plain command-center.raw in place, and the .raw.v directory
         // supersedes it, but only once this version is really in there.
         let ext = Path::new(EXTENSIONS);
@@ -336,6 +350,15 @@ impl Ops for Live {
             fs::remove_file(&plain).map_err(|e| format!("{}: {e}", plain.display()))?;
         }
         Ok(())
+    }
+
+    fn installed(&self, name: &str) -> bool {
+        fs::symlink_metadata(Path::new(EXTENSIONS).join("command-center.raw.v").join(name)).is_ok_and(|m| m.file_type().is_file())
+    }
+
+    fn loaded(&self) -> Option<String> {
+        let text = fs::read_to_string("/usr/lib/extension-release.d/extension-release.command-center").ok()?;
+        text.lines().find_map(|l| l.strip_prefix("IMAGE_VERSION=")).map(|v| v.trim_matches('"').to_string())
     }
 
     fn claim(&mut self) -> bool {
@@ -441,6 +464,8 @@ mod tests {
         sums: String,
         policy: Option<Vec<u8>>,
         new_policy: Option<Vec<u8>>, // what the refresh merges
+        installed: bool,             // this version's already in .raw.v
+        loaded: Option<String>,      // the merged image's version
     }
 
     impl Ops for Fake<'_> {
@@ -460,6 +485,12 @@ mod tests {
         fn sysupdate(&mut self, _name: &str) -> Result<(), String> {
             self.steps.push("sysupdate".into());
             Ok(())
+        }
+        fn installed(&self, _name: &str) -> bool {
+            self.installed
+        }
+        fn loaded(&self) -> Option<String> {
+            self.loaded.clone()
         }
         fn claim(&mut self) -> bool {
             self.steps.push("claim".into());
@@ -499,7 +530,7 @@ mod tests {
     fn fake(dir: &Path) -> Fake<'_> {
         let image = b"an image".to_vec();
         let sums = format!("{}  command-center_0.9.1.raw\n{}  cc-host.tar.gz\n", sha(&image), sha(b"other"));
-        Fake { dir, steps: vec![], bad_sig: false, image, desktop: false, tab: false, sums, policy: Some(b"v1".to_vec()), new_policy: Some(b"v1".to_vec()) }
+        Fake { dir, steps: vec![], bad_sig: false, image, desktop: false, tab: false, sums, policy: Some(b"v1".to_vec()), new_policy: Some(b"v1".to_vec()), installed: false, loaded: None }
     }
 
     #[test]
@@ -553,6 +584,22 @@ mod tests {
             let i = f.steps.iter().position(|s| s == "refresh").unwrap();
             assert_eq!(f.steps[i + 1] == "restart polkit", restarts, "{before:?} to {after:?}");
         }
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_version_thats_already_in_place_isnt_downloaded_again() {
+        let d = scratch("same");
+        prepare(&d, unsafe { libc::geteuid() }).unwrap();
+        let mut f = fake(&d);
+        (f.installed, f.loaded) = (true, Some("0.9.1".into()));
+        assert!(run(&mut f, &d).unwrap().contains("up to date"));
+        assert_eq!(f.steps, ["fetch SHA256SUMS", "fetch SHA256SUMS.sig", "verify"], "no image, no claim, no refresh");
+        // installed by an earlier run with the Desktop open, so not loaded yet: only the loading's left
+        let mut f = fake(&d);
+        (f.installed, f.loaded) = (true, Some("0.9.0".into()));
+        assert!(run(&mut f, &d).unwrap().contains("installed and loaded"));
+        assert_eq!(f.steps, ["fetch SHA256SUMS", "fetch SHA256SUMS.sig", "verify", "claim", "refresh", "release"]);
         let _ = fs::remove_dir_all(&d);
     }
 
@@ -632,6 +679,22 @@ mod tests {
         assert!(!image_in_use(&proc, &ours), "only us and who started us");
         pid(30, "/usr/lib/command-center/target/release/cc-panels", 1); // the dashboard tab
         assert!(image_in_use(&proc, &ours), "the tab runs from the image");
+        let _ = fs::remove_dir_all(&proc);
+        // a terminal opened from a cc-box (cc-home, from the image), and cc-home update in it
+        pid(10, "/usr/lib/command-center/cc-sysext-update", 9);
+        pid(9, "/usr/bin/pkexec", 8);
+        pid(8, "/usr/lib/command-center/cc-home", 7);
+        pid(7, "/usr/bin/bash", 6);
+        pid(6, "/usr/lib/command-center/cc-home", 1); // the cc-box
+        let ours = ancestors(&proc, 10);
+        assert_eq!(ours, [10, 9, 8], "only who's running the update");
+        assert!(image_in_use(&proc, &ours), "the cc-box above it still runs from the image");
+        // pkexec started from something else: its parent isn't ours to skip
+        let _ = fs::remove_dir_all(&proc);
+        pid(10, "/usr/lib/command-center/cc-sysext-update", 9);
+        pid(9, "/usr/bin/pkexec", 8);
+        pid(8, "/usr/bin/bash", 1);
+        assert_eq!(ancestors(&proc, 10), [10, 9]);
         assert!(from_image(Path::new("/usr/bin/cc-home")) && !from_image(Path::new("/usr/bin/curl")));
         let _ = fs::remove_dir_all(&proc);
     }

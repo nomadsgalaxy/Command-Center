@@ -335,8 +335,12 @@ unregisters the vrpathreg driver, removes the `~/.local/bin` links and the per-u
 overrides, and leaves `~/.config/control-center` alone.
 
 **Signing:** the image runs as root, so a SHA256SUMS file from the same release isn't enough, since
-anyone who can edit the release can edit both. Releases get a detached signature (`SHA256SUMS.gpg`),
-and cc-install checks it against a key compiled into cc-install.
+anyone who can edit the release can edit both. Releases get a detached signature, `SHA256SUMS.sig`
+(release.yml makes it with `gpg --detach-sign`), and the update helper checks it with `gpgv`
+against `/usr/lib/command-center/release-key.gpg`, the public half of `packaging/command-center.asc`
+that build.sh puts in the image. That one name and that one key are used everywhere. The `install`
+script and cc-install don't check the signature yet: they only check what they download against
+`SHA256SUMS`, so for the first install the signature isn't checked by anything.
 
 ### Updates without a password after that
 
@@ -356,17 +360,22 @@ root under pkexec cc-home refuses to be anything else), and as root it does one 
    is our release key, the public half of `packaging/command-center.asc`, put in the image by
    build.sh; no system keyring is used or touched. Nothing in SHA256SUMS counts before this passes.
 4. The one `command-center_<version>.raw` the signed list names (letters, digits and `._+~-`
-   only, so never a path), downloaded the same way and checked against its SHA-256.
+   only, so never a path). If that version's already a file in `command-center.raw.v/` and it's
+   the one loaded, the helper stops there: "Command Center is up to date". If it's there but not
+   loaded (an earlier run found the Desktop open), it skips to step 6. Otherwise it's downloaded
+   the same way and checked against its SHA-256.
 5. Then `systemd-sysupdate --component=command-center --verify=no update` copies it into
    `/var/lib/extensions/command-center.raw.v/`, with the transfer file in
    `/usr/lib/sysupdate.command-center.d/50-command-center.transfer` (source: the work directory,
    `InstancesMax=2`). `--verify=no` because steps 3 and 4 did the checking. A plain
-   `command-center.raw` from the first install is removed once the `.raw.v/` directory exists.
+   `command-center.raw` from the first install is removed once this version is in `.raw.v/`. sysupdate
+   copies the image, so the work directory is emptied after it.
 6. `systemd-sysext refresh` only with the Desktop's lock taken (`/run/user/<uid>`, for the user
    pkexec says asked; exclusive, never waiting) and held across the check and the refresh, so a
    Desktop that starts meanwhile waits for it, and only if no other process's program is under
    `/usr/lib/command-center` or a `/usr/bin/cc-*` (the dashboard tab's runs with the Desktop
-   closed), apart from the helper and the `cc-home update` that started it. Otherwise the new image
+   closed), apart from the helper, its pkexec and the `cc-home update` that ran pkexec. Nothing
+   further up is skipped, so a cc-box from the image above the terminal counts. Otherwise the new image
    is loaded at the next boot, or by running `cc-home update` again once those have closed. It never
    stops anything. One gap is left: SteamVR starting the dashboard tab's process in the few
    milliseconds between the check and the refresh, since the tab doesn't take that lock.
@@ -414,6 +423,9 @@ Still to do with a real image: one full `cc-home update` from a signed release.
   (`cd / && sudo systemd-sysext refresh`). The helper and cc-install's hint already do.
 - **`cc-home update` asks for a password:** polkitd hasn't read the action yet. Run
   `sudo systemctl try-restart polkit.service` once, or restart the Frame.
+- **Going back to the previous version:** `InstancesMax=2` keeps the one before. Remove the newest
+  file in `/var/lib/extensions/command-center.raw.v/`, then `cd / && sudo systemd-sysext refresh`.
+  The next `cc-home update` installs the newest release again.
 
 ### When the image isn't loaded
 
