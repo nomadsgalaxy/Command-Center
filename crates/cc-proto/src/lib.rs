@@ -8,5 +8,6 @@ pub mod conf;
 pub mod imu;
 pub mod lan;
 pub mod pair;
+pub mod paths;
 pub mod server;
 pub use spake2;

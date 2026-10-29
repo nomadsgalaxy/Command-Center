@@ -150,7 +150,9 @@ root. When this file and the code disagree, the code wins, and this file should 
   Frame key, `trusted`. `server.rs`: the host half of the login. `pair.rs`: SPAKE2 pairing
   (`frame_pair`, `host_one`). `lan.rs`: the host's route-source address and the private-address check. `conf.rs`: viewers.conf editing, `write_pairing`, unpairing,
   home.json (`read_home`, `write_home`), workspaces (`choose_workspace`, `load_workspace`,
-  `TEMPORARY`), a Python-compatible `Json`.
+  `TEMPORARY`), a Python-compatible `Json`. `paths.rs`: `home_dir`, `config`, `conf_dir` and
+  `cache`, the folders by `$HOME` (never `$XDG_CONFIG_HOME`, which the Desktop session points
+  elsewhere), used by cc-home and cc-panels alike.
 - `cc-scan/src`: `camera.rs` (/dev/video99, the VR mirror), `aruco.rs` + `contours.rs` +
   `image.rs` + `dict.rs` (OpenCV's detector, ported pixel-exact), `pattern.rs` (tag layouts),
   `solve.rs` (camera intrinsics and monitor poses), `lag.rs`, `hud.rs` (drawn here, shown by

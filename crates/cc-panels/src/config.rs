@@ -4,13 +4,8 @@
 use crate::geometry::Pose;
 use cc_proto::conf::{self, Json};
 
-pub fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_else(|_| ".".into())
-}
-
-pub fn config(name: &str) -> String {
-    format!("{}/.config/control-center/{name}", home_dir())
-}
+// Where the files are, by HOME (cc_proto::paths, shared with cc-home).
+pub use cc_proto::paths::{cache, config, home_dir};
 
 /// One remote monitor: `<name> <user>@<host>:<port> <screen> <w>x<h> [curve=h|v|flat] [autoconnect=yes|no] ...`.
 #[derive(Clone, Debug, Default)]
@@ -186,11 +181,6 @@ fn migrate(mut json: serde_json::Value) -> serde_json::Value {
 
 fn write_home(json: &serde_json::Value) -> std::io::Result<()> {
     write_json(&config("home.json"), json)
-}
-
-/// ~/.cache/control-center/<name>
-pub fn cache(name: &str) -> String {
-    format!("{}/.cache/control-center/{name}", home_dir())
 }
 
 /// Writes the whole file or nothing, so a crash mid-write never leaves half a file.

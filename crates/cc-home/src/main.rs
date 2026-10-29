@@ -23,20 +23,11 @@ mod steamos;
 use cc_proto::conf::{self, Json, Viewer, py_round};
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
-use std::path::PathBuf;
+
 use std::sync::OnceLock;
 
-pub fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_else(|_| ".".into())
-}
-
-pub fn cache(name: &str) -> String {
-    format!("{}/.cache/control-center/{name}", home_dir())
-}
-
-fn conf_dir() -> PathBuf {
-    PathBuf::from(home_dir()).join(".config/control-center")
-}
+// Where the files are, by HOME (cc_proto::paths, shared with cc-panels).
+pub use cc_proto::paths::{cache, conf_dir, home_dir};
 
 /// Same as Python's SystemExit(msg): the message on stderr, then exit 1.
 fn die(msg: impl std::fmt::Display) -> ! {
