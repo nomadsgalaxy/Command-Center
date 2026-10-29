@@ -239,7 +239,7 @@ pub fn state(key: &str, v: Value) {
 /// `state`, but only when it's changed since `key`'s last line (the taskbar's, made every frame).
 pub fn changed(key: &str, v: Value) {
     static LAST: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
-    let mut last = LAST.lock().unwrap();
+    let mut last = crate::ffi::lock(&LAST);
     if last.iter().any(|(k, l)| k == key && *l == v) {
         return;
     }
