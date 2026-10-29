@@ -5,9 +5,10 @@
 //! keeps the grip for switching a controller between gamepad and hands. What the trigger does depends on where:
 //!   - the bar or an edge of the card: the panel rides rigidly on that device until you let
 //!     go, and the joystick (or the wheel) pushes it away or pulls it closer;
-//!   - the curve button beside the bar: while held, the point you took rides on the device.
-//!     Pull it toward you to bend the panel, push it back to flatten it. The joystick or
-//!     wheel bends it too, 3 cm a notch;
+//!   - the curve button beside the bar: a tap flips the panel between flat and curved round you
+//!     (SteamVR's "Toggle Curvature"). Held, the point you took rides on the device: pull it
+//!     toward you to bend the panel, push it back to flatten it. The joystick or wheel bends it
+//!     too, 3 cm a notch;
 //!   - the button left of the bar, on an aligned monitor that got moved off its aligned place
 //!     (say you pulled it closer to read it): puts it back. After a relocalization those places
 //!     moved with the room, so it aligns that monitor again instead;
@@ -839,6 +840,20 @@ struct Drag {
     mode: Mode,
     lost: Option<Instant>,
     streak: Option<Streak>, // the push or pull going on, for its speed-up
+    since: Instant,         // when it started, to tell a tap on the curve button from a pull
+    bent0: f64,             // ...and how bent the panel was then (its sagitta, metres)
+}
+
+/// A press on the curve button let go this soon, having bent it this little (metres of sagitta),
+/// is a tap: it flips the panel between flat and curved (`toggled`) instead.
+const TAP: Duration = Duration::from_millis(350);
+const TAP_BEND: f64 = 0.005;
+
+/// The curve a tap on the curve button gives a panel `width` wide, `dist` from the eye: curved
+/// means a circle round you at that distance (SteamVR's "Toggle Curvature"), never tighter than a
+/// half circle; curved means flat again.
+fn toggled(width: f64, curve: f64, dist: f64) -> f64 {
+    if curve > 0.0 { 0.0 } else { dist.max(crate::geometry::least_radius(width)) }
 }
 
 /// Notches that keep coming the same way: since when, the last one, and which way (out is away).
@@ -903,6 +918,7 @@ pub struct Grab {
     scanned_read: Option<Instant>,
     stale: Vec<Option<Pose>>,  // those places as of the last relocalization; if they're still the same, they moved with the room
     aligns: Vec<usize>,        // align buttons pressed after a relocalization, for machines.rs
+    taps: Vec<usize>,          // the curve button tapped (not pulled), for flip_curves
     keyboards: Vec<usize>,     // keyboard buttons pressed, for osk.rs
     backs: crate::back::Backs, // panels turned away from you show their backs (back.rs)
     pub game: bool,            // a VR game is running (the taskbar knows), so no backs
@@ -1093,6 +1109,7 @@ impl Grab {
             scanned_read: None,
             stale: Vec::new(),
             aligns: Vec::new(),
+            taps: Vec::new(),
             keyboards: Vec::new(),
             backs: Default::default(),
             game: false,
@@ -1383,13 +1400,28 @@ impl Grab {
             Mode::Zoom { .. } => "zoomed",
             Mode::Move { .. } => "carried",
         };
-        self.drags[i] = Some(Drag { dev, mode, lost: None, streak: None });
+        self.drags[i] = Some(Drag { dev, mode, lost: None, streak: None, since: Instant::now(), bent0: sagitta(pl.width, pl.curve) });
         eprintln!("{}: {what} by device {dev}", self.owner(i).map_or("", |o| o.name));
     }
 
     /// Letting go: the panel stays where it is and its new place is saved into "home".
     fn end(&mut self, i: usize, k: &Kvm) {
-        if self.drags[i].take().is_some() {
+        let Some(d) = self.drags[i].take() else { return };
+        if let Mode::Curve { .. } = d.mode {
+            let pl = self.at(i, k);
+            if d.since.elapsed() < TAP && (sagitta(pl.width, pl.curve) - d.bent0).abs() < TAP_BEND {
+                return self.taps.push(i); // update() flips it, and saves it then
+            }
+        }
+        self.save(i, k);
+    }
+
+    /// The curve button's taps since the last frame: each flips its panel flat or curved.
+    fn flip_curves(&mut self, k: &mut Kvm, s: &mut impl Stage) {
+        for i in std::mem::take(&mut self.taps) {
+            let pl = self.at(i, k);
+            let curve = toggled(pl.width, pl.curve, norm(&[0, 1, 2].map(|r| pl.c[r] - s.head()[r])));
+            self.put(i, k, s, &pl.matrix(), pl.width, None, curve);
             self.save(i, k);
         }
     }
@@ -1541,6 +1573,7 @@ impl Grab {
     /// laser, then the bar and card follow their panel, fade, and take their look.
     pub fn update(&mut self, k: &mut Kvm) {
         let now = Instant::now();
+        self.flip_curves(k, &mut Live);
         self.carry(k, &mut Live, now);
         self.refresh(k, now);
     }
@@ -2596,6 +2629,31 @@ mod tests {
             let n = k.place[0];
             assert!(n.width > 2.0 && (n.height / n.width - 0.5625).abs() < 1e-6, "{} x {}", n.width, n.height);
             assert!(far(&p.c, &n.c) < 1e-4, "the centre didn't move");
+        }
+
+        #[test]
+        fn a_tap_on_the_curve_button_flips_it_curved_round_you_and_flat_again() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, EYE, p.c);
+            g.start(0, Part::Knob, HAND, &k, &f);
+            g.end_by(HAND, &k);
+            g.flip_curves(&mut k, &mut f);
+            let dist = far(&p.c, &f.head);
+            assert!((k.place[0].curve - dist).abs() < 1e-9, "curved round the eye: {} for {dist}", k.place[0].curve);
+            assert_eq!(f.writes.curvature_of(f.overlay(0)), Some(bend(k.place[0].width, dist)));
+            g.start(0, Part::Knob, HAND, &k, &f);
+            g.end_by(HAND, &k);
+            g.flip_curves(&mut k, &mut f);
+            assert_eq!(k.place[0].curve, 0.0, "and flat again");
+            // a held press that bent it isn't a tap
+            g.start(0, Part::Knob, HAND, &k, &f);
+            g.scroll(0, 2.0, &mut k, &mut f); // 6 cm of bend on the wheel
+            g.carry(&mut k, &mut f, Instant::now());
+            g.end_by(HAND, &k);
+            g.flip_curves(&mut k, &mut f);
+            assert!(k.place[0].curve > 0.0 && (k.place[0].curve - dist).abs() > 1e-3, "the pull's own curve: {}", k.place[0].curve);
+            assert_eq!(toggled(4.0, 0.0, 1.0), 4.0 / std::f64::consts::PI, "never past a half circle");
         }
 
         #[test]
