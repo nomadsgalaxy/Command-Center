@@ -370,9 +370,29 @@ called by its full path with an empty environment. Signing a release stays a ste
 with the key's secret half, which nothing here touches: each release needs `SHA256SUMS.sig`, a
 detached signature over `SHA256SUMS` made with that key.
 
-Still to try on the Frame: the `.raw.v/` directory (sysext picks the newest version inside it,
-"vpick", since systemd 256); the transfer from a local directory; and the polkit prompt not
-appearing for the user at the device.
+Tried on the Frame (systemd 257, as the steamos user against a scratch `--root`): the transfer
+from a local directory works, and `update` with no version installs nothing older than the newest
+installed ("No update needed."). Still to try, with a real image, as root (Anthony's call):
+
+1. vpick. Build two images, `command-center_1.raw` and `command-center_2.raw` (packaging/sysext/build.sh,
+   with `IMAGE_VERSION` set to 1 and 2). Then:
+   ```
+   sudo mkdir -p /var/lib/extensions/command-center.raw.v
+   sudo cp command-center_1.raw /var/lib/extensions/command-center.raw.v/
+   sudo systemd-sysext refresh && systemd-sysext status    # command-center, version 1
+   grep IMAGE_VERSION /usr/lib/extension-release.d/extension-release.command-center
+   sudo cp command-center_2.raw /var/lib/extensions/command-center.raw.v/
+   sudo systemd-sysext refresh && systemd-sysext status    # now version 2: the newest wins
+   grep IMAGE_VERSION /usr/lib/extension-release.d/extension-release.command-center
+   ```
+   If it stays on 1, or merges neither, the `.raw.v/` layout doesn't work here and the helper has to
+   replace a plain `command-center.raw` instead.
+2. polkit for the user at the device. With the image merged, from the headset's own session:
+   ```
+   pkcheck --action-id org.controlcenter.update --process $$ && echo allowed
+   cc-home update      # no password prompt; "… is installed …" or a refusal saying why
+   ```
+   and from an SSH session (not active at the device), `pkcheck` must say not authorized.
 
 ### When the image isn't loaded
 

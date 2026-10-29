@@ -160,6 +160,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_starting_desktop_waits_for_the_lock_instead_of_giving_up() {
+        let dir = std::env::temp_dir().join(format!("cc-tab-wait-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("control-center-desktop.lock");
+        let held = hold(&path).unwrap(); // the update helper, mid-refresh
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = path.clone();
+        std::thread::spawn(move || tx.send(hold(&p).is_ok()).unwrap());
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "it's waiting, not starting and not giving up");
+        drop(held);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(true), "and it starts once the lock is free");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn the_desktops_lock_says_whether_it_runs() {
         let dir = std::env::temp_dir().join(format!("cc-tab-lock-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

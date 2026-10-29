@@ -20,6 +20,12 @@
 //!    with those closed. What this can't cover: SteamVR starting the dashboard tab's process in the
 //!    few milliseconds between the check and the refresh (the tab doesn't take that lock).
 //!
+//! The image ships no scripts that run as processes: session/cc-launch and the rest are links to
+//! cc-home, and the .js files are KWin's scripts, read by KWin. So a program running from the
+//! image is always a process whose exe is in it (image_in_use); SteamVR maps our driver from the
+//! image's /opt part, which keeps the old file until SteamVR restarts. A second helper waits for
+//! nothing: it stops with "an update is already running" (RUN_LOCK).
+//!
 //! It takes no arguments, reads no paths from anywhere, follows no symlink it makes or empties,
 //! and runs every program by its full path with an empty environment. It's a copy of cc-home
 //! (not a link, so polkit's exec.path matches it and its name is its own), and as root under
@@ -36,6 +42,8 @@ use std::process::Command;
 
 const RELEASES: &str = "https://github.com/nomadsgalaxy/Command-Center/releases/latest/download";
 const WORK: &str = "/var/lib/command-center/update";
+/// One helper at a time: held for the whole run, so a second can't empty the first's downloads.
+const RUN_LOCK: &str = "/var/lib/command-center/update.lock";
 const KEYRING: &str = "/usr/lib/command-center/release-key.gpg";
 const HELPER: &str = "/usr/lib/command-center/cc-sysext-update";
 const EXTENSIONS: &str = "/var/lib/extensions";
@@ -53,7 +61,9 @@ trait Ops {
     fn fetch(&mut self, name: &str, max: u64, secs: u64) -> Result<(), String>;
     /// gpgv on SHA256SUMS.sig and SHA256SUMS in the work directory.
     fn verify_signature(&mut self) -> Result<(), String>;
-    fn sysupdate(&mut self) -> Result<(), String>;
+    /// sysupdate, then (only if it exited 0 and `name` is now in the .raw.v directory) the first
+    /// install's plain command-center.raw out of the way.
+    fn sysupdate(&mut self, name: &str) -> Result<(), String>;
     /// Takes the Desktop's lock and holds it until `release`, so a Desktop that starts meanwhile
     /// waits for it. False if a Desktop holds it, or who asked isn't known.
     fn claim(&mut self) -> bool;
@@ -133,7 +143,7 @@ fn run(o: &mut impl Ops, dir: &Path) -> Result<String, String> {
     if !hash_ok(&dir.join(&name), &hash)? {
         return Err(format!("{name} doesn't match its signed hash, so it isn't installed"));
     }
-    o.sysupdate()?;
+    o.sysupdate(&name)?;
     let later = format!("{name} is installed; it's loaded at the next boot, or run cc-home update again with the Desktop closed");
     if !o.claim() {
         return Ok(later);
@@ -142,6 +152,13 @@ fn run(o: &mut impl Ops, dir: &Path) -> Result<String, String> {
     let r = if o.in_use() { Ok(later) } else { o.refresh().map(|_| format!("{name} is installed and loaded")) };
     o.release();
     r
+}
+
+/// Whether the first install's plain image in `ext` can go: it's a plain file, and `name` (the
+/// version just verified and installed) is a plain file in command-center.raw.v.
+fn plain_goes(ext: &Path, name: &str) -> bool {
+    let file = |p: PathBuf| fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file());
+    file(ext.join("command-center.raw")) && file(ext.join("command-center.raw.v").join(name))
 }
 
 /// What a process running as root under pkexec may be: only the helper, by its own name. If
@@ -178,6 +195,58 @@ fn ancestors(proc: &Path, me: u32) -> Vec<u32> {
         p = ppid;
     }
     out
+}
+
+/// Takes the Desktop's lock at `path`, for user `uid`, without ever waiting: None if a Desktop
+/// holds it or the path isn't a plain file. It's root in the user's runtime directory, so the last
+/// part is never followed if it's a symlink, and the open never blocks (a FIFO planted there would
+/// otherwise hang it); then it has to be a plain file. One that isn't there yet is made, theirs,
+/// 0600, so their Desktop can still take it.
+fn claim_at(path: &Path, uid: u32) -> Option<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let flags = libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;
+    let opened = fs::OpenOptions::new().read(true).custom_flags(flags).open(path).or_else(|e| {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e);
+        }
+        let f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(flags).open(path)?;
+        if unsafe { libc::fchown(std::os::fd::AsRawFd::as_raw_fd(&f), uid, u32::MAX) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(f)
+    });
+    let f = opened.ok()?;
+    if !f.metadata().is_ok_and(|m| m.file_type().is_file()) {
+        return None;
+    }
+    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&f), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return None; // a Desktop has it
+    }
+    Some(f)
+}
+
+/// The helper's own lock at `path` (root's, never a symlink), held while it runs. Err if another
+/// helper holds it.
+fn exclusive(path: &Path) -> Result<fs::File, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(parent) = path.parent() {
+        std::os::unix::fs::DirBuilderExt::mode(fs::DirBuilder::new().recursive(true), 0o755).create(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if !f.metadata().is_ok_and(|m| m.file_type().is_file()) {
+        return Err(format!("{} isn't a plain file, so nothing's done", path.display()));
+    }
+    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&f), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err("an update is already running".into());
+    }
+    Ok(f)
 }
 
 /// The real steps.
@@ -220,43 +289,23 @@ impl Ops for Live {
         ran(&mut c, "gpgv")
     }
 
-    fn sysupdate(&mut self) -> Result<(), String> {
+    fn sysupdate(&mut self, name: &str) -> Result<(), String> {
         ran(tool("/usr/lib/systemd/systemd-sysupdate").args(["--component=command-center", "--verify=no", "update"]), "systemd-sysupdate")?;
-        // the first install put a plain command-center.raw in place; the .raw.v directory supersedes it
-        let plain = Path::new(EXTENSIONS).join("command-center.raw");
-        if fs::symlink_metadata(&plain).is_ok_and(|m| m.file_type().is_file()) && Path::new(EXTENSIONS).join("command-center.raw.v").is_dir() {
+        // The first install put a plain command-center.raw in place, and the .raw.v directory
+        // supersedes it, but only once this version is really in there.
+        let ext = Path::new(EXTENSIONS);
+        if plain_goes(ext, name) {
+            let plain = ext.join("command-center.raw");
             fs::remove_file(&plain).map_err(|e| format!("{}: {e}", plain.display()))?;
         }
         Ok(())
     }
 
     fn claim(&mut self) -> bool {
-        use std::os::unix::fs::OpenOptionsExt;
         // No PKEXEC_UID: whose Desktop it would be isn't known, so never refresh.
         let Some(uid) = self.user else { return false };
-        // It's root in the user's runtime directory: the last part is never followed if it's a
-        // symlink, and has to be a plain file. One that isn't there yet is made, theirs, 0600, so
-        // their Desktop can still take it.
-        let path = format!("/run/user/{uid}/control-center-desktop.lock");
-        let opened = fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path).or_else(|e| {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                return Err(e);
-            }
-            let f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path)?;
-            if unsafe { libc::fchown(std::os::fd::AsRawFd::as_raw_fd(&f), uid, u32::MAX) } != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(f)
-        });
-        let Ok(f) = opened else { return false };
-        if !f.metadata().is_ok_and(|m| m.file_type().is_file()) {
-            return false;
-        }
-        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&f), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return false; // a Desktop has it
-        }
-        self.held = Some(f);
-        true
+        self.held = claim_at(Path::new(&format!("/run/user/{uid}/control-center-desktop.lock")), uid);
+        self.held.is_some()
     }
 
     fn in_use(&self) -> bool {
@@ -289,6 +338,10 @@ pub fn helper(args: &[std::ffi::OsString]) -> i32 {
     }
     let user = std::env::var("PKEXEC_UID").ok().and_then(|u| u.parse().ok());
     let dir = PathBuf::from(WORK);
+    let _running = match exclusive(Path::new(RUN_LOCK)) {
+        Ok(f) => f, // held until we return
+        Err(e) => return fail(e),
+    };
     if let Err(e) = prepare(&dir, 0) {
         return fail(e);
     }
@@ -302,6 +355,8 @@ pub fn helper(args: &[std::ffi::OsString]) -> i32 {
 }
 
 /// `cc-home update`: the helper through pkexec, on an image install. A checkout updates with git.
+/// cc-home is a static musl binary, so after pkexec returns (with the image maybe swapped under it)
+/// it loads nothing from the image: no libraries, locale or assets, only the exit code.
 pub fn main() -> i32 {
     if !Path::new(HELPER).exists() {
         eprintln!("this is a checkout, not the system image: update it with git pull and cc-home install");
@@ -345,7 +400,7 @@ mod tests {
             self.steps.push("verify".into());
             if self.bad_sig { Err("BAD signature".into()) } else { Ok(()) }
         }
-        fn sysupdate(&mut self) -> Result<(), String> {
+        fn sysupdate(&mut self, _name: &str) -> Result<(), String> {
             self.steps.push("sysupdate".into());
             Ok(())
         }
@@ -482,6 +537,52 @@ mod tests {
         assert!(image_in_use(&proc, &ours), "the tab runs from the image");
         assert!(from_image(Path::new("/usr/bin/cc-home")) && !from_image(Path::new("/usr/bin/curl")));
         let _ = fs::remove_dir_all(&proc);
+    }
+
+    #[test]
+    fn a_fifo_at_the_lock_path_is_refused_without_waiting() {
+        let d = scratch("fifo");
+        fs::create_dir_all(&d).unwrap();
+        let fifo = d.join("control-center-desktop.lock");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let t = std::time::Instant::now();
+        assert!(claim_at(&fifo, unsafe { libc::geteuid() }).is_none(), "not a plain file");
+        assert!(t.elapsed() < std::time::Duration::from_secs(1), "and it didn't hang on the open");
+        let lock = d.join("real.lock");
+        let me = unsafe { libc::geteuid() };
+        let held = claim_at(&lock, me).expect("made and taken");
+        assert!(claim_at(&lock, me).is_none(), "a Desktop (or we) holds it");
+        drop(held);
+        assert!(claim_at(&lock, me).is_some());
+        let link = d.join("link.lock");
+        std::os::unix::fs::symlink(&lock, &link).unwrap();
+        assert!(claim_at(&link, me).is_none(), "never through a symlink");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_second_helper_stops_while_the_first_runs() {
+        let d = scratch("run");
+        let lock = d.join("update.lock");
+        let first = exclusive(&lock).unwrap();
+        assert_eq!(exclusive(&lock).unwrap_err(), "an update is already running");
+        drop(first);
+        assert!(exclusive(&lock).is_ok());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_first_installs_plain_image_goes_only_once_this_version_is_in_place() {
+        let ext = scratch("ext");
+        fs::create_dir_all(ext.join("command-center.raw.v")).unwrap();
+        fs::write(ext.join("command-center.raw"), "old").unwrap();
+        assert!(!plain_goes(&ext, "command-center_2.raw"), "the new version isn't there (sysupdate did nothing)");
+        fs::write(ext.join("command-center.raw.v/command-center_1.raw"), "other").unwrap();
+        assert!(!plain_goes(&ext, "command-center_2.raw"), "another version isn't this one");
+        fs::write(ext.join("command-center.raw.v/command-center_2.raw"), "new").unwrap();
+        assert!(plain_goes(&ext, "command-center_2.raw"));
+        let _ = fs::remove_dir_all(&ext);
     }
 
     #[test]
