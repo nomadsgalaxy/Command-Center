@@ -201,11 +201,9 @@ pub fn key(code: u16, value: i32) {
 /// Wheel notches, positive up or right (evdev's way).
 pub fn wheel(horizontal: bool, notches: f64) {
     #[cfg(test)]
-    return {
-        let _ = (horizontal, notches);
-        SHELL_OTHER.lock().unwrap().push("wheel")
-    };
-    #[cfg_attr(test, allow(unreachable_code))]
+    if crate::vr::fake::here() {
+        return SHELL_OTHER.lock().unwrap().push("wheel");
+    }
     let s = INPUT.lock().unwrap();
     if let Some(ses) = &s.session {
         ses.axis(horizontal, notches * s.wheel * if horizontal { 1.0 } else { -1.0 });
@@ -216,8 +214,9 @@ pub fn wheel(horizontal: bool, notches: f64) {
 /// tooltips and clears hover states. Not while a button is held in the session, since that's a drag.
 pub fn leave() {
     #[cfg(test)]
-    return SHELL_OTHER.lock().unwrap().push("leave");
-    #[cfg_attr(test, allow(unreachable_code))]
+    if crate::vr::fake::here() {
+        return SHELL_OTHER.lock().unwrap().push("leave");
+    }
     let mut s = INPUT.lock().unwrap();
     if s.hover.is_none() || s.down != 0 {
         return;
@@ -273,8 +272,9 @@ fn park(ses: &Session) -> bool {
 /// they're above every window. Coming back onto a window panel raises that window again.
 pub fn shell_mouse(flags: u32, at: Option<(f64, f64)>) {
     #[cfg(test)]
-    return SHELL_SENT.lock().unwrap().push((flags, at)); // in tests it goes nowhere else: no session, no fake_input
-    #[cfg_attr(test, allow(unreachable_code))]
+    if crate::vr::fake::here() {
+        return SHELL_SENT.lock().unwrap().push((flags, at)); // a replay's goes nowhere else: no session, no fake_input
+    }
     let mut s = INPUT.lock().unwrap();
     let Some(ses) = s.session.clone() else { return };
     s.hover = Some(SHELL);
@@ -305,8 +305,9 @@ pub static SHELL_OTHER: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 /// ponytail: a laser click into nothing (SteamVR's own space) leaves it open.
 pub fn shell_outside() {
     #[cfg(test)]
-    return SHELL_OTHER.lock().unwrap().push("outside");
-    #[cfg_attr(test, allow(unreachable_code))]
+    if crate::vr::fake::here() {
+        return SHELL_OTHER.lock().unwrap().push("outside");
+    }
     if !plasmabar::OPEN.load(Relaxed) {
         return;
     }

@@ -24,8 +24,10 @@ they didn't cover is the event path, polling and the laser's pose, and that's wh
 `fake::install` returns a guard, since there's one SteamVR per process, so fake-SteamVR tests take
 turns.
 
-In tests, `shell_mouse` puts its flags and point on `windows::SHELL_SENT` and returns: nothing
-goes to a session or fake input. Once the fake is in, `Windows::start`, `Kwin::start` and
+On the thread that holds the fake's guard (`vr::fake::here()`), `shell_mouse` puts its flags and
+point on `windows::SHELL_SENT` and returns: nothing goes to a session or fake input. Any other test
+takes the real path, so ordinary unit tests still run the real code (with no session, it does
+nothing). Once the fake is in, `Windows::start`, `Kwin::start` and
 `Capture::start` panic, so a replay can't connect to KWin, start capture or a session, or send
 real input (a test checks all four).
 
@@ -68,8 +70,10 @@ out and only counted. Even so, a trace is a record of what you did with the lase
 pointed, so treat it as sensitive: it's only written when you ask for it, it stays on the Frame,
 and you should delete the flag file and the trace when you're done.
 
-It's written through a 1 MB buffer flushed once a pass, so the disk never stalls a frame, and at
-64 MB it stops with one line in the log. The buffer's also flushed however cc-panels ends: a normal quit, closing
+It's written through a 1 MB buffer flushed at most once a second, so the main loop writes one block
+a second, not one a pass, and at 64 MB it stops with one line in the log. The writes are still on
+the main loop, so until that's been measured, treat frame timing with a trace on as possibly a
+little off. The buffer's also flushed however cc-panels ends: a normal quit, closing
 the Desktop, SteamVR's Quit, SIGTERM or SIGINT, a panic, and the exits after a drawing thread's
 panic. Only a SIGKILL or a power cut loses the last pass. Flushing is best effort: if a write or a flush
 fails (a full disk, say), the log says so once, and the trace is missing lines from there on.

@@ -22,13 +22,15 @@ const MAX: u64 = 64 << 20;
 struct Out {
     file: std::io::BufWriter<std::fs::File>, // flushed once a pass (tick), so writing never stalls a frame on the disk
     written: u64,
-    since: std::time::Instant, // what the ticks' "t" counts from
-    failed: bool,              // a write or flush failed, and the log has said so once
+    since: std::time::Instant,   // what the ticks' "t" counts from
+    flushed: std::time::Instant, // the last flush, at most once a second
+    failed: bool,                // a write or flush failed, and the log has said so once
 }
 
 impl Out {
     fn new(file: std::fs::File) -> Out {
-        Out { file: std::io::BufWriter::with_capacity(1 << 20, file), written: 0, since: std::time::Instant::now(), failed: false }
+        let now = std::time::Instant::now();
+        Out { file: std::io::BufWriter::with_capacity(1 << 20, file), written: 0, since: now, flushed: now, failed: false }
     }
 
     /// A write's or flush's result: the first failure goes to the log, so a trace with a hole in
@@ -194,14 +196,17 @@ pub fn laser_pose(dev: u32) -> Option<Mat> {
     m
 }
 
-/// A pass starting: the last one's lines go to the disk, then this one's line, with the seconds
-/// since the trace began.
+/// A pass starting, with the seconds since the trace began. What's buffered goes to the disk at
+/// most once a second, so the main loop writes about one block a second, not one a pass.
 pub fn tick(who: &str) {
     let t = {
         let mut o = out().lock().unwrap();
         let Some(o) = o.as_mut().filter(|o| o.written < MAX) else { return };
-        let r = o.file.flush();
-        o.check(r);
+        if o.flushed.elapsed() >= std::time::Duration::from_secs(1) {
+            let r = o.file.flush();
+            o.check(r);
+            o.flushed = std::time::Instant::now();
+        }
         o.since.elapsed().as_secs_f64()
     };
     write(json!({ "tick": who, "t": t, "dropped": DROPPED.load(std::sync::atomic::Ordering::Relaxed) }));
@@ -247,7 +252,7 @@ pub fn changed(key: &str, v: Value) {
 /// can't do this itself, since cc-win-spike builds it without those modules. The guard keeps
 /// other fake-SteamVR tests out until it drops (docs/vr-harness.md).
 #[cfg(test)]
-pub fn fake_vr() -> std::sync::MutexGuard<'static, ()> {
+pub fn fake_vr() -> crate::vr::fake::Guard {
     let guard = crate::vr::fake::install(crate::vr::fake::Script::default());
     crate::plasmabar::reset_for_test();
     let mut k = crate::kvm::lock();
@@ -318,6 +323,15 @@ mod tests {
         assert!(!o.check(Err(std::io::Error::other("disk full"))) && o.failed);
         assert!(!o.check(Err(std::io::Error::other("again"))), "still failing, said once");
         assert!(o.check(Ok(())));
+    }
+
+    #[test]
+    fn only_the_thread_holding_the_fake_gets_the_test_inputs() {
+        let g = fake_vr();
+        assert!(crate::vr::fake::here());
+        assert!(!std::thread::spawn(crate::vr::fake::here).join().unwrap(), "another test's thread takes the real path");
+        drop(g);
+        assert!(!crate::vr::fake::here(), "and so does this one once the guard's gone");
     }
 
     #[test]

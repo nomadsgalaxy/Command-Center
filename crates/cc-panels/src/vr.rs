@@ -315,6 +315,27 @@ pub mod fake {
     pub fn on() -> bool {
         ON.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    thread_local! {
+        static HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Whether this thread holds the fake (a replay test, between install and its guard's drop).
+    /// windows.rs's session inputs go to their test lists then, and to their real paths otherwise,
+    /// so an ordinary unit test still runs the real code.
+    pub fn here() -> bool {
+        HERE.get()
+    }
+
+    /// The fake's guard: other fake-SteamVR tests wait for it, and while this thread holds it
+    /// `here()` is true.
+    pub struct Guard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            HERE.set(false);
+        }
+    }
     /// Held by a test for as long as it uses the fake, since there's one SteamVR per process.
     pub static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
@@ -379,9 +400,10 @@ pub mod fake {
     /// gone. Each install swaps the script in under SCRIPT's lock, while holding the guard, so the
     /// last test's events and poses are gone. Use trace::fake_vr, which also clears what a replay
     /// leaves outside the script.
-    pub fn install(s: Script) -> std::sync::MutexGuard<'static, ()> {
-        let guard = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    pub fn install(s: Script) -> Guard {
+        let guard = Guard(ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner()));
         ON.store(true, std::sync::atomic::Ordering::Relaxed);
+        HERE.set(true);
         fn leak<T>(t: T) -> &'static T {
             Box::leak(Box::new(t))
         }
