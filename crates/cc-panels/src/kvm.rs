@@ -47,6 +47,33 @@ const KEY_F1: u16 = 59;
 const KEY_F4: u16 = 62;
 const KEY_F12: u16 = 88;
 const KEY_RIGHTCTRL: u16 = 97;
+/// How a panel takes text from SteamVR's keyboard (Panel::text_mode).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TextMode {
+    Unicode, // characters as themselves, whatever the host's layout
+    UsKeys,  // only as a US keyboard's keys, which the strip says before you type
+}
+
+/// How one character from SteamVR's keyboard goes out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Route {
+    Key(u16, bool), // a key (and Shift): Backspace, Enter and Tab, a shortcut, or a US keyboard's
+    Char,           // the character itself
+    Missed,         // neither can type it
+}
+
+/// Text is characters, shortcuts are keys: a control character (Backspace, Enter, Tab) is always
+/// its key, and so is anything typed with a sticky Ctrl, Alt or Super held, since a shortcut means
+/// a key. The rest goes as itself where the panel can take that, else as a US keyboard's keys.
+fn route(c: char, modified: bool, mode: TextMode) -> Route {
+    let key = || crate::control::ui::key_for(c).map_or(Route::Missed, |(k, s)| Route::Key(k, s));
+    match mode {
+        _ if c.is_control() || modified => key(),
+        TextMode::Unicode => Route::Char,
+        TextMode::UsKeys => key(),
+    }
+}
+
 /// The key strip's sticky modifiers (osk.rs), in its order: Ctrl, Alt, Super.
 pub const MODS: [u16; 3] = [29, 56, 125];
 const KEY_HOME: u16 = 102;
@@ -378,6 +405,25 @@ impl Kvm {
         }
     }
 
+    /// How the typing panel takes text. The session's focused window (Plasma's bar) is evdev keys.
+    fn text_mode(&self) -> TextMode {
+        #[cfg(test)]
+        return tests::MODE.with(|m| m.get());
+        #[cfg(not(test))]
+        return if self.kbd_shell { TextMode::UsKeys } else { panel(self.kbd).text_mode() };
+    }
+
+    /// Send a character as itself to the typing panel.
+    fn send_char(&self, c: char) -> bool {
+        #[cfg(test)]
+        return tests::CHARS.with(|s| {
+            s.borrow_mut().push(c);
+            true
+        });
+        #[cfg(not(test))]
+        return panel(self.kbd).text(c);
+    }
+
     /// Send a key to the typing panel, or to the session after a click on Plasma's bar.
     fn send_key(&self, code: u16, value: i32) {
         #[cfg(test)]
@@ -407,10 +453,10 @@ impl Kvm {
         asked || !self.keyboard_in_use()
     }
 
-    /// Types text to panel i (SteamVR's keyboard, osk.rs) as key presses on a US layout, the way
-    /// a physical keyboard's keys would go. "\b" is Backspace and "\n" Enter. Returns how many
-    /// characters it couldn't type. It never logs the text, which may be a password.
-    /// shortcut: characters a US keyboard can't type are dropped; RDP's Unicode input could send them.
+    /// Types text to panel i (SteamVR's keyboard, osk.rs), each character the way `route` says.
+    /// "\b" is Backspace and "\n" Enter. Returns how many characters it couldn't type, a refused
+    /// character among them (it's never sent again as keys). It never logs the text, which may be
+    /// a password.
     pub fn type_text(&mut self, i: usize, text: &str) -> usize {
         self.type_to(i);
         let (mut missed, mut cr) = (0, false);
@@ -418,9 +464,10 @@ impl Kvm {
             if std::mem::replace(&mut cr, c == '\r') && c == '\n' {
                 continue; // \r\n is one Enter
             }
-            match crate::control::ui::key_for(c) {
-                Some((code, shift)) => self.tap(code, shift),
-                None => missed += 1,
+            match route(c, self.latched.contains(&true), self.text_mode()) {
+                Route::Key(code, shift) => self.tap(code, shift),
+                Route::Char if self.send_char(c) => self.keystrokes += 1,
+                Route::Char | Route::Missed => missed += 1,
             }
         }
         self.typed = Some(Instant::now());
@@ -1541,6 +1588,37 @@ mod tests {
     thread_local! {
         /// The keys send_key sent on this test's thread: code, value.
         pub static SENT: std::cell::RefCell<Vec<(u16, i32)>> = const { std::cell::RefCell::new(Vec::new()) };
+        /// How the typing panel takes text, as this test says (a US keyboard unless it sets it).
+        pub static MODE: std::cell::Cell<TextMode> = const { std::cell::Cell::new(TextMode::UsKeys) };
+        /// The characters send_char sent as themselves.
+        pub static CHARS: std::cell::RefCell<Vec<char>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    #[test]
+    fn text_goes_as_characters_and_shortcuts_and_controls_as_keys() {
+        use TextMode::*;
+        assert_eq!(route('é', false, Unicode), Route::Char);
+        assert_eq!(route('a', false, Unicode), Route::Char, "even ASCII: the host's layout can't move it");
+        assert_eq!(route('a', false, UsKeys), Route::Key(KEY_A, false));
+        assert_eq!(route('é', false, UsKeys), Route::Missed, "never a guess at another key");
+        assert_eq!(route('\u{8}', false, Unicode), Route::Key(14, false), "Backspace is a key");
+        assert_eq!(route('\n', false, Unicode), Route::Key(28, false));
+        assert_eq!(route('c', true, Unicode), Route::Key(46, false), "Ctrl+C is a shortcut, so keys");
+        assert_eq!(route('é', true, Unicode), Route::Missed, "a shortcut with a key no US keyboard has");
+    }
+
+    #[test]
+    fn a_unicode_panel_gets_the_characters_and_a_shortcut_gets_keys() {
+        MODE.with(|m| m.set(TextMode::Unicode));
+        let mut k = Kvm::idle();
+        assert_eq!(k.type_text(0, "zé€😀"), 0);
+        assert_eq!(CHARS.with(|c| std::mem::take(&mut *c.borrow_mut())), ['z', 'é', '€', '😀']);
+        assert!(sent().is_empty(), "no keys for text");
+        k.latched = [true, false, false]; // Ctrl
+        k.type_text(0, "c");
+        assert_eq!(sent(), [(29, 1), (46, 1), (46, 0), (29, 0)], "Ctrl+C as keys");
+        assert!(CHARS.with(|c| c.borrow().is_empty()));
+        MODE.with(|m| m.set(TextMode::UsKeys));
     }
 
     fn sent() -> Vec<(u16, i32)> {

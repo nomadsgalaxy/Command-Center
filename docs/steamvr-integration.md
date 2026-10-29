@@ -53,11 +53,17 @@ else, and when the panel's connection drops.
 What it can't do:
 
 - Function keys. Use a real keyboard for those.
-- It types as a US keyboard does. A character that isn't on one (an accented letter, the euro
-  sign, an emoji) isn't sent, and the strip says "Couldn't type 1 character" for a few seconds.
-  It never says which character, and neither does the log, since you might be typing a password.
-- The remote computer reads the keys with its own layout, the same as a real keyboard's keys. If
-  it isn't set to US, some punctuation comes out as what's on that key in its layout.
+- What you type goes as the characters themselves where the panel can take that: a VNC screen
+  always, and an RDP screen when its server says it takes Unicode input. Then the computer's own
+  keyboard layout doesn't matter, and accented letters, the euro sign and emoji all work. Window
+  panels, and RDP servers that don't take Unicode, get a US keyboard's keys instead, and the
+  keyboard's hint and the strip say "as a US keyboard" before you type. On those, a character a US
+  keyboard doesn't have isn't sent, and the strip says "Couldn't type 1 character" for a few
+  seconds. It never says which character, and neither does the log, since you might be typing a
+  password. A character the computer refuses isn't sent again some other way.
+- Backspace, Enter and Tab, the strip's keys, and anything you type with a sticky Ctrl, Alt or
+  Super are keys, not characters, because a shortcut means a key. They go by the US layout's key
+  positions, the same as a real keyboard's keys do.
 - Press a key on a real keyboard while it's open and it closes, since you've gone back to the
   real one. Pressing the keyboard button always opens it, even right after you typed on a real
   keyboard.
@@ -91,3 +97,24 @@ To turn them off, add this to `~/.config/control-center/settings.json` (it appli
 Whether they show in the headset hasn't been checked on every SteamOS version yet. To try it,
 open the Desktop and run `cc-home notify-test` for a notification, or `cc-home notify-test toast`
 for SteamVR's toast on its own.
+
+### Typing: checks before calling it supported
+
+Typing characters as themselves (RDP Unicode input, VNC keysyms) is built and unit-tested, but it
+hasn't been tried against real hosts yet, so it isn't supported until this list passes on the
+desktop. For each of krdp and a VNC server, and for each host layout (US and German):
+
+- [ ] `zyYZ` comes out as typed (a German layout swaps Z and Y as keys).
+- [ ] Punctuation: `@"#$%^&*()[]{};:'<>?/\|`~`.
+- [ ] `€£éß` and an emoji (😀) come out as typed, or on US-keys panels the strip counts them as
+      not typed and nothing else appears.
+- [ ] Backspace deletes one character, Enter makes one new line (also for a \r\n), Tab moves on.
+- [ ] Sticky Ctrl then `c`, `v`, `a` on SteamVR's keyboard copy, paste and select all. Sticky Alt
+      then Tab switches windows. Sticky Super opens the launcher.
+- [ ] A sticky Ctrl held through a click on the panel makes a Ctrl-click, and nothing stays
+      pressed after it (type a letter: it's lowercase and plain).
+- [ ] Focus loss: laser off the panel mid-click, then type: no modifier stuck.
+- [ ] Reconnect: drop the network for a few seconds while the keyboard is open, then type: it
+      types, nothing stuck, and an RDP server that doesn't take Unicode still says "as a US
+      keyboard".
+- [ ] A window panel says "as a US keyboard" and types ASCII.

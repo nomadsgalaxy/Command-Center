@@ -451,6 +451,7 @@ pub fn run(p: &'static Panel) {
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_NlaSecurity, true);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_TlsSecurity, true);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_RdpSecurity, false);
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_UnicodeInput, true); // asked for; the server's capability decides (unicode())
             if let Some(pin) = &pin {
                 // paired (H2): only that certificate. FreeRDP accepts it by fingerprint before
                 // anything else, and any other one goes to on_other_cert, which refuses it
@@ -602,6 +603,25 @@ pub fn mouse(p: &Panel, flags: u32, x: f64, y: f64) {
     }
 }
 
+/// Whether the server takes Unicode keyboard input: we ask for it before connecting, and FreeRDP
+/// keeps that only if the server's input capability says INPUT_FLAG_UNICODE. None until connected.
+pub fn unicode(p: &Panel) -> Option<bool> {
+    let c = p.rdp.load(Acquire);
+    (p.connected.load(Acquire) && !c.is_null()).then(|| unsafe { freerdp_settings_get_bool((*c).settings, FreeRDP_Settings_Keys_Bool_FreeRDP_UnicodeInput) != 0 })
+}
+
+/// c's UTF-16 units: one, or a surrogate pair past the BMP, which RDP's Unicode input takes one at a time.
+fn units(c: char) -> Vec<u16> {
+    c.encode_utf16(&mut [0u16; 2]).to_vec()
+}
+
+/// A character as itself (SteamVR's keyboard): each UTF-16 unit pressed and let go. False if
+/// FreeRDP refused one, and the caller never retries it as keys.
+pub fn text(p: &Panel, c: char) -> bool {
+    let Some(i) = input(p) else { return false };
+    units(c).iter().all(|&u| unsafe { freerdp_input_send_unicode_keyboard_event(i, 0, u) != 0 && freerdp_input_send_unicode_keyboard_event(i, KBD_FLAGS_RELEASE as u16, u) != 0 })
+}
+
 pub fn key(p: &Panel, down: bool, repeat: bool, scancode: u32) {
     if let Some(i) = input(p) {
         unsafe { freerdp_input_send_keyboard_event_ex(i, down as BOOL, repeat as BOOL, scancode) };
@@ -620,6 +640,13 @@ mod tests {
     use super::*;
 
     /// A panel whose host server is down waits five minutes, or until Connect, or until it's closed.
+    #[test]
+    fn a_character_past_the_bmp_goes_as_its_surrogate_pair() {
+        assert_eq!(units('a'), [0x61]);
+        assert_eq!(units('€'), [0x20ac]);
+        assert_eq!(units('😀'), [0xd83d, 0xde00]);
+    }
+
     #[test]
     fn a_down_host_waits_for_connect_or_five_minutes() {
         let s = Duration::from_secs;
