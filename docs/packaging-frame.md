@@ -299,7 +299,10 @@ something doesn't load (an FFmpeg or glibc bump), it stops and names what's miss
 the VR launcher doesn't show cc-launch's output. The code is `crates/cc-home/src/steamos.rs`.
 
 The file name has to match the image's name: `command-center.raw` (or `command-center.raw.v/`, see
-section 4) needs `extension-release.command-center`.
+section 4) needs `extension-release.command-center`. build.sh always names it that, whatever the
+output file is called, so `command-center_0.9.1.raw` carries `extension-release.command-center` too.
+The vpick test on 2026-10-29 used the same rule (`extension-release.cc-n9-test` inside each
+`cc-n9-test_<N>.raw`).
 
 ### Per-user state
 
@@ -340,8 +343,12 @@ asking first, and to clean up a checkout install: unregister the vrpathreg drive
 alone. It doesn't yet: the installer still builds a checkout install.
 
 **Signing:** the image runs as root, so a SHA256SUMS file from the same release isn't enough, since
-anyone who can edit the release can edit both. Releases get a detached signature (`SHA256SUMS.gpg`),
-and cc-install checks it against a key compiled into cc-install.
+anyone who can edit the release can edit both. Releases get a detached signature, `SHA256SUMS.sig`
+(release.yml makes it with `gpg --detach-sign`), and the update helper checks it with `gpgv`
+against `/usr/lib/command-center/release-key.gpg`, the public half of `packaging/command-center.asc`
+that build.sh puts in the image. That one name and that one key are used everywhere. The `install`
+script and cc-install don't check the signature yet: they only check what they download against
+`SHA256SUMS`, so for the first install the signature isn't checked by anything.
 
 ### Updates without a password after that
 
@@ -361,18 +368,27 @@ root under pkexec cc-home refuses to be anything else), and as root it does one 
    is our release key, the public half of `packaging/command-center.asc`, put in the image by
    build.sh; no system keyring is used or touched. Nothing in SHA256SUMS counts before this passes.
 4. The one `command-center_<version>.raw` the signed list names (letters, digits and `._+~-`
-   only, so never a path), downloaded the same way and checked against its SHA-256.
+   only, so never a path). If that version's already a file in `command-center.raw.v/` and it's
+   the one loaded, the helper stops there: "Command Center is up to date". If it's there but not
+   loaded (an earlier run found the Desktop or its dashboard tab open), it's checked against the
+   signed SHA-256 again, since an interrupted run could have left it cut short. A mismatch stops
+   the update and says to remove the file; a match skips to step 6 ("… was already installed;
+   it's loaded now"). Otherwise it's downloaded the same way and checked against its SHA-256.
+   The version in the name has to equal the image's `IMAGE_VERSION` byte for byte, which build.sh
+   makes sure of in release mode.
 5. Then `systemd-sysupdate --component=command-center --verify=no update` copies it into
    `/var/lib/extensions/command-center.raw.v/`, with the transfer file in
    `/usr/lib/sysupdate.command-center.d/50-command-center.transfer` (source: the work directory,
    `InstancesMax=2`). `--verify=no` because steps 3 and 4 did the checking. A plain
-   `command-center.raw` from the first install is removed once the `.raw.v/` directory exists.
+   `command-center.raw` from the first install is removed once this version is in `.raw.v/`. sysupdate
+   copies the image, so the work directory is emptied after it.
 6. `systemd-sysext refresh` only with the Desktop's lock taken (`/run/user/<uid>`, for the user
    pkexec says asked; exclusive, never waiting) and held across the check and the refresh, so a
    Desktop that starts meanwhile waits for it, and only if no other process's program is under
    `/usr/lib/command-center` or a `/usr/bin/cc-*` (the dashboard tab's runs with the Desktop
-   closed), apart from the helper and the `cc-home update` that started it. Otherwise the new image
-   is loaded at the next boot, or by running `cc-home update` again once those have closed. It never
+   closed), apart from the helper, its pkexec and the `cc-home update` that ran pkexec. Nothing
+   further up is skipped, so a cc-box from the image above the terminal counts. Otherwise the new image
+   is loaded at the next boot, or by running `cc-home update` again with the Desktop and its dashboard tab closed. It never
    stops anything. One gap is left: SteamVR starting the dashboard tab's process in the few
    milliseconds between the check and the refresh, since the tab doesn't take that lock.
    sysupdate never installs an older version than the newest one installed unless it's asked for
@@ -388,6 +404,26 @@ and the helper makes it if it isn't there yet). Otherwise it does nothing. It ho
 `/var/lib/command-center/update.lock` for the whole run, so a second helper stops with "an update
 is already running". A Desktop that starts while the helper holds the Desktop's lock says
 "Command Center is updating; starting in a moment" in its log and waits.
+
+### Releasing the image (not decided yet)
+
+Nothing publishes a `command-center_<version>.raw` yet. release.yml builds cc-install, cc-host and
+cc-home on GitHub's Ubuntu runners, but the image has to be built against SteamOS's own libraries
+(build-native.sh, then build.sh), which those runners don't have. Two ways it could go:
+
+- **A self-hosted SteamOS runner** (a Frame or a Deck) builds the image for a `v*` tag with
+  `CC_RELEASE=1`, uploads it to the draft release, and the publish job signs the whole SHA256SUMS
+  the way it does now.
+- **A release in two stages, by hand:** CI makes the draft with its binaries, someone builds the
+  image on SteamOS and uploads it, then SHA256SUMS is made and signed over everything, and the
+  release is published.
+
+Either way, SHA256SUMS is signed last, over every file. Where the signing key lives and who signs
+(CI from the `CC_SIGNING_KEY` secret, as release.yml does now, or Anthony by hand) is Anthony's
+call.
+
+A follow-up, not in this change: the `install` script could check `SHA256SUMS.sig` too, against a
+pinned key fingerprint, so a first install is checked the same way updates are.
 
 The helper takes no arguments and reads no paths from anywhere, and every program it runs is
 called by its full path with an empty environment. Signing a release stays a step done by hand,
@@ -419,6 +455,9 @@ Still to do with a real image: one full `cc-home update` from a signed release.
   (`cd / && sudo systemd-sysext refresh`). The helper and cc-install's hint already do.
 - **`cc-home update` asks for a password:** polkitd hasn't read the action yet. Run
   `sudo systemctl try-restart polkit.service` once, or restart the Frame.
+- **Going back to the previous version:** `InstancesMax=2` keeps the one before. Remove the newest
+  file in `/var/lib/extensions/command-center.raw.v/`, then `cd / && sudo systemd-sysext refresh`.
+  That lasts until the next `cc-home update`, which installs the newest release again.
 
 ### When the image isn't loaded
 
@@ -481,6 +520,12 @@ packaging/sysext/steamos-buildenv.sh   # once per SteamOS version: the build con
 packaging/sysext/build-native.sh       # cc-home, FreeRDP, libvncclient, cc-panels, the driver
 packaging/sysext/build.sh              # → packaging/sysext/out/command-center.raw
 ```
+
+For a release, `CC_RELEASE=1 CC_VERSION=0.9.1 packaging/sysext/build.sh out/command-center_0.9.1.raw`.
+In release mode build.sh refuses a version that isn't from a tag (`v0.9.1` on the checkout's
+HEAD), a `-dirty` one, one that doesn't start with a digit, and a checkout with uncommitted
+changes, because sysupdate orders the images by version. Without `CC_RELEASE` the version is
+`git describe`, which is fine for testing.
 
 `build-native.sh` builds in place, into the checkout's usual paths, so don't run it in the checkout
 the Desktop is running from: it replaces that checkout's FreeRDP. I use a worktree. It reads FreeRDP's
