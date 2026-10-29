@@ -165,6 +165,7 @@ pub struct Panel {
     pub cliprdr: AtomicPtr<freerdp_sys::CliprdrClientContext>, // its clipboard channel, while connected
     level: AtomicU8,                                           // how much of its stream is worth having (attention.rs)
     pub change: AtomicU32,                                     // the most of its picture one frame changed since the last tick, in thousandths (attention.rs)
+    pub codecs: Mutex<rdp::Codecs>,                            // frames by graphics codec, for the log (rdp.rs)
 }
 
 impl Panel {
@@ -199,6 +200,7 @@ impl Panel {
             cliprdr: AtomicPtr::default(),
             level: AtomicU8::new(attention::Level::Full as u8),
             change: AtomicU32::new(0),
+            codecs: Mutex::default(),
         };
         // Lasers work it with the dashboard closed, wheels scroll it in steps, and it's never see-through.
         call!(ov, SetOverlayInputMethod, p.overlay, sys::VROverlayInputMethod_Mouse);
