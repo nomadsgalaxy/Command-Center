@@ -639,7 +639,6 @@ pub fn wheel(p: &Panel, horizontal: bool, rotation: i32) {
 mod tests {
     use super::*;
 
-    /// A panel whose host server is down waits five minutes, or until Connect, or until it's closed.
     #[test]
     fn a_character_past_the_bmp_goes_as_its_surrogate_pair() {
         assert_eq!(units('a'), [0x61]);
@@ -647,6 +646,7 @@ mod tests {
         assert_eq!(units('😀'), [0xd83d, 0xde00]);
     }
 
+    /// A panel whose host server is down waits five minutes, or until Connect, or until it's closed.
     #[test]
     fn a_down_host_waits_for_connect_or_five_minutes() {
         let s = Duration::from_secs;

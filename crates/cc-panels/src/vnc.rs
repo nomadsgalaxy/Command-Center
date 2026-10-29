@@ -846,7 +846,6 @@ pub fn run(p: &'static Panel) {
 mod tests {
     use super::*;
 
-    /// A hostile 65535x65535 cursor (or any too big, or not 4 bytes a pixel) hides the cursor.
     #[test]
     fn a_character_is_its_latin1_or_unicode_keysym() {
         assert_eq!(char_keysym('a'), 0x61);
@@ -855,6 +854,7 @@ mod tests {
         assert_eq!(char_keysym('😀'), 0x0101_f600);
     }
 
+    /// A hostile 65535x65535 cursor (or any too big, or not 4 bytes a pixel) hides the cursor.
     #[test]
     fn huge_cursors_are_hidden() {
         let fb = (2560, 1440);
