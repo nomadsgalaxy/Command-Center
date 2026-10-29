@@ -85,8 +85,27 @@ struct State {
 
 static TAG: u8 = 0;
 
-unsafe fn state(cl: *mut rfbClient) -> &'static mut State {
-    unsafe { &mut *(rfbClientGetClientData(cl, &TAG as *const u8 as *mut c_void) as *mut State) }
+thread_local! {
+    /// True while this thread is inside with_state, so a second one (a callback from inside a callback) gets nothing.
+    static IN_STATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs f on cl's State, the one connect gave it, and returns what f did. It returns None when the
+/// State is gone (Session's drop clears the pointer before it frees it) or is already in use further
+/// up this thread, so no callback ever sees a freed State or two &mut to the same one.
+unsafe fn with_state<R>(cl: *mut rfbClient, f: impl FnOnce(&mut State) -> R) -> Option<R> {
+    let p = unsafe { rfbClientGetClientData(cl, &TAG as *const u8 as *mut c_void) } as *mut State;
+    if p.is_null() || IN_STATE.replace(true) {
+        return None;
+    }
+    struct Out;
+    impl Drop for Out {
+        fn drop(&mut self) {
+            IN_STATE.set(false); // on a panic too, which ffi::guard catches
+        }
+    }
+    let _out = Out;
+    Some(f(unsafe { &mut *p }))
 }
 
 impl State {
@@ -106,8 +125,7 @@ unsafe fn secure(cl: *mut rfbClient) -> bool {
 
 /// The credential guard (review B2): VeNCrypt lets a server pick an unencrypted sub-type after
 /// we chose it, so the password goes out only when it's safe, whatever was negotiated.
-unsafe fn may_send(cl: *mut rfbClient) -> bool {
-    let st = unsafe { state(cl) };
+unsafe fn may_send(cl: *mut rfbClient, st: &mut State) -> bool {
     let ok = st.opts.insecure || unsafe { secure(cl) };
     if !ok {
         st.refused = Some("the host asked for the password without TLS (tls=no allows that)");
@@ -122,142 +140,149 @@ fn strdup(s: &str) -> *mut c_char {
 
 unsafe extern "C" fn get_password(cl: *mut rfbClient) -> *mut c_char {
     crate::ffi::guard("get_password", std::ptr::null_mut(), || {
-        if !unsafe { may_send(cl) } {
-            return std::ptr::null_mut();
-        }
-        strdup(&unsafe { state(cl) }.opts.password) // libvncclient frees it
+        let pass = unsafe { with_state(cl, |st| may_send(cl, st).then(|| st.opts.password.clone())) }.flatten();
+        pass.map_or(std::ptr::null_mut(), |p| strdup(&p)) // libvncclient frees it
     })
 }
 
 unsafe extern "C" fn get_credential(cl: *mut rfbClient, kind: c_int) -> *mut rfbCredential {
     crate::ffi::guard("get_credential", std::ptr::null_mut(), || {
-        let st = unsafe { state(cl) };
-        let c = unsafe { libc::calloc(1, size_of::<rfbCredential>()) as *mut rfbCredential };
-        if c.is_null() {
-            return c;
-        }
-        if kind as u32 == rfbCredentialTypeX509 {
-            // No CA file: the certificate is checked against the pin (an unpinned one goes to
-            // on_certificate). A pinned one that's also valid for the system CAs passes without
-            // the pin, which a LAN host's self-signed certificate never is.
-            if let Some(pin) = st.opts.pin {
-                let fp = unsafe { libc::malloc(32) as *mut u8 };
-                if !fp.is_null() {
-                    unsafe { std::ptr::copy_nonoverlapping(pin.as_ptr(), fp, 32) };
-                }
-                unsafe { (*c).x509Credential.x509ExpectedFingerprint = fp };
-            }
-            return c;
-        }
-        if !unsafe { may_send(cl) } {
-            unsafe { libc::free(c as *mut c_void) };
-            return std::ptr::null_mut();
-        }
-        unsafe {
-            (*c).userCredential.username = strdup(&st.opts.user);
-            (*c).userCredential.password = strdup(&st.opts.password);
-        }
-        c
+        unsafe { with_state(cl, |st| credential(cl, st, kind)) }.unwrap_or(std::ptr::null_mut())
     })
+}
+
+unsafe fn credential(cl: *mut rfbClient, st: &mut State, kind: c_int) -> *mut rfbCredential {
+    let c = unsafe { libc::calloc(1, size_of::<rfbCredential>()) as *mut rfbCredential };
+    if c.is_null() {
+        return c;
+    }
+    if kind as u32 == rfbCredentialTypeX509 {
+        // No CA file: the certificate is checked against the pin (an unpinned one goes to
+        // on_certificate). A pinned one that's also valid for the system CAs passes without
+        // the pin, which a LAN host's self-signed certificate never is.
+        if let Some(pin) = st.opts.pin {
+            let fp = unsafe { libc::malloc(32) as *mut u8 };
+            if !fp.is_null() {
+                unsafe { std::ptr::copy_nonoverlapping(pin.as_ptr(), fp, 32) };
+            }
+            unsafe { (*c).x509Credential.x509ExpectedFingerprint = fp };
+        }
+        return c;
+    }
+    if !unsafe { may_send(cl, st) } {
+        unsafe { libc::free(c as *mut c_void) };
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        (*c).userCredential.username = strdup(&st.opts.user);
+        (*c).userCredential.password = strdup(&st.opts.password);
+    }
+    c
 }
 
 /// The certificate isn't the pinned one, or there's no pin. With a pin that's a refusal. Without
 /// one it's trust on first use, like an unpaired RDP machine, and the log says how to pin it.
 unsafe extern "C" fn on_certificate(cl: *mut rfbClient, subject: *const c_char, _: libc::time_t, _: libc::time_t, fp: *const u8, len: usize) -> rfbBool {
     crate::ffi::guard("on_certificate", 0, || {
-        let st = unsafe { state(cl) };
         let hex: String = unsafe { std::slice::from_raw_parts(fp, len) }.iter().map(|b| format!("{b:02x}")).collect();
         let subject = if subject.is_null() { String::new() } else { unsafe { CStr::from_ptr(subject) }.to_string_lossy().into_owned() };
-        if st.opts.pin.is_some() {
-            eprintln!("vnc {}: the host's certificate changed ({subject}, sha256 {hex}); not connecting", st.opts.host);
-            st.refused = Some("the host's certificate isn't the pinned one");
-            return 0;
+        unsafe {
+            with_state(cl, |st| {
+                if st.opts.pin.is_some() {
+                    eprintln!("vnc {}: the host's certificate changed ({subject}, sha256 {hex}); not connecting", st.opts.host);
+                    st.refused = Some("the host's certificate isn't the pinned one");
+                    return 0;
+                }
+                eprintln!("vnc {}: certificate {subject}, sha256 {hex}, not pinned; add pin={hex} to its viewers.conf line", st.opts.host);
+                1
+            })
         }
-        eprintln!("vnc {}: certificate {subject}, sha256 {hex}, not pinned; add pin={hex} to its viewers.conf line", st.opts.host);
-        1
+        .unwrap_or(0)
     })
 }
 
 unsafe extern "C" fn malloc_fb(cl: *mut rfbClient) -> rfbBool {
-    crate::ffi::guard("malloc_fb", 0, || {
-        let st = unsafe { state(cl) };
-        st.cursor.drawn = None; // the old buffer (and the cursor in it) is gone
-        st.resized = true;
-        let ok = st.malloc_fb.map_or(0, |f| unsafe { f(cl) });
-        let (w, h) = unsafe { ((*cl).width, (*cl).height) };
-        st.grow(0, 0, w, h);
-        ok
+    crate::ffi::guard("malloc_fb", 0, || unsafe {
+        with_state(cl, |st| {
+            st.cursor.drawn = None; // the old buffer (and the cursor in it) is gone
+            st.resized = true;
+            let ok = st.malloc_fb.map_or(0, |f| f(cl));
+            let (w, h) = ((*cl).width, (*cl).height);
+            st.grow(0, 0, w, h);
+            ok
+        })
+        .unwrap_or(0)
     })
 }
 
 unsafe extern "C" fn got_update(cl: *mut rfbClient, x: c_int, y: c_int, w: c_int, h: c_int) {
-    crate::ffi::guard("got_update", (), || {
-        let st = unsafe { state(cl) };
-        st.grow(x, y, x + w, y + h);
-        st.area += w.max(0) as i64 * h.max(0) as i64;
+    crate::ffi::guard("got_update", (), || unsafe {
+        with_state(cl, |st| {
+            st.grow(x, y, x + w, y + h);
+            st.area += w.max(0) as i64 * h.max(0) as i64;
+        });
     })
 }
 
 unsafe extern "C" fn finished_update(cl: *mut rfbClient) {
-    crate::ffi::guard("finished_update", (), || {
-        let st = unsafe { state(cl) };
-        let all = unsafe { ((*cl).width.max(1) as i64) * ((*cl).height.max(1) as i64) };
-        st.change = st.change.max((st.area * 1000 / all).min(1000) as u32);
-        st.area = 0;
-        st.updates += 1;
-        // Any update answers the request, even one with only the desktop size or the cursor in it
-        // (TigerVNC's first answer), so the next request goes out at once if the panel wants one.
-        st.asked = false;
+    crate::ffi::guard("finished_update", (), || unsafe {
+        let all = ((*cl).width.max(1) as i64) * ((*cl).height.max(1) as i64);
+        with_state(cl, |st| {
+            st.change = st.change.max((st.area * 1000 / all).min(1000) as u32);
+            st.area = 0;
+            st.updates += 1;
+            // Any update answers the request, even one with only the desktop size or the cursor in it
+            // (TigerVNC's first answer), so the next request goes out at once if the panel wants one.
+            st.asked = false;
+        });
     })
 }
 
 unsafe extern "C" fn cursor_shape(cl: *mut rfbClient, xhot: c_int, yhot: c_int, w: c_int, h: c_int, bpp: c_int) {
-    crate::ffi::guard("cursor_shape", (), || {
-        let st = unsafe { state(cl) };
-        unsafe { restore(cl, st) };
-        let n = (w.max(0) * h.max(0)) as usize;
-        let (src, mask) = unsafe { ((*cl).rcSource, (*cl).rcMask) };
-        if bpp != 4 || n == 0 || src.is_null() || mask.is_null() {
-            st.cursor.w = 0; // an empty shape hides it
-            return;
-        }
-        let c = &mut st.cursor;
-        (c.w, c.h, c.hot) = (w, h, (xhot, yhot));
-        c.px = unsafe { std::slice::from_raw_parts(src as *const u32, n) }.to_vec();
-        c.mask = unsafe { std::slice::from_raw_parts(mask, n) }.to_vec();
-        unsafe { draw(cl, st) };
+    crate::ffi::guard("cursor_shape", (), || unsafe {
+        with_state(cl, |st| {
+            restore(cl, st);
+            let n = (w.max(0) * h.max(0)) as usize;
+            let (src, mask) = ((*cl).rcSource, (*cl).rcMask);
+            if bpp != 4 || n == 0 || src.is_null() || mask.is_null() {
+                st.cursor.w = 0; // an empty shape hides it
+                return;
+            }
+            let c = &mut st.cursor;
+            (c.w, c.h, c.hot) = (w, h, (xhot, yhot));
+            c.px = std::slice::from_raw_parts(src as *const u32, n).to_vec();
+            c.mask = std::slice::from_raw_parts(mask, n).to_vec();
+            draw(cl, st);
+        });
     })
 }
 
 /// Before libvncclient writes this area, the cursor comes out of it.
 unsafe extern "C" fn lock_area(cl: *mut rfbClient, x: c_int, y: c_int, w: c_int, h: c_int) {
-    crate::ffi::guard("lock_area", (), || {
-        let st = unsafe { state(cl) };
-        if let Some(d) = st.cursor.drawn
-            && x < d[2] && x + w > d[0] && y < d[3] && y + h > d[1]
-        {
-            unsafe { restore(cl, st) };
-        }
+    crate::ffi::guard("lock_area", (), || unsafe {
+        with_state(cl, |st| {
+            if let Some(d) = st.cursor.drawn
+                && x < d[2] && x + w > d[0] && y < d[3] && y + h > d[1]
+            {
+                restore(cl, st);
+            }
+        });
     })
 }
 
 /// After it wrote a rect, the cursor goes back in.
 unsafe extern "C" fn unlock(cl: *mut rfbClient) {
-    crate::ffi::guard("unlock", (), || {
-        unsafe { draw(cl, state(cl)) };
+    crate::ffi::guard("unlock", (), || unsafe {
+        with_state(cl, |st| draw(cl, st));
     })
 }
 
 /// The server moved the pointer (PointerPos).
 unsafe extern "C" fn cursor_pos(cl: *mut rfbClient, x: c_int, y: c_int) -> rfbBool {
-    crate::ffi::guard("cursor_pos", 0, || {
-        unsafe { move_cursor(cl, x, y) };
-        1
-    })
+    crate::ffi::guard("cursor_pos", 0, || unsafe { with_state(cl, |st| move_cursor(cl, st, x, y)).map_or(0, |_| 1) })
 }
 
-unsafe fn move_cursor(cl: *mut rfbClient, x: i32, y: i32) {
-    let st = unsafe { state(cl) };
+unsafe fn move_cursor(cl: *mut rfbClient, st: &mut State, x: i32, y: i32) {
     if st.cursor.at == (x, y) {
         return;
     }
@@ -355,7 +380,7 @@ impl Session {
                 return Err("can't reach it".into());
             }
             if rfbClientInitialise(cl) == 0 {
-                return Err(state(cl).refused.unwrap_or("refused (the password, or no security type we allow)").into());
+                return Err(with_state(cl, |st| st.refused).flatten().unwrap_or("refused (the password, or no security type we allow)").into());
             }
             // Nothing goes to a session without TLS unless tls=no said so, and never to one that
             // didn't check a password, since a fake desktop would get every keystroke.
@@ -395,12 +420,12 @@ impl Session {
 
     /// A request is out and no update has answered it yet.
     pub fn asked(&self) -> bool {
-        unsafe { state(self.cl) }.asked
+        unsafe { with_state(self.cl, |st| st.asked) }.unwrap_or(true)
     }
 
     /// Asks for whatever changed since the last picture.
     pub fn request(&mut self) -> bool {
-        unsafe { state(self.cl) }.asked = true;
+        unsafe { with_state(self.cl, |st| st.asked = true) };
         unsafe { SendIncrementalFramebufferUpdateRequest(self.cl) != 0 }
     }
 
@@ -429,13 +454,12 @@ impl Session {
 
     /// What changed since the last take: the region, D-045's change, and how many updates ended.
     pub fn take(&mut self) -> (Option<[i32; 4]>, u32, u32) {
-        let st = unsafe { state(self.cl) };
-        (st.damage.take(), std::mem::take(&mut st.change), std::mem::take(&mut st.updates))
+        unsafe { with_state(self.cl, |st| (st.damage.take(), std::mem::take(&mut st.change), std::mem::take(&mut st.updates))) }.unwrap_or((None, 0, 0))
     }
 
     /// The framebuffer changed size since the last call.
     pub fn resized(&mut self) -> bool {
-        std::mem::take(&mut unsafe { state(self.cl) }.resized)
+        unsafe { with_state(self.cl, |st| std::mem::take(&mut st.resized)) }.unwrap_or(false)
     }
 
     /// Sends one input event. False when the connection's gone.
@@ -449,7 +473,8 @@ impl Session {
                 // RDP's buttons 1, 2, 3 are left, right, middle; RFB's mask bits 0, 1, 2 are left, middle, right
                 let bit = [(PTR_FLAGS_BUTTON1, 1), (PTR_FLAGS_BUTTON2, 4), (PTR_FLAGS_BUTTON3, 2)].iter().filter(|(f, _)| flags & f != 0).fold(0, |m, (_, b)| m | b);
                 if flags & PTR_FLAGS_DOWN != 0 { self.mask |= bit } else { self.mask &= !bit }
-                unsafe { move_cursor(cl, self.at.0, self.at.1) };
+                let at = self.at;
+                unsafe { with_state(cl, |st| move_cursor(cl, st, at.0, at.1)) };
                 unsafe { SendPointerEvent(cl, self.at.0, self.at.1, self.mask) != 0 }
             }
             Ev::Wheel(horizontal, notches) => {
@@ -487,14 +512,22 @@ impl Session {
     }
 }
 
+/// Teardown, in this order: the client's pointer to the State is cleared first, so any callback
+/// that still comes (from rfbClientCleanup, or one already on its way) finds no State and fails
+/// (with_state gives None) instead of using a freed one. Then the client goes, then the framebuffer
+/// it leaves to us, and the State last, once nothing can reach it.
 impl Drop for Session {
     fn drop(&mut self) {
         unsafe {
-            let st = state(self.cl) as *mut State;
+            let tag = &TAG as *const u8 as *mut c_void;
+            let st = rfbClientGetClientData(self.cl, tag) as *mut State;
+            rfbClientSetClientData(self.cl, tag, std::ptr::null_mut());
             let fb = (*self.cl).frameBuffer;
             rfbClientCleanup(self.cl); // closes the socket and TLS; it leaves the framebuffer to us
             libc::free(fb as *mut c_void);
-            drop(Box::from_raw(st));
+            if !st.is_null() {
+                drop(Box::from_raw(st));
+            }
         }
     }
 }
@@ -707,6 +740,33 @@ pub fn run(p: &'static Panel) {
 mod tests {
     use super::*;
 
+    /// with_state hands out the State only while the client points at it, and only once at a time.
+    /// After teardown has cleared the pointer, a late callback gets nothing and fails.
+    #[test]
+    fn state_is_scoped_and_gone_after_teardown() {
+        unsafe {
+            let cl = rfbGetClient(8, 3, 4);
+            assert!(!cl.is_null());
+            let tag = &TAG as *const u8 as *mut c_void;
+            let st = Box::into_raw(Box::new(State::default()));
+            rfbClientSetClientData(cl, tag, st as *mut c_void);
+            got_update(cl, 0, 0, 10, 10);
+            assert_eq!(with_state(cl, |st| st.area), Some(100));
+            assert_eq!(with_state(cl, |_| with_state(cl, |_| ())), Some(None), "no second &mut from inside");
+            assert_eq!(with_state(cl, |_| ()), Some(()), "free again afterwards");
+            assert_eq!(cursor_pos(cl, 1, 1), 1);
+
+            rfbClientSetClientData(cl, tag, std::ptr::null_mut()); // what Session's drop does first
+            got_update(cl, 0, 0, 10, 10);
+            assert_eq!(cursor_pos(cl, 2, 2), 0, "a late callback fails");
+            assert!(get_password(cl).is_null(), "and gives no password");
+            assert_eq!(with_state(cl, |_| ()), None);
+            assert_eq!((*st).area, 100, "the State wasn't touched");
+            drop(Box::from_raw(st));
+            rfbClientCleanup(cl);
+        }
+    }
+
     #[test]
     fn keys_map_to_us_keysyms_and_qemu_numbers() {
         assert_eq!((keysym(30, false), keysym(30, true)), ('a' as u32, 'A' as u32));
@@ -811,7 +871,6 @@ mod tests {
             assert!(t.contains("button 1,") && t.contains("button 4,"), "the left button and the wheel");
             assert!(t.contains("(keysym 0x41, A)"), "Shift+A as A");
         }
-        let cursor = &unsafe { state(s.cl) }.cursor;
-        eprintln!("cursor shape {}x{} hot {:?}, drawn at {:?}", cursor.w, cursor.h, cursor.hot, cursor.drawn);
+        unsafe { with_state(s.cl, |st| eprintln!("cursor shape {}x{} hot {:?}, drawn at {:?}", st.cursor.w, st.cursor.h, st.cursor.hot, st.cursor.drawn)) };
     }
 }
