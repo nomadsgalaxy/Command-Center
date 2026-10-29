@@ -136,6 +136,11 @@ the one it was on as soon as you are again. "Nobody's using it" means the Deskto
 you've taken the headset off. It never happens while a game is playing, VR or flat, since that
 costs frame rate and Steam picks its own profile for each game.
 
+It goes by whether you're wearing the headset, not by what the Frame is doing, so with the
+headset off it also drops to Powersave while it streams, hosts Remote Play, or pre-caches
+shaders, and those go slower. A program started outside Steam isn't seen as a game either. If
+that's a problem, turn it off (below).
+
 If anything else changes the profile meanwhile (Steam, a game, or you in the Quick Access menu),
 Command Center leaves your choice alone and doesn't put anything back. If it's stopped before it
 can put the profile back (a crash), the next start does. On a SteamOS without steamos-manager's

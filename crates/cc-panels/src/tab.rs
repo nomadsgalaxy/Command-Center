@@ -106,6 +106,11 @@ pub fn run() -> Result<(), String> {
         // While the Desktop is closed and no game plays, the Frame can save power (power.rs); a
         // running Desktop decides that itself.
         crate::power::want(!desktop);
+        // GetCurrentSceneProcessId is a scene app's pid: 0 with nothing running and with our Desktop
+        // up (overlay apps aren't scene apps), a game's while one runs. SteamVR Home is a scene app
+        // too, so with Home running there's no Powersave. (Not checked live: asking costs an OpenVR
+        // connection.) flat_game() sees Steam's 2D games (gamescope's focused app, or a reaper
+        // launch); a program started outside Steam isn't seen, so it could run in Powersave.
         crate::power::game(call!(apps, GetCurrentSceneProcessId) != 0 || crate::handoff::flat_game());
         if tab.quit {
             tab.destroy();

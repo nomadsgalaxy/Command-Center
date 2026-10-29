@@ -24,18 +24,30 @@ const IFACE: &str = "com.steampowered.SteamOSManager1.PerformanceProfile1";
 static WANT: AtomicBool = AtomicBool::new(false);
 static GAME: AtomicBool = AtomicBool::new(false);
 static STOP: AtomicBool = AtomicBool::new(false);
+/// Wakes the thread the moment `want` or `game` changes, so a headset put back on or a game
+/// starting gets its profile back straight away, not up to POLL later.
+static WAKE: (std::sync::Mutex<bool>, std::sync::Condvar) = (std::sync::Mutex::new(false), std::sync::Condvar::new());
+
+fn wake() {
+    *WAKE.0.lock().unwrap() = true;
+    WAKE.1.notify_one();
+}
 /// Which process this is ("desktop" or "tab"), for its own copy of the found profile: the two
 /// take turns, the tab's only while the Desktop is closed.
 static ROLE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
 /// Nobody's using the Desktop (it's closed, or the headset is off). Called as that changes.
 pub fn want(idle: bool) {
-    WANT.store(idle, Relaxed);
+    if WANT.swap(idle, Relaxed) != idle {
+        wake();
+    }
 }
 
 /// A game is playing (VR or 2D), so no Powersave whatever `want` says.
 pub fn game(on: bool) {
-    GAME.store(on, Relaxed);
+    if GAME.swap(on, Relaxed) != on {
+        wake();
+    }
 }
 
 /// What the profile should become now, if anything.
@@ -53,28 +65,37 @@ pub struct Saver {
 }
 
 impl Saver {
-    /// One look: `low` is whether Powersave is wanted, `now` the profile as it is.
+    /// One look: `low` is whether Powersave is wanted, `now` the profile as it is. It says what to
+    /// set; `commit` records it once the set has gone through.
     pub fn step(&mut self, low: bool, now: &str) -> Act {
         match (&self.found, low) {
             (None, true) if self.backed_off || now == LOW => Act::Nothing, // let go, or already low (nothing of ours to undo)
-            (None, true) => {
-                self.found = Some(now.to_string());
-                Act::Set(LOW.into())
-            }
+            (None, true) => Act::Set(LOW.into()),
             (Some(_), true) if now != LOW => {
                 (self.found, self.backed_off) = (None, true); // changed under us: theirs now
                 Act::Nothing
             }
             (Some(_), true) => Act::Nothing,
-            (Some(was), false) => {
-                let act = if now == LOW { Act::Set(was.clone()) } else { Act::Nothing }; // changed meanwhile: leave theirs
-                self.found = None;
-                act
+            (Some(was), false) if now == LOW => Act::Set(was.clone()),
+            (Some(_), false) => {
+                self.found = None; // changed meanwhile: leave theirs
+                Act::Nothing
             }
             (None, false) => {
                 self.backed_off = false;
                 Act::Nothing
             }
+        }
+    }
+
+    /// What `step` asked for went through (`ok`), or didn't. Only a Powersave that took makes the
+    /// profile it replaced (`was`) ours to put back; one that didn't changes nothing, and isn't
+    /// someone else's doing. Putting it back clears it; failing to keeps it, to try again.
+    pub fn commit(&mut self, act: &Act, was: &str, ok: bool) {
+        match act {
+            Act::Set(p) if ok && p == LOW => self.found = Some(was.to_string()),
+            Act::Set(_) if ok => self.found = None,
+            _ => {}
         }
     }
 }
@@ -136,14 +157,21 @@ fn run() {
     if s.found.is_some() {
         eprintln!("power: a profile we set earlier wasn't put back; it will be now");
     }
+    let mut refused = false; // said once that a set failed
     while !STOP.load(Relaxed) {
         if let Some(now) = m.get() {
             let low = WANT.load(Relaxed) && !GAME.load(Relaxed);
             let had = s.found.clone();
-            if let Act::Set(p) = s.step(low, &now) {
-                if m.set(&p) {
-                    eprintln!("power: {now} -> {p} ({})", if p == LOW { "nobody's using the Desktop" } else { "back to what it was" });
+            let act = s.step(low, &now);
+            if let Act::Set(p) = &act {
+                let ok = m.set(p);
+                s.commit(&act, &now, ok);
+                match ok {
+                    true => eprintln!("power: {now} -> {p} ({})", if p == LOW { "nobody's using the Desktop" } else { "back to what it was" }),
+                    false if !std::mem::replace(&mut refused, true) => eprintln!("power: steamos-manager wouldn't set {p}; trying again quietly"),
+                    false => {}
                 }
+                refused &= !ok;
             }
             if s.found != had {
                 match &s.found {
@@ -156,7 +184,9 @@ fn run() {
                 }
             }
         }
-        std::thread::sleep(POLL);
+        let woken = WAKE.0.lock().unwrap();
+        let (mut woken, _) = WAKE.1.wait_timeout_while(woken, POLL, |w| !*w).unwrap();
+        *woken = false;
     }
 }
 
@@ -181,26 +211,48 @@ mod tests {
     fn it_saves_powersaves_and_puts_back_what_it_found() {
         let mut s = Saver::default();
         assert_eq!(s.step(false, "Performance"), Act::Nothing, "in use: nothing");
-        assert_eq!(s.step(true, "Performance"), Act::Set(LOW.into()));
+        let a = s.step(true, "Performance");
+        assert_eq!(a, Act::Set(LOW.into()));
+        assert_eq!(s.found, None, "not ours until the set goes through");
+        s.commit(&a, "Performance", true);
         assert_eq!(s.found.as_deref(), Some("Performance"));
         assert_eq!(s.step(true, LOW), Act::Nothing, "stays");
-        assert_eq!(s.step(false, LOW), Act::Set("Performance".into()), "back to what it was");
+        let a = s.step(false, LOW);
+        assert_eq!(a, Act::Set("Performance".into()), "back to what it was");
+        s.commit(&a, LOW, true);
         assert_eq!(s, Saver::default());
     }
 
     #[test]
     fn it_backs_off_when_someone_else_changes_it() {
         let mut s = Saver::default();
-        s.step(true, "Balanced");
+        let a = s.step(true, "Balanced");
+        s.commit(&a, "Balanced", true);
         assert_eq!(s.step(true, "Performance"), Act::Nothing, "Steam or you changed it");
         assert_eq!(s.step(true, "Performance"), Act::Nothing, "and it doesn't take it back this spell");
         assert_eq!(s.step(false, "Performance"), Act::Nothing, "nothing to put back");
         assert_eq!(s.step(true, "Performance"), Act::Set(LOW.into()), "the next idle spell is ours again");
         // changed while it's going back: theirs stays
         let mut s = Saver::default();
-        s.step(true, "Balanced");
+        let a = s.step(true, "Balanced");
+        s.commit(&a, "Balanced", true);
         assert_eq!(s.step(false, "Performance"), Act::Nothing);
         assert_eq!(s.found, None);
+    }
+
+    #[test]
+    fn a_set_that_fails_isnt_taken_as_someone_elses_change() {
+        let mut s = Saver::default();
+        let a = s.step(true, "Performance");
+        s.commit(&a, "Performance", false); // polkit, or steamos-manager busy
+        assert_eq!(s, Saver::default(), "nothing of ours, nothing backed off");
+        assert_eq!(s.step(true, "Performance"), Act::Set(LOW.into()), "it tries again next time");
+        let a = s.step(true, "Performance");
+        s.commit(&a, "Performance", true);
+        let back = s.step(false, LOW);
+        s.commit(&back, LOW, false);
+        assert_eq!(s.found.as_deref(), Some("Performance"), "a failed put-back keeps what to put back");
+        assert_eq!(s.step(false, LOW), Act::Set("Performance".into()), "and tries again");
     }
 
     #[test]

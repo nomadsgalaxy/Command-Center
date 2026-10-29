@@ -1021,7 +1021,7 @@ fn run() -> Result<(), String> {
     let mut status = Instant::now();
     let mut ticks = 0u64;
     let mut att: Vec<attention::Attention> = panels().iter().map(|_| Default::default()).collect();
-    let mut on_head = true; // ponytail: assume it's worn at start; the first take-off (VREvent 104) says otherwise
+    let mut on_head = vr::head_worn().unwrap_or(true); // as SteamVR says at start, else worn; VREvent 103/104 keep it up to date
     let mut gaze_seen: Option<([f64; 3], [f64; 3], Instant)> = None; // the last valid gaze sample
     let display_hz = || {
         let mut err = 0;
