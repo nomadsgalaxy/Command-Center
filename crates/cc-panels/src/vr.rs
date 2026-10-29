@@ -30,7 +30,8 @@ macro_rules! call {
 }
 
 fn table<T>(version: &[u8]) -> Result<&'static T, String> {
-    let name = CString::new(format!("FnTable:{}", CStr::from_bytes_with_nul(version).unwrap().to_str().unwrap())).unwrap();
+    let version = CStr::from_bytes_with_nul(version).ok().and_then(|v| v.to_str().ok()).ok_or("a bad interface version")?;
+    let name = cstr(&format!("FnTable:{version}"))?;
     let mut err = 0;
     let p = unsafe { sys::VR_GetGenericInterface(name.as_ptr(), &mut err) } as *const T;
     if p.is_null() { Err(format!("no {name:?} ({err})")) } else { Ok(unsafe { &*p }) }
@@ -90,7 +91,7 @@ pub fn error_name(e: sys::EVROverlayError) -> String {
 }
 
 pub fn create_overlay(key: &str, name: &str) -> Result<Handle, String> {
-    let (k, n) = (CString::new(key).unwrap(), CString::new(name).unwrap());
+    let (k, n) = (cstr(key)?, cstr(name)?);
     let mut h = 0;
     match call!(ov, CreateOverlay, k.as_ptr() as *mut _, n.as_ptr() as *mut _, &mut h) {
         0 => Ok(h),
@@ -100,7 +101,7 @@ pub fn create_overlay(key: &str, name: &str) -> Result<Handle, String> {
 
 /// A tab in SteamVR's dashboard: its page (main) and its thumbnail, which is the tab's icon.
 pub fn create_dashboard_overlay(key: &str, name: &str) -> Result<(Handle, Handle), String> {
-    let (k, n) = (CString::new(key).unwrap(), CString::new(name).unwrap());
+    let (k, n) = (cstr(key)?, cstr(name)?);
     let (mut main, mut thumb) = (0, 0);
     match call!(ov, CreateDashboardOverlay, k.as_ptr() as *mut _, n.as_ptr() as *mut _, &mut main, &mut thumb) {
         0 => Ok((main, thumb)),
@@ -109,8 +110,18 @@ pub fn create_dashboard_overlay(key: &str, name: &str) -> Result<(Handle, Handle
 }
 
 pub fn set_from_file(h: Handle, path: &str) {
-    let p = CString::new(path).unwrap();
-    call!(ov, SetOverlayFromFile, h, p.as_ptr() as *mut _);
+    match cstr(path) {
+        Ok(p) => {
+            call!(ov, SetOverlayFromFile, h, p.as_ptr() as *mut _);
+        }
+        Err(e) => eprintln!("overlay picture: {e}"),
+    }
+}
+
+/// A C string for OpenVR. Overlay names come from viewers.conf and paths from the disk, so a NUL in
+/// one is an error for that overlay, not a panic that takes cc-panels down.
+fn cstr(s: &str) -> Result<CString, String> {
+    CString::new(s).map_err(|_| format!("{s:?} has a NUL in it"))
 }
 
 pub fn place(h: Handle, m: &Mat) {
@@ -227,4 +238,14 @@ pub fn tip(hand: &str) -> Option<([f64; 3], &'static str)> {
         let m = laser_pose(i)?;
         Some(([m[0][3] as f64, m[1][3] as f64, m[2][3] as f64], h))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// A NUL in an overlay's name or a picture's path is an error, not a panic.
+    #[test]
+    fn a_nul_is_an_error() {
+        assert!(super::cstr("controlcenter.panel.desk").is_ok());
+        assert!(super::cstr("desk\0wide").is_err());
+    }
 }
