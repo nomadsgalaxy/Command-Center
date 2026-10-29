@@ -284,7 +284,12 @@ pub fn main(conf: &Path, plat: Box<dyn Platform + Send + Sync>, test: bool) -> i
     let _ = std::fs::remove_file(&flag);
     println!("@pair state={state}");
     if state == "locked" {
-        let _ = std::fs::write(&locked, b"");
+        // The marker is what makes the next pairing wait PAUSE. This run stops here either way;
+        // if it can't be written, say so, since the next run would start at once (RESDISC-001).
+        if let Err(e) = std::fs::write(&locked, b"") {
+            eprintln!("{}: {e}; the key is locked out, but the next pairing won't wait {PAUSE:.0} s", locked.display());
+        }
+        return 1;
     }
     let Some((frame, pk, r)) = paired else { return 1 };
     let saved = write_private(&conf.join("frames").join(format!("{frame}.json")), r.to_string().as_bytes())
