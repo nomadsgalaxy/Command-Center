@@ -15,7 +15,11 @@
 //!                            registers it with SteamVR (one connection), so Command Center's
 //!                            dashboard tab is there while the Desktop is closed (cc-panels' tab.rs).
 //!                            With SteamVR off, the Desktop's next start registers it instead
-//!   cc-home install remove   undoes both, takes the manifest out of SteamVR, and unregisters the
+//!                            And it makes the controller's shoulder button right click on
+//!                            SteamVR's laser (binding.rs; settings.json "bumper_right_click": false
+//!                            keeps it off)
+//!   cc-home install remove   undoes both, takes the manifest out of SteamVR, puts the shoulder
+//!                            button back to Valve's left click, and unregisters the
 //!                            pointer driver; the checkout, the container and
 //!                            ~/.config/control-center stay
 use crate::home_dir;
@@ -165,6 +169,10 @@ fn remove() -> Result<(), String> {
     if let Err(e) = tab_in_steamvr(false) {
         eprintln!("the dashboard tab: {e}"); // the rest is removed either way
     }
+    match crate::binding::restore() {
+        Ok(say) => println!("{say}"),
+        Err(e) => eprintln!("bumper right click: {e}"),
+    }
     if !crate::session::native(&root) {
         let _ = fs::remove_file(root.join("command-center.vrmanifest")); // the image's is part of the image
     }
@@ -308,6 +316,11 @@ fn commands() -> Result<(), String> {
     fs::write(&manifest, text).map_err(|e| format!("{}: {e}", manifest.display()))?;
     if let Err(e) = tab_in_steamvr(true) {
         eprintln!("the dashboard tab: {e}; the Desktop's next start tries again");
+    }
+    // The bumper as right click on SteamVR's laser (binding.rs).
+    match crate::binding::apply() {
+        Ok(say) => println!("{say}"),
+        Err(e) => eprintln!("bumper right click: {e}"),
     }
     println!("a Nomads Galaxy project");
     Ok(())

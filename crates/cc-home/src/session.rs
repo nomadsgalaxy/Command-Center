@@ -231,6 +231,7 @@ fn desktop(args: &[String]) -> i32 {
         // from somewhere else, register the driver with vrpathreg (once; steamos.rs).
         crate::steamos::check_steamvr(register_driver);
     }
+    crate::binding::check(); // the bumper's right click, back if a steamreset or a deleted file lost it
     let runtime = format!("{}/cc-desktop", var_or("XDG_RUNTIME_DIR", &format!("/run/user/{}", uid())));
     // A Desktop closed a moment ago may still be stopping because an app is slow to quit. Let it
     // finish, or the new session can't start and cc-panels comes up without one (live,

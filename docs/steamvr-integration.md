@@ -129,6 +129,26 @@ everything else.
 Docking doesn't change any of this: a docked panel's place in the room stays where you last put
 it down, so after a restart it's there (in the same room) or in front of you (somewhere new).
 
+## The shoulder button is right click
+
+On the Frame's controllers the shoulder button (bumper) is right click on SteamVR's laser, so a
+context menu is one press away. The trigger is still left click, the thumbstick click is still
+right click, and the bumper still holds the laser steady while it's pressed, as Valve set it up.
+
+It's a personal binding for SteamVR's laser (`openvr.component.vrcompositor`), made from Valve's
+own Frame controller binding with only the bumper's two clicks changed, in
+`~/steamvr/input/openvr.component.vrcompositor_frame_controller.json`. The binding is active while
+SteamVR runs. We write the user binding file any time, but the selection in steamvr.vrsettings
+only while SteamVR isn't running, because vrserver rewrites that file on exit. So if you install
+while SteamVR is running, it says "applies next time SteamVR is closed", and the next
+`cc-home install` or Desktop start with SteamVR closed makes the selection. Each Desktop start
+checks it again, so a steamreset or a deleted file doesn't lose it for good.
+
+It never breaks the controller: if the file goes missing or SteamVR updates its laser, SteamVR
+goes back to Valve's own binding by itself. `cc-home install remove` takes it out, and so does
+picking another binding in SteamVR's Controller Bindings. To keep the bumper as left click, add
+`"bumper_right_click": false` to `~/.config/control-center/settings.json`.
+
 ## SteamVR's keyboard
 
 Every live panel (a computer's screen, a window, a pop-out) has a keyboard button on its bar,

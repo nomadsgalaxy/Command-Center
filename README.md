@@ -67,6 +67,8 @@ updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
 - **Moving windows:** grab a panel's bar or edge with the trigger to carry it, the thumbstick
   pushes it away or pulls it closer, the bottom-right corner resizes it, a tap on the curve button
   curves it, and (with `"docking": true`) holding it at your other hand or your face until it buzzes docks it there.
+- **Right click with the shoulder button:** the Frame controller's bumper is right click on
+  SteamVR's laser, so context menus are one press away.
 - **Typing with a controller:** the keyboard button on a panel's bar opens SteamVR's keyboard,
   and what you type goes to that computer or window. Text fields in Command Center's own windows
   open it too, unless you've just been typing on a real keyboard.

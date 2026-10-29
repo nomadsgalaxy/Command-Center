@@ -13,6 +13,7 @@
 //!
 //! It's a static musl binary so the launcher can run it on the Frame's host, and cc-panels can
 //! run it in cc-box.
+mod binding;
 mod hibernate;
 mod install;
 mod machine;
