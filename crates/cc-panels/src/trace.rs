@@ -20,7 +20,7 @@ use std::sync::Mutex;
 const MAX: u64 = 64 << 20;
 
 struct Out {
-    file: std::io::BufWriter<std::fs::File>, // flushed once a pass (tick), so writing never stalls a frame on the disk
+    file: std::io::BufWriter<std::fs::File>, // buffered synchronous writes, flushed at most once a second (tick) and at exit (flush)
     written: u64,
     since: std::time::Instant,   // what the ticks' "t" counts from
     flushed: std::time::Instant, // the last flush, at most once a second

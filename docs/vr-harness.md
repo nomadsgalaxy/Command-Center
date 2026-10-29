@@ -76,10 +76,10 @@ a second, not one a pass, and at 64 MB it stops with one line in the log. The wr
 the main loop, so until that's been measured, treat frame timing with a trace on as possibly a
 little off. The buffer's also flushed however cc-panels ends: a normal quit, closing
 the Desktop, SteamVR's Quit, SIGTERM or SIGINT, a panic, and the exits after a drawing thread's
-panic. Only a SIGKILL or a power cut loses the last pass. Flushing is best effort: if a write or a flush
-fails (a full disk, say), the log says so once, and the trace is missing lines from there on. And a
-panic's flush doesn't wait for the trace's lock, so if another thread happens to hold it right then,
-the last pass is lost too. A panic while the lock's held doesn't stop the trace: every lock of it
+panic. All of that is best effort. A SIGKILL or a power cut loses what's still buffered. If a write
+or a flush fails (a full disk, say), the log says so once, and the trace is missing lines from there
+on. And the flush on the way out (`trace::flush`) doesn't wait for the trace's lock, so if another
+thread holds it right then, the last pass is lost too, however cc-panels is ending. A panic while the lock's held doesn't stop the trace: every lock of it
 takes it anyway.
 
 ## Replaying one
