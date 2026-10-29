@@ -367,6 +367,14 @@ fn contents(p: usize, list: u32, flags: u32, pos: u64, len: u32) -> Option<Vec<u
 
 /// A machine's copied files, fetched into ~/.cache/control-center/clipboard/<copy> for a Frame
 /// paste. Returns the top-level paths, for the uri-list. A second paste of the same copy reuses them.
+/// The files' total size, if it's within max_mb. The sizes come from the machine (its
+/// FileGroupDescriptorW), so they're added with checks: a sum that would wrap is refused, not let
+/// through as a small number (ARITHOFL-001).
+fn within(entries: &[Entry], max_mb: u64) -> Option<u64> {
+    let total = entries.iter().filter(|e| !e.dir).try_fold(0u64, |t, e| t.checked_add(e.size))?;
+    (total <= max_mb.saturating_mul(1 << 20)).then_some(total)
+}
+
 pub fn download(src: usize, descriptor: &[u8], copy: u64) -> Option<Vec<PathBuf>> {
     if let Some((g, tops)) = &*crate::ffi::lock(&STAGED) {
         if *g == copy {
@@ -375,11 +383,10 @@ pub fn download(src: usize, descriptor: &[u8], copy: u64) -> Option<Vec<PathBuf>
     }
     let entries = formats::from_descriptor(descriptor)?;
     let max_mb = crate::config::settings()["clipboard_max_mb"].as_u64().unwrap_or(2048);
-    let total: u64 = entries.iter().filter(|e| !e.dir).map(|e| e.size).sum();
-    if total > max_mb << 20 {
-        eprintln!("clipboard: {} MB of files is over clipboard_max_mb ({max_mb})", total >> 20);
+    let Some(total) = within(&entries, max_mb) else {
+        eprintln!("clipboard: the files are over clipboard_max_mb ({max_mb} MB), or their sizes don't add up");
         return None;
-    }
+    };
     let base = PathBuf::from(format!("{}/.cache/control-center/clipboard", crate::config::home_dir()));
     // ponytail: only the newest copy's files are kept; the one before goes once this starts
     let _ = std::fs::remove_dir_all(&base);
@@ -398,7 +405,9 @@ pub fn download(src: usize, descriptor: &[u8], copy: u64) -> Option<Vec<PathBuf>
         while at < e.size {
             let want = (e.size - at).min(RANGE as u64) as u32;
             let chunk = contents(src, i as u32, FILECONTENTS_RANGE, at, want).filter(|c| !c.is_empty())?;
-            f.write_all(&chunk).ok()?;
+            // never more than asked for, so what's written stays inside the total checked above
+            let chunk = &chunk[..chunk.len().min(want as usize)];
+            f.write_all(chunk).ok()?;
             at += chunk.len() as u64;
         }
     }
@@ -406,4 +415,25 @@ pub fn download(src: usize, descriptor: &[u8], copy: u64) -> Option<Vec<PathBuf>
     let tops = formats::tops(&root, &entries);
     *crate::ffi::lock(&STAGED) = Some((copy, tops.clone()));
     Some(tops)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(size: u64) -> Entry {
+        Entry { name: "f".into(), size, dir: false, local: None }
+    }
+
+    /// A machine's file sizes that would wrap past u64 are refused, and so is anything over the
+    /// limit; folders don't count.
+    #[test]
+    fn sizes_that_wrap_are_refused() {
+        assert_eq!(within(&[file(1 << 63), file(1 << 63)], 2048), None, "2^63 + 2^63 wraps to 0");
+        assert_eq!(within(&[file(u64::MAX), file(1)], u64::MAX), None);
+        assert_eq!(within(&[file(3 << 20)], 2), None, "over clipboard_max_mb");
+        assert_eq!(within(&[file(1 << 20), file(1 << 20)], 2), Some(2 << 20));
+        assert_eq!(within(&[Entry { dir: true, ..file(u64::MAX) }, file(5)], 1), Some(5));
+        assert_eq!(within(&[file(5)], u64::MAX), Some(5), "a huge limit doesn't overflow either");
+    }
 }
