@@ -1040,7 +1040,7 @@ fn paint_backdrop(h: vr::Handle) {
 
 /// Every tracked device's pose in standing space, as it'll be when this frame's picture reaches
 /// your eyes (vr::to_photons), so what's carried or docked keeps up with the hand.
-fn poses() -> Vec<sys::TrackedDevicePose_t> {
+pub fn poses() -> Vec<sys::TrackedDevicePose_t> {
     let n = sys::k_unMaxTrackedDeviceCount as usize;
     let mut all: Vec<sys::TrackedDevicePose_t> = vec![unsafe { std::mem::zeroed() }; n];
     call!(sys, GetDeviceToAbsoluteTrackingPose, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, vr::to_photons(), all.as_mut_ptr(), n as u32);

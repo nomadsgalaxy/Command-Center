@@ -151,9 +151,21 @@ pub fn to_photons() -> f32 {
     if !call!(sys, GetTimeSinceLastVsync, &mut since, &mut frame) {
         return 0.0;
     }
-    let mut err = 0;
-    let hz = call!(sys, GetFloatTrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &mut err);
-    let v2p = call!(sys, GetFloatTrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_SecondsFromVsyncToPhotons_Float, &mut err);
+    // the display's rate and delay don't change while it runs, so they're read until the headset
+    // reports a rate, then kept
+    static DISPLAY: OnceLock<(f32, f32)> = OnceLock::new();
+    let (hz, v2p) = match DISPLAY.get() {
+        Some(&d) => d,
+        None => {
+            let mut err = 0;
+            let hz = call!(sys, GetFloatTrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &mut err);
+            let v2p = call!(sys, GetFloatTrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_SecondsFromVsyncToPhotons_Float, &mut err);
+            if hz > 0.0 {
+                let _ = DISPLAY.set((hz, v2p));
+            }
+            (hz, v2p)
+        }
+    };
     if hz <= 0.0 { 0.0 } else { (1.0 / hz - since).max(0.0) + v2p.max(0.0) }
 }
 

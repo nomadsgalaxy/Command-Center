@@ -69,7 +69,8 @@ impl Stage for Live {
     fn controllers(&self) -> Vec<u32> {
         // connected, tracked or not: a hand that's out of the cameras' sight right now can still be a
         // target later in the carry (arm() reads its pose each frame)
-        (1..openvr_sys::k_unMaxTrackedDeviceCount as u32).filter(|&d| crate::grab::connected(d) && vr::is_real_controller(d)).collect()
+        let poses = crate::grab::poses(); // once, not per device
+        (1..openvr_sys::k_unMaxTrackedDeviceCount as u32).filter(|&d| poses.get(d as usize).is_some_and(|p| p.bDeviceIsConnected) && vr::is_real_controller(d)).collect()
     }
 
     fn panel(&self, i: usize) -> PanelFacts {
@@ -189,8 +190,8 @@ pub mod fake {
 
         fn controllers(&self) -> Vec<u32> {
             let mut c: Vec<u32> = self.devices.keys().chain(&self.hidden).copied().filter(|&d| d != 0 && d != crate::grab::MOUSE && !self.off.contains(&d)).collect();
-            c.dedup();
             c.sort();
+            c.dedup();
             c
         }
 
