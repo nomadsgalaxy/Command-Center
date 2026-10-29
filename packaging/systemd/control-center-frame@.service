@@ -2,11 +2,17 @@
 Description=Command Center share for paired Frame %i
 After=graphical-session.target
 PartOf=graphical-session.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+OnFailure=control-center-alert@%n.service
 
 [Service]
+ExecStartPre=@HOST@ krdp-check
 ExecStart=@HOST@ frame-run %i
 Restart=on-failure
-RestartSec=5
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=60s
 
 [Install]
 WantedBy=graphical-session.target

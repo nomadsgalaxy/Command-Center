@@ -2,11 +2,16 @@
 Description=Command Center: announce this machine on the network (mDNS _controlcenter._tcp)
 After=graphical-session.target network-online.target
 PartOf=graphical-session.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+OnFailure=control-center-alert@%n.service
 
 [Service]
 ExecStart=@HOST@ announce-run
 Restart=on-failure
-RestartSec=10
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=60s
 
 [Install]
 WantedBy=graphical-session.target

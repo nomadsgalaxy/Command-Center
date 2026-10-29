@@ -2,7 +2,10 @@
 Description=Command Center window stream for paired Frame %i
 After=graphical-session.target
 PartOf=graphical-session.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
+ExecStartPre=@HOST@ krdp-check --window
 ExecStart=@HOST@ window-run %i
 Restart=no

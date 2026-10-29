@@ -682,6 +682,10 @@ fn check(e: &Env) -> bool {
         println!("  need the firewall to let the Frame in (ports 3399-3449, private ranges only): cc-share fix");
         bad = true;
     }
+    for f in foreign_dropins(&dropin_dirs(e)) {
+        println!("  need {} changes a Command Center unit and isn't ours: remove it, then systemctl --user daemon-reload", f.display());
+        bad = true;
+    }
     println!("  ok   cc-host (cc-host {}): the agent, pairing and tag screens", env!("CARGO_PKG_VERSION"));
     for u in ["control-center-agent", "control-center-guard"] {
         if sysq(&["is-active", "-q", u]) {
@@ -746,6 +750,8 @@ pub fn unit_files(host: &str, krdp: &str) -> Vec<(&'static str, String)> {
         // The agent (docs/agent.md). It runs as this user, never root, and it's sandboxed as far as krdp control still works.
         ("control-center-agent.service", fill(include_str!("../../../packaging/systemd/control-center-agent.service"))),
         ("control-center-guard.service", fill(include_str!("../../../packaging/systemd/control-center-guard.service"))),
+        // OnFailure= of the others: a unit that gave up says so (cc-host alert).
+        ("control-center-alert@.service", fill(include_str!("../../../packaging/systemd/control-center-alert@.service"))),
     ]
 }
 
@@ -945,6 +951,9 @@ fn install(e: &Env, args: &[String]) -> i32 {
         }
     }
     e.launcher();
+    if !no_dropins(e) {
+        return 1;
+    }
     e.units_cmd(&["start"], false); // It's running now either way.
     if e.autostart() {
         e.units_cmd(&["enable"], true);
@@ -1497,7 +1506,7 @@ fn uninstall(e: &Env, args: &[String]) -> i32 {
             let _ = std::fs::remove_file(f.path());
         }
     }
-    for u in ["control-center-share@.service", "control-center-frame@.service", "control-center-guard.service", "control-center-agent.service", "control-center-window@.service"] {
+    for u in ["control-center-share@.service", "control-center-frame@.service", "control-center-guard.service", "control-center-agent.service", "control-center-window@.service", "control-center-alert@.service"] {
         let _ = std::fs::remove_file(e.units.join(u));
     }
     for p in [e.home.join(".local/bin/cc-share"), e.home.join(".local/share/applications/command-center-krdp-window.desktop"), e.home.join(".local/share/applications/command-center-host.desktop"), e.dir.join("shared"), e.dir.join("autostart")] {
@@ -1543,6 +1552,97 @@ pub fn pair_precheck(e: &Env, flag: &str) -> Result<(), i32> {
 }
 
 /// Runs cc-share's commands. Returns None if it isn't one of them.
+// ---------------------------------------------------------------- the units' health
+
+/// The units' ExecStartPre: runs the krdp that frame-run (or window-run, with `window`) would run,
+/// with --version, so a krdp that can't load its libraries fails here once, with the loader's error
+/// in the journal, instead of crash-looping.
+fn krdp_check(e: &Env, window: bool) -> i32 {
+    let bin = if window { krdp(e, true) } else { Some(krdp(e, false).unwrap_or_else(|| PathBuf::from("/usr/bin/krdpserver"))) };
+    let Some(bin) = bin else {
+        eprintln!("no window server built (docs/remote-windows.md step 0)");
+        return 1;
+    };
+    match starts(&bin) {
+        Ok(()) => 0,
+        Err(x) => {
+            eprintln!("{x}");
+            1
+        }
+    }
+}
+
+/// Whether bin runs at all: `bin --version`, without a display. The error says why not.
+fn starts(bin: &Path) -> Result<(), String> {
+    let o = Command::new(bin).arg("--version").env("QT_QPA_PLATFORM", "offscreen").stdin(Stdio::null()).stdout(Stdio::null()).output().map_err(|x| format!("{}: {x}", bin.display()))?;
+    if o.status.success() {
+        return Ok(());
+    }
+    Err(format!("{} can't start ({}): {}", bin.display(), o.status, String::from_utf8_lossy(&o.stderr).trim()))
+}
+
+/// Where a host's alerts go, one line each: "<unix time> <unit>". The agent reads it.
+pub fn alerts(e: &Env) -> PathBuf {
+    e.home.join(".cache/control-center/host-alerts")
+}
+
+/// control-center-alert@<unit>: a unit gave up (OnFailure=). It says so once, as a desktop
+/// notification and a line in the alerts file, instead of failing quietly.
+fn alert(e: &Env, unit: &str) -> i32 {
+    notify(&format!("{unit} stopped after failing again and again: systemctl --user status {unit}"));
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let f = alerts(e);
+    let line = format!("{secs} {unit}\n");
+    let written = f.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| {
+        use std::io::Write;
+        std::fs::OpenOptions::new().create(true).append(true).open(&f)?.write_all(line.as_bytes())
+    });
+    if let Err(x) = written {
+        eprintln!("{}: {x}", f.display());
+        return 1;
+    }
+    0
+}
+
+/// The places a drop-in for our user units could be: the user's, the admin's and the runtime ones.
+fn dropin_dirs(e: &Env) -> Vec<PathBuf> {
+    let mut d = vec![e.units.clone(), PathBuf::from("/etc/systemd/user"), PathBuf::from("/run/systemd/user"), PathBuf::from("/usr/lib/systemd/user")];
+    if let Some(r) = std::env::var_os("XDG_RUNTIME_DIR") {
+        d.push(PathBuf::from(r).join("systemd/user"));
+    }
+    d
+}
+
+/// Drop-ins for any control-center-* unit in dirs. We ship none, so every one is unknown, like the
+/// leftover that pointed krdp at an old library and crash-looped 5,000 times.
+pub fn foreign_dropins(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut found = vec![];
+    for d in dirs {
+        for entry in std::fs::read_dir(d).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("control-center-") && name.ends_with(".d") {
+                found.extend(std::fs::read_dir(entry.path()).into_iter().flatten().flatten().map(|f| f.path()).filter(|f| f.extension().is_some_and(|x| x == "conf")));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Refuses to start with an unknown drop-in in place, and says which files and how to clear them.
+fn no_dropins(e: &Env) -> bool {
+    let found = foreign_dropins(&dropin_dirs(e));
+    if found.is_empty() {
+        return true;
+    }
+    eprintln!("not starting: these drop-ins change Command Center's units, and Command Center ships none:");
+    for f in &found {
+        eprintln!("  {}", f.display());
+    }
+    eprintln!("remove them (or move them out of the way), run systemctl --user daemon-reload, and try again");
+    false
+}
+
 pub fn main(cmd: &str, args: &[String]) -> Option<i32> {
     let e = env();
     let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or("");
@@ -1556,6 +1656,9 @@ pub fn main(cmd: &str, args: &[String]) -> Option<i32> {
         "install" => install(&e, args),
         "check" => i32::from(!check(&e)),
         "up" => {
+            if !no_dropins(&e) {
+                return Some(1);
+            }
             e.units_cmd(&["start"], false);
             notify(&format!("sharing {}: the Frame can connect", hostname()));
             println!("Command Center is running on {}", hostname());
@@ -1609,6 +1712,8 @@ pub fn main(cmd: &str, args: &[String]) -> Option<i32> {
         "announce" => announce_cmd(&e, if arg(0).is_empty() { "status" } else { arg(0) }),
         "announce-run" => announce_run(&e),
         "frame-run" => frame_run(&e, arg(0)),
+        "krdp-check" => krdp_check(&e, arg(0) == "--window"),
+        "alert" => alert(&e, arg(0)),
         "window-run" => window_run(&e, arg(0)),
         "windows" => windows_cmd(&e, if arg(0).is_empty() { "status" } else { arg(0) }),
         "unpair" => unpair(&e, arg(0), arg(1)),
@@ -1623,6 +1728,40 @@ pub fn main(cmd: &str, args: &[String]) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    /// The drop-in check finds a leftover for any of our units (template or instance) in any of the
+    /// dirs, and nothing else.
+    #[test]
+    fn finds_foreign_dropins() {
+        let d = std::env::temp_dir().join(format!("cc-host-dropins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (user, etc) = (d.join("user"), d.join("etc"));
+        for (dir, unit, file) in [(&user, "control-center-share@.service.d", "old-krdp.conf"), (&etc, "control-center-agent.service.d", "x.conf"), (&user, "control-center-share@0.service.d", "notes.txt"), (&user, "someone-else.service.d", "y.conf")] {
+            std::fs::create_dir_all(dir.join(unit)).unwrap();
+            std::fs::write(dir.join(unit).join(file), "[Service]\n").unwrap();
+        }
+        let found = super::foreign_dropins(&[user.clone(), etc.clone(), d.join("missing")]);
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(found, [etc.join("control-center-agent.service.d/x.conf"), user.join("control-center-share@.service.d/old-krdp.conf")]);
+    }
+
+    /// The units' ExecStartPre: a krdp that can't load its libraries fails, with the loader's words.
+    #[test]
+    fn a_krdp_that_cant_load_fails_the_check() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("cc-host-krdpcheck-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (good, bad) = (d.join("good"), d.join("bad"));
+        std::fs::write(&good, "#!/bin/sh\necho krdp-server 6.7.5\n").unwrap();
+        std::fs::write(&bad, "#!/bin/sh\necho 'krdpserver: error while loading shared libraries: libKRdp.so.6: cannot open shared object file' >&2\nexit 127\n").unwrap();
+        for f in [&good, &bad] {
+            std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let (g, b) = (super::starts(&good), super::starts(&bad));
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(g, Ok(()));
+        assert!(b.as_ref().is_err_and(|e| e.contains("libKRdp.so.6") && e.contains("127")), "{b:?}");
+    }
+
     use super::*;
 
     #[test]

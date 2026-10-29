@@ -1,0 +1,6 @@
+[Unit]
+Description=Command Center: say that %i stopped after failing again and again
+
+[Service]
+Type=oneshot
+ExecStart=@HOST@ alert %i

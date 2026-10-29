@@ -267,6 +267,33 @@ fn install_fails_when_the_units_cant_be_written() {
     assert!(!log.contains("daemon-reload") && !log.contains(" start "), "nothing reloaded or started: {log}");
 }
 
+/// A leftover drop-in on one of our units (like the one that pointed krdp at an old library) stops
+/// `cc-share up` with the file named, before anything starts, and check flags it.
+#[test]
+fn up_refuses_an_unknown_dropin() {
+    let work = std::env::temp_dir().join(format!("cc-host-share-dropin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("desk.json"), DESK).unwrap();
+    let run = Run { dir: work.join("run"), work: work.clone() };
+    let share = run.home().join(".local/share/control-center");
+    std::fs::create_dir_all(&share).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_cc-host"), share.join("cc-host")).unwrap();
+    run.shims();
+    let d = run.home().join(".config/systemd/user/control-center-share@.service.d");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("old-krdp.conf"), "[Service]\nEnvironment=LD_LIBRARY_PATH=/opt/old-krdp\n").unwrap();
+    run.cmd("up");
+    run.cmd("check");
+    let out = std::fs::read_to_string(run.dir.join("out")).unwrap();
+    let log = std::fs::read_to_string(run.dir.join("log")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&work);
+    let up = out.split("$ cc-share check").next().unwrap();
+    assert!(up.contains("[exit 1]") && up.contains("old-krdp.conf") && up.contains("not starting"), "{out}");
+    assert!(!log.contains(" start "), "nothing started: {log}");
+    assert!(out.contains("need ") && out.split("$ cc-share check").nth(1).unwrap().contains("old-krdp.conf"), "{out}");
+}
+
 #[test]
 fn share_commands_match_the_recorded_bash() {
     use Step::*;

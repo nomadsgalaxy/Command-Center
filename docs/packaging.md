@@ -76,6 +76,26 @@ per-user step after it, because a package runs as root and can't set up someone'
   id in ~/.config/control-center stay, so no Frame has to pair again (R10).
 - `cc-share check` reports the package version, and that the patched krdp is the one running.
 
+## When a host's units break
+
+Every `control-center-*` unit gives up instead of crash-looping forever. It's allowed 5 starts in
+5 minutes (`StartLimitIntervalSec=300`, `StartLimitBurst=5`), and the wait between restarts grows
+from 2 s to a minute (`RestartSteps=5`, `RestartMaxDelaySec=60s`; systemd 254 and later, and older
+versions ignore those two keys with a warning). Once a unit gives up it's `failed`, so
+`systemctl --user --failed` lists it, and `OnFailure=` starts `control-center-alert@<unit>`. That
+runs `cc-host alert`, which shows a desktop notification and adds a line to
+`~/.cache/control-center/host-alerts`.
+
+Before krdp starts, its unit runs the same krdp with `--version` (`cc-host krdp-check` for a paired
+Frame's servers). A krdp that can't load its libraries then fails once, with the loader's error in
+`journalctl --user -u <unit>`.
+
+Command Center ships no drop-ins for its units, so `cc-share install` and `cc-share up` refuse to
+start while any `control-center-*.d/*.conf` exists in `~/.config/systemd/user`, `/etc/systemd/user`,
+`/run/systemd/user`, `/usr/lib/systemd/user` or `$XDG_RUNTIME_DIR/systemd/user`, and `cc-share
+check` lists them. Remove them, run `systemctl --user daemon-reload` and start again. That's the
+leftover that once pointed krdp at an old library and restarted it more than 5,000 times.
+
 ## Updates
 
 - **The package manager updates the files.** The running user services keep the old binaries
