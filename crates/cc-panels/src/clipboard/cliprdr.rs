@@ -285,14 +285,43 @@ fn respond(p: usize, data: Option<&[u8]>) {
 
 // ------------------------------------------------------------------ file contents
 
+/// The FILECONTENTS answers being worked on, at most FILE_WORKERS at once. Holding one is a slot.
+struct Busy;
+const FILE_WORKERS: usize = 4;
+static BUSY: AtomicU32 = AtomicU32::new(0);
+
+impl Busy {
+    /// Takes a slot if one is free.
+    fn take() -> bool {
+        if BUSY.fetch_add(1, SeqCst) as usize >= FILE_WORKERS {
+            BUSY.fetch_sub(1, SeqCst);
+            return false;
+        }
+        true
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        BUSY.fetch_sub(1, SeqCst);
+    }
+}
+
 unsafe extern "C" fn on_server_file_contents_request(c: *mut CliprdrClientContext, r: *const CLIPRDR_FILE_CONTENTS_REQUEST) -> UINT {
     crate::ffi::guard("on_server_file_contents_request", ERROR_INTERNAL_ERROR, || {
         let r = unsafe { *r };
         let p = index(c);
         let pos = (r.nPositionHigh as u64) << 32 | r.nPositionLow as u64;
         let relay = with(p, |i| i.relay).flatten();
+        // A machine could send requests faster than they're answered, each one a thread with up
+        // to MOST bytes (RESEXHAUST-002), so only a few run at once; one past that is refused.
+        if !Busy::take() {
+            answer(p, r.streamId, None);
+            return 0;
+        }
         // off the RDP thread: a relay waits on another machine, and a range is a disk read
         std::thread::spawn(move || {
+            let _busy = Busy;
             let data = match relay {
                 Some(src) => contents(src, r.listIndex, r.dwFlags, pos, r.cbRequested.min(MOST)),
                 None => local(r.listIndex as usize, r.dwFlags, pos, r.cbRequested.min(MOST)),
@@ -435,5 +464,15 @@ mod tests {
         assert_eq!(within(&[file(1 << 20), file(1 << 20)], 2), Some(2 << 20));
         assert_eq!(within(&[Entry { dir: true, ..file(u64::MAX) }, file(5)], 1), Some(5));
         assert_eq!(within(&[file(5)], u64::MAX), Some(5), "a huge limit doesn't overflow either");
+    }
+
+    /// Only FILE_WORKERS FILECONTENTS answers run at once; a slot frees when its worker ends.
+    #[test]
+    fn file_answers_are_bounded() {
+        let held: Vec<Busy> = (0..FILE_WORKERS).map(|_| Busy::take().then_some(Busy).unwrap()).collect();
+        assert!(!Busy::take(), "one more is refused");
+        drop(held);
+        assert!(Busy::take(), "free again");
+        drop(Busy);
     }
 }
