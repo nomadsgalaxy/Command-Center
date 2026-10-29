@@ -588,6 +588,7 @@ impl Painter {
                     // comes, so end the process, same as when cards were drawn on the main
                     // thread. The panic hook has already logged it and systemd starts it again.
                     let Ok(buf) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(draw)) else {
+                        crate::trace::flush();
                         std::process::exit(101);
                     };
                     if tx.send((i, seq, buf)).is_err() {

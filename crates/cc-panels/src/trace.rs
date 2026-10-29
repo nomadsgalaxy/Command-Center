@@ -61,6 +61,22 @@ fn write(v: Value) {
     }
 }
 
+/// Writes what's buffered to the disk. It's called on every way cc-panels ends: GiveBack's drop
+/// (a normal quit, closing the Desktop, SteamVR's Quit, and SIGTERM or SIGINT, which only set
+/// QUIT so main ends through it), the panic hook, and the exits after the cards' or the UI's
+/// thread panicked. It never waits on the lock, since a panic can come while it's held, and
+/// it never starts a trace.
+pub fn flush() {
+    let mut o = match OUT.try_lock() {
+        Ok(o) => o,
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return,
+    };
+    if let Some(o) = o.as_mut() {
+        let _ = o.file.flush();
+    }
+}
+
 /// What an event type carries into a trace, if it goes in at all.
 enum Kind {
     Pointer, // a move, press or release: where, which button
@@ -217,6 +233,24 @@ mod tests {
         assert!(kwin && cap && win, "KWin {kwin}, capture {cap}, the session {win}");
         crate::windows::shell_mouse(freerdp_sys::PTR_FLAGS_MOVE, Some((1.0, 2.0)));
         assert_eq!(*crate::windows::SHELL_SENT.lock().unwrap(), [(freerdp_sys::PTR_FLAGS_MOVE, Some((1.0, 2.0)))], "it went to the test's list, and only there");
+    }
+
+    #[test]
+    fn flush_writes_what_was_buffered() {
+        let _vr = fake_vr(); // the replays write through OUT too, so not while one runs
+        let path = std::env::temp_dir().join(format!("cc-trace-flush-{}.jsonl", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        *OUT.lock().unwrap() = Some(Out { file: std::io::BufWriter::with_capacity(1 << 20, file), written: 0, since: std::time::Instant::now() });
+        state("plasma", json!({"crop": [1, 2, 3, 4]}));
+        pose(3, None);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "", "still in the buffer");
+        flush();
+        let text = std::fs::read_to_string(&path).unwrap();
+        *OUT.lock().unwrap() = None;
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(text.starts_with(r#"{"plasma":{"crop":[1,2,3,4]}}"#), "{text}");
+        flush(); // with no trace: nothing, and no panic
     }
 
     #[test]

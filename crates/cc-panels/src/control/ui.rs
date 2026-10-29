@@ -271,7 +271,10 @@ impl<K: Clone + PartialEq + Send + 'static> Painter<K> {
                     (self.job, self.drawn, self.px) = (None, Some(k), t.px); // even if refused: it's tried again on the next change
                 }
                 Err(mpsc::TryRecvError::Empty) => return,
-                Err(mpsc::TryRecvError::Disconnected) => std::process::exit(101), // it panicked (and logged it), so exit like the cards' painter does
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    crate::trace::flush();
+                    std::process::exit(101) // it panicked (and logged it), so exit like the cards' painter does
+                }
             }
         }
         if self.drawn.as_ref() == Some(&key) {

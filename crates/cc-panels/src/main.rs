@@ -750,6 +750,7 @@ impl Drop for GiveBack {
         crate::kvm::lock().return_devices();
         kwin::restore();
         power::stop(); // the profile it found, back
+        trace::flush();
     }
 }
 
@@ -837,6 +838,7 @@ fn run() -> Result<(), String> {
             laser::hide();
         }
         default_hook(info);
+        trace::flush(); // what led up to it
     }));
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);

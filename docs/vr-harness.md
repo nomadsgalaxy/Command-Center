@@ -67,7 +67,9 @@ pointed, so treat it as sensitive: it's only written when you ask for it, it sta
 and you should delete the flag file and the trace when you're done.
 
 It's written through a 1 MB buffer flushed once a pass, so the disk never stalls a frame, and at
-64 MB it stops with one line in the log.
+64 MB it stops with one line in the log. The buffer's also flushed however cc-panels ends: a normal quit, closing
+the Desktop, SteamVR's Quit, SIGTERM or SIGINT, a panic, and the exits after a drawing thread's
+panic. Only a SIGKILL or a power cut loses the last pass.
 
 ## Replaying one
 
