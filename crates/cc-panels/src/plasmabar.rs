@@ -405,6 +405,11 @@ impl Plasma {
             }
             apply(&mut Live, self.ov, &place_for(&local, dev, width, curve, b, self.placed.map(|q| q.4)));
             self.placed = placed;
+            if crate::trace::on() {
+                let aspect = c[3] as f64 / c[2].max(1) as f64;
+                let v = serde_json::json!({"crop": c, "panel": p, "bounds": b, "world": world, "width": width, "aspect": aspect, "curve": curve, "clickable": self.clickable});
+                crate::trace::state("plasma", v);
+            }
         }
         *CROP.lock().unwrap() = Some((c, p));
         crate::kvm::lock().plasma = Some(Placement::from_matrix(&world, width, c[3] as f64 / c[2].max(1) as f64, curve));
@@ -454,7 +459,8 @@ impl Plasma {
         // the bounds show. While a popup is open the texture is the whole output and we show a
         // crop of it, so the laser moved the pointer ~2.5x too fast. Back to fractions of the crop.
         let b = self.placed.map_or([0.0, 0.0, 1.0, 1.0], |q| q.4);
-        while call!(ov, PollNextOverlayEvent, self.ov, &mut e, size_of::<vr::VREvent_t>() as u32) {
+        crate::trace::tick("plasma");
+        while crate::trace::poll("plasma", self.ov, &mut e) {
             let m = unsafe { e.data.mouse };
             let (fx, fy) = in_bounds(b, m.x as f64, m.y as f64);
             if debug() && e.eventType != sys::EVREventType_VREvent_MouseMove {

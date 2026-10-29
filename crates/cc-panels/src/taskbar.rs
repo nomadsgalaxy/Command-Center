@@ -929,7 +929,8 @@ impl Taskbar {
     /// Laser events on it: hovering, clicking a chip, taking an edge, a corner or the knob.
     fn events(&mut self, grab: &mut grab::Grab, windows: &mut Windows) {
         let mut e: vr::VREvent_t = Default::default();
-        while call!(ov, PollNextOverlayEvent, self.ov, &mut e, size_of::<vr::VREvent_t>() as u32) {
+        crate::trace::tick("taskbar");
+        while crate::trace::poll("taskbar", self.ov, &mut e) {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
             let y = from_top(self.frame.h, m.y as f64); // its units, from the top
             let mut part = part_at(&self.frame, m.x as f64, y);
@@ -939,7 +940,7 @@ impl Taskbar {
             let pointer = [sys::EVREventType_VREvent_MouseMove, sys::EVREventType_VREvent_MouseButtonDown, sys::EVREventType_VREvent_MouseButtonUp].contains(&e.eventType);
             let bar = if pointer && self.frame.well.is_some() { crate::kvm::lock().bar } else { None }; // (unlocked again: laser_on_panel takes it)
             if let Some(bar) = bar
-                && let Some(l) = vr::laser_pose(dev)
+                && let Some(l) = crate::trace::laser_pose(dev)
                 && let Some(on) = crate::plasmabar::laser_on_panel(&[l[0][3] as f64, l[1][3] as f64, l[2][3] as f64], &frame_point(&bar, &self.frame, m.x as f64, m.y as f64))
             {
                 part = match (on, part) {

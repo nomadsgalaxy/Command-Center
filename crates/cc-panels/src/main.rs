@@ -45,6 +45,7 @@ mod surface;
 mod tab;
 mod taskbar;
 mod theme;
+mod trace;
 mod vnc;
 mod vr;
 mod windows;
