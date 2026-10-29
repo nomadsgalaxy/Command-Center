@@ -316,6 +316,14 @@ pub fn ahead_of(eye: &V3, f: &V3, dist: f64, drop: f64, aside: f64) -> V3 {
     [eye[0] + f[0] * dist - f[2] * aside, eye[1] - drop, eye[2] + f[2] * dist + f[0] * aside]
 }
 
+/// Where a new surface opens: limits::NEW_AHEAD ahead of the eyes, level, facing you, `width`
+/// wide. `drop` and `aside` are a staircase's steps (windows.rs), 0 for one on its own.
+pub fn new_pose(head: &Mat, width: f64, drop: f64, aside: f64) -> Pose {
+    let (eye, f) = ([0, 1, 2].map(|i| head[i][3] as f64), level_ahead(head));
+    let (yaw, pitch) = angles(&f);
+    Pose { centre: ahead_of(&eye, &f, crate::limits::NEW_AHEAD, drop, aside), yaw, pitch, width, ..Default::default() }
+}
+
 // ------------------------------------------------------------------ curves
 // A panel's curve is a radius in metres (0 is flat). SteamVR wants it as a fraction, and everything
 // that bends a panel agrees on the same rules, so they're written once, here.
@@ -602,6 +610,16 @@ mod tests {
         assert_eq!(level([0.0, 5.0, 0.0]), [0.0, 0.0, 0.0], "straight up has no level direction");
         assert!((norm(&level([3.0, 9.0, 4.0])) - 1.0).abs() < 1e-12);
         assert_eq!(level_ahead(&STAND_IN_HEAD), [0.0, 0.0, -1.0], "the stand-in looks down -z");
+        // a new surface: 1.4 m ahead, level, facing back at the eyes, whichever way you face
+        for yaw in [0.0f64, 70.0, -150.0] {
+            let (c, s) = (yaw.to_radians().cos() as f32, yaw.to_radians().sin() as f32);
+            let head: Mat = [[c, 0.0, s, 0.3], [0.0, 1.0, 0.0, 1.6], [-s, 0.0, c, -0.2]];
+            let p = new_pose(&head, 1.2, 0.0, 0.0);
+            let eye = [0, 1, 2].map(|i| head[i][3] as f64);
+            let to = [p.centre[0] - eye[0], p.centre[1] - eye[1], p.centre[2] - eye[2]];
+            assert!((norm(&to) - 1.4).abs() < 1e-6 && to[1].abs() < 1e-9 && p.pitch.abs() < 1e-9, "{yaw}: {to:?}");
+            assert!((p.yaw - angles(&to).0).abs() < 1e-6, "{yaw}: it faces you");
+        }
         let eye = [1.0, 1.7, 2.0];
         assert_eq!(ahead_of(&eye, &[0.0, 0.0, -1.0], 1.2, 0.0, 0.0), [1.0, 1.7, 0.8]);
         let at = ahead_of(&eye, &[0.0, 0.0, -1.0], 1.2, 0.1, 0.1);

@@ -794,11 +794,12 @@ fn connect(p: &'static Panel, after: Duration) -> std::thread::JoinHandle<()> {
     })
 }
 
-/// Places a remote at its saved spot, or else a metre and a half in front of you. Returns its
-/// pose and whether it was saved. Used at start and when Add machine fills one.
+/// Places a remote at its saved spot, or else where every new surface opens (geometry.rs
+/// `new_pose`), 1.2 m wide. Returns its pose and whether it was saved. Used at start and when Add
+/// machine fills one.
 pub fn place_remote(p: &Panel) -> (Pose, bool) {
     let saved = config::home_pose(&p.v.name, Some(p.v.screen));
-    let pose = saved.unwrap_or(Pose { centre: [0.0, 1.5, -1.5], width: 1.2, ..Default::default() });
+    let pose = saved.unwrap_or_else(|| geometry::new_pose(&vr::head().unwrap_or(geometry::STAND_IN_HEAD), 1.2, 0.0, 0.0));
     p.set_vert(pose.vert); // curved top to bottom means turned (kvm.rs set_place)
     KVM.lock().unwrap().set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve);
     (pose, saved.is_some())

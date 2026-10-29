@@ -990,14 +990,11 @@ impl Windows {
         self.density / p.zoom()
     }
 
-    /// 1.2 m ahead of the head, level, each new one 8 cm right and down from the last.
+    /// Where every new surface opens (geometry.rs `new_pose`), each new one 8 cm right and down from the last.
     fn ahead(&self) -> Pose {
         let n = (0..SLOTS).filter(|&j| panel(self.first + j).live()).count() % 6;
-        let m = vr::head().unwrap_or(STAND_IN_HEAD);
-        let (eye, f) = ([0, 1, 2].map(|i| m[i][3] as f64), level_ahead(&m));
-        let (yaw, pitch) = angles(&f);
         let c = 0.08 * n as f64;
-        Pose { centre: ahead_of(&eye, &f, 1.2, c, c), yaw, pitch, width: 1.0, ..Default::default() }
+        crate::geometry::new_pose(&vr::head().unwrap_or(STAND_IN_HEAD), 1.0, c, c)
     }
 
     /// Its border tag, drawn once per app by assets.rs (off the main thread) and then cached.

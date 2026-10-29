@@ -28,6 +28,12 @@ pub const ZOOM_NOTCH: f64 = 1.1;
 /// metres, so it has no `MIN_WIDTH` or `MAX_WIDTH` (the spec makes it metres).
 pub const BAR_SCALE: (f64, f64) = (0.5, 3.0);
 
+// ------------------------------------------------------------------ placement
+
+/// A new surface opens this far ahead of the eyes, level and facing you (the spec's rule 9,
+/// geometry.rs `new_pose`), and it stays where you then put it.
+pub const NEW_AHEAD: f64 = 1.4;
+
 // ------------------------------------------------------------------ theater mode
 
 /// A window panel in theater mode (windows.rs `theater`): this far ahead of the eyes, this wide,
