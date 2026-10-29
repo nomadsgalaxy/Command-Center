@@ -198,19 +198,50 @@ pub enum FirstPin {
 
 /// Trust on first use for a VNC server (docs/vnc.md): the first certificate it shows becomes the
 /// line's pin=, and after that only that one is taken. It never replaces a pin. Only that line
-/// changes, so comments and every other line stay as they were, and the file is replaced in one
-/// rename.
+/// changes, so comments and every other line stay as they were.
+///
+/// Two first connects at once (two VNC monitors) mustn't lose either pin, so it holds a lock for
+/// this process and flock on viewers.conf, reads the file through the locked fd, writes a temporary
+/// file of its own with the file's mode, fsyncs it, and renames it into place.
 pub fn pin_first_use(conf: &Path, name: &str, hex: &str) -> Result<FirstPin, String> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let path = conf.join("viewers.conf");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let err = |e: std::io::Error| format!("{}: {e}", path.display());
+    // The lock is on the file as it was opened. If another writer renamed a new one into place
+    // meanwhile, lock that one instead.
+    let mut f = loop {
+        let f = std::fs::File::open(&path).map_err(err)?;
+        f.lock().map_err(err)?;
+        if f.metadata().map_err(err)?.ino() == std::fs::metadata(&path).map_err(err)?.ino() {
+            break f;
+        }
+    };
+    let mut text = String::new();
+    f.read_to_string(&mut text).map_err(err)?;
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
     let i = entry(&lines, name).ok_or_else(|| format!("no {name} in {}", path.display()))?;
     if let Some(pin) = opt(&line_opts(&lines[i]), "pin") {
         return Ok(if pin.eq_ignore_ascii_case(hex) { FirstPin::Same } else { FirstPin::Other(pin.to_owned()) });
     }
     lines[i] = set_options(&lines[i], &[("pin".into(), hex.to_ascii_lowercase())])?;
-    let tmp = conf.join("viewers.conf.tmp");
-    std::fs::write(&tmp, lines.join("\n") + "\n").and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mode = f.metadata().map_err(err)?.permissions().mode() & 0o7777;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    let tmp = conf.join(format!(".viewers.conf.{}.{nanos}", std::process::id()));
+    let written = (|| {
+        let mut t = std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp)?;
+        t.set_permissions(std::fs::Permissions::from_mode(mode))?; // the umask doesn't get a say
+        t.write_all((lines.join("\n") + "\n").as_bytes())?;
+        t.sync_all()?;
+        std::fs::rename(&tmp, &path)?;
+        std::fs::File::open(conf)?.sync_all()
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err(e));
+    }
     Ok(FirstPin::Saved)
 }
 
@@ -1230,6 +1261,35 @@ pub fn enter_workspace(data: &mut Json, name: &str, universe: u64, saved: &Json,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Eight first connects at once, each to its own line: every pin survives, and the file keeps
+    /// its mode.
+    #[test]
+    fn concurrent_first_pins_all_survive() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("cc-proto-pins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let conf: String = (0..8).map(|i| format!("m{i}  me@10.0.0.{i}:5900  {i}  1920x1080  proto=vnc\n")).collect();
+        std::fs::write(d.join("viewers.conf"), format!("# eight macs\n{conf}")).unwrap();
+        std::fs::set_permissions(d.join("viewers.conf"), std::fs::Permissions::from_mode(0o640)).unwrap();
+        let threads: Vec<_> = (0..8).map(|i| {
+            let d = d.clone();
+            std::thread::spawn(move || pin_first_use(&d, &format!("m{i}"), &format!("{i:02x}").repeat(32)))
+        }).collect();
+        for t in threads {
+            assert_eq!(t.join().unwrap(), Ok(FirstPin::Saved));
+        }
+        let pins: Vec<Option<String>> = (0..8).map(|i| viewer_pin(&d, &format!("m{i}"))).collect();
+        let mode = std::fs::metadata(d.join("viewers.conf")).unwrap().permissions().mode() & 0o777;
+        let left = std::fs::read_dir(&d).unwrap().count();
+        let _ = std::fs::remove_dir_all(&d);
+        for (i, p) in pins.iter().enumerate() {
+            assert_eq!(p.as_deref(), Some(format!("{i:02x}").repeat(32).as_str()), "m{i}");
+        }
+        assert_eq!(mode, 0o640, "the file's own mode");
+        assert_eq!(left, 1, "no temporary file left");
+    }
 
     /// The first certificate becomes the pin, the same one passes, a different one doesn't, and the
     /// comments and the other lines are left as they were.
