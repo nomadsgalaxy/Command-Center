@@ -49,7 +49,7 @@ fn url(p: &Path) -> String {
 /// version, binding kind. Read off vrserver's strings (`%s_%s%s`, `CurrentURL`, `_steamvrinput`);
 /// nobody has seen one written on the Frame yet, so it's only used with SteamVR closed, and a
 /// wrong spelling just leaves Valve's default in place.
-fn key(version: u64) -> String {
+fn selection_key(version: u64) -> String {
     format!("frame_controller_{version}_CurrentURL_steamvrinput")
 }
 
@@ -81,7 +81,7 @@ enum Pick {
     Theirs,  // a binding the user picked: never replaced
 }
 
-fn pick(current: Option<&str>, ours: &str) -> Pick {
+fn selection(current: Option<&str>, ours: &str) -> Pick {
     match current.map(plain) {
         None => Pick::Default,
         Some(u) if u.is_empty() => Pick::Default,
@@ -125,8 +125,8 @@ fn select(settings: &mut Value, version: u64, url: &str) -> Pick {
     if !section.is_object() {
         *section = json!({});
     }
-    let k = key(version);
-    match pick(section[&k].as_str(), url) {
+    let k = selection_key(version);
+    match selection(section[&k].as_str(), url) {
         Pick::Theirs => Pick::Theirs,
         Pick::Ours => Pick::Ours,
         Pick::Default => {
@@ -295,7 +295,7 @@ pub fn apply(by_hand: bool) -> Result<(Done, String), String> {
     let same = |say: &str| Ok((Done::Unchanged, say.to_string()));
     if steamvr_running() {
         let a = actions()?;
-        return match pick(current(&a), &u) {
+        return match selection(current(&a), &u) {
             Pick::Ours => same("the bumper is right click on SteamVR's laser"),
             Pick::Theirs => same(THEIRS),
             Pick::Default => {
@@ -333,7 +333,7 @@ pub fn restore(by_hand: bool) -> Result<(Done, String), String> {
     let mut done = (Done::Unchanged, "the bumper is left click");
     if steamvr_running() {
         let a = actions()?;
-        if pick(current(&a), &u) == Pick::Ours {
+        if selection(current(&a), &u) == Pick::Ours {
             let target = format!("file://{DEFAULT}");
             select_once(&target, &stamp(&target, 0, &u, &steamvr_build()), by_hand)?;
             done = (Done::Changed, "the bumper is left click again (one binding load)");
@@ -403,14 +403,14 @@ mod tests {
     fn the_live_selection_is_read_as_valves_ours_or_the_users() {
         let mine = "file:///home/x/steamvr/input/openvr.component.vrcompositor_frame_controller.json";
         let a: Value = serde_json::from_str(ACTIONS).unwrap();
-        assert_eq!(pick(current(&a), mine), Pick::Default, "Valve's own: ours may go in");
-        assert_eq!(pick(Some(mine), mine), Pick::Ours, "already ours: nothing to do, no binding load");
-        assert_eq!(pick(Some("file:///home/x/steamvr/input/my_own.json"), mine), Pick::Theirs, "the user's: never replaced");
-        assert_eq!(pick(None, mine), Pick::Default);
+        assert_eq!(selection(current(&a), mine), Pick::Default, "Valve's own: ours may go in");
+        assert_eq!(selection(Some(mine), mine), Pick::Ours, "already ours: nothing to do, no binding load");
+        assert_eq!(selection(Some("file:///home/x/steamvr/input/my_own.json"), mine), Pick::Theirs, "the user's: never replaced");
+        assert_eq!(selection(None, mine), Pick::Default);
         // ours as SteamVR reports a personal binding (getactions on the Frame: file:// plus the absolute path)
         let reported = "file:///home/x/steamvr/input/openvr.component.vrcompositor_frame_controller.json";
-        assert_eq!(pick(Some(reported), "/home/x//steamvr/input/openvr.component.vrcompositor_frame_controller.json"), Pick::Ours, "spelled differently, the same file");
-        assert_eq!(pick(Some(DEFAULT), mine), Pick::Default, "Valve's as a bare path");
+        assert_eq!(selection(Some(reported), "/home/x//steamvr/input/openvr.component.vrcompositor_frame_controller.json"), Pick::Ours, "spelled differently, the same file");
+        assert_eq!(selection(Some(DEFAULT), mine), Pick::Default, "Valve's as a bare path");
     }
 
     #[test]
