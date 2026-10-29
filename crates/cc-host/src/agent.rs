@@ -337,7 +337,8 @@ impl Agent {
                 // A slow start shouldn't hold up this Frame's other commands.
                 let (me, f, i, out, cmd) = (self.clone(), frame.to_owned(), ip.to_owned(), out.clone(), cmd.to_owned());
                 std::thread::spawn(move || {
-                    let mut a = if cmd == "session" { me.session_start(&f, &i, &req["index"]) } else { me.window_start(&f, &i, &req["uuid"]) };
+                    let force = req["force"] == json!(true); // the user asked again (Connect), so a unit that gave up is reset first
+                    let mut a = if cmd == "session" { me.session_start(&f, &i, &req["index"], force) } else { me.window_start(&f, &i, &req["uuid"], force) };
                     a["id"] = json!(id);
                     let mut b = canon(&a);
                     b.push(b'\n');

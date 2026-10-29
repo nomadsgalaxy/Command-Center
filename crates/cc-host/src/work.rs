@@ -139,7 +139,28 @@ impl Agent {
 
     /// session start: starts this Frame's server for that monitor (or restarts a stale one) and answers
     /// once its port listens. There are at most sessions_max on this host.
-    pub fn session_start(&self, frame: &str, ip: &str, index: &Value) -> Value {
+    /// A unit systemd stopped trying (ActiveState failed, with no restart coming): the Result it
+    /// failed with. Starting it again would only fail again, and with every start a new failure and
+    /// a new alert, the agent itself would defeat the start limit (Crab saw an alert every 15 s).
+    fn gave_up(&self, unit: &str) -> Option<String> {
+        let out = self.plat.systemctl(&["show", "-p", "ActiveState", "-p", "SubState", "-p", "Result", unit]);
+        let v = |k: &str| out.lines().find_map(|l| l.strip_prefix(k).and_then(|r| r.strip_prefix('='))).unwrap_or("").to_owned();
+        (v("ActiveState") == "failed" && !v("SubState").contains("auto-restart")).then(|| v("Result"))
+    }
+
+    /// Starts unit, unless it gave up: then it's {error: down, detail: <Result>}, and nothing starts
+    /// it until a start with force (the Machines window's Connect), which resets it first.
+    fn bring_up(&self, unit: &str, force: bool) -> Result<(), Value> {
+        if force {
+            self.plat.systemctl(&["reset-failed", unit]);
+        } else if let Some(result) = self.gave_up(unit) {
+            return Err(json!({"ok": false, "error": "down", "detail": result}));
+        }
+        self.plat.systemctl(&["start", unit]);
+        Ok(())
+    }
+
+    pub fn session_start(&self, frame: &str, ip: &str, index: &Value, force: bool) -> Value {
         let Some(index) = index.as_i64() else { return json!({"ok": false, "error": "no-such-monitor"}) };
         if !self.plat.monitors().iter().any(|m| m["index"] == json!(index)) {
             return json!({"ok": false, "error": "no-such-monitor"});
@@ -164,7 +185,9 @@ impl Agent {
             if others >= cap {
                 return json!({"ok": false, "error": "busy", "detail": format!("{cap} sessions running on this host")});
             }
-            self.plat.systemctl(&["start", &unit]);
+            if let Err(e) = self.bring_up(&unit, force) {
+                return e;
+            }
             if let Err(e) = self.wait_up(frame, port, &unit, json!({"event": "session", "index": index, "state": "starting"})) {
                 return e;
             }
@@ -250,7 +273,7 @@ impl Agent {
         Ok(json!({"ok": true, "windows": self.window_scope()}))
     }
 
-    pub fn window_start(&self, frame: &str, ip: &str, uuid: &Value) -> Value {
+    pub fn window_start(&self, frame: &str, ip: &str, uuid: &Value, force: bool) -> Value {
         if let Err(e) = self.window_allowed(frame) {
             return json!({"ok": false, "error": e});
         }
@@ -290,7 +313,9 @@ impl Agent {
         let _held = lock.lock().unwrap();
         let t0 = mono();
         if !self.plat.listening(port) {
-            self.plat.systemctl(&["start", &unit]);
+            if let Err(e) = self.bring_up(&unit, force) {
+                return e;
+            }
             if let Err(e) = self.wait_up(frame, port, &unit, json!({"event": "window", "uuid": uuid, "state": "starting"})) {
                 return e;
             }
@@ -690,6 +715,35 @@ pub fn check_tags(p: &Value, w: i64, h: i64) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Crab's case: a Frame's server that gave up, by the start limit or as a Restart=no unit that
+    /// failed once. session start doesn't start it again (each start would be a new failure and a
+    /// new alert); it answers down. A start with force resets it, then starts it.
+    #[test]
+    fn a_unit_that_gave_up_isnt_started_until_forced() {
+        let conf = std::env::temp_dir().join(format!("cc-host-gaveup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&conf);
+        std::fs::create_dir_all(conf.join("frames")).unwrap();
+        std::fs::write(conf.join("frames/f1.json"), r#"{"slot": 1}"#).unwrap();
+        let fake = crate::platform::Fake::default();
+        let (units, calls) = (fake.units.clone(), fake.calls.clone());
+        let agent = Agent::new(conf.clone(), Box::new(fake));
+        let unit = "control-center-frame@f1-0.service";
+        let starts = || calls.lock().unwrap().iter().filter(|c| c.starts_with("start ") || c.starts_with("restart ")).count();
+        for result in ["start-limit-hit", "exit-code"] {
+            units.lock().unwrap().insert(unit.into(), ("failed".into(), 0, result.into()));
+            let before = starts();
+            let a = agent.session_start("f1", "10.0.0.2", &json!(0), false);
+            assert_eq!(a, json!({"ok": false, "error": "down", "detail": result}), "{result}");
+            assert_eq!(starts(), before, "{result}: no start, so no new failure and no new alert");
+        }
+        let a = agent.session_start("f1", "10.0.0.2", &json!(0), true);
+        let log = calls.lock().unwrap().clone();
+        let _ = std::fs::remove_dir_all(&conf);
+        assert_eq!(a["ok"], true, "{a}");
+        let (reset, start) = (log.iter().position(|c| c == &format!("reset-failed {unit}")), log.iter().position(|c| c == &format!("start {unit}")));
+        assert!(reset.is_some() && start.is_some() && reset < start, "reset-failed, then start: {log:?}");
+    }
+
     /// Crab's case on a fake host: a Frame's server whose krdp can't load. systemd restarts it a few
     /// times, then the start limit makes it failed. status shows it degraded while it loops and down
     /// once it gave up, instead of the agent answering as if all were well.
@@ -703,7 +757,7 @@ mod tests {
         let units = fake.units.clone();
         let agent = Agent::new(conf.clone(), Box::new(fake));
         let unit = "control-center-frame@f1-0.service";
-        let set = |state: &str, n: u64| units.lock().unwrap().insert(unit.into(), (state.into(), n));
+        let set = |state: &str, n: u64| units.lock().unwrap().insert(unit.into(), (state.into(), n, "exit-code".into()));
         let now = |a: &Agent| a.health_of("f1")[0].clone();
 
         assert_eq!(now(&agent)["health"], "idle", "no session yet");

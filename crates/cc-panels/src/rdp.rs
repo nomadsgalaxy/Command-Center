@@ -263,16 +263,28 @@ fn ask_health(p: &Panel, last: &mut Option<std::time::Instant>) {
     }
 }
 
+/// How long a panel waits before asking again when its host says its server gave up ("down").
+/// Not every few seconds: each start the host lets through would fail again and alert again. Five
+/// minutes is also about when someone may have fixed it. Connect asks at once (Panel::retry).
+pub const DOWN_RETRY: Duration = Duration::from_secs(300);
+
+/// Whether a panel whose host server is down keeps waiting after `waited`.
+pub fn keep_waiting(waited: Duration, live: bool, retry: bool) -> bool {
+    live && !retry && waited < DOWN_RETRY
+}
+
 fn session(p: &Panel, start: bool) -> Result<u32, String> {
     let v: &crate::config::Viewer = &p.v;
     let verb = if start { "start" } else { "stop" };
+    // A window popping out is always someone asking, and so is Connect.
+    let force = start && (v.pop.is_some() || p.retry.swap(false, Relaxed));
     let machine = crate::config::machine_of(v);
     let (cmd, args) = match &v.pop {
         // its source monitor is on the shared login, so it's not paired (cc-home's window)
         Some((from, _)) if crate::panels().iter().any(|q| q.v.name == *from && q.v.port < 3410) => return Err("not-paired".into()),
-        Some((_, uuid)) => ("window", serde_json::json!({"op": verb, "uuid": uuid})),
+        Some((_, uuid)) => ("window", serde_json::json!({"op": verb, "uuid": uuid, "force": force})),
         None if v.port < 3410 || cc_proto::agent::trusted(std::path::Path::new(&crate::config::config("")), machine).is_err() => return Ok(v.port),
-        None => ("session", serde_json::json!({"op": verb, "index": (v.port - 3400) % 10})),
+        None => ("session", serde_json::json!({"op": verb, "index": (v.port - 3400) % 10, "force": force})),
     };
     let r = agent(machine, cmd, args).map_err(|e| if e == "unknown-command" && v.pop.is_some() { "unsupported".into() } else { e });
     match r {
@@ -367,6 +379,18 @@ pub fn run(p: &'static Panel) {
                     return crate::popout::failed(p, &why);
                 }
                 pause();
+                continue;
+            }
+            // Its host's server gave up. Asking every few seconds would restart it and fail again,
+            // so wait (DOWN_RETRY, or until Connect), showing it as down meanwhile.
+            Err(why) if why == "down" && !pop => {
+                if p.host_health.swap(HOST_DOWN, Relaxed) != HOST_DOWN {
+                    eprintln!("{}: its host's server gave up; asking again in {} min, or at Connect", p.v.name, DOWN_RETRY.as_secs() / 60);
+                }
+                let t0 = std::time::Instant::now();
+                while !QUIT.load(Relaxed) && keep_waiting(t0.elapsed(), p.live(), p.retry.load(Relaxed)) {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
                 continue;
             }
             Err(why) if pop => {
@@ -578,6 +602,17 @@ pub fn wheel(p: &Panel, horizontal: bool, rotation: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A panel whose host server is down waits five minutes, or until Connect, or until it's closed.
+    #[test]
+    fn a_down_host_waits_for_connect_or_five_minutes() {
+        let s = Duration::from_secs;
+        assert!(keep_waiting(s(10), true, false));
+        assert!(keep_waiting(s(299), true, false));
+        assert!(!keep_waiting(s(300), true, false), "then it asks again");
+        assert!(!keep_waiting(s(10), true, true), "Connect asks at once");
+        assert!(!keep_waiting(s(10), false, false), "closed: stop");
+    }
 
     /// The agent's status says which monitor's server is broken, and only that panel shows it.
     #[test]

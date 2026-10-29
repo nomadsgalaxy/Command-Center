@@ -102,6 +102,12 @@ start while any `control-center-*.d/*.conf` exists in `~/.config/systemd/user`, 
 check` lists them. Remove them, run `systemctl --user daemon-reload` and start again. That's the
 leftover that once pointed krdp at an old library and restarted it more than 5,000 times.
 
+Once a unit has given up, the agent doesn't start it again on its own. A Frame asking for that
+monitor's session gets `down`, shows the host server as down, and asks again every 5 minutes. Press
+Disconnect and then Connect in the Machines window to try at once: that start resets the unit
+(`reset-failed`) first. Before this, the Frame's own retries restarted the unit every 15 s or so,
+which made a fresh failure and a fresh alert each time.
+
 ## Updates
 
 - **The package manager updates the files.** The running user services keep the old binaries

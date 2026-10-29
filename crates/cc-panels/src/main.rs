@@ -141,6 +141,7 @@ pub struct Panel {
     pub connected: AtomicBool,
     pub down: AtomicBool,  // its last try to connect failed (rdp.rs): audio doesn't wait on it
     pub host_health: AtomicU8, // what its host says of its server (rdp::HOST_*), shown in the machines window
+    pub retry: AtomicBool, // Connect was pressed: the next session start asks the host to try a server that gave up
     pub audio: AtomicBool, // its session connected carrying the machine's sound and microphone (rdp.rs)
     pub stale: [Stale; 2], // per GPU buffer
     pub cliprdr: AtomicPtr<freerdp_sys::CliprdrClientContext>, // its clipboard channel, while connected
@@ -174,6 +175,7 @@ impl Panel {
             connected: AtomicBool::new(false),
             down: AtomicBool::new(false),
             host_health: AtomicU8::new(0),
+            retry: AtomicBool::new(false),
             audio: AtomicBool::new(false),
             stale: [Stale::new(), Stale::new()],
             cliprdr: AtomicPtr::default(),

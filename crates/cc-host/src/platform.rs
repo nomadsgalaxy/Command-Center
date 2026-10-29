@@ -191,8 +191,10 @@ mod kwin {
 #[derive(Default)]
 pub struct Fake {
     up: Arc<Mutex<HashSet<u16>>>,
-    /// What `systemctl show` says for a unit: (ActiveState, NRestarts). Units not in it are inactive.
-    pub units: Arc<Mutex<std::collections::HashMap<String, (String, u64)>>>,
+    /// What `systemctl show` says for a unit: (ActiveState, NRestarts, Result). Units not in it are inactive.
+    pub units: Arc<Mutex<std::collections::HashMap<String, (String, u64, String)>>>,
+    /// Every systemctl call, its arguments joined with spaces.
+    pub calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl Platform for Fake {
@@ -204,12 +206,19 @@ impl Platform for Fake {
             let i = unit.split('@').nth(1)?;
             if unit.contains("window@") { Some(3405 + 10 + i.split('-').nth_back(5)?.parse::<u16>().ok()?) } else { Some(3410 + i.trim_end_matches(".service").rsplit('-').next()?.parse::<u16>().ok()?) }
         };
+        self.calls.lock().unwrap().push(args.join(" "));
         if args.first() == Some(&"show") {
             let units = self.units.lock().unwrap();
             return args.iter().filter(|a| a.ends_with(".service")).map(|u| {
-                let (state, n) = units.get(*u).cloned().unwrap_or(("inactive".into(), 0));
-                format!("Id={u}\nActiveState={state}\nNRestarts={n}\n\n")
+                let (state, n, result) = units.get(*u).cloned().unwrap_or(("inactive".into(), 0, "success".into()));
+                let sub = if state == "failed" { "failed" } else { "dead" };
+                format!("Id={u}\nActiveState={state}\nSubState={sub}\nNRestarts={n}\nResult={result}\n\n")
             }).collect();
+        }
+        if args.first() == Some(&"reset-failed") {
+            for u in &args[1..] {
+                self.units.lock().unwrap().remove(*u);
+            }
         }
         match (args.first(), args.get(1)) {
             (Some(&"start"), Some(u)) | (Some(&"restart"), Some(u)) if !u.contains('*') => {

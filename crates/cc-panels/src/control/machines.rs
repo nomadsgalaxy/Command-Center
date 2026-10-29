@@ -1435,7 +1435,12 @@ impl Machines {
             Hit::Connect(r) => {
                 let (i, p) = (self.rows[r], panel(self.rows[r]));
                 eprintln!("machines: {} {}", if p.live() { "disconnect" } else { "connect" }, p.v.name);
-                if p.live() { crate::disconnect(p) } else { super::connect_later(i) }
+                if p.live() {
+                    crate::disconnect(p)
+                } else {
+                    p.retry.store(true, Relaxed); // someone asked, so a host server that gave up gets one more try
+                    super::connect_later(i)
+                }
             }
             Hit::Auto(r) => {
                 let i = self.rows[r];
