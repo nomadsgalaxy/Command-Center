@@ -83,6 +83,12 @@ I leaned on AI to help me write a decent amount of this, being unfamiliar with c
   ([docs/packaging.md](docs/packaging.md#steamos-hosts)); the installer doesn't do it for you yet.
 - **Gaming-grade latency:** RDP suits desktop work, not fast games.
 
+## Changing the code
+
+Every change to `main` goes through a CI gate: format, clippy, the tests on x86_64 and aarch64,
+and a license and advisory check. [docs/ci.md](docs/ci.md) says what it checks and how to run it
+before you push.
+
 ## License
 
 OCL v1.1 + SWAtt v1 (Open Community License v1.1 + Software Attribution v1, by Prusa Research).

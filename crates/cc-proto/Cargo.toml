@@ -2,6 +2,8 @@
 name = "cc-proto"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 license-file.workspace = true
 authors.workspace = true
 description = "Command Center's Frame-host wire protocol: SPAKE2 pairing, the agent's TLS + Ed25519 challenge, messages (docs/pairing.md, docs/agent.md)"
@@ -17,3 +19,6 @@ sha2 = "0.10"
 hkdf = "0.12"
 hmac = "0.12"
 chacha20poly1305 = "0.10"
+
+[lints]
+workspace = true

@@ -2,6 +2,8 @@
 name = "cc-home"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 license-file.workspace = true
 authors.workspace = true
 description = "Command Center's cc-home: spots, workspaces, machines, pairing, networks, hibernate, and the camera's align (cc-scan). Static musl: it runs on the Frame's host and in cc-box"
@@ -13,3 +15,6 @@ serde_json = "1"
 base64 = "0.22"
 libc = "0.2"
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+[lints]
+workspace = true

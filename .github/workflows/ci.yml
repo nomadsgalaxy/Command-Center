@@ -1,0 +1,119 @@
+# The gate every push and pull request to main goes through: format, clippy, the tests, and
+# cargo-deny. The crates that build without our native prefixes (FreeRDP, libvncclient, OpenVR's
+# runtime) run on x86_64 and aarch64. cc-panels needs those prefixes, so it has its own job that
+# builds them; it doesn't block yet (see that job). docs/ci.md says how to run all of it locally.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  # The crates the gate covers. cc-panels and the -sys crates need the native prefixes.
+  CRATES: -p cc-proto -p cc-host -p cc-home -p cc-scan -p cc-install -p cc-pointer -p cc-hello
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install stable --profile minimal -c rustfmt && rustup default stable
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update -q && sudo apt-get install -yq libclang-dev
+      - run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable
+      # The two unsafe-documentation lints are warnings in Cargo.toml while the backlog gets
+      # written (163 in these crates); -D warnings would make them errors, so the gate allows
+      # those two by name and the next step shows them.
+      - name: clippy, as a gate
+        run: cargo clippy $CRATES --all-targets -- -D warnings -A clippy::undocumented_unsafe_blocks -A clippy::missing_safety_doc
+      - name: unsafe blocks without a safety comment (not a gate yet)
+        run: cargo clippy $CRATES --all-targets 2>&1 | grep -cE "missing a safety comment|missing a .# Safety. section" || true
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04, openvr: linux64, openvr_sha: cb68c5788b0ddab32c0402e58820956a489ef6cb99ecf2e1fa997533ead54475 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, openvr: linuxarm64, openvr_sha: cc3671d24dd23fb61494e8a8327cf4fe7f638a60508ff7225984a03f2f5947e9 }
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.arch }}-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update -q && sudo apt-get install -yq musl-tools libclang-dev
+      - run: rustup toolchain install stable --profile minimal -t $TARGET && rustup default stable
+      # cc-hello links OpenVR's API library: Valve's own build, at the header's version, checked.
+      - name: OpenVR's API library
+        run: |
+          mkdir -p "$RUNNER_TEMP/openvr"
+          curl -fsSL -o "$RUNNER_TEMP/openvr/libopenvr_api.so" https://raw.githubusercontent.com/ValveSoftware/openvr/v2.15.6/bin/${{ matrix.openvr }}/libopenvr_api.so
+          echo "${{ matrix.openvr_sha }}  $RUNNER_TEMP/openvr/libopenvr_api.so" | sha256sum -c
+          echo "OPENVR_LIB=$RUNNER_TEMP/openvr" >> "$GITHUB_ENV"
+      # The binaries ship static (musl), so that's what's tested, the way docs/final-test-*.md build them.
+      # cc-home's tests start a real cc-host, so it's built first. Tests get a throwaway HOME and
+      # their own cc-panels socket, never anything of the runner's.
+      - name: test
+        run: |
+          cargo build --release --target $TARGET -p cc-host
+          mkdir -p "$RUNNER_TEMP/home"
+          me=$HOME # rustup and cargo stay where they are while HOME is the throwaway one
+          HOME="$RUNNER_TEMP/home" RUSTUP_HOME="$me/.rustup" CARGO_HOME="$me/.cargo" CC_PANELS_SOCKET=cc-ci-$GITHUB_RUN_ID \
+            CC_POINTER_SOCKET=cc-ci-pointer-$GITHUB_RUN_ID CC_HOST_BIN="$PWD/target/$TARGET/release/cc-host" \
+            cargo test --target $TARGET -p cc-proto -p cc-host -p cc-home -p cc-scan -p cc-install -p cc-pointer
+      # cc-hello is a check against a live SteamVR, so it's only built here.
+      - run: cargo build --target $TARGET -p cc-hello
+
+  # cc-panels needs FreeRDP 3.31.1 and libvncclient built our way (panels/third_party), which is
+  # what cc-home install and packaging/sysext/build-native.sh do on a Frame. This job does the same
+  # in the Fedora 44 image our dev container uses. It doesn't block yet: it's a 15-minute build
+  # with RPM Fusion's FFmpeg, and the first runs will shake out what the image is missing. Make it
+  # a gate (drop continue-on-error) once it's green.
+  panels:
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    container: registry.fedoraproject.org/fedora-toolbox:44
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: build dependencies (install.sh's list)
+        run: |
+          dnf install -y -q "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm"
+          dnf install -y -q --allowerasing ffmpeg ffmpeg-devel
+          dnf install -y -q gcc-c++ cmake ninja-build pkgconf-pkg-config git curl openssl-devel json-c-devel zlib-devel cjson-devel \
+            uriparser-devel libusb1-devel libicu-devel systemd-devel mesa-libgbm-devel libdrm-devel rust cargo clang-devel llvm \
+            pipewire-devel plasma-wayland-protocols wayland-devel libjpeg-turbo-devel pulseaudio-libs-devel
+      - name: FreeRDP and libvncclient, with install.rs's flags
+        run: |
+          fr=panels/third_party
+          git clone -q --depth 1 --branch 3.31.1 https://github.com/FreeRDP/FreeRDP.git "$fr/FreeRDP"
+          mapfile -t flags < <(sed -n '/^const FREERDP_FLAGS/,/^];/p' crates/cc-home/src/install.rs | grep -oE '"-D[^"]+"' | tr -d '"')
+          cmake -S "$fr/FreeRDP" -B "$fr/FreeRDP/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/$fr/prefix" -DCMAKE_INSTALL_LIBDIR=lib64 "${flags[@]}"
+          ninja -C "$fr/FreeRDP/build" install >/dev/null
+          tools/build-libvncclient.sh "$fr/vnc-prefix"
+      - name: OpenVR's API library
+        run: |
+          mkdir -p /opt/openvr
+          curl -fsSL -o /opt/openvr/libopenvr_api.so https://raw.githubusercontent.com/ValveSoftware/openvr/v2.15.6/bin/linuxarm64/libopenvr_api.so
+          echo "cc3671d24dd23fb61494e8a8327cf4fe7f638a60508ff7225984a03f2f5947e9  /opt/openvr/libopenvr_api.so" | sha256sum -c
+      - name: test cc-panels
+        run: |
+          mkdir -p /tmp/home
+          OPENVR_LIB=/opt/openvr LD_LIBRARY_PATH="$PWD/panels/third_party/prefix/lib64:/opt/openvr" HOME=/tmp/home \
+            CC_PANELS_SOCKET=cc-ci-panels-$GITHUB_RUN_ID cargo test -p cc-panels
+
+  deny:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories licenses bans sources

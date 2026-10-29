@@ -2,6 +2,8 @@
 name = "cc-install"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 license-file.workspace = true
 authors.workspace = true
 description = "Command Center's installer: a terminal app that installs, updates or removes it on the Steam Frame or a host. Static musl, from the GitHub release"
@@ -11,3 +13,6 @@ ratatui = { version = "=0.30.2", default-features = false, features = ["crosster
 serde_json = "1"
 sha2 = "0.10"
 libc = "0.2"
+
+[lints]
+workspace = true

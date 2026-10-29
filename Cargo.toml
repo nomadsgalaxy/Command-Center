@@ -6,7 +6,29 @@ members = ["crates/*"]
 edition = "2024"
 license-file = "LICENSE"  # OCL v1.1 + SWAtt v1 (no SPDX id); see NOTICE.md
 authors = ["Nomads Galaxy"]
+# File::lock (conf.rs pin_first_use) is what sets this: it's stable from 1.89. Edition 2024 alone needs 1.85.
+rust-version = "1.89"
+# Nothing here goes to crates.io; cargo-deny then leaves our own (non-SPDX) license alone.
+publish = false
+
+[workspace.lints.rust]
+# An unsafe fn's body isn't one big unsafe block: each unsafe step is marked where it happens.
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# Every unsafe block and unsafe fn should say why it's sound. Warn for now: hundreds aren't documented yet.
+undocumented_unsafe_blocks = "warn"
+missing_safety_doc = "warn"
 
 [profile.release]
 opt-level = 3
 debug = 1
+
+# The scan's solver does millions of float ops per test (tests/cross.rs solve_cross): about 7 s
+# optimized, over 20 minutes in a debug build. So its tests build it, and the maths it leans on,
+# optimized. Nothing else changes.
+[profile.test.package.cc-scan]
+opt-level = 3
+
+[profile.test.package.nalgebra]
+opt-level = 3

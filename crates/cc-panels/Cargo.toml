@@ -3,6 +3,8 @@ name = "cc-panels"
 version = "0.2.0"
 description = "Command Center's VR panels: every remote monitor as a SteamVR overlay, one pointer and keyboard across them, one clipboard"
 edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 license-file.workspace = true
 
 [dependencies]
@@ -21,3 +23,6 @@ wayland-backend = "0.3" # the generated interfaces name it
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 async-io = "2" # the long poll's timer (zbus runs on it already)
 event-listener = "5" # the long poll's wake-up (zbus has it already)
+
+[lints]
+workspace = true

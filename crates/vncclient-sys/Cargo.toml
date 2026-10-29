@@ -3,8 +3,13 @@ name = "vncclient-sys"
 version = "0.1.0"
 description = "Bindings to libvncclient (LibVNCServer master, built static in panels/third_party/vnc-prefix)"
 edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 license-file.workspace = true
 links = "vncclient"
 
 [build-dependencies]
 bindgen = "0.72"
+
+[lints]
+workspace = true

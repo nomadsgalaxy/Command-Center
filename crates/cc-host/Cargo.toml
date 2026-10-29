@@ -2,6 +2,8 @@
 name = "cc-host"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 license-file.workspace = true
 authors.workspace = true
 description = "Command Center's host side in one static binary: the agent, pairing, key and tag screens, install (docs/rust-host.md)"
@@ -23,3 +25,6 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 [dev-dependencies]
 cc-scan = { path = "../cc-scan" }
+
+[lints]
+workspace = true

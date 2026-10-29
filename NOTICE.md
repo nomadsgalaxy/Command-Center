@@ -22,3 +22,7 @@ These keep their own licenses, since OCL doesn't cover them:
 | Atkinson Hyperlegible Mono | `third_party/fonts/` | SIL OFL 1.1 (`third_party/fonts/OFL.txt`) |
 | FreeRDP 3.31.1 | built into `panels/third_party/` by install.sh (not in this repository) | Apache-2.0 |
 | KDE krdp patches | `krdp/*.patch` | They apply to krdp (LGPL), so they follow krdp's license |
+| jpeg-encoder (Rust crate, in cc-scan) | built into cc-home | MIT or Apache-2.0, and IJG: this software is based in part on the work of the Independent JPEG Group |
+
+The Rust crates the binaries are built from keep their own licenses too, listed in `Cargo.lock` and
+checked by `cargo deny check licenses` (`deny.toml`).

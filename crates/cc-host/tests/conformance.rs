@@ -17,7 +17,12 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const PORT: u16 = 34991;
+/// The agent's port for this run: one the system says is free, so parallel runs (CI's jobs, or
+/// another checkout's tests) don't collide the way a fixed port did.
+fn port() -> u16 {
+    static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+    *PORT.get_or_init(|| std::net::TcpListener::bind(("127.0.0.1", 0)).and_then(|l| l.local_addr()).expect("a free port").port())
+}
 
 /// Accepts any certificate and keeps it, since the raw cases look at it themselves.
 #[derive(Debug)]
@@ -59,7 +64,7 @@ impl Conn {
             .dangerous()
             .with_custom_certificate_verifier(seen.clone())
             .with_no_client_auth();
-        let tcp = TcpStream::connect(("127.0.0.1", PORT))?;
+        let tcp = TcpStream::connect(("127.0.0.1", port()))?;
         tcp.set_read_timeout(Some(Duration::from_secs(10)))?;
         let conn = ClientConnection::new(Arc::new(cfg), ServerName::try_from("cc-host").unwrap()).map_err(std::io::Error::other)?;
         let mut c = Conn { tls: StreamOwned::new(conn, tcp), buf: vec![], cert: vec![], version: None, n: 0 };
@@ -188,7 +193,8 @@ impl Suite {
         let frame = key();
         write(&dir.join("trusted-frames/steam-frame.pub"), &B64.encode(frame.verifying_key().to_bytes()));
         write(&dir.join("frames/steam-frame.json"), r#"{"slot": 1}"#);
-        let mut server = Command::new(env!("CARGO_BIN_EXE_cc-host")).args(["serve", "--fake", "--port", &PORT.to_string()]).env("CC_CONF", &dir).stdout(Stdio::piped()).spawn().expect("cc-host serve");
+        let mut server =
+            Command::new(env!("CARGO_BIN_EXE_cc-host")).args(["serve", "--fake", "--port", &port().to_string()]).env("CC_CONF", &dir).stdout(Stdio::piped()).spawn().expect("cc-host serve");
         let mut out = server.stdout.take().unwrap();
         let mut first = [0u8; 64];
         let n = out.read(&mut first).unwrap_or(0);
@@ -286,25 +292,25 @@ fn agent_conformance() {
         s.fresh();
     });
     s.case("a wrong first byte closes without an answer", |s| {
-        let mut t = TcpStream::connect(("127.0.0.1", PORT)).unwrap();
+        let mut t = TcpStream::connect(("127.0.0.1", port())).unwrap();
         t.write_all(b"GET / HTTP/1.0\r\n\r\n").unwrap();
         assert!(shut(&mut t));
         s.fresh();
     });
     s.case("a silent connection closes within 2 s", |s| {
         let t0 = Instant::now();
-        let mut t = TcpStream::connect(("127.0.0.1", PORT)).unwrap();
+        let mut t = TcpStream::connect(("127.0.0.1", port())).unwrap();
         assert!(shut(&mut t) && t0.elapsed() < Duration::from_secs(4));
         s.fresh();
     });
     s.case("the pairing door is closed with no key on screen", |s| {
-        let mut t = TcpStream::connect(("127.0.0.1", PORT)).unwrap();
+        let mut t = TcpStream::connect(("127.0.0.1", port())).unwrap();
         t.write_all(b"{\"v\":1}\n").unwrap();
         assert!(shut(&mut t));
         s.fresh();
     });
     s.case("a refusal backs off the address (backoff)", |s| {
-        let mut t = TcpStream::connect(("127.0.0.1", PORT)).unwrap();
+        let mut t = TcpStream::connect(("127.0.0.1", port())).unwrap();
         t.write_all(b"x").unwrap();
         shut(&mut t);
         std::thread::sleep(Duration::from_millis(200));
@@ -347,9 +353,9 @@ fn agent_conformance() {
         write(&pub_, &saved);
     });
     s.case("at most 4 connections at once", |s| {
-        let held: Vec<TcpStream> = (0..4).map(|_| TcpStream::connect(("127.0.0.1", PORT)).unwrap()).collect();
+        let held: Vec<TcpStream> = (0..4).map(|_| TcpStream::connect(("127.0.0.1", port())).unwrap()).collect();
         std::thread::sleep(Duration::from_millis(300));
-        let mut extra = TcpStream::connect(("127.0.0.1", PORT)).unwrap();
+        let mut extra = TcpStream::connect(("127.0.0.1", port())).unwrap();
         assert!(shut(&mut extra));
         drop(held);
         s.fresh();

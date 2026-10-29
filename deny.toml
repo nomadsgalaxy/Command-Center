@@ -1,0 +1,53 @@
+# cargo-deny's checks for the CI gate (.github/workflows/ci.yml, docs/ci.md).
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# A RustSec advisory against anything in Cargo.lock fails the gate. To accept one, add its id
+# here with a line on why. These are "unmaintained" notices with no fix in reach yet, not holes.
+ignore = [
+  # paste: a proc macro nalgebra (simba) uses at build time. Goes when nalgebra drops it.
+  { id = "RUSTSEC-2024-0436", reason = "build-time macro through nalgebra/simba; no maintained version to move to" },
+  # ttf-parser: fontdue's font parser, reading only our bundled Atkinson font. Goes with a font crate on skrifa.
+  { id = "RUSTSEC-2026-0192", reason = "parses only the font we ship; fontdue has no maintained parser yet" },
+  # zvariant, zvariant_derive, zbus_names: merged into zbus 6. Moving to it is a major bump (a follow-up).
+  { id = "RUSTSEC-2026-0370", reason = "folded into zbus 6; the move is its own change" },
+  { id = "RUSTSEC-2026-0371", reason = "folded into zbus 6; the move is its own change" },
+  { id = "RUSTSEC-2026-0372", reason = "folded into zbus 6; the move is its own change" },
+]
+
+[licenses]
+version = 2
+# What the dependencies are under today. Anything new that isn't here fails the gate, so it gets
+# looked at before it ships.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+]
+confidence-threshold = 0.9
+# Our own crates are under LICENSE (OCL v1.1 + SWAtt v1, no SPDX id) and aren't published.
+private = { ignore = true }
+
+# jpeg-encoder ports libjpeg's tables, so it carries the IJG license next to MIT or Apache. It's the
+# one license outside the usual set. It asks for a credit line in the docs, which NOTICE.md has.
+[[licenses.exceptions]]
+crate = "jpeg-encoder"
+allow = ["IJG"]
+
+[bans]
+# Two versions of one crate are worth knowing about, not a reason to fail the build (there are 10
+# today: base64, convert_case, foldhash, getrandom, hashbrown, itertools, nom, shlex, syn, windows-sys).
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
