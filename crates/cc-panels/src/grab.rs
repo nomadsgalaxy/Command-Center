@@ -844,6 +844,29 @@ struct Drag {
     bent0: f64,             // ...and how bent the panel was then (its sagitta, metres)
 }
 
+/// What a docked panel rides on (the spec's rule 7). World is not docked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Dock {
+    Hand(u32), // a controller
+    Head,
+}
+
+/// A carry let go with the carrying hand this near another controller docks the panel on that
+/// controller, and this near the head (a hand at your face) docks it on the head (metres).
+const DOCK_HAND: f64 = 0.15;
+const DOCK_HEAD: f64 = 0.15; // calibration knob: not so far out that pulling a panel close to read it docks it
+
+/// Where a panel let go by a hand at `hand` goes: onto one of the other `controllers` (their
+/// positions), onto the head, or the world (None).
+fn dock_for(hand: V3, head: V3, controllers: &[(u32, V3)]) -> Option<Dock> {
+    let d = |a: V3, b: V3| norm(&[a[0] - b[0], a[1] - b[1], a[2] - b[2]]);
+    let near = controllers.iter().map(|&(c, p)| (c, d(hand, p))).filter(|&(_, x)| x < DOCK_HAND).min_by(|a, b| a.1.total_cmp(&b.1));
+    match near {
+        Some((c, _)) => Some(Dock::Hand(c)),
+        None => (d(hand, head) < DOCK_HEAD).then_some(Dock::Head),
+    }
+}
+
 /// A press on the curve button let go this soon, having bent it this little (metres of sagitta),
 /// is a tap: it flips the panel between flat and curved (`toggled`) instead.
 const TAP: Duration = Duration::from_millis(350);
@@ -918,7 +941,9 @@ pub struct Grab {
     scanned_read: Option<Instant>,
     stale: Vec<Option<Pose>>,  // those places as of the last relocalization; if they're still the same, they moved with the room
     aligns: Vec<usize>,        // align buttons pressed after a relocalization, for machines.rs
-    taps: Vec<usize>,          // the curve button tapped (not pulled), for flip_curves
+    taps: Vec<usize>,          // the curve button tapped (not pulled), for settle
+    drops: Vec<(usize, u32)>,  // carries a controller let go (slot, device), for settle to dock or not
+    docked: Vec<Option<(Dock, Mat)>>, // what each slot rides on, and its pose relative to that
     keyboards: Vec<usize>,     // keyboard buttons pressed, for osk.rs
     backs: crate::back::Backs, // panels turned away from you show their backs (back.rs)
     pub game: bool,            // a VR game is running (the taskbar knows), so no backs
@@ -1110,6 +1135,8 @@ impl Grab {
             stale: Vec::new(),
             aligns: Vec::new(),
             taps: Vec::new(),
+            drops: Vec::new(),
+            docked: vec![None; n],
             keyboards: Vec::new(),
             backs: Default::default(),
             game: false,
@@ -1183,6 +1210,7 @@ impl Grab {
         crate::gpu::forget(x.card);
         crate::surface::destroy(x.card);
         let i = self.slot();
+        self.docked[i] = None;
         (self.drags[i], self.drawn[i], self.near[i], self.hover[i], self.fade[i], self.focus[i]) = (None, None, None, None, 0.0, 0);
         (self.pending[i], self.done[i], self.shown[i], self.dimmed[i]) = (None, None, true, false);
         self.painter.jobs.cancel(i);
@@ -1391,6 +1419,7 @@ impl Grab {
             }
             Part::Bar | Part::Edge => {
                 let Some(d) = s.device(dev) else { return };
+                self.docked[i] = None; // grabbed again: torn off, and the drop decides anew
                 Mode::Move { rel: mul(&inv_rigid(&d), &pl.matrix()) }
             }
         };
@@ -1407,6 +1436,9 @@ impl Grab {
     /// Letting go: the panel stays where it is and its new place is saved into "home".
     fn end(&mut self, i: usize, k: &Kvm) {
         let Some(d) = self.drags[i].take() else { return };
+        if matches!(d.mode, Mode::Move { .. }) && d.dev != MOUSE && crate::THEATER.load(Relaxed) != i {
+            return self.drops.push((i, d.dev)); // settle docks it, or puts it in the world and saves it
+        }
         if let Mode::Curve { .. } = d.mode {
             let pl = self.at(i, k);
             if d.since.elapsed() < TAP && (sagitta(pl.width, pl.curve) - d.bent0).abs() < TAP_BEND {
@@ -1416,8 +1448,30 @@ impl Grab {
         self.save(i, k);
     }
 
-    /// The curve button's taps since the last frame: each flips its panel flat or curved.
-    fn flip_curves(&mut self, k: &mut Kvm, s: &mut impl Stage) {
+    /// What was let go since the last frame. A carry let go near another controller or the head
+    /// docks there; anywhere else it's in the world and saved. A tap on the curve button flips
+    /// its panel flat or curved.
+    fn settle(&mut self, k: &mut Kvm, s: &mut impl Stage) {
+        for (i, dev) in std::mem::take(&mut self.drops) {
+            let pos = |m: Mat| [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64];
+            let others: Vec<(u32, V3)> = s.controllers().into_iter().filter(|&c| c != dev).filter_map(|c| Some((c, pos(s.device(c)?)))).collect();
+            let dock = s.device(dev).and_then(|m| dock_for(pos(m), s.head(), &others));
+            let on = match dock {
+                Some(Dock::Hand(c)) => s.device(c),
+                Some(Dock::Head) => s.head_pose(),
+                None => None,
+            };
+            match (dock, on) {
+                (Some(dock), Some(m)) => {
+                    self.docked[i] = Some((dock, mul(&inv_rigid(&m), &self.at(i, k).matrix())));
+                    eprintln!("{}: docked on {dock:?} (home keeps its last place in the room)", self.owner(i).map_or("", |o| o.name));
+                }
+                _ => {
+                    self.docked[i] = None;
+                    self.save(i, k);
+                }
+            }
+        }
         for i in std::mem::take(&mut self.taps) {
             let pl = self.at(i, k);
             let curve = toggled(pl.width, pl.curve, norm(&[0, 1, 2].map(|r| pl.c[r] - s.head()[r])));
@@ -1467,7 +1521,7 @@ impl Grab {
             Some(Glyph::Align) => self.aligns.push(i),
             Some(_) => {
                 let (Some(pose), p) = (self.scanned[i], &panels()[i]) else { return };
-                self.drags[i] = None;
+                (self.drags[i], self.docked[i]) = (None, None);
                 p.set_vert(pose.vert); // curved top to bottom means turned (kvm.rs set_place)
                 k.set_pose_with(s, i, &panel_matrix(&pose), pose.width, pose.curve);
                 match p.save_spot(&k.place[i]) {
@@ -1483,7 +1537,7 @@ impl Grab {
     /// It's instant, since no move here eases.
     fn face(&mut self, i: usize, k: &mut Kvm, s: &mut impl Stage) {
         let pl = self.at(i, k);
-        self.drags[i] = None;
+        (self.drags[i], self.docked[i]) = (None, None);
         let eye = s.head();
         self.put(i, k, s, &panel_matrix(&facing(&pl, &eye)), pl.width, Some(pl.height), pl.curve);
         self.save(i, k);
@@ -1527,7 +1581,9 @@ impl Grab {
     /// A spot recall or `place` takes the panel away from whoever's carrying it.
     pub fn cancel(&mut self, i: usize) {
         self.drags[i] = None;
+        self.docked[i] = None; // a recall puts it in the world
     }
+
 
     /// Whether anything was carried, a laser or the cursor was near a panel, or a card or the
     /// theater backdrop was fading, as of the last update.
@@ -1573,7 +1629,7 @@ impl Grab {
     /// laser, then the bar and card follow their panel, fade, and take their look.
     pub fn update(&mut self, k: &mut Kvm) {
         let now = Instant::now();
-        self.flip_curves(k, &mut Live);
+        self.settle(k, &mut Live);
         self.carry(k, &mut Live, now);
         self.refresh(k, now);
     }
@@ -1582,6 +1638,20 @@ impl Grab {
     /// device that's gone untracked for LOST puts it down.
     fn carry(&mut self, k: &mut Kvm, s: &mut impl Stage, now: Instant) {
         self.moving = self.drags.iter().any(Option::is_some);
+        for i in 0..self.drags.len() {
+            if self.drags[i].is_some() {
+                continue;
+            }
+            let Some((dock, rel)) = self.docked[i] else { continue };
+            let on = match dock {
+                Dock::Hand(c) => s.device(c),
+                Dock::Head => s.head_pose(),
+            };
+            if let Some(m) = on {
+                let pl = self.at(i, k);
+                self.put(i, k, s, &mul(&m, &rel), pl.width, None, pl.curve); // it rides along, like a carry that never ends
+            }
+        }
         for i in 0..self.drags.len() {
             let Some(drag) = self.drags[i].as_mut() else { continue };
             let tracked = s.device(drag.dev);
@@ -2632,26 +2702,76 @@ mod tests {
         }
 
         #[test]
+        fn let_go_by_the_other_hand_it_docks_there_and_rides_along_until_torn_off() {
+            const OTHER: u32 = 2;
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+            point(&mut f, OTHER, [0.38, 1.2, -0.4], p.c); // 8 cm away: in reach
+            g.start(0, Part::Bar, HAND, &k, &f);
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert!(matches!(g.docked[0], Some((Dock::Hand(OTHER), _))), "{:?}", g.docked[0].map(|d| d.0));
+            // the other hand moves 30 cm left: the panel goes with it, the same way round
+            let was = k.place[0];
+            let mut m = f.devices[&OTHER];
+            m[0][3] -= 0.3;
+            f.devices.insert(OTHER, m);
+            g.carry(&mut k, &mut f, Instant::now());
+            assert!((k.place[0].c[0] - (was.c[0] - 0.3)).abs() < 1e-5 && far(&[k.place[0].c[1], k.place[0].c[2], 0.0], &[was.c[1], was.c[2], 0.0]) < 1e-5);
+            // grabbed again and let go out of reach: torn off, in the world
+            point(&mut f, HAND, [-0.5, 1.2, -0.4], k.place[0].c);
+            g.start(0, Part::Bar, HAND, &k, &f);
+            assert!(g.docked[0].is_none(), "torn off while it's carried");
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert!(g.docked[0].is_none());
+        }
+
+        #[test]
+        fn let_go_by_a_hand_at_your_face_it_docks_on_the_head() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            let head = crate::stage::fake::aimed(EYE, [0.0, 1.6, -1.0]);
+            f.head_pose = Some(head);
+            point(&mut f, HAND, [0.05, 1.57, -0.05], p.c); // 8 cm from the eye
+            g.start(0, Part::Bar, HAND, &k, &f);
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert!(matches!(g.docked[0], Some((Dock::Head, _))));
+            let mut turned = head;
+            turned[1][3] += 0.2; // stood up 20 cm
+            f.head_pose = Some(turned);
+            let was = k.place[0].c;
+            g.carry(&mut k, &mut f, Instant::now());
+            assert!((k.place[0].c[1] - was[1] - 0.2).abs() < 1e-5, "it rose with the head");
+            g.cancel(0);
+            assert!(g.docked[0].is_none(), "a recall puts it in the world");
+            assert_eq!(dock_for([0.0, 1.0, 0.0], EYE, &[(3, [0.0, 1.1, 0.0]), (4, [0.0, 1.05, 0.0])]), Some(Dock::Hand(4)), "the nearer controller");
+            assert_eq!(dock_for([0.0, 1.0, 0.0], EYE, &[]), None, "nowhere near: the world");
+        }
+
+        #[test]
         fn a_tap_on_the_curve_button_flips_it_curved_round_you_and_flat_again() {
             let p = flat();
             let (mut g, mut k, mut f) = world(p);
             point(&mut f, HAND, EYE, p.c);
             g.start(0, Part::Knob, HAND, &k, &f);
             g.end_by(HAND, &k);
-            g.flip_curves(&mut k, &mut f);
+            g.settle(&mut k, &mut f);
             let dist = far(&p.c, &f.head);
             assert!((k.place[0].curve - dist).abs() < 1e-9, "curved round the eye: {} for {dist}", k.place[0].curve);
             assert_eq!(f.writes.curvature_of(f.overlay(0)), Some(bend(k.place[0].width, dist)));
             g.start(0, Part::Knob, HAND, &k, &f);
             g.end_by(HAND, &k);
-            g.flip_curves(&mut k, &mut f);
+            g.settle(&mut k, &mut f);
             assert_eq!(k.place[0].curve, 0.0, "and flat again");
             // a held press that bent it isn't a tap
             g.start(0, Part::Knob, HAND, &k, &f);
             g.scroll(0, 2.0, &mut k, &mut f); // 6 cm of bend on the wheel
             g.carry(&mut k, &mut f, Instant::now());
             g.end_by(HAND, &k);
-            g.flip_curves(&mut k, &mut f);
+            g.settle(&mut k, &mut f);
             assert!(k.place[0].curve > 0.0 && (k.place[0].curve - dist).abs() > 1e-3, "the pull's own curve: {}", k.place[0].curve);
             assert_eq!(toggled(4.0, 0.0, 1.0), 4.0 / std::f64::consts::PI, "never past a half circle");
         }

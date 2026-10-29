@@ -29,6 +29,8 @@ pub trait Stage: Overlays {
     fn head(&self) -> V3;
     /// The head's pose right now, if it's tracked.
     fn head_pose(&self) -> Option<Mat>;
+    /// The real controllers SteamVR tracks (not the mouse's pointer device), for docking (grab.rs).
+    fn controllers(&self) -> Vec<u32>;
     /// Slot i's overlay facts.
     fn panel(&self, i: usize) -> PanelFacts;
     /// Sends panel i's machine (or window) a pointer move to pixel (x, y).
@@ -50,6 +52,10 @@ impl Stage for Live {
 
     fn head_pose(&self) -> Option<Mat> {
         vr::head()
+    }
+
+    fn controllers(&self) -> Vec<u32> {
+        (1..openvr_sys::k_unMaxTrackedDeviceCount as u32).filter(|&d| vr::is_real_controller(d) && crate::grab::pose_of(d).is_some()).collect()
     }
 
     fn panel(&self, i: usize) -> PanelFacts {
@@ -151,6 +157,12 @@ pub mod fake {
 
         fn head_pose(&self) -> Option<Mat> {
             self.head_pose
+        }
+
+        fn controllers(&self) -> Vec<u32> {
+            let mut c: Vec<u32> = self.devices.keys().copied().filter(|&d| d != 0 && d != crate::grab::MOUSE).collect();
+            c.sort();
+            c
         }
 
         fn panel(&self, i: usize) -> PanelFacts {
