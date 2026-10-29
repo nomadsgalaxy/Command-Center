@@ -198,23 +198,44 @@ unsafe fn credential(cl: *mut rfbClient, st: &mut State, kind: c_int) -> *mut rf
 /// the session proved it checks a password over TLS (settle_pin).
 unsafe extern "C" fn on_certificate(cl: *mut rfbClient, subject: *const c_char, _: libc::time_t, _: libc::time_t, fp: *const u8, len: usize) -> rfbBool {
     crate::ffi::guard("on_certificate", 0, || {
-        // SAFETY: libvncclient's fingerprint for this callback, len bytes; a null one is no bytes
-        // (a slice can't be built from null even when it's empty)
+        // SAFETY: libvncclient's fingerprint for this callback, len bytes. A null one is no bytes
+        // (a slice can't be built from null even when it's empty), which `certificate` refuses.
         let fp = if fp.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(fp, len) } };
         let hex: String = fp.iter().map(|b| format!("{b:02x}")).collect();
         let subject = if subject.is_null() { String::new() } else { unsafe { CStr::from_ptr(subject) }.to_string_lossy().into_owned() };
         unsafe {
-            with_state(cl, |st| {
-                if st.opts.pin.is_some() {
+            with_state(cl, |st| match certificate(fp, st.opts.pin.is_some()) {
+                Cert::NoFingerprint => {
+                    eprintln!("vnc {}: the server sent no certificate fingerprint, so it isn't trusted", st.opts.host);
+                    st.refused = Some("the server sent no certificate fingerprint");
+                    0
+                }
+                Cert::NotThePin => {
                     eprintln!("vnc {}: the host's certificate changed ({subject}, sha256 {hex}); not connecting", st.opts.host);
                     st.refused = Some("the host's certificate isn't the pinned one");
-                    return 0;
+                    0
                 }
-                1
+                Cert::GoOn => 1,
             })
         }
         .unwrap_or(0)
     })
+}
+
+/// on_certificate's answer, before anything is compared or pinned.
+#[derive(Debug, PartialEq)]
+enum Cert {
+    NoFingerprint, // nothing to know it by: never trusted
+    NotThePin,     // there's a pin, and libvncclient only asks when the certificate isn't it
+    GoOn,          // no pin yet: connect's checks decide (settle_pin), from the TLS session's own certificate
+}
+
+fn certificate(fingerprint: &[u8], pinned: bool) -> Cert {
+    match (fingerprint.is_empty(), pinned) {
+        (true, _) => Cert::NoFingerprint,
+        (false, true) => Cert::NotThePin,
+        (false, false) => Cert::GoOn,
+    }
 }
 
 /// The server's own certificate's SHA-256, from the TLS session. None without TLS.
@@ -863,6 +884,14 @@ pub fn run(p: &'static Panel) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_certificate_with_no_fingerprint_is_never_trusted() {
+        assert_eq!(certificate(&[], false), Cert::NoFingerprint, "no pin yet: still refused, so nothing empty is ever pinned");
+        assert_eq!(certificate(&[], true), Cert::NoFingerprint);
+        assert_eq!(certificate(&[0xab; 32], true), Cert::NotThePin);
+        assert_eq!(certificate(&[0xab; 32], false), Cert::GoOn);
+    }
 
     #[test]
     fn a_disconnected_panel_takes_no_characters() {
