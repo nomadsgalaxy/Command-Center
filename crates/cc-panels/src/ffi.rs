@@ -29,11 +29,18 @@ thread_local! {
 /// Runs a callback's body. If it panics, this logs it with `name` (once per session), marks the
 /// session failed, and returns `fail`.
 pub fn guard<R>(name: &'static str, fail: R, body: impl FnOnce() -> R) -> R {
+    caught(name, fail, body, true)
+}
+
+/// guard's catch, marking the session failed or not, and saying which in its one log line.
+fn caught<R>(name: &'static str, fail: R, body: impl FnOnce() -> R, fails: bool) -> R {
     GUARDED.set(GUARDED.get() + 1);
     let r = catch_unwind(AssertUnwindSafe(body));
     GUARDED.set(GUARDED.get() - 1);
     r.unwrap_or_else(|e| {
-        FAILED.set(true);
+        if fails {
+            FAILED.set(true);
+        }
         let first = SAID.with_borrow_mut(|s| {
             !s.contains(&name) && {
                 s.push(name);
@@ -43,7 +50,8 @@ pub fn guard<R>(name: &'static str, fail: R, body: impl FnOnce() -> R) -> R {
         if first {
             let why = e.downcast_ref::<&str>().copied().or_else(|| e.downcast_ref::<String>().map(String::as_str)).unwrap_or("?");
             // writeln, not eprintln: a closed stderr mustn't panic again in here
-            let _ = writeln!(std::io::stderr(), "{name}: panicked ({why}); the callback failed, and its session reconnects");
+            let then = if fails { "the callback failed, and its session reconnects" } else { "it was only logging, so the session carries on" };
+            let _ = writeln!(std::io::stderr(), "{name}: panicked ({why}); {then}");
         }
         fail
     })
@@ -52,9 +60,7 @@ pub fn guard<R>(name: &'static str, fail: R, body: impl FnOnce() -> R) -> R {
 /// guard() for work beside a callback's job, like its logging: a panic in it is logged once the
 /// same way, but the session carries on, so the job itself still runs after it.
 pub fn aside(name: &'static str, body: impl FnOnce()) {
-    let failed = FAILED.get();
-    guard(name, (), body);
-    FAILED.set(failed);
+    caught(name, (), body, false)
 }
 
 /// Whether a callback on this thread panicked since new_session(). Its session should end.
@@ -122,6 +128,19 @@ mod tests {
         assert!(session_failed());
         new_session();
         assert!(!session_failed());
+    }
+
+    #[test]
+    fn a_panic_aside_is_said_once_and_fails_nothing() {
+        new_session();
+        aside("logs", || panic!("a logging bug"));
+        aside("logs", || panic!("again"));
+        assert!(!session_failed(), "the session carries on");
+        assert_eq!(SAID.with_borrow(|s| s.iter().filter(|n| **n == "logs").count()), 1, "said once");
+        let _ = guard("ends", (), || panic!("a real one"));
+        aside("logs", || ());
+        assert!(session_failed(), "and it doesn't undo a real failure either");
+        new_session();
     }
 
     #[test]

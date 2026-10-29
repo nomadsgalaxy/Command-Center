@@ -68,7 +68,8 @@ Only the events a replay needs go in, with only their own fields: pointer moves,
 releases, focus coming and going, and scrolls. Anything else, keyboard events included, is left
 out and only counted. Even so, a trace is a record of what you did with the lasers and where you
 pointed, so treat it as sensitive: it's only written when you ask for it, it stays on the Frame,
-and you should delete the flag file and the trace when you're done.
+and you should delete the flag file and every `vr-trace-*.jsonl` when you're done, since each start
+makes a new one.
 
 It's written through a 1 MB buffer flushed at most once a second, so the main loop writes one block
 a second, not one a pass, and at 64 MB it stops with one line in the log. The writes are still on
