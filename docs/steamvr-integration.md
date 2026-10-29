@@ -138,16 +138,26 @@ right click, and the bumper still holds the laser steady while it's pressed, as 
 It's a personal binding for SteamVR's laser (`openvr.component.vrcompositor`), made from Valve's
 own Frame controller binding with only the bumper's two clicks changed, in
 `~/steamvr/input/openvr.component.vrcompositor_frame_controller.json`. The binding is active while
-SteamVR runs. We write the user binding file any time, but the selection in steamvr.vrsettings
-only while SteamVR isn't running, because vrserver rewrites that file on exit. So if you install
-while SteamVR is running, it says "applies next time SteamVR is closed", and the next
-`cc-home install` or Desktop start with SteamVR closed makes the selection. Each Desktop start
-checks it again, so a steamreset or a deleted file doesn't lose it for good.
+SteamVR runs. We write the user binding file any time. While SteamVR runs, which on the Frame is
+nearly always, we select it the way SteamVR's own Controller Bindings page does, through
+vrserver's local web API: SteamVR switches to it straight away, with no restart. While SteamVR
+isn't running, the selection goes into steamvr.vrsettings instead, because vrserver rewrites that
+file on exit. Each Desktop start checks it again, so a steamreset or a deleted file doesn't lose it
+for good.
+
+What it costs: SteamVR has a budget of binding loads, and running out of it stops the lasers
+until SteamVR restarts. Selecting the binding is one binding load, once. Checking it at a Desktop
+start costs none: it only reads what's selected, and selects only if ours isn't. Taking it out is
+one more.
+
+If you've picked your own binding for SteamVR's laser in Controller Bindings, Command Center
+leaves it: the bumper does whatever your binding says.
 
 It never breaks the controller: if the file goes missing or SteamVR updates its laser, SteamVR
 goes back to Valve's own binding by itself. `cc-home install remove` takes it out, and so does
 picking another binding in SteamVR's Controller Bindings. To keep the bumper as left click, add
-`"bumper_right_click": false` to `~/.config/control-center/settings.json`.
+`"bumper_right_click": false` to `~/.config/control-center/settings.json`; the next Desktop start
+takes ours out if it's there.
 
 ## SteamVR's keyboard
 
