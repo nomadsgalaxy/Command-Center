@@ -319,8 +319,13 @@ authenticate. Valve's polkit actions (`org.valve.steamos.policy`) only cover the
 ```
 sudo install -Dm644 command-center.raw /var/lib/extensions/command-center.raw
 sudo systemctl enable systemd-sysext.service   # survives OS updates via the keep list
-sudo systemd-sysext refresh
+cd / && sudo systemd-sysext refresh            # from a directory root can read (see below)
+sudo systemctl try-restart polkit.service      # so polkit sees org.controlcenter.update
 ```
+
+This first one needs the password, once: the image brings the polkit action that makes later
+updates passwordless, and polkitd doesn't know it until it restarts. Without the restart, `cc-home
+update` asks for a password until the next reboot.
 
 cc-install does this through `pkexec` and asks first. It also cleans up a checkout install:
 unregisters the vrpathreg driver, removes the `~/.local/bin` links and the per-user `.desktop`
@@ -364,6 +369,17 @@ root under pkexec cc-home refuses to be anything else), and as root it does one 
    milliseconds between the check and the refresh, since the tab doesn't take that lock.
    sysupdate never installs an older version than the newest one installed unless it's asked for
    one, which the helper never does.
+7. If that refresh brought a new or changed polkit action (the `.policy` file's bytes differ from
+   before), `systemctl try-restart polkit.service`, since polkitd only reads actions when it
+   starts. If the restart fails, the helper says so and exits with an error, even though the image
+   is loaded, because the next update would ask for a password.
+
+Before any of that, its first act is `chdir("/")`, and it checks `/var/lib/command-center` is a real
+directory, root's, that no one else can write (the image's `tmpfiles.d` entry makes it at boot,
+and the helper makes it if it isn't there yet). Otherwise it does nothing. It holds
+`/var/lib/command-center/update.lock` for the whole run, so a second helper stops with "an update
+is already running". A Desktop that starts while the helper holds the Desktop's lock says
+"Command Center is updating; starting in a moment" in its log and waits.
 
 The helper takes no arguments and reads no paths from anywhere, and every program it runs is
 called by its full path with an empty environment. Signing a release stays a step done by hand,
@@ -372,41 +388,43 @@ detached signature over `SHA256SUMS` made with that key.
 
 Tried on the Frame (systemd 257, as the steamos user against a scratch `--root`): the transfer
 from a local directory works, and `update` with no version installs nothing older than the newest
-installed ("No update needed."). Still to try, with a real image, as root (Anthony's call):
+installed ("No update needed.").
 
-1. vpick. Build two images, `command-center_1.raw` and `command-center_2.raw` (packaging/sysext/build.sh,
-   with `IMAGE_VERSION` set to 1 and 2). Then:
-   ```
-   sudo mkdir -p /var/lib/extensions/command-center.raw.v
-   sudo cp command-center_1.raw /var/lib/extensions/command-center.raw.v/
-   sudo systemd-sysext refresh && systemd-sysext status    # command-center, version 1
-   grep IMAGE_VERSION /usr/lib/extension-release.d/extension-release.command-center
-   sudo cp command-center_2.raw /var/lib/extensions/command-center.raw.v/
-   sudo systemd-sysext refresh && systemd-sysext status    # now version 2: the newest wins
-   grep IMAGE_VERSION /usr/lib/extension-release.d/extension-release.command-center
-   ```
-   If it stays on 1, or merges neither, the `.raw.v/` layout doesn't work here and the helper has to
-   replace a plain `command-center.raw` instead.
-2. polkit for the user at the device. With the image merged, from the headset's own session:
-   ```
-   pkcheck --action-id org.controlcenter.update --process $$ && echo allowed
-   cc-home update      # no password prompt; "… is installed …" or a refusal saying why
-   ```
-   and from an SSH session (not active at the device), `pkcheck` must say not authorized.
+Tested on the Frame on October 29, 2026, with a throwaway squashfs extension (`cc-n9-test`,
+removed after):
+
+1. vpick works on 257. With `cc-n9-test_1.raw` and then `cc-n9-test_2.raw` in
+   `/var/lib/extensions/cc-n9-test.raw.v/`, the refresh said `Using extensions 'cc-n9-test_2.raw'`:
+   the newest wins, so the `.raw.v/` layout is the one to use.
+2. polkit (`allow_active=yes`): `pkcheck --action-id … --process` from an SSH session said not
+   authorized; for cc-panels' process in the headset's own session (session 2, `Remote=no`,
+   `Active=yes`) it said authorized, with no prompt. The catch: polkitd didn't see an action
+   that arrived by a sysext merge ("not registered") until `systemctl restart polkit`. That's why
+   the first install restarts it and the helper does too when the `.policy` changes (step 7).
+
+Still to do with a real image: one full `cc-home update` from a signed release.
+
+### Troubleshooting
+
+- **`Failed to read metadata …: Permission denied` from systemd-sysext:** it opens the current
+  directory first, and root can't read a user's FUSE mount (`~/Cloud`, say). Run it from `/`
+  (`cd / && sudo systemd-sysext refresh`). The helper and cc-install's hint already do.
+- **`cc-home update` asks for a password:** polkitd hasn't read the action yet. Run
+  `sudo systemctl try-restart polkit.service` once, or restart the Frame.
 
 ### When the image isn't loaded
 
 If the image is in `/var/lib/extensions` but systemd-sysext didn't load it, nothing of Command
 Center is there to run, the launcher tile included, so it can't say so itself. The installer
 (cc-install, which runs from its own download) checks for that and says how to load it:
-`sudo systemd-sysext refresh`, or a restart. When the image is loaded, `cc-home desktop`
+`cd / && sudo systemd-sysext refresh && sudo systemctl try-restart polkit`, or a restart. When the image is loaded, `cc-home desktop`
 (cc-launch) checks that its extension-release file is ours before it starts anything.
 
 ### Uninstall
 
 ```
 sudo rm /var/lib/extensions/command-center.raw   # or the .raw.v directory
-sudo systemd-sysext refresh
+cd / && sudo systemd-sysext refresh
 ```
 
 That's everything system-wide gone: the commands, the driver, both `.desktop` files and the polkit
@@ -529,5 +547,5 @@ Open questions I want answered on the device:
 
 - Does the VR launcher show `command-center.desktop`, with its art, without a reboot
   (`kbuildsycoca6`)? Does a second Desktop-template entry confuse it?
-- Does `.raw.v/` vpick work for sysext on 257 here?
+- ~~Does `.raw.v/` vpick work for sysext on 257 here?~~ Yes (October 29, 2026; see section 4).
 - How does `systemd-sysext refresh` behave while vrserver has the driver mapped?

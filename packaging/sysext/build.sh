@@ -42,6 +42,7 @@ for c in cc-home cc-panels; do ln -s "../lib/command-center/$c" "$s/usr/bin/$c";
 install -m755 "$s/$lib/cc-home" "$s/$lib/cc-sysext-update" # a copy, not a link: pkexec's exec.path and argv[0] both see this name
 install -Dm644 "$root/packaging/sysext/org.controlcenter.update.policy" "$s/usr/share/polkit-1/actions/org.controlcenter.update.policy"
 install -Dm644 "$root/packaging/sysext/50-command-center.transfer" "$s/usr/lib/sysupdate.command-center.d/50-command-center.transfer"
+install -Dm644 "$root/packaging/sysext/command-center.tmpfiles" "$s/usr/lib/tmpfiles.d/command-center.conf" # the helper's /var/lib/command-center, root's from boot
 gpg --dearmor <"$root/packaging/command-center.asc" >"$s/$lib/release-key.gpg"
 chmod 644 "$s/$lib/release-key.gpg"
 cp -P "$root"/panels/third_party/prefix/lib64/lib{freerdp3,freerdp-client3,winpr3}.so.3* "$s/$lib/panels/third_party/prefix/lib64/"

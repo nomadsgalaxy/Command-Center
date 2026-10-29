@@ -381,7 +381,7 @@ pub fn look() -> Facts {
             let ext = Path::new("/var/lib/extensions");
             let image = ext.join("command-center.raw").exists() || ext.join("command-center.raw.v").exists();
             if unmerged(image, Path::new("/usr/lib/extension-release.d/extension-release.command-center").exists()) {
-                miss("Command Center's system image isn't loaded", "load it with: sudo systemd-sysext refresh (or restart the Frame)".into());
+                miss("Command Center's system image isn't loaded", "load it with: cd / && sudo systemd-sysext refresh && sudo systemctl try-restart polkit (or restart the Frame)".into());
             }
         }
         Kind::Host => {

@@ -19,6 +19,10 @@
 //!    running from the image. Otherwise the new image is merged at the next boot or the next update
 //!    with those closed. What this can't cover: SteamVR starting the dashboard tab's process in the
 //!    few milliseconds between the check and the refresh (the tab doesn't take that lock).
+//!    polkitd reads its actions only when it starts, so if the refresh brought a new or changed
+//!    org.controlcenter.update action, polkit is restarted; otherwise the next `cc-home update`
+//!    would ask for a password until a reboot. The helper's first act is chdir("/"), since
+//!    systemd-sysext opens "." and root can't read a user's FUSE mount.
 //!
 //! The image ships no scripts that run as processes: session/cc-launch and the rest are links to
 //! cc-home, and the .js files are KWin's scripts, read by KWin. So a program running from the
@@ -41,12 +45,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const RELEASES: &str = "https://github.com/nomadsgalaxy/Command-Center/releases/latest/download";
+/// Root's, never writable by anyone else (owned_dir), and everything below is root's too.
+const STATE: &str = "/var/lib/command-center";
 const WORK: &str = "/var/lib/command-center/update";
 /// One helper at a time: held for the whole run, so a second can't empty the first's downloads.
 const RUN_LOCK: &str = "/var/lib/command-center/update.lock";
 const KEYRING: &str = "/usr/lib/command-center/release-key.gpg";
 const HELPER: &str = "/usr/lib/command-center/cc-sysext-update";
 const EXTENSIONS: &str = "/var/lib/extensions";
+const POLICY: &str = "/usr/share/polkit-1/actions/org.controlcenter.update.policy";
 
 /// Size caps and time limits for the downloads.
 const SUMS_MAX: u64 = 64 * 1024;
@@ -70,6 +77,10 @@ trait Ops {
     /// Something other than this helper runs a program from the image (the dashboard tab, say).
     fn in_use(&self) -> bool;
     fn refresh(&mut self) -> Result<(), String>;
+    /// The merged image's polkit action file, None if it isn't there.
+    fn policy(&self) -> Option<Vec<u8>>;
+    /// polkitd only reads actions when it starts, so a new or changed one needs this.
+    fn restart_polkit(&mut self) -> Result<(), String>;
     fn release(&mut self);
 }
 
@@ -149,7 +160,12 @@ fn run(o: &mut impl Ops, dir: &Path) -> Result<String, String> {
         return Ok(later);
     }
     // the Desktop's lock is held from here to the refresh's end, so no Desktop starts under it
-    let r = if o.in_use() { Ok(later) } else { o.refresh().map(|_| format!("{name} is installed and loaded")) };
+    let r = if o.in_use() {
+        Ok(later)
+    } else {
+        let before = o.policy();
+        o.refresh().and_then(|_| if o.policy() == before { Ok(()) } else { o.restart_polkit() }).map(|_| format!("{name} is installed and loaded"))
+    };
     o.release();
     r
 }
@@ -223,6 +239,27 @@ fn claim_at(path: &Path, uid: u32) -> Option<fs::File> {
         return None; // a Desktop has it
     }
     Some(f)
+}
+
+/// /var/lib/command-center, made (0755) if the image's tmpfiles.d entry hasn't yet: a real
+/// directory owned by `uid` (root) that nobody else can write, or nothing's done, since the work
+/// directory and RUN_LOCK in it are only safe if no one else can swap them.
+fn owned_dir(dir: &Path, uid: u32) -> Result<(), String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    match std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o755).create(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(format!("{}: {e}", dir.display())),
+        _ => {}
+    }
+    let d = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(dir)
+        .map_err(|e| format!("{} isn't a plain directory ({e}), so nothing's done", dir.display()))?;
+    let m = d.metadata().map_err(|e| format!("{}: {e}", dir.display()))?;
+    if m.uid() != uid || m.permissions().mode() & 0o022 != 0 {
+        return Err(format!("{} can be written by someone other than root, so nothing's done", dir.display()));
+    }
+    Ok(())
 }
 
 /// The helper's own lock at `path` (root's, never a symlink), held while it runs. Err if another
@@ -322,14 +359,29 @@ impl Ops for Live {
     fn refresh(&mut self) -> Result<(), String> {
         ran(tool("/usr/bin/systemd-sysext").arg("refresh"), "systemd-sysext refresh")
     }
+
+    fn policy(&self) -> Option<Vec<u8>> {
+        fs::read(POLICY).ok()
+    }
+
+    fn restart_polkit(&mut self) -> Result<(), String> {
+        // try-restart: a polkitd that isn't running reads the new action when D-Bus starts it
+        ran(tool("/usr/bin/systemctl").args(["try-restart", "polkit.service"]), "the image is loaded, but restarting polkit (so cc-home update stays passwordless) failed")
+    }
 }
 
 /// cc-sysext-update, as root through pkexec. Returns the exit code.
 pub fn helper(args: &[std::ffi::OsString]) -> i32 {
+    // First, before anything can start a child: systemd-sysext opens "." first, and root can't
+    // read a user's FUSE mount (~/Cloud, say).
+    let cwd = std::env::set_current_dir("/");
     let fail = |e: String| {
         eprintln!("cc-sysext-update: {e}");
         1
     };
+    if let Err(e) = cwd {
+        return fail(format!("chdir /: {e}"));
+    }
     if !args.is_empty() {
         return fail("it takes no arguments".into());
     }
@@ -338,6 +390,9 @@ pub fn helper(args: &[std::ffi::OsString]) -> i32 {
     }
     let user = std::env::var("PKEXEC_UID").ok().and_then(|u| u.parse().ok());
     let dir = PathBuf::from(WORK);
+    if let Err(e) = owned_dir(Path::new(STATE), 0) {
+        return fail(e);
+    }
     let _running = match exclusive(Path::new(RUN_LOCK)) {
         Ok(f) => f, // held until we return
         Err(e) => return fail(e),
@@ -384,6 +439,8 @@ mod tests {
         desktop: bool,
         tab: bool, // something else runs from the image
         sums: String,
+        policy: Option<Vec<u8>>,
+        new_policy: Option<Vec<u8>>, // what the refresh merges
     }
 
     impl Ops for Fake<'_> {
@@ -413,6 +470,14 @@ mod tests {
         }
         fn refresh(&mut self) -> Result<(), String> {
             self.steps.push("refresh".into());
+            self.policy = self.new_policy.clone();
+            Ok(())
+        }
+        fn policy(&self) -> Option<Vec<u8>> {
+            self.policy.clone()
+        }
+        fn restart_polkit(&mut self) -> Result<(), String> {
+            self.steps.push("restart polkit".into());
             Ok(())
         }
         fn release(&mut self) {
@@ -434,7 +499,7 @@ mod tests {
     fn fake(dir: &Path) -> Fake<'_> {
         let image = b"an image".to_vec();
         let sums = format!("{}  command-center_0.9.1.raw\n{}  cc-host.tar.gz\n", sha(&image), sha(b"other"));
-        Fake { dir, steps: vec![], bad_sig: false, image, desktop: false, tab: false, sums }
+        Fake { dir, steps: vec![], bad_sig: false, image, desktop: false, tab: false, sums, policy: Some(b"v1".to_vec()), new_policy: Some(b"v1".to_vec()) }
     }
 
     #[test]
@@ -456,6 +521,38 @@ mod tests {
         f.tab = true;
         assert!(run(&mut f, &d).unwrap().contains("next boot"));
         assert_eq!(f.steps[f.steps.len() - 2..], ["claim", "release"], "the tab runs from the image: no refresh, and the lock goes back");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_state_directory_must_be_ours_and_nobody_elses_to_write() {
+        let me = unsafe { libc::geteuid() };
+        let d = scratch("state");
+        assert!(owned_dir(&d, me).is_ok(), "made when it isn't there");
+        assert!(owned_dir(&d, me).is_ok(), "and fine the second time");
+        assert!(owned_dir(&d, me + 1).is_err(), "someone else's");
+        fs::set_permissions(&d, fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(owned_dir(&d, me).is_err(), "group-writable");
+        fs::set_permissions(&d, fs::Permissions::from_mode(0o755)).unwrap();
+        let link = scratch("state-link");
+        std::os::unix::fs::symlink(&d, &link).unwrap();
+        assert!(owned_dir(&link, me).is_err(), "a symlink to it");
+        let _ = fs::remove_file(&link);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn polkit_restarts_only_when_the_refresh_brings_a_new_or_changed_action() {
+        let d = scratch("polkit");
+        prepare(&d, unsafe { libc::geteuid() }).unwrap();
+        for (before, after, restarts) in [(Some("v1"), Some("v1"), false), (Some("v1"), Some("v2"), true), (None, Some("v1"), true)] {
+            let mut f = fake(&d);
+            f.policy = before.map(|p| p.as_bytes().to_vec());
+            f.new_policy = after.map(|p| p.as_bytes().to_vec());
+            assert!(run(&mut f, &d).is_ok());
+            let i = f.steps.iter().position(|s| s == "refresh").unwrap();
+            assert_eq!(f.steps[i + 1] == "restart polkit", restarts, "{before:?} to {after:?}");
+        }
         let _ = fs::remove_dir_all(&d);
     }
 
