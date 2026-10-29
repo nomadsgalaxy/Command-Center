@@ -80,7 +80,7 @@ pub fn run() -> Result<(), String> {
     let (mut desktop, mut looked, lock) = (false, None::<Instant>, desktop_lock());
     eprintln!("tab: up");
     loop {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         while call!(sys, PollNextEvent, &mut e, size_of::<vr::VREvent_t>() as u32) {
             match e.eventType {
                 sys::EVREventType_VREvent_Quit => {

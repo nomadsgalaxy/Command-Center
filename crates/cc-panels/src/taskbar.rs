@@ -928,7 +928,7 @@ impl Taskbar {
 
     /// Laser events on it: hovering, clicking a chip, taking an edge, a corner or the knob.
     fn events(&mut self, grab: &mut grab::Grab, windows: &mut Windows) {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         while call!(ov, PollNextOverlayEvent, self.ov, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
             let y = from_top(self.frame.h, m.y as f64); // its units, from the top

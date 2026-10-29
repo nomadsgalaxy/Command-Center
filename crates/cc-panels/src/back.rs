@@ -228,7 +228,7 @@ impl Backs {
 
     /// Laser presses and releases on the backs, as (slot, device, pressed).
     pub fn events(&self) -> Vec<(usize, u32, bool)> {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         let mut out = Vec::new();
         for b in &self.pool {
             while call!(ov, PollNextOverlayEvent, b.h, &mut e, size_of::<vr::VREvent_t>() as u32) {

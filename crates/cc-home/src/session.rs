@@ -385,6 +385,7 @@ pub fn start_log(cache: &Path, stamp: &str) -> std::io::Result<fs::File> {
 fn stamp() -> String {
     unsafe {
         let t = libc::time(std::ptr::null_mut());
+        // SAFETY: libc::tm is plain integers (and a nullable zone pointer): all zeros is a valid value, which localtime_r then fills.
         let mut tm: libc::tm = std::mem::zeroed();
         libc::localtime_r(&t, &mut tm);
         let mut buf = [0u8; 32];

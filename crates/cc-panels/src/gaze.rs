@@ -60,11 +60,11 @@ impl Gaze {
     /// Where you're looking: an origin and a unit direction in standing space, if the
     /// tracker has a valid sample right now.
     pub fn sample(&self) -> Option<(V3, V3)> {
-        let mut active: sys::VRActiveActionSet_t = unsafe { std::mem::zeroed() };
+        let mut active: sys::VRActiveActionSet_t = Default::default();
         active.ulActionSet = self.set;
         active.nPriority = 0; // not the global overlay priority: that needs an experimental SteamVR setting and never took the controllers
         call!(input, UpdateActionState, &mut active, size_of::<sys::VRActiveActionSet_t>() as u32, 1);
-        let mut e: sys::VREyeTrackingData_t = unsafe { std::mem::zeroed() };
+        let mut e: sys::VREyeTrackingData_t = Default::default();
         let err = call!(input, GetEyeTrackingDataRelativeToNow, self.action, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0, &mut e, size_of::<sys::VREyeTrackingData_t>() as u32);
         let valid = err == 0 && e.bActive && e.bValid;
         if let Some(line) = self.health.lock().unwrap().note(valid, Instant::now()) {

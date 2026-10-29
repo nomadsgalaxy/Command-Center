@@ -206,6 +206,7 @@ fn damage_meta() -> Vec<u8> {
 /// How much of a w x h picture a buffer's frame damaged, in thousandths, from its damage rects.
 /// When it has none it counts as all of it, and we log that once.
 fn damaged(buf: &spa::sys::spa_buffer, (w, h): (u32, u32)) -> u32 {
+    // SAFETY: the buffer is PipeWire's while we hold it; metas is checked for null, and n_metas is how many it points to.
     let metas = if buf.metas.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(buf.metas, buf.n_metas as usize) } };
     let Some(m) = metas.iter().find(|m| m.type_ == spa::sys::SPA_META_VideoDamage && !m.data.is_null()) else {
         static SAID: AtomicBool = AtomicBool::new(false);
@@ -215,8 +216,11 @@ fn damaged(buf: &spa::sys::spa_buffer, (w, h): (u32, u32)) -> u32 {
         return 1000;
     };
     let n = m.size as usize / size_of::<spa::sys::spa_meta_region>();
-    let rects = unsafe { std::slice::from_raw_parts(m.data as *const spa::sys::spa_meta_region, n) };
-    let area: u64 = rects.iter().map(|r| r.region.size).take_while(|s| s.width > 0 && s.height > 0).map(|s| s.width as u64 * s.height as u64).sum();
+    // SAFETY: m.data is non-null (the find above) and m.size bytes long, so n whole regions fit in
+    // it. Each is read unaligned: nothing promises the metadata area is aligned for the struct.
+    let base = m.data as *const spa::sys::spa_meta_region;
+    let rects = (0..n).map(|k| unsafe { base.add(k).read_unaligned() });
+    let area: u64 = rects.map(|r| r.region.size).take_while(|s| s.width > 0 && s.height > 0).map(|s| s.width as u64 * s.height as u64).sum();
     (area * 1000 / (w as u64 * h as u64).max(1)).min(1000) as u32
 }
 
@@ -520,7 +524,7 @@ impl Shown {
 }
 
 fn import(fd: i32, w: u32, h: u32, offset: u32, stride: u32, modifier: u64) -> Option<sys::SharedTextureHandle_t> {
-    let mut a: sys::DmabufAttributes_t = unsafe { std::mem::zeroed() };
+    let mut a: sys::DmabufAttributes_t = Default::default();
     a.unWidth = w;
     a.unHeight = h;
     (a.unDepth, a.unMipLevels, a.unArrayLayers, a.unSampleCount) = (1, 1, 1, 1);

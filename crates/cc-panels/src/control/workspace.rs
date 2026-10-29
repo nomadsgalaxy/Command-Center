@@ -583,7 +583,7 @@ impl Workspace {
         let n = self.rows.len();
         let t = typing_row(self.typing.as_ref(), n);
         let drawn = self.painter.drawn().map(|k| k.rows.len());
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         while ui::next_event(h, &mut e) {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
             // in units from the bottom left; none while the texture is drawn for a different row count

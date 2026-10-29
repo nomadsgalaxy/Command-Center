@@ -440,7 +440,7 @@ impl Panel {
 /// there were and whether any worked it (a move, click or scroll to its machine, which is
 /// D-045's input).
 fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, bool) {
-    let (mut e, mut n, mut worked): (vr::VREvent_t, u32, bool) = (unsafe { std::mem::zeroed() }, 0, false);
+    let (mut e, mut n, mut worked): (vr::VREvent_t, u32, bool) = (Default::default(), 0, false);
     while call!(ov, PollNextOverlayEvent, p.overlay, &mut e, size_of::<vr::VREvent_t>() as u32) {
         n += 1;
         if osk::event(p, &e) {
@@ -1098,7 +1098,7 @@ fn run() -> Result<(), String> {
             );
         }
         laps.lap("status");
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         let mut events = 0;
         while call!(sys, PollNextEvent, &mut e, size_of::<vr::VREvent_t>() as u32) {
             (events, last_event) = (events + 1, e.eventType);

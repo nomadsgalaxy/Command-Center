@@ -195,9 +195,11 @@ fn ours(uid: Option<u32>) -> bool {
 /// someone else, dropped. Err ends the drain (WouldBlock when there's nothing left).
 fn recv_ours(s: &UnixDatagram, buf: &mut [u8]) -> std::io::Result<Option<(usize, Sender)>> {
     use std::os::fd::AsRawFd;
+    // SAFETY: sockaddr_un is an integer family and a byte array: all zeros is valid (and an empty path, filled in below).
     let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     let mut ctrl = [0u64; 8]; // room for one cmsghdr with a ucred, aligned
     let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };
+    // SAFETY: msghdr is integers and pointers that may be null: all zeros is an empty message, filled in below.
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_name = (&mut addr as *mut libc::sockaddr_un).cast();
     msg.msg_namelen = size_of::<libc::sockaddr_un>() as libc::socklen_t;

@@ -157,6 +157,7 @@ impl Stream {
     /// (SHMRACE-002); the indexing below is bounds-checked against the mapping's length.
     fn rgb(&self, b: &Buffer) -> Vec<u8> {
         let m = &self.maps[b.index as usize];
+        // SAFETY: the mapping is m.len bytes and lives as long as self; the buffer's dequeued, so the driver doesn't write it meanwhile (above).
         let data = unsafe { std::slice::from_raw_parts(m.ptr, m.len) };
         let row = self.w * 3;
         let mut out = Vec::with_capacity(row * self.h);

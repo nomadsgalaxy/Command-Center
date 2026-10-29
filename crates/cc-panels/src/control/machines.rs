@@ -1349,7 +1349,7 @@ impl Machines {
     fn events(&mut self, h: vr::Handle, grab: &mut grab::Grab, windows: &mut Windows) {
         let (n, form, offer) = (self.rows.len(), shape(self.form.as_ref()), self.offer.is_some());
         let renamed = self.rename.as_ref().and_then(|(i, r)| Some((self.rows.iter().position(|x| x == i)?, r.choice)));
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         while ui::next_event(h, &mut e) {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
             // its units, from the bottom left; none while the texture (and its mouse scale) is still another shape's

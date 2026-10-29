@@ -67,6 +67,7 @@ unsafe extern "C" fn on_end_paint(c: *mut rdpContext) -> BOOL {
             // instead of their bounds, since a caret and a clock in opposite corners are only a little.
             let (hwnd, gdi) = unsafe { (&*hwnd, &*gdi) };
             let n = if hwnd.cinvalid.is_null() { 0 } else { hwnd.ninvalid.max(0) as usize };
+            // SAFETY: FreeRDP's invalid regions for this paint; cinvalid is non-null here and holds ninvalid (n) rects.
             let rects = if n == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(hwnd.cinvalid, n) } };
             let area: i64 = rects.iter().map(|r| r.w.max(0) as i64 * r.h.max(0) as i64).sum();
             let all = (gdi.width.max(1) as i64 * gdi.height.max(1) as i64).max(1);
@@ -424,7 +425,7 @@ pub fn run(p: &'static Panel) {
                 p.v.port
             }
         };
-        let mut ep: RDP_CLIENT_ENTRY_POINTS = unsafe { std::mem::zeroed() };
+        let mut ep: RDP_CLIENT_ENTRY_POINTS = Default::default();
         ep.Version = RDP_CLIENT_INTERFACE_VERSION;
         ep.Size = size_of::<RDP_CLIENT_ENTRY_POINTS_V1>() as u32;
         ep.ContextSize = size_of::<PanelContext>() as u32;

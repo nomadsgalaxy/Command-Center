@@ -448,7 +448,7 @@ impl Plasma {
 
     /// Laser events on it go into the session. The mouse's come through kvm.rs.
     fn events(&mut self) {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         self.moving = self.held != 0;
         // SteamVR reports overlay mouse events in the whole texture's coordinates, not the part
         // the bounds show. While a popup is open the texture is the whole output and we show a
