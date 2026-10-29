@@ -153,6 +153,19 @@ pub(crate) fn ray_at(pl: &Placement, crop: Rect, o: &V3, d: &V3) -> Option<(f64,
     Some(global(crop, fx, fy))
 }
 
+/// Where a laser event lands in the session, and whether that was the fallback: by the laser's
+/// ray (`ray`, origin and unit direction) through the overlay as placed (`pl`, showing `crop`) when
+/// there is one, otherwise by SteamVR's point (x, y) put through the bounds `b`.
+fn laser_point(pl: Option<Placement>, crop: Option<Rect>, ray: Option<(V3, V3)>, b: [f32; 4], x: f64, y: f64) -> (Option<(f64, f64)>, bool) {
+    match pl.zip(crop).zip(ray).and_then(|((pl, c), (o, d))| ray_at(&pl, c, &o, &d)) {
+        Some(p) => (Some(p), false),
+        None => {
+            let (fx, fy) = in_bounds(b, x, y);
+            (crop.map(|c| global(c, fx, fy)), true)
+        }
+    }
+}
+
 /// `panel_at` for a laser from `from` that hit the taskbar's frame at `to`: Some(None) if it
 /// passes Plasma's bar by, None while the bar isn't showing.
 pub fn laser_on_panel(from: &V3, to: &V3) -> Option<Option<(f64, f64)>> {
@@ -472,18 +485,46 @@ impl Plasma {
         // whole output, it's turned into fractions of the crop. That point depends on which
         // texture and bounds SteamVR had when it made the event, and right after a menu opens
         // that isn't always what's drawn.
+        // Copies, taken once: no lock is held while the loop asks OpenVR for poses.
         let b = self.placed.map_or([0.0, 0.0, 1.0, 1.0], |q| q.4);
         let (pl, crop) = (crate::kvm::lock().plasma, CROP.lock().unwrap().map(|c| c.0));
+        let mut lasers: Vec<(u32, Option<crate::geometry::Mat>)> = Vec::new(); // each device's laser, once a batch
         crate::trace::tick("plasma");
         while crate::trace::poll("plasma", self.ov, &mut e) {
-            let m = unsafe { e.data.mouse };
-            let (fx, fy) = in_bounds(b, m.x as f64, m.y as f64);
-            let ray = crate::trace::laser_pose(e.trackedDeviceIndex).map(|l| ([l[0][3], l[1][3], l[2][3]].map(f64::from), [-l[0][2], -l[1][2], -l[2][2]].map(f64::from)));
-            let by_ray = pl.zip(crop).zip(ray).and_then(|((pl, c), (o, d))| ray_at(&pl, c, &o, &d));
-            if debug() && e.eventType != sys::EVREventType_VREvent_MouseMove {
-                eprintln!("plasma-debug: overlay event {} at {:.3},{:.3} (crop {fx:.3},{fy:.3}) -> {:?}, by its ray {by_ray:?}, crop {:?}", e.eventType, m.x, m.y, at(fx, fy), *CROP.lock().unwrap());
+            let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
+            let laser = match lasers.iter().find(|r| r.0 == dev) {
+                Some(r) => r.1,
+                None => {
+                    let l = vr::laser_pose(dev);
+                    lasers.push((dev, l));
+                    l
+                }
+            };
+            // while a trace runs, the laser this event was mapped by, after the event's own line
+            // (trace::poll wrote it), so a replay or a check of SteamVR's point has the same ray
+            if crate::trace::on() && matches!(e.eventType, sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp) {
+                crate::trace::pose(dev, laser.as_ref());
             }
-            self.laser(&e, by_ray.or_else(|| at(fx, fy)));
+            let ray: Option<(V3, V3)> = laser.map(|l| ([l[0][3], l[1][3], l[2][3]].map(f64::from), [-l[0][2], -l[1][2], -l[2][2]].map(f64::from)));
+            let (spot, fell_back) = laser_point(pl, crop, ray, b, m.x as f64, m.y as f64);
+            if debug() {
+                // how often the fallback fires, for the log: per run, counted on every event
+                static EVENTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                static FALLBACKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let n = EVENTS.fetch_add(1, Relaxed) + 1;
+                let f = FALLBACKS.fetch_add(u32::from(fell_back), Relaxed) + u32::from(fell_back);
+                if e.eventType != sys::EVREventType_VREvent_MouseMove {
+                    let (fx, fy) = in_bounds(b, m.x as f64, m.y as f64);
+                    eprintln!(
+                        "plasma-debug: overlay event {} at {:.3},{:.3} (crop {fx:.3},{fy:.3}) -> {spot:?}{}, crop {crop:?}; fallback {f} of {n} events this run",
+                        e.eventType,
+                        m.x,
+                        m.y,
+                        if fell_back { " (fallback, no ray)" } else { " by its ray" }
+                    );
+                }
+            }
+            self.laser(&e, spot);
         }
     }
 
@@ -913,6 +954,46 @@ mod tests {
         let (fx, fy) = in_bounds(b, shown.0, shown.1);
         let twice = global(grown, fx, fy);
         assert!((twice.0 - item.0).abs() > 50.0 || (twice.1 - item.1).abs() > 50.0, "{twice:?}");
+    }
+
+    #[test]
+    fn with_no_pose_a_laser_still_maps_by_steamvrs_point() {
+        let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
+        let b = bounds(grown, WL0);
+        let item = (600.0, 1200.0);
+        let tex = ((item.0 - WL0[0] as f64) / 1920.0, 1.0 - (item.1 - WL0[1] as f64) / 1080.0);
+        let (at, fell_back) = laser_point(None, Some(grown), None, b, tex.0, tex.1);
+        let at = at.unwrap();
+        assert!(fell_back && (at.0 - item.0).abs() < 1.5 && (at.1 - item.1).abs() < 1.5, "{at:?}");
+        assert_eq!(laser_point(None, None, None, b, tex.0, tex.1), (None, true), "hidden: nowhere");
+        // with a ray, the ray wins
+        use crate::geometry::{Pose, panel_matrix};
+        let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let pl = placed_for(&m, grown, 0.0006, 0.0);
+        let (o, d) = laser_at(&pl, grown, (900.0, 1500.0));
+        let (at, fell_back) = laser_point(Some(pl), Some(grown), Some((o, d)), b, tex.0, tex.1);
+        assert!(!fell_back && (at.unwrap().0 - 900.0).abs() < 1.5);
+    }
+
+    #[test]
+    fn closing_the_start_menu_brings_the_laser_back_to_the_bar() {
+        use crate::geometry::{Pose, panel_matrix};
+        let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let mpp = 0.0006;
+        let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
+        for curve in [0.0, 2.0] {
+            let (open, shut) = (placed_for(&m, grown, mpp, curve), placed_for(&m, BAR, mpp, curve));
+            // a laser on a task on the bar while the menu's open, then the menu closes under it
+            let task = (1100.0, 1795.0);
+            let (o, d) = laser_at(&open, grown, task);
+            let on = |pl: &Placement, c: Rect| ray_at(pl, c, &o, &d).unwrap();
+            let close = |a: (f64, f64)| (a.0 - task.0).abs() < 1.5 && (a.1 - task.1).abs() < 1.5;
+            assert!(close(on(&open, grown)) && close(on(&shut, BAR)), "curve {curve}: same task before and after");
+            // where the menu was is off the bar now, so it's clamped to the bar's top edge
+            let (o, d) = laser_at(&open, grown, (600.0, 1200.0));
+            let y = ray_at(&shut, BAR, &o, &d).unwrap().1;
+            assert!((y - BAR[1] as f64).abs() < 1.5, "curve {curve}: {y}");
+        }
     }
 
     #[test]
