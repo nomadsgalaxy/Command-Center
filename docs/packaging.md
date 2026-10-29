@@ -371,9 +371,19 @@ The command line route (`cc-share uninstall`, then `pacman -R command-center-hos
 ## The krdp patches stay as they are
 
 Each package build downloads krdp's release tarball, checks its checksum, applies
-krdp/pointer-offset.patch, clipboard.patch and window-stream.patch, and builds it into our
-private directory. The clipboard work (files, HTML, images, the echo guard) goes on in
-clipboard.patch unchanged and ships with the next package.
+krdp/pointer-offset.patch, clipboard.patch, window-stream.patch, audio.patch and
+password-file.patch, and builds it into our private directory. The clipboard work (files, HTML,
+images, the echo guard) goes on in clipboard.patch unchanged and ships with the next package.
+
+password-file.patch adds `--password-file <path>`: krdp reads the password from the first line of
+that file (or an inherited pipe, `/dev/fd/3`), because `-p` puts it in argv, where any local user
+can read it in `/proc/<pid>/cmdline`. The share unit points it at
+`~/.config/control-center/password`, and a paired Frame's servers (frame-run, window-run) get theirs
+through a pipe, with no file on disk. A krdp without the patch (one a distro ships, in a user
+install) still gets `-p`, cc-host logs that each time it starts one, and `cc-share check` lists it as
+a need. The Steam Deck's krdp 6.4.3 gets the same option from krdp/deck/password-file.patch. The patch
+applies to krdp 6.7.5 and, with line offsets only, to 6.8.0 (our other patches don't apply to 6.8.0
+yet). It's meant to go upstream: krdp/upstream/password-file-issue.md is the issue we're filing.
 
 ## Order of work
 
