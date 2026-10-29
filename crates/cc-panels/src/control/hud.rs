@@ -60,6 +60,32 @@ fn create(kind: Kind) -> Result<vr::Handle, String> {
     Ok(h)
 }
 
+/// Reads a HUD picture of exactly `len` bytes. Anyone on this machine can send `hud <path>` to the
+/// control socket, and this runs on the main loop, so the path has to be a plain file inside our
+/// own cache folder (where cc-home's scans write them), of exactly that size, and no more than that
+/// is ever read: /dev/zero, a FIFO or a huge file elsewhere can't stall or fill the Desktop
+/// (RESEXHAUST-001).
+fn sheet(cache: &std::path::Path, path: &std::path::Path, len: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let real = path.canonicalize().map_err(|e| e.to_string())?;
+    if !cache.canonicalize().is_ok_and(|c| real.starts_with(c)) {
+        return Err(format!("not in {}", cache.display()));
+    }
+    // non-blocking, so opening a FIFO that got there anyway can't stall the main loop
+    let f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW).open(&real).map_err(|e| e.to_string())?;
+    let m = f.metadata().map_err(|e| e.to_string())?;
+    if !m.is_file() || m.len() != len {
+        return Err(format!("{} bytes, not a {len}-byte RGBA file", m.len()));
+    }
+    let mut px = Vec::with_capacity(len as usize);
+    f.take(len + 1).read_to_end(&mut px).map_err(|e| e.to_string())?;
+    if px.len() as u64 != len {
+        return Err(format!("{} bytes, not {len}", px.len()));
+    }
+    Ok(px)
+}
+
 /// Shows or refreshes one piece from a raw RGBA picture file, w x h. The mark also gets its width
 /// in metres and its place in standing space. The strip gets its skip button's rectangle, and
 /// only a click inside it skips, because live a laser just resting across the strip skipped by
@@ -68,9 +94,9 @@ pub fn show(kind: Kind, path: &str, w: u32, h: u32, place: Option<(f32, crate::g
     if w == 0 || h == 0 || w > 1920 || h > 1920 || w as u64 * h as u64 > 1_500_000 {
         return format!("error hud {w}x{h}: 1 to 1920 px a side, 1.5 MP at most");
     }
-    let px = match std::fs::read(path) {
-        Ok(px) if px.len() == (w * h * 4) as usize => px,
-        Ok(px) => return format!("error hud {path} is {} bytes, not {w}x{h} RGBA", px.len()),
+    let cache = std::path::PathBuf::from(format!("{}/.cache/control-center", crate::config::home_dir()));
+    let px = match sheet(&cache, std::path::Path::new(path), (w * h * 4) as u64) {
+        Ok(px) => px,
         Err(e) => return format!("error hud {path}: {e}"),
     };
     let mut huds = HUDS.lock().unwrap();
@@ -141,6 +167,31 @@ pub fn tick() {
 
 #[cfg(test)]
 mod tests {
+    /// Only an exactly sized plain file inside the cache folder is read: not a file outside it, not
+    /// one reached by a symlink out of it, not a FIFO or a device, and not a wrong size.
+    #[test]
+    fn hud_reads_only_its_own_pictures() {
+        use std::os::unix::fs::symlink;
+        let d = std::env::temp_dir().join(format!("cc-panels-hudread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let cache = d.join("cache");
+        std::fs::create_dir_all(cache.join("scan")).unwrap();
+        std::fs::write(cache.join("scan/hud.rgba"), [7u8; 16]).unwrap();
+        std::fs::write(d.join("outside.rgba"), [7u8; 16]).unwrap();
+        symlink(d.join("outside.rgba"), cache.join("scan/link.rgba")).unwrap();
+        symlink("/dev/zero", cache.join("scan/zero.rgba")).unwrap();
+        let fifo = std::ffi::CString::new(cache.join("scan/fifo.rgba").to_string_lossy().into_owned()).unwrap();
+        unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
+        let read = |p: &str, n| super::sheet(&cache, &cache.join(p), n);
+        assert_eq!(read("scan/hud.rgba", 16), Ok(vec![7u8; 16]));
+        assert!(read("scan/hud.rgba", 12).is_err(), "the wrong size");
+        assert!(super::sheet(&cache, &d.join("outside.rgba"), 16).is_err(), "outside the cache");
+        assert!(read("scan/link.rgba", 16).is_err(), "a symlink out of it");
+        assert!(read("scan/zero.rgba", 16).is_err(), "/dev/zero");
+        assert!(read("scan/fifo.rgba", 16).is_err(), "a FIFO, without blocking");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn only_the_button_counts() {
         let r = [700.0, 54.0, 890.0, 94.0];
