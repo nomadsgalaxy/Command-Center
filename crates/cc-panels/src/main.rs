@@ -36,6 +36,7 @@ mod osk;
 mod overlay;
 mod plasmabar;
 mod popout;
+mod power;
 mod rdp;
 #[allow(dead_code)] // virtual outputs for desktop mode aren't wired up yet; the spike uses them
 mod session;
@@ -745,6 +746,7 @@ impl Drop for GiveBack {
         laser::hide();
         crate::kvm::lock().return_devices();
         kwin::restore();
+        power::stop(); // the profile it found, back
     }
 }
 
@@ -900,6 +902,7 @@ fn run() -> Result<(), String> {
 
     vr::init().map_err(|e| format!("SteamVR: {e}"))?;
     tab::ensure_registered(); // in this connection, not one of its own (the binding-load budget)
+    power::start("desktop");
     let dev = gpu::device().ok_or("no GPU buffers (GBM on renderD128)")?;
     // The workspace for this room (its SteamVR tracking universe). Its spots place the panels.
     let mut err = 0;
@@ -1018,7 +1021,7 @@ fn run() -> Result<(), String> {
     let mut status = Instant::now();
     let mut ticks = 0u64;
     let mut att: Vec<attention::Attention> = panels().iter().map(|_| Default::default()).collect();
-    let mut on_head = true; // ponytail: assume it's worn at start; the first take-off (VREvent 104) says otherwise
+    let mut on_head = vr::head_worn().unwrap_or(true); // as SteamVR says at start, else worn; VREvent 103/104 keep it up to date
     let mut gaze_seen: Option<([f64; 3], [f64; 3], Instant)> = None; // the last valid gaze sample
     let display_hz = || {
         let mut err = 0;
@@ -1139,6 +1142,8 @@ fn run() -> Result<(), String> {
             }
         }
         laps.lap("events");
+        power::want(!on_head); // the headset's off: nobody's using the Desktop (power.rs)
+        power::game(bar.game() || handoff::flat_game());
         let now = Instant::now();
         let head = vr::head().map(|m| ([0, 1, 2].map(|r| m[r][3] as f64), [0, 1, 2].map(|r| -m[r][2] as f64)));
         let gaze_ray = gaze_seen.filter(|g| now - g.2 < kvm::GAZE_STALE).map(|g| (g.0, g.1));

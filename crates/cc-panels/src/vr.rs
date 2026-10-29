@@ -176,6 +176,16 @@ pub fn head_predicted() -> Option<Mat> {
     pose.bPoseIsValid.then_some(pose.mDeviceToAbsoluteTracking.m)
 }
 
+/// Whether the headset is being worn, as its proximity sensor says through SteamVR's activity
+/// level (the same thing VREvent 103/104 report). None when SteamVR can't tell.
+pub fn head_worn() -> Option<bool> {
+    match call!(sys, GetTrackedDeviceActivityLevel, 0) {
+        sys::EDeviceActivityLevel_k_EDeviceActivityLevel_UserInteraction | sys::EDeviceActivityLevel_k_EDeviceActivityLevel_UserInteraction_Timeout => Some(true),
+        sys::EDeviceActivityLevel_k_EDeviceActivityLevel_Idle | sys::EDeviceActivityLevel_k_EDeviceActivityLevel_Standby | sys::EDeviceActivityLevel_k_EDeviceActivityLevel_Idle_Timeout => Some(false),
+        _ => None,
+    }
+}
+
 /// The headset's pose in SteamVR's raw tracking space (drivers report raw poses).
 pub fn head_raw() -> Option<Mat> {
     let mut pose: sys::TrackedDevicePose_t = unsafe { std::mem::zeroed() };
