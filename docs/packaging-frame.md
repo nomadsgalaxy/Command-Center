@@ -362,8 +362,12 @@ root under pkexec cc-home refuses to be anything else), and as root it does one 
 4. The one `command-center_<version>.raw` the signed list names (letters, digits and `._+~-`
    only, so never a path). If that version's already a file in `command-center.raw.v/` and it's
    the one loaded, the helper stops there: "Command Center is up to date". If it's there but not
-   loaded (an earlier run found the Desktop or its dashboard tab open), it skips to step 6. Otherwise it's downloaded
-   the same way and checked against its SHA-256.
+   loaded (an earlier run found the Desktop or its dashboard tab open), it's checked against the
+   signed SHA-256 again, since an interrupted run could have left it cut short. A mismatch stops
+   the update and says to remove the file; a match skips to step 6 ("… was already installed;
+   it's loaded now"). Otherwise it's downloaded the same way and checked against its SHA-256.
+   The version in the name has to equal the image's `IMAGE_VERSION` byte for byte, which build.sh
+   makes sure of in release mode.
 5. Then `systemd-sysupdate --component=command-center --verify=no update` copies it into
    `/var/lib/extensions/command-center.raw.v/`, with the transfer file in
    `/usr/lib/sysupdate.command-center.d/50-command-center.transfer` (source: the work directory,
@@ -392,6 +396,26 @@ and the helper makes it if it isn't there yet). Otherwise it does nothing. It ho
 `/var/lib/command-center/update.lock` for the whole run, so a second helper stops with "an update
 is already running". A Desktop that starts while the helper holds the Desktop's lock says
 "Command Center is updating; starting in a moment" in its log and waits.
+
+### Releasing the image (not decided yet)
+
+Nothing publishes a `command-center_<version>.raw` yet. release.yml builds cc-install, cc-host and
+cc-home on GitHub's Ubuntu runners, but the image has to be built against SteamOS's own libraries
+(build-native.sh, then build.sh), which those runners don't have. Two ways it could go:
+
+- **A self-hosted SteamOS runner** (a Frame or a Deck) builds the image for a `v*` tag with
+  `CC_RELEASE=1`, uploads it to the draft release, and the publish job signs the whole SHA256SUMS
+  the way it does now.
+- **A release in two stages, by hand:** CI makes the draft with its binaries, someone builds the
+  image on SteamOS and uploads it, then SHA256SUMS is made and signed over everything, and the
+  release is published.
+
+Either way, SHA256SUMS is signed last, over every file. Where the signing key lives and who signs
+(CI from the `CC_SIGNING_KEY` secret, as release.yml does now, or Anthony by hand) is Anthony's
+call.
+
+A follow-up, not in this change: the `install` script could check `SHA256SUMS.sig` too, against a
+pinned key fingerprint, so a first install is checked the same way updates are.
 
 The helper takes no arguments and reads no paths from anywhere, and every program it runs is
 called by its full path with an empty environment. Signing a release stays a step done by hand,
@@ -425,7 +449,7 @@ Still to do with a real image: one full `cc-home update` from a signed release.
   `sudo systemctl try-restart polkit.service` once, or restart the Frame.
 - **Going back to the previous version:** `InstancesMax=2` keeps the one before. Remove the newest
   file in `/var/lib/extensions/command-center.raw.v/`, then `cd / && sudo systemd-sysext refresh`.
-  The next `cc-home update` installs the newest release again.
+  That lasts until the next `cc-home update`, which installs the newest release again.
 
 ### When the image isn't loaded
 

@@ -74,8 +74,8 @@ trait Ops {
     /// sysupdate, then (only if it exited 0 and `name` is now in the .raw.v directory) the first
     /// install's plain command-center.raw out of the way.
     fn sysupdate(&mut self, name: &str) -> Result<(), String>;
-    /// `name` is already a plain file in the .raw.v directory.
-    fn installed(&self, name: &str) -> bool;
+    /// Where `name` already is, a plain file in the .raw.v directory.
+    fn installed(&self, name: &str) -> Option<PathBuf>;
     /// The IMAGE_VERSION of the image that's merged now, if ours is.
     fn loaded(&self) -> Option<String>;
     /// Takes the Desktop's lock and holds it until `release`, so a Desktop that starts meanwhile
@@ -95,7 +95,8 @@ trait Ops {
 /// before the name, binary mode, is fine). A version is letters, digits and `._+~-`, so a name can
 /// never be a path. None unless there's exactly one.
 fn image_entry(sums: &str) -> Option<(String, String)> {
-    let ok_version = |v: &str| !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || "._+~-".contains(c)) && !v.contains("..");
+    // digits first, as build.sh's release mode makes them, so never "v0.9.1"
+    let ok_version = |v: &str| v.starts_with(|c: char| c.is_ascii_digit()) && v.chars().all(|c| c.is_ascii_alphanumeric() || "._+~-".contains(c)) && !v.contains("..");
     let mut found = sums.lines().filter_map(|l| {
         let (hash, name) = l.split_once(char::is_whitespace)?;
         let name = name.trim_start().trim_start_matches('*');
@@ -104,6 +105,17 @@ fn image_entry(sums: &str) -> Option<(String, String)> {
     });
     let one = found.next()?;
     found.next().is_none().then_some(one)
+}
+
+/// The version in an image's name, `command-center_<version>.raw`.
+fn version_of(name: &str) -> Option<&str> {
+    name.strip_prefix("command-center_")?.strip_suffix(".raw")
+}
+
+/// IMAGE_VERSION from an extension-release file. build.sh writes it from the same $version it
+/// names a release's file with, so it compares equal to `version_of` that name.
+fn image_version(release: &str) -> Option<String> {
+    release.lines().find_map(|l| l.strip_prefix("IMAGE_VERSION=")).map(|v| v.trim_matches('"').to_string())
 }
 
 /// Whether file `path` hashes to `want` (lowercase hex SHA-256).
@@ -157,16 +169,23 @@ fn run(o: &mut impl Ops, dir: &Path) -> Result<String, String> {
     o.verify_signature().map_err(|e| format!("the release's signature doesn't check out ({e}), so nothing's installed"))?;
     let sums = fs::read_to_string(dir.join("SHA256SUMS")).map_err(|e| format!("SHA256SUMS: {e}"))?;
     let (name, hash) = image_entry(&sums).ok_or("the signed SHA256SUMS doesn't list exactly one command-center_<version>.raw, so nothing's installed")?;
-    let version = name.strip_prefix("command-center_").and_then(|v| v.strip_suffix(".raw")).unwrap_or_default();
-    if !o.installed(&name) {
-        o.fetch(&name, IMAGE_MAX, IMAGE_SECS)?;
-        if !hash_ok(&dir.join(&name), &hash)? {
-            return Err(format!("{name} doesn't match its signed hash, so it isn't installed"));
+    let version = version_of(&name).unwrap_or_default();
+    let done = match o.installed(&name) {
+        None => {
+            o.fetch(&name, IMAGE_MAX, IMAGE_SECS)?;
+            if !hash_ok(&dir.join(&name), &hash)? {
+                return Err(format!("{name} doesn't match its signed hash, so it isn't installed"));
+            }
+            o.sysupdate(&name)?;
+            format!("{name} is installed and loaded")
         }
-        o.sysupdate(&name)?;
-    } else if o.loaded().as_deref() == Some(version) {
-        return Ok(format!("{name} is already installed and loaded: Command Center is up to date"));
-    } // else an earlier run installed it but couldn't load it then, so this only loads it
+        // an earlier run installed it; it's only trusted again if it still matches the signed hash
+        Some(p) if !hash_ok(&p, &hash)? => {
+            return Err(format!("{} doesn't match its signed hash (maybe a copy cut short), so nothing's loaded: remove it and run cc-home update again", p.display()));
+        }
+        Some(_) if o.loaded().as_deref() == Some(version) => return Ok(format!("{name} is already installed and loaded: Command Center is up to date")),
+        Some(_) => format!("{name} was already installed; it's loaded now"), // the Desktop or its tab was open last time
+    };
     let later = format!("{name} is installed; it's loaded at the next boot, or run cc-home update again with the Desktop and its dashboard tab closed");
     if !o.claim() {
         return Ok(later);
@@ -176,7 +195,7 @@ fn run(o: &mut impl Ops, dir: &Path) -> Result<String, String> {
         Ok(later)
     } else {
         let before = o.policy();
-        o.refresh().and_then(|_| if o.policy() == before { Ok(()) } else { o.restart_polkit() }).map(|_| format!("{name} is installed and loaded"))
+        o.refresh().and_then(|_| if o.policy() == before { Ok(()) } else { o.restart_polkit() }).map(|_| done)
     };
     o.release();
     r
@@ -352,13 +371,13 @@ impl Ops for Live {
         Ok(())
     }
 
-    fn installed(&self, name: &str) -> bool {
-        fs::symlink_metadata(Path::new(EXTENSIONS).join("command-center.raw.v").join(name)).is_ok_and(|m| m.file_type().is_file())
+    fn installed(&self, name: &str) -> Option<PathBuf> {
+        let p = Path::new(EXTENSIONS).join("command-center.raw.v").join(name);
+        fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_file()).then_some(p)
     }
 
     fn loaded(&self) -> Option<String> {
-        let text = fs::read_to_string("/usr/lib/extension-release.d/extension-release.command-center").ok()?;
-        text.lines().find_map(|l| l.strip_prefix("IMAGE_VERSION=")).map(|v| v.trim_matches('"').to_string())
+        image_version(&fs::read_to_string("/usr/lib/extension-release.d/extension-release.command-center").ok()?)
     }
 
     fn claim(&mut self) -> bool {
@@ -464,7 +483,7 @@ mod tests {
         sums: String,
         policy: Option<Vec<u8>>,
         new_policy: Option<Vec<u8>>, // what the refresh merges
-        installed: bool,             // this version's already in .raw.v
+        installed: Option<Vec<u8>>,  // this version's already in .raw.v, with these bytes
         loaded: Option<String>,      // the merged image's version
     }
 
@@ -486,8 +505,10 @@ mod tests {
             self.steps.push("sysupdate".into());
             Ok(())
         }
-        fn installed(&self, _name: &str) -> bool {
-            self.installed
+        fn installed(&self, name: &str) -> Option<PathBuf> {
+            let p = self.dir.join(format!("in-raw.v-{name}"));
+            fs::write(&p, self.installed.as_ref()?).unwrap();
+            Some(p)
         }
         fn loaded(&self) -> Option<String> {
             self.loaded.clone()
@@ -530,7 +551,7 @@ mod tests {
     fn fake(dir: &Path) -> Fake<'_> {
         let image = b"an image".to_vec();
         let sums = format!("{}  command-center_0.9.1.raw\n{}  cc-host.tar.gz\n", sha(&image), sha(b"other"));
-        Fake { dir, steps: vec![], bad_sig: false, image, desktop: false, tab: false, sums, policy: Some(b"v1".to_vec()), new_policy: Some(b"v1".to_vec()), installed: false, loaded: None }
+        Fake { dir, steps: vec![], bad_sig: false, image, desktop: false, tab: false, sums, policy: Some(b"v1".to_vec()), new_policy: Some(b"v1".to_vec()), installed: None, loaded: None }
     }
 
     #[test]
@@ -592,14 +613,19 @@ mod tests {
         let d = scratch("same");
         prepare(&d, unsafe { libc::geteuid() }).unwrap();
         let mut f = fake(&d);
-        (f.installed, f.loaded) = (true, Some("0.9.1".into()));
+        (f.installed, f.loaded) = (Some(f.image.clone()), Some("0.9.1".into()));
         assert!(run(&mut f, &d).unwrap().contains("up to date"));
         assert_eq!(f.steps, ["fetch SHA256SUMS", "fetch SHA256SUMS.sig", "verify"], "no image, no claim, no refresh");
         // installed by an earlier run with the Desktop or its tab open, so not loaded yet: only the loading's left
         let mut f = fake(&d);
-        (f.installed, f.loaded) = (true, Some("0.9.0".into()));
-        assert!(run(&mut f, &d).unwrap().contains("installed and loaded"));
+        (f.installed, f.loaded) = (Some(f.image.clone()), Some("0.9.0".into()));
+        assert_eq!(run(&mut f, &d).unwrap(), "command-center_0.9.1.raw was already installed; it's loaded now");
         assert_eq!(f.steps, ["fetch SHA256SUMS", "fetch SHA256SUMS.sig", "verify", "claim", "refresh", "release"]);
+        // a copy cut short by an interrupted run isn't loaded, even though the name's right
+        let mut f = fake(&d);
+        (f.installed, f.loaded) = (Some(b"an ima".to_vec()), Some("0.9.0".into()));
+        assert!(run(&mut f, &d).unwrap_err().contains("doesn't match its signed hash"));
+        assert_eq!(f.steps, ["fetch SHA256SUMS", "fetch SHA256SUMS.sig", "verify"], "nothing loaded");
         let _ = fs::remove_dir_all(&d);
     }
 
@@ -619,6 +645,19 @@ mod tests {
         f.sums = format!("{}  command-center_1.raw\n{}  command-center_2.raw\n", sha(b"a"), sha(b"b"));
         assert!(run(&mut f, &d).is_err() && !f.steps.contains(&"sysupdate".into()), "two images: which one? neither");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_version_in_the_name_matches_the_one_build_sh_writes() {
+        // build.sh's printf, with the same $version it names the release's file with
+        let release = |v: &str| format!("ID=_any\nARCHITECTURE=arm64\nIMAGE_ID=command-center\nIMAGE_VERSION={v}\n");
+        for v in ["0.9.1", "0.9.1-3", "1.0.0+frame~rc1"] {
+            let name = format!("command-center_{v}.raw");
+            assert_eq!(image_version(&release(v)).as_deref(), version_of(&name), "{v}");
+        }
+        assert_eq!(image_version("IMAGE_VERSION=\"0.9.1\"\n").as_deref(), Some("0.9.1"), "quoted, as os-release allows");
+        let h = "a".repeat(64);
+        assert_eq!(image_entry(&format!("{h}  command-center_v0.9.1.raw\n")), None, "a leading v never matches IMAGE_VERSION");
     }
 
     #[test]
