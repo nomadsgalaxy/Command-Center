@@ -396,7 +396,7 @@ removed after):
 1. vpick works on 257. With `cc-n9-test_1.raw` and then `cc-n9-test_2.raw` in
    `/var/lib/extensions/cc-n9-test.raw.v/`, the refresh said `Using extensions 'cc-n9-test_2.raw'`:
    the newest wins, so the `.raw.v/` layout is the one to use.
-2. polkit (`allow_active=yes`): `pkcheck --action-id … --process` from an SSH session said not
+2. polkit (`allow_active=yes`): `pkcheck --action-id … --process` from a remote login session said not
    authorized; for cc-panels' process in the headset's own session (session 2, `Remote=no`,
    `Active=yes`) it said authorized, with no prompt. The catch: polkitd didn't see an action
    that arrived by a sysext merge ("not registered") until `systemctl restart polkit`. That's why
