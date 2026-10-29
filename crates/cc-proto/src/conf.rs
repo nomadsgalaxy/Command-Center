@@ -499,7 +499,7 @@ impl Json {
     /// json.loads (None if it isn't JSON). It's lenient where Python is strict (control characters,
     /// "1."), and a lone surrogate becomes U+FFFD.
     pub fn parse(s: &str) -> Option<Json> {
-        let mut p = Parser { s: s.as_bytes(), i: 0 };
+        let mut p = Parser { s: s.as_bytes(), i: 0, depth: 0 };
         let v = p.value()?;
         p.ws();
         (p.i == p.s.len()).then_some(v)
@@ -647,7 +647,12 @@ impl Json {
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    depth: usize, // arrays and objects open around this point
 }
+
+/// How deep arrays and objects may nest. Ours go 4 or 5 deep; without a cap, a file of `[[[[…`
+/// would recurse until the stack overflows.
+const MAX_DEPTH: usize = 64;
 
 impl Parser<'_> {
     fn ws(&mut self) {
@@ -684,6 +689,15 @@ impl Parser<'_> {
                 return self.number();
             }
         };
+        if self.depth >= MAX_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let out = self.container(open, close);
+        self.depth -= 1;
+        out
+    }
+    fn container(&mut self, open: u8, close: &str) -> Option<Json> {
         self.i += 1;
         let mut out = if open == b'{' { Json::obj() } else { Json::Arr(Vec::new()) };
         self.ws();
@@ -1292,6 +1306,17 @@ pub fn enter_workspace(data: &mut Json, name: &str, universe: u64, saved: &Json,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Nesting is capped at MAX_DEPTH, so a hostile file can't overflow the stack; anything ours
+    /// (a few levels) still parses.
+    #[test]
+    fn json_nesting_is_capped() {
+        let deep = |n: usize| "[".repeat(n) + &"]".repeat(n);
+        assert!(Json::parse(&deep(MAX_DEPTH)).is_some());
+        assert!(Json::parse(&deep(MAX_DEPTH + 1)).is_none());
+        assert!(Json::parse(&deep(100_000)).is_none(), "and no stack overflow");
+        assert!(Json::parse(r#"{"a": {"b": [1, {"c": [2]}]}}"#).is_some());
+    }
 
     /// Eight first connects at once, each to its own line: every pin survives, and the file keeps
     /// its mode.
