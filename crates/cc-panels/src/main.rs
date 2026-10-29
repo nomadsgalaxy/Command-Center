@@ -19,6 +19,7 @@ mod attention;
 mod back;
 mod capture;
 mod clipboard;
+mod ffi;
 mod config;
 mod control;
 mod geometry;
@@ -752,10 +753,13 @@ fn run() -> Result<(), String> {
     if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err("cc-panels is already running".into());
     }
-    // A panic anywhere gives the laser's hand back before anything else.
+    // A panic anywhere gives the laser's hand back before anything else, unless it's in a callback
+    // from C, which ffi::guard catches, so cc-panels carries on and keeps its laser.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        laser::hide();
+        if !ffi::guarded() {
+            laser::hide();
+        }
         default_hook(info);
     }));
     unsafe {

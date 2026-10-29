@@ -88,12 +88,12 @@ pub fn pop(monitor: &str, uuid: &str) -> String {
     }
     {
         // the monitor was pressed last, so the window is likely the one clicked there: call it active
-        let mut f = FOCUS.lock().unwrap();
+        let mut f = crate::ffi::lock(&FOCUS);
         f.retain(|e| e.1 != p.index);
         f.iter_mut().filter(|e| e.1 == src.index).for_each(|e| e.1 = p.index);
     }
     {
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::ffi::lock(&KVM);
         let pose = config::home_pose(&name, None).unwrap_or_else(|| in_front(&k.place[src.index], crate::vr::head_position()));
         p.set_vert(pose.vert);
         k.set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve);
@@ -131,7 +131,7 @@ fn show(p: &Panel, which: &str) {
 
 /// Sets the card's tag for W5's focus: the name alone when active, otherwise the hint.
 fn show_focus(p: &Panel) {
-    show(p, if FOCUS.lock().unwrap().iter().any(|e| e.1 == p.index) { "" } else { IDLE });
+    show(p, if crate::ffi::lock(&FOCUS).iter().any(|e| e.1 == p.index) { "" } else { IDLE });
 }
 
 /// A press on panel i (from Panel::mouse, lasers or the mouse) moves W5's focus on its machine to
@@ -139,7 +139,7 @@ fn show_focus(p: &Panel) {
 pub fn pressed(i: usize) {
     let Some(m) = panels().get(i).map(|p| config::machine_of(&p.v).to_string()).filter(|m| !m.is_empty()) else { return };
     let was = {
-        let mut f = FOCUS.lock().unwrap();
+        let mut f = crate::ffi::lock(&FOCUS);
         match f.iter_mut().find(|e| e.0 == m) {
             Some(e) => std::mem::replace(&mut e.1, i),
             None => {
@@ -160,12 +160,12 @@ pub fn pressed(i: usize) {
 
 fn say(s: String) {
     eprintln!("popout: {s}");
-    *NEWS.lock().unwrap() = Some(s);
+    *crate::ffi::lock(&NEWS) = Some(s);
 }
 
 /// News for the Machines window's status since it last checked.
 pub fn news() -> Option<String> {
-    NEWS.lock().unwrap().take()
+    crate::ffi::lock(&NEWS).take()
 }
 
 /// `window start` was refused (windows-off, not-shared, busy, ...): report it and free the slot.
@@ -177,7 +177,7 @@ pub fn failed(p: &Panel, why: &str) {
 
 /// Makes the slot a spare again and drops W5's focus from it.
 fn free(p: &Panel) {
-    FOCUS.lock().unwrap().retain(|e| e.1 != p.index);
+    crate::ffi::lock(&FOCUS).retain(|e| e.1 != p.index);
     eprintln!("{}: slot freed", p.v.name);
     p.empty();
 }
@@ -205,14 +205,14 @@ pub fn ended(p: &Panel) {
 /// The stream's size, from its RDP thread: `first` at connect, or later when it changes (a popup,
 /// the window resized). The main loop sizes the panel in tick.
 pub fn resized(i: usize, w: u32, h: u32, first: bool) {
-    SIZED.lock().unwrap().push((i, w, h, first));
+    crate::ffi::lock(&SIZED).push((i, w, h, first));
     crate::vr::wake();
 }
 
 /// Main loop: applies each new stream size to its panel. The first size uses the Frame's own
 /// window scale, later ones keep the pixels' size in metres, and a saved spot's width stays.
 pub fn tick(k: &mut Kvm) {
-    let sized = std::mem::take(&mut *SIZED.lock().unwrap());
+    let sized = std::mem::take(&mut *crate::ffi::lock(&SIZED));
     for (i, w, h, first) in sized {
         let p = panel(i);
         if !p.used() || p.v.pop.is_none() {

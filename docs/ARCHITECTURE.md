@@ -91,6 +91,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `gpu.rs` | GBM buffers imported into SteamVR (`Buffers::present`), `write`/`write_frame` from decode threads, `show_raw` (two buffers, no blink) for UI overlays. |
 | `rdp.rs` | One FreeRDP session per remote panel (`run`, reconnect loop), `session` (asks the agent for this Frame's server), `agent` (one agent call), input out (`mouse`, `key`, `wheel`), cliprdr attach. |
 | `vnc.rs` | One libvncclient session per `proto=vnc` panel, same panel/GPU/wake model as rdp.rs (`run`, `connect`, keysyms, pinning). |
+| `ffi.rs` | `guard`, which every callback from FreeRDP and libvncclient runs in: a panic there is logged and the callback fails, instead of aborting cc-panels and every panel with it. `lock` takes a lock even after a caught panic poisoned it. |
 | `popout.rs` | Remote windows popped out into a spare panel (`pop`). Parked (docs/remote-windows.md). |
 | `session.rs` | The cc-desktop session over Wayland: finding it (`discover`), the screencast (`stream_window`, `stream_output`), fake_input (`pointer_to`, `button`, `key`, `axis`). |
 | `capture.rs` | One PipeWire thread for every screencast stream, DMA-BUF import on the main thread (`Shown::tick`). |

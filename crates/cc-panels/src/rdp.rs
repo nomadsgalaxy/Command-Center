@@ -26,39 +26,43 @@ unsafe fn panel_of(c: *mut rdpContext) -> &'static Panel {
 }
 
 unsafe extern "C" fn on_begin_paint(c: *mut rdpContext) -> BOOL {
-    let hwnd = unsafe { &mut *(*(*(*(*c).gdi).primary).hdc).hwnd };
-    unsafe { (*hwnd.invalid).null = 1 };
-    hwnd.ninvalid = 0; // clear its rects like gdi_begin_paint does, or they'd pile up
-    1
+    crate::ffi::guard("on_begin_paint", 0, || {
+        let hwnd = unsafe { &mut *(*(*(*(*c).gdi).primary).hdc).hwnd };
+        unsafe { (*hwnd.invalid).null = 1 };
+        hwnd.ninvalid = 0; // clear its rects like gdi_begin_paint does, or they'd pile up
+        1
+    })
 }
 
 unsafe extern "C" fn on_end_paint(c: *mut rdpContext) -> BOOL {
-    let p = unsafe { panel_of(c) };
-    let r = unsafe { &*(*(*(*(*(*c).gdi).primary).hdc).hwnd).invalid };
-    if r.null != 0 {
-        return 1;
-    }
-    for st in &p.stale {
-        st.grow(r.x, r.y, r.x + r.w, r.y + r.h); // neither buffer has this region yet
-    }
-    // D-045: how much of the picture this update changed, for attention.rs. It sums the rects
-    // instead of their bounds, since a caret and a clock in opposite corners are only a little.
-    let (hwnd, gdi) = unsafe { (&*(*(*(*(*c).gdi).primary).hdc).hwnd, &*(*c).gdi) };
-    let n = if hwnd.cinvalid.is_null() { 0 } else { hwnd.ninvalid.max(0) as usize };
-    let rects = if n == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(hwnd.cinvalid, n) } };
-    let area: i64 = rects.iter().map(|r| r.w.max(0) as i64 * r.h.max(0) as i64).sum();
-    let all = (gdi.width.max(1) as i64 * gdi.height.max(1) as i64).max(1);
-    p.change.fetch_max((area * 1000 / all).min(1000) as u32, Relaxed);
-    p.dirty.store(true, Release); // goes to the GPU once the decode is done (run, gpu::write)
-    if !IN_SESSION.get() {
-        // Shouldn't happen with SynchronousDynamicChannels, but if it does, the session thread may be asleep, so wake it
-        static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !SAID.swap(true, Relaxed) {
-            eprintln!("{}: painted outside check_event_handles (once)", p.v.name);
+    crate::ffi::guard("on_end_paint", 0, || {
+        let p = unsafe { panel_of(c) };
+        let r = unsafe { &*(*(*(*(*(*c).gdi).primary).hdc).hwnd).invalid };
+        if r.null != 0 {
+            return 1;
         }
-        poke(p);
-    }
-    1
+        for st in &p.stale {
+            st.grow(r.x, r.y, r.x + r.w, r.y + r.h); // neither buffer has this region yet
+        }
+        // D-045: how much of the picture this update changed, for attention.rs. It sums the rects
+        // instead of their bounds, since a caret and a clock in opposite corners are only a little.
+        let (hwnd, gdi) = unsafe { (&*(*(*(*(*c).gdi).primary).hdc).hwnd, &*(*c).gdi) };
+        let n = if hwnd.cinvalid.is_null() { 0 } else { hwnd.ninvalid.max(0) as usize };
+        let rects = if n == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(hwnd.cinvalid, n) } };
+        let area: i64 = rects.iter().map(|r| r.w.max(0) as i64 * r.h.max(0) as i64).sum();
+        let all = (gdi.width.max(1) as i64 * gdi.height.max(1) as i64).max(1);
+        p.change.fetch_max((area * 1000 / all).min(1000) as u32, Relaxed);
+        p.dirty.store(true, Release); // goes to the GPU once the decode is done (run, gpu::write)
+        if !IN_SESSION.get() {
+            // Shouldn't happen with SynchronousDynamicChannels, but if it does, the session thread may be asleep, so wake it
+            static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !SAID.swap(true, Relaxed) {
+                eprintln!("{}: painted outside check_event_handles (once)", p.v.name);
+            }
+            poke(p);
+        }
+        1
+    })
 }
 
 thread_local! {
@@ -67,16 +71,18 @@ thread_local! {
 }
 
 unsafe extern "C" fn on_desktop_resize(c: *mut rdpContext) -> BOOL {
-    // This normally comes inside check_event_handles, where we already hold the lock (drdynvc is
-    // synchronous, see run). If it ever comes from another thread (drdynvc's own, when it's
-    // asynchronous), we take the lock here.
-    let p = unsafe { panel_of(c) };
-    let _g = (!IN_SESSION.get()).then(|| p.lock.lock().unwrap());
-    let (w, h) = unsafe { desktop(c) };
-    if p.v.pop.is_some() {
-        crate::popout::resized(p.index, w, h, false); // a popup or the window resized its stream
-    }
-    unsafe { gdi_resize((*c).gdi, w, h) }
+    crate::ffi::guard("on_desktop_resize", 0, || {
+        // This normally comes inside check_event_handles, where we already hold the lock (drdynvc is
+        // synchronous, see run). If it ever comes from another thread (drdynvc's own, when it's
+        // asynchronous), we take the lock here.
+        let p = unsafe { panel_of(c) };
+        let _g = (!IN_SESSION.get()).then(|| crate::ffi::lock(&p.lock));
+        let (w, h) = unsafe { desktop(c) };
+        if p.v.pop.is_some() {
+            crate::popout::resized(p.index, w, h, false); // a popup or the window resized its stream
+        }
+        unsafe { gdi_resize((*c).gdi, w, h) }
+    })
 }
 
 /// The session's desktop size, as the server set it.
@@ -94,19 +100,23 @@ fn is_cliprdr(name: *const std::os::raw::c_char) -> bool {
 }
 
 unsafe extern "C" fn on_channel_connected(context: *mut c_void, e: *const ChannelConnectedEventArgs) {
-    let e = unsafe { &*e };
-    if !is_cliprdr(e.name) {
-        return unsafe { freerdp_client_OnChannelConnectedEventHandler(context, e) }; // graphics pipeline to the GDI
-    }
-    crate::clipboard::cliprdr::attach(unsafe { panel_of(context as *mut rdpContext) }, e.pInterface as *mut CliprdrClientContext);
+    crate::ffi::guard("on_channel_connected", (), || {
+        let e = unsafe { &*e };
+        if !is_cliprdr(e.name) {
+            return unsafe { freerdp_client_OnChannelConnectedEventHandler(context, e) }; // graphics pipeline to the GDI
+        }
+        crate::clipboard::cliprdr::attach(unsafe { panel_of(context as *mut rdpContext) }, e.pInterface as *mut CliprdrClientContext);
+    })
 }
 
 unsafe extern "C" fn on_channel_disconnected(context: *mut c_void, e: *const ChannelDisconnectedEventArgs) {
-    let e = unsafe { &*e };
-    if !is_cliprdr(e.name) {
-        return unsafe { freerdp_client_OnChannelDisconnectedEventHandler(context, e) };
-    }
-    crate::clipboard::cliprdr::detach(unsafe { panel_of(context as *mut rdpContext) }, e.pInterface as *mut CliprdrClientContext);
+    crate::ffi::guard("on_channel_disconnected", (), || {
+        let e = unsafe { &*e };
+        if !is_cliprdr(e.name) {
+            return unsafe { freerdp_client_OnChannelDisconnectedEventHandler(context, e) };
+        }
+        crate::clipboard::cliprdr::detach(unsafe { panel_of(context as *mut rdpContext) }, e.pInterface as *mut CliprdrClientContext);
+    })
 }
 
 type Connected = unsafe extern "C" fn(*mut c_void, *const ChannelConnectedEventArgs);
@@ -115,49 +125,59 @@ type Disconnected = unsafe extern "C" fn(*mut c_void, *const ChannelDisconnected
 // ------------------------------------------------------------------ the session
 
 unsafe extern "C" fn on_pre_connect(instance: *mut freerdp) -> BOOL {
-    unsafe {
-        let c = (*instance).context;
-        PubSub_Subscribe((*c).pubSub, c"ChannelConnected".as_ptr(), on_channel_connected as Connected);
-        PubSub_Subscribe((*c).pubSub, c"ChannelDisconnected".as_ptr(), on_channel_disconnected as Disconnected);
-        freerdp_settings_set_uint32((*c).settings, FreeRDP_Settings_Keys_UInt32_FreeRDP_OsMajorType, OSMAJORTYPE_UNIX)
-    }
+    crate::ffi::guard("on_pre_connect", 0, || {
+        unsafe {
+            let c = (*instance).context;
+            PubSub_Subscribe((*c).pubSub, c"ChannelConnected".as_ptr(), on_channel_connected as Connected);
+            PubSub_Subscribe((*c).pubSub, c"ChannelDisconnected".as_ptr(), on_channel_disconnected as Disconnected);
+            freerdp_settings_set_uint32((*c).settings, FreeRDP_Settings_Keys_UInt32_FreeRDP_OsMajorType, OSMAJORTYPE_UNIX)
+        }
+    })
 }
 
 unsafe extern "C" fn on_post_connect(instance: *mut freerdp) -> BOOL {
-    unsafe {
-        if gdi_init(instance, PIXEL_FORMAT_BGRA32) == 0 {
-            return 0; // the server's own byte order, so no per-pixel conversion
+    crate::ffi::guard("on_post_connect", 0, || {
+        unsafe {
+            if gdi_init(instance, PIXEL_FORMAT_BGRA32) == 0 {
+                return 0; // the server's own byte order, so no per-pixel conversion
+            }
+            let u = (*(*instance).context).update;
+            (*u).BeginPaint = Some(on_begin_paint);
+            (*u).EndPaint = Some(on_end_paint);
+            (*u).DesktopResize = Some(on_desktop_resize);
         }
-        let u = (*(*instance).context).update;
-        (*u).BeginPaint = Some(on_begin_paint);
-        (*u).EndPaint = Some(on_end_paint);
-        (*u).DesktopResize = Some(on_desktop_resize);
-    }
-    1
+        1
+    })
 }
 
 unsafe extern "C" fn on_post_disconnect(instance: *mut freerdp) {
-    unsafe {
-        let c = (*instance).context;
-        PubSub_Unsubscribe((*c).pubSub, c"ChannelConnected".as_ptr(), on_channel_connected as Connected);
-        PubSub_Unsubscribe((*c).pubSub, c"ChannelDisconnected".as_ptr(), on_channel_disconnected as Disconnected);
-        gdi_free(instance);
-    }
+    crate::ffi::guard("on_post_disconnect", (), || {
+        unsafe {
+            let c = (*instance).context;
+            PubSub_Unsubscribe((*c).pubSub, c"ChannelConnected".as_ptr(), on_channel_connected as Connected);
+            PubSub_Unsubscribe((*c).pubSub, c"ChannelDisconnected".as_ptr(), on_channel_disconnected as Disconnected);
+            gdi_free(instance);
+        }
+    })
 }
 
 unsafe extern "C" fn on_client_new(instance: *mut freerdp, _: *mut rdpContext) -> BOOL {
-    unsafe {
-        (*instance).PreConnect = Some(on_pre_connect);
-        (*instance).PostConnect = Some(on_post_connect);
-        (*instance).PostDisconnect = Some(on_post_disconnect);
-    }
-    1
+    crate::ffi::guard("on_client_new", 0, || {
+        unsafe {
+            (*instance).PreConnect = Some(on_pre_connect);
+            (*instance).PostConnect = Some(on_post_connect);
+            (*instance).PostDisconnect = Some(on_post_disconnect);
+        }
+        1
+    })
 }
 
 /// A paired machine's certificate that doesn't match its pin. We refuse it (0) and never ask.
 unsafe extern "C" fn on_other_cert(instance: *mut freerdp, _: *const BYTE, _: usize, _: *const std::os::raw::c_char, _: UINT16, _: DWORD) -> std::os::raw::c_int {
-    eprintln!("{}: the host's certificate changed; pair again", unsafe { panel_of((*instance).context) }.v.name);
-    0
+    crate::ffi::guard("on_other_cert", 0, || {
+        eprintln!("{}: the host's certificate changed; pair again", unsafe { panel_of((*instance).context) }.v.name);
+        0
+    })
 }
 
 /// Sends one command to a machine's agent (cc_proto::agent, docs/agent.md) as this Frame, on a
@@ -405,7 +425,7 @@ pub fn run(p: &'static Panel) {
                     if !wake.is_null() {
                         ResetEvent(wake); // any poke from here on wakes the next wait
                     }
-                    let _g = p.lock.lock().unwrap();
+                    let _g = crate::ffi::lock(&p.lock);
                     IN_SESSION.set(true);
                     let ok = freerdp_check_event_handles(c);
                     IN_SESSION.set(false);
@@ -460,7 +480,7 @@ pub fn poke(p: &Panel) {
 
 /// Input and suppress reach the session through p.rdp under p.lock, so drop it before it's freed.
 fn detach(p: &Panel) {
-    let _g = p.lock.lock().unwrap();
+    let _g = crate::ffi::lock(&p.lock);
     p.rdp.store(std::ptr::null_mut(), Release);
 }
 
