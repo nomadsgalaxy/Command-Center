@@ -75,6 +75,7 @@ fn mask(layers: [&[u8]; 3], w: usize, pad: usize) -> Vec<u8> {
 /// A host's name from reverse DNS without the domain, or the address itself if it has no name.
 fn host_name(host: &str) -> String {
     let Ok(ip) = host.parse::<std::net::Ipv4Addr>() else { return host.split('.').next().unwrap_or(host).to_owned() };
+    // SAFETY: sockaddr_in is integers: all zeros is a valid (unspecified) address, filled in below.
     let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
     sa.sin_family = libc::AF_INET as _;
     sa.sin_addr.s_addr = u32::from_ne_bytes(ip.octets());

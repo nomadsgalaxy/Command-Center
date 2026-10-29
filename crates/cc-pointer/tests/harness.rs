@@ -130,8 +130,10 @@ struct PropertiesVtbl {
     tracked_device_to_property_container: unsafe extern "C" fn(This, u32) -> u64,
 }
 unsafe extern "C" fn props_write(this: This, c: u64, batch: *mut PropertyWrite, n: u32) -> i32 {
+    // SAFETY: the driver passes n writes it owns for this call; buffers are checked below.
     for w in unsafe { std::slice::from_raw_parts_mut(batch, n as usize) } {
-        let b = unsafe { std::slice::from_raw_parts(w.buffer as *const u8, w.buffer_size as usize) };
+        // SAFETY: each write's buffer is buffer_size bytes, or null for none (not a slice)
+        let b = if w.buffer.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(w.buffer as *const u8, w.buffer_size as usize) } };
         let v = match w.tag {
             2 => format!("{}", i32::from_ne_bytes(b.try_into().unwrap())),
             4 => format!("{}", b[0] != 0),

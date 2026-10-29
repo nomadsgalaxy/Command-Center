@@ -292,6 +292,7 @@ fn running(name: &str) -> bool {
 
 fn free_gb(p: &Path) -> u64 {
     let Ok(c) = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()) else { return u64::MAX };
+    // SAFETY: libc::statvfs is plain integers: all zeros is a valid value, which statvfs then fills.
     let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statvfs(c.as_ptr(), &mut s) } != 0 {
         return u64::MAX; // can't tell, so don't block on it

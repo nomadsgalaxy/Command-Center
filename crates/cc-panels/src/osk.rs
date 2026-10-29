@@ -278,7 +278,7 @@ impl Keys {
     }
 
     fn events(&mut self, h: vr::Handle, i: usize) {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         while call!(ov, PollNextOverlayEvent, h, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let m = unsafe { e.data.mouse };
             let at = hit(m.x as f64, crate::geometry::from_top(H, m.y as f64)); // events count from the bottom left

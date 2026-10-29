@@ -198,7 +198,10 @@ unsafe fn credential(cl: *mut rfbClient, st: &mut State, kind: c_int) -> *mut rf
 /// the session proved it checks a password over TLS (settle_pin).
 unsafe extern "C" fn on_certificate(cl: *mut rfbClient, subject: *const c_char, _: libc::time_t, _: libc::time_t, fp: *const u8, len: usize) -> rfbBool {
     crate::ffi::guard("on_certificate", 0, || {
-        let hex: String = unsafe { std::slice::from_raw_parts(fp, len) }.iter().map(|b| format!("{b:02x}")).collect();
+        // SAFETY: libvncclient's fingerprint for this callback, len bytes; a null one is no bytes
+        // (a slice can't be built from null even when it's empty)
+        let fp = if fp.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(fp, len) } };
+        let hex: String = fp.iter().map(|b| format!("{b:02x}")).collect();
         let subject = if subject.is_null() { String::new() } else { unsafe { CStr::from_ptr(subject) }.to_string_lossy().into_owned() };
         unsafe {
             with_state(cl, |st| {
@@ -320,6 +323,7 @@ unsafe extern "C" fn cursor_shape(cl: *mut rfbClient, xhot: c_int, yhot: c_int, 
             }
             let c = &mut st.cursor;
             (c.w, c.h, c.hot) = (w, h, (xhot, yhot));
+            // SAFETY: libvncclient's cursor shape, valid during this callback; both are checked for null above and are n (w × h) pixels long.
             c.px = std::slice::from_raw_parts(src as *const u32, n).to_vec();
             c.mask = std::slice::from_raw_parts(mask, n).to_vec();
             draw(cl, st);

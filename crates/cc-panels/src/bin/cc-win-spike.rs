@@ -236,7 +236,7 @@ fn run() -> Result<(), String> {
         if let Some(src) = srcs.first() {
             mouse(overlay, src, &s, scale.1 as f64);
         }
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         while call!(sys, PollNextEvent, &mut e, size_of::<vr::VREvent_t>() as u32) {
             if e.eventType == sys::EVREventType_VREvent_Quit {
                 QUIT.store(true, Relaxed);
@@ -286,7 +286,7 @@ fn ahead(d: f64) -> geometry::Mat {
 /// Passes laser moves and clicks on the overlay through to the streamed thing's place in the
 /// session.
 fn mouse(overlay: vr::Handle, src: &Src, s: &Session, h: f64) {
-    let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+    let mut e: vr::VREvent_t = Default::default();
     while call!(ov, PollNextOverlayEvent, overlay, &mut e, size_of::<vr::VREvent_t>() as u32) {
         let Some((origin, px)) = src.origin(s) else { continue };
         let m = unsafe { e.data.mouse };

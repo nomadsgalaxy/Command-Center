@@ -325,7 +325,7 @@ impl Prefs {
 
     /// Laser events: hovering, and presses on a control.
     fn events(&mut self, h: vr::Handle, grab: &mut grab::Grab, windows: &mut Windows, bar: &mut Taskbar) {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         while ui::next_event(h, &mut e) {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
             let at = held(self.hover, m.x as f64, from_top(H, m.y as f64)); // window units; events count from the bottom left

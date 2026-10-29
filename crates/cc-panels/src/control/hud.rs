@@ -148,7 +148,7 @@ fn on_button(r: &[f32; 4], x: f32, y: f32) -> bool {
 pub fn tick() {
     let mut huds = HUDS.lock().unwrap();
     if let Some(h) = &huds[Kind::Status as usize] {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         while call!(ov, PollNextOverlayEvent, h.overlay, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let m = unsafe { e.data.mouse }; // pixels from the bottom left
             if e.eventType == sys::EVREventType_VREvent_MouseButtonDown && h.skip.is_some_and(|r| on_button(&r, m.x, from_top(h.height, m.y))) {

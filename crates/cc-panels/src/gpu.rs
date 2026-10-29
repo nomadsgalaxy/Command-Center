@@ -181,7 +181,7 @@ impl Buffers {
                 eprintln!("{name}: no {w}x{h} GPU buffer");
                 return false;
             }
-            let mut a: sys::DmabufAttributes_t = unsafe { std::mem::zeroed() };
+            let mut a: sys::DmabufAttributes_t = Default::default();
             unsafe {
                 a.unWidth = w as u32;
                 a.unHeight = h as u32;

@@ -332,7 +332,7 @@ pub fn next_event(h: vr::Handle, e: &mut vr::VREvent_t) -> bool {
         return false;
     };
     *sent = at;
-    *e = unsafe { std::mem::zeroed() };
+    *e = Default::default();
     (e.eventType, e.trackedDeviceIndex) = (kind as u32, grab::MOUSE);
     e.data.mouse = sys::VREvent_Mouse_t { x, y, button: button as u32, cursorIndex: 0 };
     true

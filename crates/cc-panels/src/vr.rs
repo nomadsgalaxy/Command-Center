@@ -138,7 +138,7 @@ pub fn place(h: Handle, m: &Mat) {
 
 /// The headset's pose in standing space, while it's tracked.
 pub fn head() -> Option<Mat> {
-    let mut pose: sys::TrackedDevicePose_t = unsafe { std::mem::zeroed() };
+    let mut pose: sys::TrackedDevicePose_t = Default::default();
     call!(sys, GetDeviceToAbsoluteTrackingPose, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0, &mut pose, 1);
     pose.bPoseIsValid.then_some(pose.mDeviceToAbsoluteTracking.m)
 }
@@ -171,7 +171,7 @@ pub fn to_photons() -> f32 {
 
 /// The headset's pose when this frame's picture reaches your eyes (`to_photons`), if it's tracked.
 pub fn head_predicted() -> Option<Mat> {
-    let mut pose: sys::TrackedDevicePose_t = unsafe { std::mem::zeroed() };
+    let mut pose: sys::TrackedDevicePose_t = Default::default();
     call!(sys, GetDeviceToAbsoluteTrackingPose, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, to_photons(), &mut pose, 1);
     pose.bPoseIsValid.then_some(pose.mDeviceToAbsoluteTracking.m)
 }
@@ -188,7 +188,7 @@ pub fn head_worn() -> Option<bool> {
 
 /// The headset's pose in SteamVR's raw tracking space (drivers report raw poses).
 pub fn head_raw() -> Option<Mat> {
-    let mut pose: sys::TrackedDevicePose_t = unsafe { std::mem::zeroed() };
+    let mut pose: sys::TrackedDevicePose_t = Default::default();
     call!(sys, GetDeviceToAbsoluteTrackingPose, sys::ETrackingUniverseOrigin_TrackingUniverseRawAndUncalibrated, 0.0, &mut pose, 1);
     pose.bPoseIsValid.then_some(pose.mDeviceToAbsoluteTracking.m)
 }
@@ -223,7 +223,7 @@ pub fn is_real_controller(i: u32) -> bool {
 pub fn laser_pose(dev: u32) -> Option<Mat> {
     use std::collections::HashMap;
     static TIPS: std::sync::Mutex<Option<HashMap<String, Mat>>> = std::sync::Mutex::new(None);
-    let mut pose: [sys::TrackedDevicePose_t; 64] = unsafe { std::mem::zeroed() };
+    let mut pose: [sys::TrackedDevicePose_t; 64] = std::array::from_fn(|_| Default::default());
     call!(sys, GetDeviceToAbsoluteTrackingPose, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0, pose.as_mut_ptr(), 64);
     let d = pose.get(dev as usize).filter(|p| p.bPoseIsValid)?.mDeviceToAbsoluteTracking.m;
     let mut buf = [0 as std::os::raw::c_char; 256];
@@ -233,8 +233,8 @@ pub fn laser_pose(dev: u32) -> Option<Mat> {
     let mut tips = TIPS.lock().unwrap();
     let tips = tips.get_or_insert_with(HashMap::new);
     if !tips.contains_key(&model) && !model.is_empty() {
-        let mut mode: sys::RenderModel_ControllerMode_State_t = unsafe { std::mem::zeroed() };
-        let mut state: sys::RenderModel_ComponentState_t = unsafe { std::mem::zeroed() };
+        let mut mode: sys::RenderModel_ControllerMode_State_t = Default::default();
+        let mut state: sys::RenderModel_ComponentState_t = Default::default();
         if call!(rm, GetComponentStateForDevicePath, buf.as_mut_ptr(), sys::k_pch_Controller_Component_Tip.as_ptr() as *mut _, 0, &mut mode, &mut state) {
             tips.insert(model.clone(), state.mTrackingToComponentLocal.m);
         }

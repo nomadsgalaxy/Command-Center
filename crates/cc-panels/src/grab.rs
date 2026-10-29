@@ -1047,7 +1047,7 @@ fn paint_backdrop(h: vr::Handle) {
 /// your eyes (vr::to_photons), so what's carried or docked keeps up with the hand.
 pub fn poses() -> Vec<sys::TrackedDevicePose_t> {
     let n = sys::k_unMaxTrackedDeviceCount as usize;
-    let mut all: Vec<sys::TrackedDevicePose_t> = vec![unsafe { std::mem::zeroed() }; n];
+    let mut all: Vec<sys::TrackedDevicePose_t> = vec![Default::default(); n];
     call!(sys, GetDeviceToAbsoluteTrackingPose, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, vr::to_photons(), all.as_mut_ptr(), n as u32);
     all
 }
@@ -1371,7 +1371,7 @@ impl Grab {
 
     /// The lasers' part of `poll`: SteamVR's events on each card.
     fn poll_cards(&mut self, k: &mut Kvm, s: &mut impl Stage) {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         for i in 0..self.drags.len() {
             let Some(p) = self.owner(i) else { continue };
             {

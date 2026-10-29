@@ -149,6 +149,7 @@ unsafe extern "C" fn on_server_format_list(c: *mut CliprdrClientContext, list: *
             return rc;
         }
         let list = unsafe { &*list };
+        // SAFETY: FreeRDP hands us the list for this callback only; formats is checked for null above, and numFormats is how many it holds.
         let raw = if list.formats.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(list.formats, list.numFormats as usize) } };
         let named: Vec<(u32, Option<String>)> = raw
             .iter()
@@ -180,6 +181,7 @@ unsafe extern "C" fn on_server_format_data_response(c: *mut CliprdrClientContext
         let p = index(c);
         let Some(Some(fmt)) = with(p, |i| i.asked.pop_front()) else { return 0 };
         let ok = r.common.msgFlags as u32 & CB_RESPONSE_OK != 0 && !r.requestedFormatData.is_null();
+        // SAFETY: for this callback only; requestedFormatData is checked for null (`ok`), and dataLen is its length in bytes, as FreeRDP parsed it from the PDU.
         let raw = if ok { unsafe { std::slice::from_raw_parts(r.requestedFormatData, r.common.dataLen as usize) } } else { &[][..] };
         let bytes = ok.then(|| from_wire(fmt, raw)).flatten();
         let all = chans();
@@ -336,6 +338,7 @@ unsafe extern "C" fn on_server_file_contents_response(_: *mut CliprdrClientConte
     crate::ffi::guard("on_server_file_contents_response", ERROR_INTERNAL_ERROR, || {
         let r = unsafe { &*r };
         let ok = r.common.msgFlags as u32 & CB_RESPONSE_OK != 0 && !r.requestedData.is_null();
+        // SAFETY: for this callback only, and copied out at once; requestedData is checked for null (`ok`), and cbRequested is its length, as FreeRDP parsed it.
         let data = ok.then(|| unsafe { std::slice::from_raw_parts(r.requestedData, r.cbRequested as usize) }.to_vec());
         if let Some(tx) = crate::ffi::lock(&PENDING).as_mut().and_then(|m| m.remove(&r.streamId)) {
             let _ = tx.send(data);

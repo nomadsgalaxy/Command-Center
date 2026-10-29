@@ -1701,6 +1701,7 @@ fn unpair(e: &Env, f: &str, flag: &str) -> i32 {
 /// A file's modification time as local "YYYY-mm-dd HH:MM", like date -r.
 fn local_time(p: &Path) -> Option<String> {
     let t = std::fs::metadata(p).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64; // time_t is 64-bit on the 64-bit hosts this runs on.
+    // SAFETY: libc::tm is plain integers (and a nullable zone pointer): all zeros is a valid value, which localtime_r then fills.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     unsafe { libc::localtime_r(&t as *const i64 as *const _, &mut tm) };
     Some(format!("{:04}-{:02}-{:02} {:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min))

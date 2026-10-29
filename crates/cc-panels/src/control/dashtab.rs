@@ -277,7 +277,7 @@ impl Dashtab {
 
     /// Laser events: hovering, and presses on a choice.
     fn events(&mut self, h: vr::Handle, hand: &mut Handoff) {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         let mut again = false;
         while call!(ov, PollNextOverlayEvent, h, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let m = unsafe { e.data.mouse };

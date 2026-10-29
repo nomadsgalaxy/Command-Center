@@ -59,6 +59,7 @@ struct DriverPose {
     device_is_connected: bool,
 }
 const _: () = assert!(size_of::<DriverPose>() == 280);
+// SAFETY: DriverPose is plain floats, doubles and bools (checked at 280 bytes above): all zeros is a valid, untracked pose. A const can't call Default.
 const POSE0: DriverPose = unsafe { std::mem::zeroed() };
 
 /// vr::PropertyWrite_t
@@ -629,6 +630,7 @@ fn listen() {
     // SAFETY: plain socket calls on our own fd and stack buffers.
     unsafe {
         let sock = libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+        // SAFETY: sockaddr_un is an integer family and a byte array: all zeros is valid (and an empty path, filled in below).
         let mut addr: libc::sockaddr_un = std::mem::zeroed();
         addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
         let ok_name = !name.is_empty() && name.len() < addr.sun_path.len();
@@ -656,6 +658,7 @@ fn listen() {
             let mut buf = [0u8; 255];
             let mut ctrl = [0u64; 8]; // >= CMSG_SPACE(sizeof(ucred)), cmsghdr-aligned
             let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };
+            // SAFETY: msghdr is integers and pointers that may be null: all zeros is an empty message, filled in below.
             let mut msg: libc::msghdr = std::mem::zeroed();
             msg.msg_iov = &mut iov;
             msg.msg_iovlen = 1;
