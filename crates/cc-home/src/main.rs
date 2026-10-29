@@ -20,6 +20,7 @@ mod machine;
 mod scan;
 mod session;
 mod steamos;
+mod update;
 
 use cc_proto::conf::{self, Json, Viewer, py_round};
 use std::os::linux::net::SocketAddrExt;
@@ -98,6 +99,8 @@ demand: panels stay free to move.
   cc-home refit                           fit the VR mirror camera again from a tag board shown 1 m ahead
                                           (look at it from three spots); kept only if it fits well
   cc-home selftest                        check the geometry
+  cc-home update                          update the system image (the Frame's sysext) from the latest
+                                          release, checked against its signature; no password
   cc-home notify-test [toast] [text]      send a test notification to the headset the way pairing and
                                           host health do, or with `toast` SteamVR's own toast
 
@@ -805,6 +808,14 @@ fn main() {
     // Run as session/cc-launch, cc-panels, cc-box ... (links to us), or as cc-home desktop|panels|rest|session|box|install.
     let mut raw = std::env::args_os();
     let name = raw.next().and_then(|a| std::path::Path::new(&a).file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+    // As root through pkexec, it's the update helper and nothing else (update.rs), before anything reads the environment.
+    if name == "cc-sysext-update" {
+        std::process::exit(update::helper(&raw.collect::<Vec<_>>()));
+    }
+    if !update::root_ok(unsafe { libc::geteuid() }, std::env::var_os("PKEXEC_UID").is_some(), &name) {
+        eprintln!("cc-home: run as root by pkexec under another name ({name}), so nothing's done");
+        std::process::exit(1);
+    }
     let name = if name.starts_with("cc-home") { "cc-home".into() } else { name };
     if let Some(code) = session::dispatch(&name, &raw.collect::<Vec<_>>()) {
         std::process::exit(code)
@@ -832,6 +843,7 @@ fn main() {
         ("calibrate", 1..) => scan::calibrate(args[0], args.get(1).copied().unwrap_or("any")),
         ("refit", _) => scan::refit(),
         ("selftest", _) => selftest(),
+        ("update", _) => std::process::exit(update::main()),
         ("notify-test", _) => notify_test(args),
         _ => usage(),
     }

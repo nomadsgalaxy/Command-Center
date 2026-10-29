@@ -39,10 +39,16 @@ pub fn desktop_lock() -> PathBuf {
 }
 
 /// Takes the Desktop's lock for as long as the file stays open. It waits for it: this tab only
-/// ever holds it for the instant it takes to look.
+/// ever holds it for the instant it takes to look, and an update for as long as loading the new
+/// image takes, so a wait gets said first (only to the log: no overlay is up yet for a toast).
 pub fn hold(path: &Path) -> Result<std::fs::File, String> {
     let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&f), libc::LOCK_EX) } != 0 {
+    let fd = std::os::fd::AsRawFd::as_raw_fd(&f);
+    if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(f);
+    }
+    eprintln!("Command Center is updating; starting in a moment");
+    if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 {
         return Err(format!("{}: {}", path.display(), std::io::Error::last_os_error()));
     }
     Ok(f)
@@ -171,6 +177,21 @@ pub fn register(on: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_starting_desktop_waits_for_the_lock_instead_of_giving_up() {
+        let dir = std::env::temp_dir().join(format!("cc-tab-wait-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("control-center-desktop.lock");
+        let held = hold(&path).unwrap(); // the update helper, mid-refresh
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = path.clone();
+        std::thread::spawn(move || tx.send(hold(&p).is_ok()).unwrap());
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "it's waiting, not starting and not giving up");
+        drop(held);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(true), "and it starts once the lock is free");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_desktops_lock_says_whether_it_runs() {

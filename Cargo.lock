@@ -369,6 +369,7 @@ dependencies = [
  "cc-scan",
  "libc",
  "serde_json",
+ "sha2",
  "zbus",
 ]
 
