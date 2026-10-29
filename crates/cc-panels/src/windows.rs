@@ -958,7 +958,8 @@ impl Windows {
         let m = vr::head().unwrap_or(STAND_IN_HEAD);
         let (eye, f) = ([0, 1, 2].map(|i| m[i][3] as f64), level_ahead(&m));
         let (yaw, pitch) = angles(&f);
-        let pose = Pose { centre: ahead_of(&eye, &f, 1.8, 0.0, 0.0), yaw, pitch, width: 2.0, curve: 1.8, ..Default::default() };
+        let (ahead, width, curve) = crate::limits::THEATER;
+        let pose = Pose { centre: ahead_of(&eye, &f, ahead, 0.0, 0.0), yaw, pitch, width, curve, ..Default::default() };
         k.set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve);
         crate::THEATER.store(p.index, Relaxed); // tick_slot applies THEATER_FPS: a renegotiation, which the 1600x900 resize brings anyway
     }

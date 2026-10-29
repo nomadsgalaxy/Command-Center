@@ -51,6 +51,15 @@ in `~/.config/control-center/settings.json` and restart the Desktop:
 { "look": "plasma" }
 ```
 
+## Theater mode and new windows' size
+
+A window in theater mode opens 1.8 m ahead of you, 2 m wide and curved. SteamVR's own theater
+screen is flat and 3 m away, at its default scale of 2.8. SteamVR's scale has no fixed metres
+(it multiplies a page's own size), so the two can only be compared by how wide they look: if
+SteamVR's page is 1.2 m wide at scale 1, which nobody has measured yet, both fill about 58° of your
+view. So nothing changed here. New windows open 1.4 m ahead (see above), a computer's screen with
+no saved place 1.2 m wide, and a window panel as wide as its window's pixels make it.
+
 ## SteamVR's keyboard
 
 Every live panel (a computer's screen, a window, a pop-out) has a keyboard button on its bar,
