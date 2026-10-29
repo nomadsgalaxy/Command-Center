@@ -33,8 +33,10 @@ if [ "${CC_RELEASE:-}" = 1 ]; then
   case $version in
     *-dirty* | *[!0-9A-Za-z._+~-]* | [!0-9]*) echo "CC_VERSION=$version isn't a release version (digits first, no -dirty)" >&2; exit 1 ;;
   esac
-  git -C "$root" tag --points-at HEAD | grep -qx "v$version" || { echo "v$version isn't a tag on $root's HEAD" >&2; exit 1; }
-  git -C "$root" diff --quiet HEAD || { echo "$root has changes that aren't committed" >&2; exit 1; }
+  git -C "$root" tag --points-at HEAD | grep -qxF "v$version" || { echo "v$version isn't a tag on $root's HEAD" >&2; exit 1; }
+  [ -z "$(git -C "$root" status --porcelain)" ] || { echo "$root has changes or files that aren't committed" >&2; exit 1; }
+  # update.rs's "up to date" compares the version in the file's name with IMAGE_VERSION byte for byte
+  [ "$(basename "$out")" = "command-center_$version.raw" ] || { echo "a release image is named command-center_$version.raw, not $(basename "$out")" >&2; exit 1; }
 fi
 lib=usr/lib/command-center
 s=$(mktemp -d)
@@ -113,6 +115,7 @@ mkdir -p "$s/usr/lib/extension-release.d"
 printf 'ID=_any\nARCHITECTURE=arm64\nIMAGE_ID=%s\nIMAGE_VERSION=%s\n' \
   "$name" "$version" >"$s/usr/lib/extension-release.d/extension-release.$name"
 
+grep -qxF "IMAGE_VERSION=$version" "$s/usr/lib/extension-release.d/extension-release.$name" || { echo "IMAGE_VERSION isn't $version" >&2; exit 1; }
 mkdir -p "$(dirname "$out")"
 mksquashfs "$s" "$out" -all-root -noappend -comp zstd -quiet -no-progress
 echo "built $out ($(du -h "$out" | cut -f1), $name $version, built on $ID $VERSION_ID, merges on any SteamOS)"
