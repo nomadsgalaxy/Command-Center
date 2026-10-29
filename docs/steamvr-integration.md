@@ -66,7 +66,8 @@ A panel comes back to the last place you put it in the room you're in now. If yo
 it anywhere in this room (a new room, or travelling), it opens in front of you instead, to place
 yourself: another room's places are never carried over, since there they'd be somewhere else
 entirely. A room with its own workspace keeps its places; Temporary, the travel workspace, keeps
-the places from the room you last laid it out in, and starts empty in a different one. A window
+each room's own places separately (for the last 8 rooms it's been used in), so going from one
+room to another and back brings each room's layout back, and a room it hasn't seen starts empty. A window
 panel's own last place (kept while its window stays open, and the one an app reopened after the
 Desktop was closed comes back to) follows the same rule. The Machines, Preferences and Workspace
 windows too: with no place for them in this room, they open 1.4 m in front of you like

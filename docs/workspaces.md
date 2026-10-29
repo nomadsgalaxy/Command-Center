@@ -25,9 +25,10 @@ When cc-panels starts, it picks one with `conf::choose_workspace`:
    workspace new`): that one, and it gets bound to this room.
 4. Anything else (you're travelling, or there's no dedicated workspace yet): **Temporary**. If it
    doesn't exist, it's made with the active workspace's machines, but not its layout: those places
-   belong to that workspace's room. Temporary remembers which room its own layout was put down in
-   (`laid_out_in`). Back in that room it keeps it; in another room it starts empty, so everything
-   opens in front of you to place yourself, and no room's places carry over to another. It never
+   belong to that workspace's room. Temporary keeps a layout per room it's used in: the current
+   room's in `spots` (`laid_out_in` says which room), the others under `rooms`, the 8 seen most
+   recently. Back in a room you get that room's layout; a room it hasn't seen starts empty, so
+   everything opens in front of you to place yourself, and no room's places carry over to another. It never
    makes a `workspace-N` for every new room.
 
 A fresh install (no home.json) starts in Temporary, so everything saves there until you make your
