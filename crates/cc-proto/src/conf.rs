@@ -1040,10 +1040,16 @@ fn has_workspace(data: &Json, n: &str) -> bool {
 }
 
 /// A new Temporary from workspace `from`'s layout and machines (empty if there's none).
+/// The room Temporary's layout belongs to (a universe id). Its spots only count in that room; in
+/// any other they're another room's places, so it starts empty there and everything opens in
+/// front of you instead (Anthony's rule, docs/steamvr-integration.md).
+const LAID_OUT_IN: &str = "laid_out_in";
+
+/// A new Temporary: the active workspace's machines, but none of its spots, which are its room's.
 fn make_temporary(data: &mut Json, from: &str) {
     let src = data.at("workspaces").at(from).clone();
     let mut t = Json::obj();
-    t.set("spots", src.get("spots").cloned().unwrap_or_else(Json::obj));
+    t.set("spots", Json::obj());
     if let Some(m) = src.get("machines") {
         t.set("machines", m.clone());
     }
@@ -1056,8 +1062,9 @@ fn make_temporary(data: &mut Json, from: &str) {
 /// 2. No room known (0, or a dummy universe): the hint's, else the active one.
 /// 3. A new room while the active one is dedicated and bound to none (`cc-home workspace new`):
 ///    that one, bound to this room.
-/// 4. Otherwise (travelling, or no dedicated workspace yet): Temporary, made from the active one's
-///    layout if it's missing.
+/// 4. Otherwise (travelling, or no dedicated workspace yet): Temporary, made with the active one's
+///    machines if it's missing. Its spots are the room it was laid out in (LAID_OUT_IN): back in that
+///    room they're kept, in another they're dropped, so no room's places carry over to another.
 ///
 /// Returns its name and whether Temporary was just made.
 pub fn choose_workspace(data: &mut Json, universe: u64, hint: Option<&str>) -> (String, bool) {
@@ -1083,6 +1090,15 @@ pub fn choose_workspace(data: &mut Json, universe: u64, hint: Option<&str>) -> (
     };
     if made {
         make_temporary(data, &active);
+    }
+    if name == TEMPORARY && universe != 0 {
+        let t = data.setdefault("workspaces", Json::obj()).setdefault(TEMPORARY, Json::obj());
+        let here = universe.to_string();
+        let other = t.get(LAID_OUT_IN).and_then(Json::str).is_some_and(|u| u != here); // none: an older file's, taken as this room's
+        if other {
+            t.set("spots", Json::obj());
+        }
+        t.set(LAID_OUT_IN, Json::Str(here));
     }
     data.set("workspace", Json::Str(name.clone()));
     (name, made)
@@ -1525,15 +1541,24 @@ mod tests {
         let mut data = home(TWO);
         assert_eq!(choose_workspace(&mut data, 333, None), (TEMPORARY.into(), true));
         let t = data.at("workspaces").at(TEMPORARY);
-        assert_eq!(t.at("spots").dumps(), home(TWO).at("workspaces").at("workspace-2").at("spots").dumps(), "made from the last-used layout");
+        assert_eq!(t.at("spots").dumps(), "{}", "another room's places don't come along: everything opens in front of you");
+        assert_eq!(t.at("machines").dumps(), home(TWO).at("workspaces").at("workspace-2").at("machines").dumps(), "its machines do");
         assert!(!t.at("universe").truthy() && data.at("workspaces").get("workspace-3").is_none());
-        // from then on it keeps its own layout: another unknown room, and back
-        data.setdefault("workspaces", Json::obj()).setdefault(TEMPORARY, Json::obj()).set("spots", home(r#"{"home": {}}"#));
+        // what you place in this room stays for this room: a restart here keeps it
+        let placed = r#"{"home": {"desk-wide": {"centre": [0.5, 1.4, -1.4], "yaw": 0.0, "pitch": 0.0, "roll": 0.0, "width": 1.2}}}"#;
+        data.setdefault("workspaces", Json::obj()).setdefault(TEMPORARY, Json::obj()).set("spots", home(placed));
+        assert_eq!(choose_workspace(&mut data, 333, None), (TEMPORARY.into(), false));
+        assert_eq!(data.at("workspaces").at(TEMPORARY).at("spots").dumps(), home(placed).dumps(), "same room: its spot");
+        // somewhere new: not carried over
         assert_eq!(choose_workspace(&mut data, 444, None), (TEMPORARY.into(), false));
-        assert_eq!(data.at("workspaces").at(TEMPORARY).at("spots").dumps(), r#"{"home": {}}"#);
+        assert_eq!(data.at("workspaces").at(TEMPORARY).at("spots").dumps(), "{}", "new room: in front of you");
         assert_eq!(choose_workspace(&mut data, 111, None), ("home".into(), false), "home again: its own");
-        assert_eq!(choose_workspace(&mut data, 555, None), (TEMPORARY.into(), false));
-        assert_eq!(data.at("workspaces").at(TEMPORARY).at("spots").dumps(), r#"{"home": {}}"#, "kept, not copied again");
+        assert_eq!(data.at("workspaces").at("home").at("spots").dumps(), home(TWO).at("workspaces").at("home").at("spots").dumps(), "a dedicated room's places are never touched");
+        // an older Temporary with no room on it is taken as this room's, so an upgrade loses nothing
+        let mut old = home(TWO);
+        old.setdefault("workspaces", Json::obj()).set(TEMPORARY, home(&format!(r#"{{"spots": {placed}}}"#)));
+        assert_eq!(choose_workspace(&mut old, 555, None), (TEMPORARY.into(), false));
+        assert_eq!(old.at("workspaces").at(TEMPORARY).at("spots").dumps(), home(placed).dumps());
     }
 
     #[test]

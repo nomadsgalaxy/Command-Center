@@ -60,6 +60,18 @@ SteamVR's page is 1.2 m wide at scale 1, which nobody has measured yet, both fil
 view. So nothing changed here. New windows open 1.4 m ahead (see above), a computer's screen with
 no saved place 1.2 m wide, and a window panel as wide as its window's pixels make it.
 
+## Where things come back after a restart
+
+A panel comes back to the last place you put it in the room you're in now. If you've never put
+it anywhere in this room (a new room, or travelling), it opens in front of you instead, to place
+yourself: another room's places are never carried over, since there they'd be somewhere else
+entirely. A room with its own workspace keeps its places; Temporary, the travel workspace, keeps
+the places from the room you last laid it out in, and starts empty in a different one. A window
+panel's own last place (kept while its window stays open) follows the same rule.
+
+Docking doesn't change any of this: a docked panel's place in the room stays where you last put
+it down, so after a restart it's there (in the same room) or in front of you (somewhere new).
+
 ## SteamVR's keyboard
 
 Every live panel (a computer's screen, a window, a pop-out) has a keyboard button on its bar,

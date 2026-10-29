@@ -477,6 +477,13 @@ fn app_name(app: &str) -> String {
     name.replace(',', " ")
 }
 
+/// Whether a window's kept pose (win-poses.json) was put in the room SteamVR tracks now (`here`).
+/// One from another room isn't used: there it'd be somewhere else entirely. One with no room (an
+/// older file), or while SteamVR has no room yet (0), counts as here.
+fn same_room(v: &Value, here: u64) -> bool {
+    here == 0 || v["room"].as_u64().is_none_or(|r| r == here)
+}
+
 /// A file-name-safe id for an app's tag.
 fn tag_id(app: &str) -> String {
     app.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect()
@@ -749,7 +756,9 @@ impl Windows {
         // Where it was (a restart, or a hibernated app reopened), else its app's spot (the first one open), else `ahead`.
         let app_open = (0..SLOTS).any(|j| win(self.first + j).is_some_and(|o| o.key == w.key && !o.popup()));
         let hibernated = || self.resumed.get_mut(&w.key)?.as_array_mut().filter(|v| !v.is_empty()).map(|v| v.remove(0));
-        let (pose, zoom, from) = match self.poses.get(&w.uuid).cloned().or_else(hibernated).and_then(|v| Some((config::pose_from(&v)?, v["zoom"].as_f64()))) {
+        let here = config::UNIVERSE.load(Relaxed);
+        let kept = self.poses.get(&w.uuid).filter(|v| same_room(v, here)).cloned();
+        let (pose, zoom, from) = match kept.or_else(hibernated).and_then(|v| Some((config::pose_from(&v)?, v["zoom"].as_f64()))) {
             Some((pose, zoom)) => (pose, zoom, "where it was"),
             None => match config::home_pose(&w.key, None).filter(|_| !app_open) {
                 Some(pose) => (pose, config::home_zoom(&w.key), "its spot"),
@@ -1067,6 +1076,7 @@ impl Windows {
             let pl = KVM.lock().unwrap().place[p.index];
             let mut v = config::pose_json(&pl.pose(), pl.height);
             v["zoom"] = json!(p.zoom());
+            v["room"] = json!(config::UNIVERSE.load(Relaxed)); // where it was put: it only comes back there (same_room)
             self.poses.insert(uuid.into(), v);
         }
     }
@@ -1340,6 +1350,21 @@ impl Windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kept_window_pose_only_comes_back_in_its_own_room() {
+        let v = |room: Option<u64>| {
+            let mut v = json!({"centre": [0.0, 1.5, -1.4], "yaw": 0.0, "pitch": 0.0, "roll": 0.0, "width": 1.0});
+            if let Some(r) = room {
+                v["room"] = json!(r);
+            }
+            v
+        };
+        assert!(same_room(&v(Some(111)), 111), "same room: where it was");
+        assert!(!same_room(&v(Some(111)), 222), "somewhere new: in front of you instead");
+        assert!(same_room(&v(None), 222), "an older file's: as before");
+        assert!(same_room(&v(Some(111)), 0), "SteamVR has no room yet: can't tell, so as before");
+    }
 
     #[test]
     fn only_the_latest_raise_counts() {
