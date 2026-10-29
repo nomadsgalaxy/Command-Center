@@ -354,7 +354,7 @@ impl Agent {
             "monitors" => Ok(json!({"ok": true, "monitors": self.plat.monitors()})),
             "status" => {
                 let (tags, blocked) = self.tags_state(frame);
-                Ok(json!({"ok": true, "tags": tags, "blocked": blocked, "sessions": self.sessions_of(frame)}))
+                Ok(json!({"ok": true, "tags": tags, "blocked": blocked, "sessions": self.sessions_of(frame), "health": self.health_of(frame)}))
             }
             "session" if req["op"] == json!("stop") => Ok(self.session_stop(frame, &req["index"])),
             "window" if req["op"] == json!("list") => self.window_list(frame),

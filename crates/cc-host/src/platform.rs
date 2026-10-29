@@ -191,6 +191,8 @@ mod kwin {
 #[derive(Default)]
 pub struct Fake {
     up: Arc<Mutex<HashSet<u16>>>,
+    /// What `systemctl show` says for a unit: (ActiveState, NRestarts). Units not in it are inactive.
+    pub units: Arc<Mutex<std::collections::HashMap<String, (String, u64)>>>,
 }
 
 impl Platform for Fake {
@@ -202,6 +204,13 @@ impl Platform for Fake {
             let i = unit.split('@').nth(1)?;
             if unit.contains("window@") { Some(3405 + 10 + i.split('-').nth_back(5)?.parse::<u16>().ok()?) } else { Some(3410 + i.trim_end_matches(".service").rsplit('-').next()?.parse::<u16>().ok()?) }
         };
+        if args.first() == Some(&"show") {
+            let units = self.units.lock().unwrap();
+            return args.iter().filter(|a| a.ends_with(".service")).map(|u| {
+                let (state, n) = units.get(*u).cloned().unwrap_or(("inactive".into(), 0));
+                format!("Id={u}\nActiveState={state}\nNRestarts={n}\n\n")
+            }).collect();
+        }
         match (args.first(), args.get(1)) {
             (Some(&"start"), Some(u)) | (Some(&"restart"), Some(u)) if !u.contains('*') => {
                 if let Some(p) = port(u) {

@@ -18,6 +18,9 @@ const CANCEL_GAP: f64 = 3.0;
 const BLOCK_S: f64 = 600.0;
 const ASK_AFTER: usize = 3;
 const ASK_WINDOW: f64 = 300.0;
+/// A share that restarted more than DEGRADED_AFTER times in the last RESTART_WINDOW seconds is degraded.
+const DEGRADED_AFTER: u64 = 2;
+const RESTART_WINDOW: f64 = 600.0;
 
 pub struct Sess {
     pub port: u16,
@@ -53,6 +56,37 @@ pub struct Work {
     asks: HashMap<String, VecDeque<Instant>>,
     pub tags: Tags,
     imu: Option<ImuStream>,
+    restarts: Restarts,
+}
+
+/// Each unit's NRestarts as status last saw it, over time, so it can count the recent ones.
+#[derive(Default)]
+struct Restarts(HashMap<String, VecDeque<(f64, u64)>>);
+
+impl Restarts {
+    /// Notes that unit has restarted n times by now, and says how many of those were in the window.
+    /// The baseline is the newest sample from before the window, or the oldest one there is.
+    fn recent(&mut self, unit: &str, now: f64, n: u64) -> u64 {
+        let q = self.0.entry(unit.to_owned()).or_default();
+        while q.len() > 1 && q[1].0 <= now - RESTART_WINDOW {
+            q.pop_front();
+        }
+        let base = q.front().map_or(n, |s| s.1);
+        q.push_back((now, n));
+        if n < base { n } else { n - base } // a smaller count means systemd reset it, so it's all new
+    }
+}
+
+/// What one of a Frame's servers is doing, from systemd and its port: down (it gave up), degraded
+/// (it keeps restarting), ok, starting, or idle (no session for it).
+pub fn health(state: &str, recent: u64, listening: bool) -> &'static str {
+    match state {
+        "failed" => "down",
+        _ if recent > DEGRADED_AFTER => "degraded",
+        "active" if listening => "ok",
+        "active" | "activating" | "reloading" => "starting",
+        _ => "idle",
+    }
 }
 
 /// The one IMU stream a host runs (the controller is one device): who asked, and how to stop it.
@@ -285,6 +319,31 @@ impl Agent {
     }
 
     /// The session list `status` shows for this Frame.
+    /// status's health: one entry per shared monitor, for this Frame's server on it (docs/agent.md).
+    pub fn health_of(&self, frame: &str) -> Vec<Value> {
+        let Ok(slot) = self.slot(frame) else { return vec![] };
+        let indexes: Vec<i64> = self.plat.monitors().iter().filter_map(|m| m["index"].as_i64()).collect();
+        let units: Vec<String> = indexes.iter().map(|i| format!("control-center-frame@{frame}-{i}.service")).collect();
+        let mut args = vec!["show", "-p", "Id", "-p", "ActiveState", "-p", "NRestarts"];
+        args.extend(units.iter().map(String::as_str));
+        let out = self.plat.systemctl(&args);
+        let mut seen: HashMap<String, (String, u64)> = HashMap::new();
+        for block in out.split("\n\n") {
+            let field = |k: &str| block.lines().find_map(|l| l.strip_prefix(k)).unwrap_or("").to_owned();
+            seen.insert(field("Id="), (field("ActiveState="), field("NRestarts=").parse().unwrap_or(0)));
+        }
+        let now = mono();
+        let mut w = self.work.lock().unwrap();
+        indexes.iter().zip(&units).map(|(i, u)| {
+            let (state, n) = seen.get(u).cloned().unwrap_or_else(|| ("unknown".into(), 0));
+            let port = 3400 + 10 * slot + *i as u16;
+            let listening = self.plat.listening(port);
+            let recent = w.restarts.recent(u, now, n);
+            json!({"index": i, "unit": u, "port": port, "state": state, "restarts": n, "recent_restarts": recent,
+                   "listening": listening, "health": health(&state, recent, listening)})
+        }).collect()
+    }
+
     pub fn sessions_of(&self, frame: &str) -> Vec<Value> {
         let now = mono();
         let w = self.work.lock().unwrap();
@@ -630,6 +689,48 @@ pub fn check_tags(p: &Value, w: i64, h: i64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Crab's case on a fake host: a Frame's server whose krdp can't load. systemd restarts it a few
+    /// times, then the start limit makes it failed. status shows it degraded while it loops and down
+    /// once it gave up, instead of the agent answering as if all were well.
+    #[test]
+    fn status_shows_a_crash_looping_share_down() {
+        let conf = std::env::temp_dir().join(format!("cc-host-health-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&conf);
+        std::fs::create_dir_all(conf.join("frames")).unwrap();
+        std::fs::write(conf.join("frames/f1.json"), r#"{"slot": 1}"#).unwrap();
+        let fake = crate::platform::Fake::default();
+        let units = fake.units.clone();
+        let agent = Agent::new(conf.clone(), Box::new(fake));
+        let unit = "control-center-frame@f1-0.service";
+        let set = |state: &str, n: u64| units.lock().unwrap().insert(unit.into(), (state.into(), n));
+        let now = |a: &Agent| a.health_of("f1")[0].clone();
+
+        assert_eq!(now(&agent)["health"], "idle", "no session yet");
+        set("activating", 1);
+        assert_eq!(now(&agent)["health"], "starting");
+        set("activating", 4);
+        let h = now(&agent);
+        assert_eq!((h["health"].as_str(), h["recent_restarts"].as_u64()), (Some("degraded"), Some(4)), "{h}");
+        set("failed", 5); // StartLimitBurst=5 tripped
+        let h = now(&agent);
+        let _ = std::fs::remove_dir_all(&conf);
+        assert_eq!(h["health"], "down", "{h}");
+        assert_eq!((h["port"].as_u64(), h["listening"].as_bool(), h["restarts"].as_u64()), (Some(3410), Some(false), Some(5)));
+    }
+
+    #[test]
+    fn restarts_count_only_the_last_ten_minutes() {
+        let mut r = Restarts::default();
+        assert_eq!(r.recent("u", 0.0, 7), 0, "the first look is the baseline");
+        assert_eq!(r.recent("u", 100.0, 9), 2);
+        assert_eq!(r.recent("u", 700.0, 9), 0, "the restarts at 100 s are still in, but the baseline moved to them");
+        assert_eq!(r.recent("u", 800.0, 12), 3);
+        assert_eq!(r.recent("u", 900.0, 1), 1, "a reset count starts over");
+        assert_eq!(health("active", 0, true), "ok");
+        assert_eq!(health("active", 3, true), "degraded");
+        assert_eq!(health("inactive", 0, false), "idle");
+    }
 
     #[test]
     fn tag_checks() {

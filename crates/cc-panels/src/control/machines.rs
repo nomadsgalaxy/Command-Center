@@ -589,6 +589,7 @@ struct Row {
     connected: bool, // its session is up
     auto: bool,      // autoconnect=yes
     untold: bool,    // its machine was unpaired while the host was away, so the host still trusts this Frame
+    broken: u8,      // its host says its server keeps failing (rdp::HOST_DEGRADED) or gave up (HOST_DOWN)
     member: bool,    // its machine is in the workspace
 }
 
@@ -935,6 +936,9 @@ impl<'a> Scene<'a> {
                 out = over(out, (c, a * fade));
             } else if x < member_x().0 - GAP && r.untold { // the host still trusts this Frame: 17 cells fit the column
                 out = over(out, tint(typed(self.ui.ascii.as_ref(), "unpair pending", x, y, HOST, cy), acc.line, acc.line, acc.line));
+            } else if x < member_x().0 - GAP && r.broken != crate::rdp::HOST_OK { // its host's server for it is broken, so it isn't just slow
+                let why = if r.broken == crate::rdp::HOST_DOWN { "host server down" } else { "host server failing" };
+                out = over(out, tint(typed(self.ui.ascii.as_ref(), why, x, y, HOST, cy), acc.line, acc.line, acc.line));
             } else if x < member_x().0 - GAP {
                 out = over(out, tint(text(self.hosts[i].as_deref(), x, y, HOST, cy), t.wdim, t.wdim, acc.line));
             }
@@ -1836,7 +1840,7 @@ impl Machines {
             .map(|&i| {
                 let p = panel(i);
                 let m = config::machine_of(&p.v);
-                Row { live: p.live(), connected: p.connected.load(Relaxed), auto: self.auto[i], untold: self.untold.iter().any(|x| x == m), member: self.members.as_ref().is_none_or(|l| l.iter().any(|x| x == m)) }
+                Row { live: p.live(), connected: p.connected.load(Relaxed), auto: self.auto[i], untold: self.untold.iter().any(|x| x == m), broken: p.host_health.load(Relaxed), member: self.members.as_ref().is_none_or(|l| l.iter().any(|x| x == m)) }
             })
             .collect();
         let row = |i: Option<usize>| i.and_then(|i| self.rows.iter().position(|&r| r == i));
@@ -1918,7 +1922,7 @@ mod tests {
 
     const C: Shape = Shape::Closed;
 
-    const TWO: [Row; 2] = [Row { live: true, connected: true, auto: true, untold: false, member: true }, Row { live: false, connected: false, auto: false, untold: false, member: false }];
+    const TWO: [Row; 2] = [Row { live: true, connected: true, auto: true, untold: false, broken: 0, member: true }, Row { live: false, connected: false, auto: false, untold: false, broken: 0, member: false }];
 
     #[test]
     fn buttons_sit_right_aligned_in_order() {
