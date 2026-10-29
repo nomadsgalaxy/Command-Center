@@ -366,12 +366,22 @@ fn open(core: &pw::core::CoreRc, node: u32, name: &str, feed: Arc<Feed>, fps: u3
             }
             let stride = if chunk.stride > 0 { chunk.stride as u32 } else { w * 4 };
             let id = (b as usize, d.epoch);
-            let px = if let Some(&(base, _, off)) = d.maps.get(&id) {
+            let px = if let Some(&(base, len, off)) = d.maps.get(&id) {
+                // The chunk's offset and stride come from the compositor, so every row has to be
+                // inside what we mapped before anything is read (BOF-001).
+                if !fits(len, off, chunk.offset, stride, w, h) {
+                    unsafe { s.queue_raw_buffer(b) };
+                    return;
+                }
                 // ponytail: whole-frame copy, swizzled for SetOverlayRaw; VideoDamage rows into gpu.rs buffers in S1
                 let src = unsafe { (base as *const u8).add(off + chunk.offset as usize) };
                 let mut rgba = vec![0u8; (w * h * 4) as usize];
+                let mut row = vec![0u8; w as usize * 4];
                 for y in 0..h as usize {
-                    let row = unsafe { std::slice::from_raw_parts(src.add(y * stride as usize), w as usize * 4) };
+                    // Copied out byte for byte, with no Rust slice over the mapping: the compositor
+                    // may still be writing it (SHMRACE-001), and a torn frame is fine, a reference
+                    // into memory someone else changes isn't.
+                    unsafe { std::ptr::copy_nonoverlapping(src.add(y * stride as usize), row.as_mut_ptr(), row.len()) };
                     for (o, i) in rgba[y * w as usize * 4..][..w as usize * 4].chunks_exact_mut(4).zip(row.chunks_exact(4)) {
                         o.copy_from_slice(&[i[2], i[1], i[0], 255]);
                     }
@@ -400,6 +410,20 @@ fn open(core: &pw::core::CoreRc, node: u32, name: &str, feed: Arc<Feed>, fps: u3
     let mut p: Vec<&Pod> = params.iter_mut().map(|b| Pod::from_bytes(b).unwrap()).collect();
     stream.connect(spa::utils::Direction::Input, Some(node), pw::stream::StreamFlags::AUTOCONNECT, &mut p)?;
     Ok(Live { stream, _listener: listener, feed, fps })
+}
+
+/// Whether h rows of w BGRx pixels, `stride` bytes apart from `chunk` into the data at `off`, all
+/// sit inside a mapping `len` bytes long.
+fn fits(len: usize, off: usize, chunk: u32, stride: u32, w: u32, h: u32) -> bool {
+    let need = || -> Option<u64> {
+        let row = u64::from(w).checked_mul(4)?;
+        if h == 0 || u64::from(stride) < row {
+            return None;
+        }
+        let last = u64::from(h - 1).checked_mul(u64::from(stride))?.checked_add(row)?;
+        (off as u64).checked_add(u64::from(chunk))?.checked_add(last)
+    };
+    need().is_some_and(|n| n <= len as u64)
 }
 
 /// One overlay's view of a Feed, on the main thread. It keeps SteamVR handles per imported
@@ -513,6 +537,20 @@ fn import(fd: i32, w: u32, h: u32, offset: u32, stride: u32, modifier: u64) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A compositor's chunk that would read past the mapping, or wrap while working that out, is
+    /// refused; one that fits exactly is taken.
+    #[test]
+    fn chunks_must_fit_the_mapping() {
+        let (w, h) = (4u32, 3u32);
+        let exact = 2 * 16 + 16; // the last row ends right at the end
+        assert!(super::fits(exact, 0, 0, 16, w, h));
+        assert!(!super::fits(exact - 1, 0, 0, 16, w, h), "one byte short");
+        assert!(!super::fits(exact, 0, 1, 16, w, h), "an offset pushes it out");
+        assert!(!super::fits(usize::MAX, 0, 0, 8, w, h), "a stride under a row");
+        assert!(!super::fits(usize::MAX, usize::MAX, u32::MAX, u32::MAX, w, h), "sums that would wrap");
+        assert!(!super::fits(1 << 20, 0, 0, 16, w, 0), "no rows");
+    }
 
     fn fixed(modifier: Option<i64>, w: u32, h: u32) -> Vec<u8> {
         use spa::param::format::FormatProperties as F;
