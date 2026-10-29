@@ -181,6 +181,20 @@ pub fn edit(code: u16, value: i32, shift: bool) -> Option<Edit> {
     }
 }
 
+/// The other way: the evdev key (and Shift) that types c on a US keyboard. "\b" is Backspace,
+/// "\n" Enter and "\t" Tab, as SteamVR's keyboard sends them.
+pub fn key_for(c: char) -> Option<(u16, bool)> {
+    match c {
+        ' ' => return Some((57, false)),
+        '\u{8}' => return Some((14, false)),
+        '\n' | '\r' => return Some((28, false)),
+        '\t' => return Some((15, false)),
+        _ => {}
+    }
+    let b = u8::try_from(c).ok().filter(|b| *b != 0)?;
+    (0..2).find_map(|shift| US[shift].iter().position(|&k| k == b).map(|i| (i as u16 + 2, shift == 1)))
+}
+
 pub type Rect = (f64, f64, f64, f64); // x0, y0, x1, y1 in units from the top left
 
 /// Redraws rect (x0, y0, x1, y1) in buf (tw x th at s texture pixels per unit), pixel by pixel.
@@ -331,6 +345,17 @@ pub fn next_event(h: vr::Handle, e: &mut vr::VREvent_t) -> bool {
 mod tests {
     use super::*;
     use crate::theme;
+
+    #[test]
+    fn every_printable_ascii_types_back_as_itself() {
+        for c in ' '..='~' {
+            let (code, shift) = key_for(c).unwrap_or_else(|| panic!("{c:?} has no key"));
+            assert_eq!(edit(code, 1, shift), Some(Edit::Char(c)), "{c:?}");
+        }
+        assert_eq!(key_for('\u{8}').map(|(k, s)| edit(k, 1, s)), Some(Some(Edit::Back)));
+        assert_eq!(key_for('\n').map(|(k, s)| edit(k, 1, s)), Some(Some(Edit::Submit)));
+        assert_eq!(key_for('é'), None);
+    }
 
     #[test]
     fn typed_text_sits_left_a_cell_a_character() {

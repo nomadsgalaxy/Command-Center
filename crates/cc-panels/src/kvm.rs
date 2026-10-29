@@ -75,6 +75,9 @@ const RESUME_PAUSE: Duration = Duration::from_millis(1500);
 const IDLE: Duration = Duration::from_secs(30);
 /// Input this recent makes its panel the one you're working in (D-042: full rate wherever you look).
 const WORKING: Duration = Duration::from_secs(2);
+/// Calibration knob: a physical key pressed this recently means you're typing on a real keyboard,
+/// so a text field doesn't pop up SteamVR's keyboard over it.
+const KEYBOARD_IN_USE: Duration = Duration::from_secs(60);
 
 /// How far out (m) the cursor floats before it's been on any panel.
 const FREE_DISTANCE: f64 = 1.5;
@@ -236,6 +239,7 @@ pub struct Kvm {
     dy: f64,
     last_used: Option<Instant>,      // the mouse's last use while awake, for the idle sleep
     typed: Option<Instant>,          // the last key typed into a panel
+    pub key_at: Option<Instant>,     // the last physical key pressed, wherever it went
     pending: (f64, Option<Instant>), // motion counted toward waking, and since when
     rctrl: Option<Instant>,          // when Right Ctrl went down, to spot the tap
     rctrl_clean: bool,
@@ -306,6 +310,7 @@ impl Kvm {
             dy: 0.0,
             last_used: None,
             typed: None,
+            key_at: None,
             pending: (0.0, None),
             rctrl: None,
             rctrl_clean: false,
@@ -370,6 +375,34 @@ impl Kvm {
             self.release_keys();
             (self.kbd, self.kbd_shell) = (i, false);
         }
+    }
+
+    /// Whether a physical keyboard is being typed on (KEYBOARD_IN_USE).
+    pub fn keyboard_in_use(&self) -> bool {
+        self.key_at.is_some_and(|t| t.elapsed() < KEYBOARD_IN_USE)
+    }
+
+    /// Types text to panel i (SteamVR's keyboard, osk.rs) as key presses on a US layout, the way
+    /// a physical keyboard's keys would go. "\b" is Backspace and "\n" Enter.
+    /// shortcut: characters a US keyboard can't type are dropped; RDP's Unicode input could send them.
+    pub fn type_text(&mut self, i: usize, text: &str) {
+        self.type_to(i);
+        for c in text.chars() {
+            let Some((code, shift)) = crate::control::ui::key_for(c) else {
+                eprintln!("SteamVR keyboard: {c:?} isn't on a US keyboard, so it isn't sent");
+                continue;
+            };
+            if shift {
+                self.send_key(KEY_LEFTSHIFT, 1);
+            }
+            self.send_key(code, 1);
+            self.send_key(code, 0);
+            if shift {
+                self.send_key(KEY_LEFTSHIFT, 0);
+            }
+            self.keystrokes += 1;
+        }
+        self.typed = Some(Instant::now());
     }
 
     /// Typing goes to the session's focused window (a click on Plasma's bar, for Kickoff's search).
@@ -998,6 +1031,9 @@ impl Kvm {
 
     /// A key or button. `ours` means its device is grabbed (otherwise the Frame gets it too).
     fn key(&mut self, code: u16, value: i32, ours: bool) {
+        if value == 1 && code < 0x100 {
+            self.key_at = Some(Instant::now()); // a key, not a mouse button (BTN_MISC and up)
+        }
         // Right Ctrl on its own toggles; used with other keys it's just Right Ctrl.
         let rctrl_down = self.rctrl.is_some();
         if code == KEY_ESC && value == 1 && rctrl_down {

@@ -633,7 +633,13 @@ impl Workspace {
             return;
         }
         tp.editing = true;
-        KVM.lock().unwrap().focus_field("workspace", true);
+        let mut k = KVM.lock().unwrap();
+        k.focus_field("workspace", true);
+        if k.keyboard_in_use() {
+            return; // you're typing on a real keyboard, and it types here now
+        }
+        drop(k);
+        crate::osk::forget();
         let (hint, text) = (CString::new("Workspace name").unwrap_or_default(), CString::new(tp.text.clone()).unwrap_or_default());
         let mode = sys::EGamepadTextInputMode_k_EGamepadTextInputModeNormal;
         let lines = sys::EGamepadTextInputLineMode_k_EGamepadTextInputLineModeSingleLine;

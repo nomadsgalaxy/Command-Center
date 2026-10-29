@@ -104,6 +104,7 @@ enum Part {
     Zoom,          // a window panel's zoom button, next to that: hold it and pull to make the text bigger
     Snap,          // left of the bar: back to the aligned place (or align again after a relocalization)
     Face,          // left of that: turns the panel in place to face the eye
+    Keys,          // right of the zoom button's place: SteamVR's keyboard, typing to this panel (osk.rs)
     Ctl(usize),    // a window control in the right-hand tab (CTL)
     Corner(usize), // indexed like CORNER_SIGN
 }
@@ -242,6 +243,8 @@ fn held_part(spec: &CardSpec, w: f64, h: f64, extra: bool, was: Option<Part>, u:
             Some(Part::Snap)
         } else if spec.on_face(u, v) {
             Some(Part::Face)
+        } else if spec.on_keys(u, v) {
+            Some(Part::Keys)
         } else if spec.on_bar(u, v) {
             Some(Part::Bar)
         } else if dead(u, v) {
@@ -274,6 +277,7 @@ struct CardSpec {
     zoom: Option<Look>,                        // a window panel's zoom button, and its look
     snap: Option<(Look, Glyph)>,               // the snap-back (or align) button left of the bar, and its look
     face: Option<Look>,                        // the face-me button left of that (none when it faces you), and its look
+    keys: Option<Look>,                        // a live panel's keyboard button, right of where zoom goes, and its look
     ctl: Option<[Look; CTLS]>,                 // a window panel's controls, and their looks
     ctls: usize,                               // how many of them, from the right (close alone: 1)
     size: (usize, usize),
@@ -340,7 +344,13 @@ impl CardSpec {
     /// whether the button's there or not, so one repaint can put it in or take it out.
     fn bar_rect(&self) -> (usize, usize, usize, usize) {
         let (bv, bh) = self.bar_box();
-        let (ku, _, r) = if self.zoom.is_some() { self.zoom_at() } else { self.knob_at() };
+        let (ku, _, r) = if self.keys.is_some() {
+            self.keys_at()
+        } else if self.zoom.is_some() {
+            self.zoom_at()
+        } else {
+            self.knob_at()
+        };
         self.rect(self.snap_at().0 - 4.6 * r, ku + 2.0 * r, bv - bh / 2.0, bv + bh / 2.0) // and the face-me button's
     }
 
@@ -395,6 +405,18 @@ impl CardSpec {
     fn on_zoom(&self, u: f64, v: f64) -> bool {
         let (zu, zv, r) = self.zoom_at();
         self.zoom.is_some() && (u - zu).hypot(v - zv) <= r * 1.3
+    }
+
+    /// The keyboard button: right of where the zoom button goes, whether it's there or not, so it
+    /// sits in the same place on every panel.
+    fn keys_at(&self) -> (f64, f64, f64) {
+        let (zu, zv, r) = self.zoom_at();
+        (zu + 2.6 * r, zv, r)
+    }
+
+    fn on_keys(&self, u: f64, v: f64) -> bool {
+        let (ku, kv, r) = self.keys_at();
+        self.keys.is_some() && (u - ku).hypot(v - kv) <= r * 1.3
     }
 
     fn pixel(&self, x: f64, y: f64) -> ([f64; 3], f64) {
@@ -453,6 +475,10 @@ impl CardSpec {
         let (zu, zv, r) = self.zoom_at();
         if let Some(look) = self.zoom.filter(|_| (u - zu).abs() < 2.0 * r && (v - zv).abs() < 2.0 * r) {
             out = over(out, knob_pixel(&p.t, &p.acc, look, (u - zu) * sx, (v - zv) * sx, r * sx, Glyph::Zoom, bp));
+        }
+        let (yu, yv, r) = self.keys_at();
+        if let Some(look) = self.keys.filter(|_| (u - yu).abs() < 2.0 * r && (v - yv).abs() < 2.0 * r) {
+            out = over(out, knob_pixel(&p.t, &p.acc, look, (u - yu) * sx, (v - yv) * sx, r * sx, Glyph::Keys, bp));
         }
         // The window controls, in their own units.
         if let Some((looks, (us, cv, _))) = ctl {
@@ -693,6 +719,7 @@ pub enum Glyph {
     Snap,  // back to the aligned place: an arrow curling back
     Align, // align again: a target
     Face,  // face me: an eye
+    Keys,  // the keyboard: a key outline with a row of keys and a space bar
 }
 
 /// A round button at (x, y) pixels from its centre, r pixels in radius, bp pixels to a Breeze
@@ -739,6 +766,12 @@ pub fn knob_pixel(t: &Tokens, acc: &Accent, look: Look, x: f64, y: f64, r: f64, 
             let (rr, c) = (0.5 * r, 0.3 * r);
             let lens = (x.hypot(y - c) - rr).max(x.hypot(y + c) - rr);
             line(lens, stroke).max(((0.12 * r - x.hypot(y)) + 0.5).clamp(0.0, 1.0))
+        }
+        Glyph::Keys => {
+            let outline = line((x.abs() - 0.5 * r).max(y.abs() - 0.32 * r), stroke);
+            let space = if x.abs() < 0.24 * r { line(y + 0.13 * r, stroke) } else { 0.0 };
+            let key = [-0.3, -0.1, 0.1, 0.3].iter().map(|k| ((0.06 * r - (x - k * r).hypot(y - 0.1 * r)) + 0.5).clamp(0.0, 1.0)).fold(0.0, f64::max);
+            outline.max(space).max(key)
         }
     };
     let ink = if look == Look::Carry { acc.ink } else { t.text };
@@ -838,6 +871,7 @@ pub struct Grab {
     scanned_read: Option<Instant>,
     stale: Vec<Option<Pose>>,  // those places as of the last relocalization; if they're still the same, they moved with the room
     aligns: Vec<usize>,        // align buttons pressed after a relocalization, for machines.rs
+    keyboards: Vec<usize>,     // keyboard buttons pressed, for osk.rs
     backs: crate::back::Backs, // panels turned away from you show their backs (back.rs)
     pub game: bool,            // a VR game is running (the taskbar knows), so no backs
 }
@@ -875,6 +909,7 @@ struct Owner {
     window: bool, // a window panel, so any shape and it can zoom
     ctls: usize,  // how many controls it has, counted from the right
     bare: bool,   // an app's popup (a menu): no card at all, since it rides on its window's panel
+    keys: bool,   // a live panel, so the keyboard button can type to it
 }
 
 /// Theater mode's backdrop: an opaque dark square 8 m wide, 2 m in front of the headset. It
@@ -1029,6 +1064,7 @@ impl Grab {
             scanned_read: None,
             stale: Vec::new(),
             aligns: Vec::new(),
+            keyboards: Vec::new(),
             backs: Default::default(),
             game: false,
         }
@@ -1051,10 +1087,10 @@ impl Grab {
                 0
             }; // a pop-out gets just close (popout.rs)
             let bare = window && crate::windows::is_popup(i);
-            return Some(Owner { name: &p.v.name, card: p.card, overlay: p.overlay, accent: p.accent, tag: p.tag(), live: p.live(), away: p.away(), window, ctls, bare });
+            return Some(Owner { name: &p.v.name, card: p.card, overlay: p.overlay, accent: p.accent, tag: p.tag(), live: p.live(), away: p.away(), window, ctls, bare, keys: p.live() });
         }
         let x = self.extra.as_ref().filter(|_| i == self.slot())?;
-        Some(Owner { name: x.name, card: x.card, overlay: x.win, accent: x.accent, tag: (0, None), live: true, away: !x.shown, window: false, ctls: 1, bare: false })
+        Some(Owner { name: x.name, card: x.card, overlay: x.win, accent: x.accent, tag: (0, None), live: true, away: !x.shown, window: false, ctls: 1, bare: false, keys: false })
     }
 
     /// Where slot i's owner is.
@@ -1272,6 +1308,7 @@ impl Grab {
             Some(Part::Ctl(c)) => self.pressed.push((i, CTL[c])),
             Some(Part::Snap) => self.snap(i, k, s),
             Some(Part::Face) => self.face(i, k, s),
+            Some(Part::Keys) => self.keyboards.push(i),
             Some(part) => self.start(i, part, dev, k, s),
             None => {}
         }
@@ -1296,7 +1333,7 @@ impl Grab {
                 let s0 = sagitta(pl.width, pl.curve);
                 Mode::Curve { local, z0, s0 }
             }
-            Part::Ctl(_) | Part::Snap | Part::Face => return, // buttons, not drags (poll handles them)
+            Part::Ctl(_) | Part::Snap | Part::Face | Part::Keys => return, // buttons, not drags (poll handles them)
             Part::Zoom => {
                 let Some((local, z0)) = taken_by(s, pl, dev) else { return };
                 Mode::Zoom { local, z0, zoom0: panels()[i].zoom() }
@@ -1409,6 +1446,11 @@ impl Grab {
     /// Align buttons pressed since the last call (panel numbers).
     pub fn take_aligns(&mut self) -> Vec<usize> {
         std::mem::take(&mut self.aligns)
+    }
+
+    /// Keyboard buttons pressed since the last call (panel numbers).
+    pub fn take_keyboards(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.keyboards)
     }
 
     /// The window controls pressed since the last call.
@@ -1767,6 +1809,7 @@ impl Grab {
         } else {
             Look::Rest
         });
+        let keys = p.keys.then_some(if self.hover[i] == Some(Part::Keys) { Look::Lit } else { Look::Rest });
         let mm = |x: f64| (x * 1000.0).round() as i64;
         let dims = [mm(pl.width), mm(pl.height), mm(g)];
         let (tag_n, tag) = p.tag.clone();
@@ -1821,8 +1864,25 @@ impl Grab {
                 None => (None, None),
             };
             let paint = Paint::new(&theme::get(), p.accent);
-            let mut spec =
-                CardSpec { w: pl.width, h: pl.height, g, tab, tag, bar: (bar_w, bar_look), knob: knob_look, zoom: zoom_look, snap, face, ctl: ctl_look, ctls: p.ctls, size: (0, 0), paint, look, grip };
+            let mut spec = CardSpec {
+                w: pl.width,
+                h: pl.height,
+                g,
+                tab,
+                tag,
+                bar: (bar_w, bar_look),
+                knob: knob_look,
+                zoom: zoom_look,
+                snap,
+                face,
+                keys,
+                ctl: ctl_look,
+                ctls: p.ctls,
+                size: (0, 0),
+                paint,
+                look,
+                grip,
+            };
             spec.size = card_size(pl.width, pl.height + spec.top() + spec.bottom(), g);
             let card = |spec| Drawn { spec, dims, card_at: now, placed: None, tag: tag_n, theme: drawn_in };
             if self.drawn[i].is_none() || !seen {
@@ -1848,7 +1908,7 @@ impl Grab {
             if grip != d.spec.grip {
                 rects.extend([d.spec.grip, grip].into_iter().flatten().map(|c| d.spec.corner_rect(c)));
             }
-            if bar_look != d.spec.bar.1 || knob_look != d.spec.knob || zoom_look != d.spec.zoom || snap != d.spec.snap || face != d.spec.face {
+            if bar_look != d.spec.bar.1 || knob_look != d.spec.knob || zoom_look != d.spec.zoom || snap != d.spec.snap || face != d.spec.face || keys != d.spec.keys {
                 rects.push(d.spec.bar_rect());
             }
             if ctl_look != d.spec.ctl {
@@ -1856,7 +1916,7 @@ impl Grab {
                 rects.push(d.spec.ctl_rect());
             }
             if !rects.is_empty() {
-                (d.spec.grip, d.spec.bar.1, d.spec.knob, d.spec.zoom, d.spec.snap, d.spec.face) = (grip, bar_look, knob_look, zoom_look, snap, face);
+                (d.spec.grip, d.spec.bar.1, d.spec.knob, d.spec.zoom, d.spec.snap, d.spec.face, d.spec.keys) = (grip, bar_look, knob_look, zoom_look, snap, face, keys);
                 for r in rects {
                     d.spec.repaint(&mut self.cards[i], r);
                 }
@@ -2110,6 +2170,7 @@ mod tests {
             zoom: Some(Look::Rest),
             snap: None,
             face: None,
+            keys: None,
             ctl: Some([Look::Rest; CTLS]),
             ctls: CTLS,
             size: (0, 0),
@@ -2137,6 +2198,23 @@ mod tests {
             assert_eq!((f.width, f.curve, f.vert), (at.width, at.curve, at.vert));
             assert!(turn(&m.pose(), &facing(&m, &eye)) < FACE_TURN, "facing: no button");
         }
+    }
+
+    #[test]
+    fn keyboard_button_is_hit_right_of_zoom_and_repainted_with_the_bar() {
+        let img = Arc::new((80, 12, [200u8, 220, 255, 255].repeat(80 * 12)));
+        let mut spec = spec_for(1.19, 0.34, 0.03, 0.1, Look::Lit, &img, &Theme::default(), REMOTE);
+        let (ku, kv, r) = spec.keys_at();
+        assert!(ku > spec.zoom_at().0 && !spec.on_keys(ku, kv), "right of zoom; none drawn, none hit");
+        spec.keys = Some(Look::Rest);
+        assert_eq!(held_part(&spec, spec.w, spec.h, false, None, ku, kv), Some(Part::Keys));
+        let (zu, zv, _) = spec.zoom_at();
+        assert_eq!(held_part(&spec, spec.w, spec.h, false, None, zu, zv), Some(Part::Zoom), "zoom keeps its own");
+        let (_, x1, _, _) = spec.bar_rect();
+        let (sx, _) = spec.scale();
+        assert!(x1 as f64 >= (ku + 1.3 * r + spec.w / 2.0 + spec.g) * sx, "its repaint covers it");
+        spec.zoom = None; // a remote screen: same place, so the button doesn't move between panels
+        assert_eq!(spec.keys_at().0, ku);
     }
 
     #[test]

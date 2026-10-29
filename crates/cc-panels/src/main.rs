@@ -31,6 +31,7 @@ mod kvm;
 mod kwin;
 mod laser;
 mod limits;
+mod osk;
 mod overlay;
 mod plasmabar;
 mod popout;
@@ -416,6 +417,9 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
     let (mut e, mut n, mut worked): (vr::VREvent_t, u32, bool) = (unsafe { std::mem::zeroed() }, 0, false);
     while call!(ov, PollNextOverlayEvent, p.overlay, &mut e, size_of::<vr::VREvent_t>() as u32) {
         n += 1;
+        if osk::event(p, &e) {
+            continue; // typed on SteamVR's keyboard, for this panel
+        }
         if grab.panel_event(p.index, &e, &mut KVM.lock().unwrap()) {
             continue; // the release of a drag, not meant for the remote
         }
@@ -1150,6 +1154,7 @@ fn run() -> Result<(), String> {
         }
         laps.lap("grab");
         windows.tick(&mut grab);
+        osk::tick(&mut grab);
         laps.lap("windows");
         bar.tick(&mut grab, &mut windows);
         laps.lap("taskbar");

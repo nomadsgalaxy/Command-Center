@@ -1789,7 +1789,13 @@ impl Machines {
             }
             f.field(j).clone()
         };
-        KVM.lock().unwrap().focus_field("machines", true);
+        let mut k = KVM.lock().unwrap();
+        k.focus_field("machines", true);
+        if k.keyboard_in_use() {
+            return; // you're typing on a real keyboard, and it types here now
+        }
+        drop(k);
+        crate::osk::forget();
         let hint = if j == OSK_RENAME { "Name shown: empty for none" } else { HINTS[j] };
         let (hint, text) = (CString::new(hint).unwrap_or_default(), CString::new(text).unwrap_or_default());
         let mode = sys::EGamepadTextInputMode_k_EGamepadTextInputModeNormal;

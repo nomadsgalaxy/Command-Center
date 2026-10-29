@@ -20,3 +20,24 @@ To turn the bar off, put this in `~/.config/control-center/settings.json` and re
 ```json
 { "steamvr_bar": false }
 ```
+
+## SteamVR's keyboard
+
+Every live panel (a computer's screen, a window, a pop-out) has a keyboard button on its bar,
+right of the curve button and, on a window, the zoom button. Press it and SteamVR's keyboard
+opens for that panel. Each key goes to the computer or window the moment you press it, the same
+way a real keyboard's keys go, and Backspace and Enter work too. Press the button on another panel
+to type there instead.
+
+What it can't do:
+
+- SteamVR's keyboard has no Esc, arrow keys, Ctrl, Alt or function keys. Use a real keyboard for
+  those.
+- It types as a US keyboard does. A character that isn't on one (an accented letter, an emoji)
+  isn't sent.
+- Press a key on a real keyboard while it's open and it closes, since you've gone back to the
+  real one.
+
+The text fields in the Machines and Workspace windows open SteamVR's keyboard when you click
+them. If you've pressed a key on a real keyboard in the last minute, they don't, and the real
+keyboard types into the field instead.

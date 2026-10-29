@@ -64,6 +64,9 @@ updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
   Command Center, or Steam and your game. SteamVR puts its own bar under the tab, and its close
   button quits Command Center, the way it quits any overlay app
   ([docs/steamvr-integration.md](docs/steamvr-integration.md)).
+- **Typing with a controller:** the keyboard button on a panel's bar opens SteamVR's keyboard,
+  and what you type goes to that computer or window. Text fields in Command Center's own windows
+  open it too, unless you've just been typing on a real keyboard.
 
 On a computer, `cc-share check` says if anything's wrong and how to fix it, and `cc-share frames`
 lists the Frames paired with it.
