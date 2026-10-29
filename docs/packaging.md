@@ -383,7 +383,10 @@ images, the echo guard) goes on in clipboard.patch unchanged and ships with the 
 
 password-file.patch adds `--password-file <path>`: krdp reads the password from the first line of
 that file (or an inherited pipe, `/dev/fd/3`), because `-p` puts it in argv, where any local user
-can read it in `/proc/<pid>/cmdline`. The share unit points it at
+can read it in `/proc/<pid>/cmdline`. It needs `-u`, can't go with `-p`, and an empty first line is
+an error, so krdp never starts with an empty password. cc-host checks the same before it starts a
+paired Frame's server: a missing or empty user or password, or one with a line break or NUL, stops
+it with a message saying to pair the Frame again. The share unit points it at
 `~/.config/control-center/password`, and a paired Frame's servers (frame-run, window-run) get theirs
 through a pipe, with no file on disk. A krdp without the patch (one a distro ships, in a user
 install) still gets `-p`, cc-host logs that each time it starts one, and `cc-share check` lists it as

@@ -1327,10 +1327,26 @@ fn takes_password_file(bin: &Path) -> Option<bool> {
     Some(String::from_utf8_lossy(&o.stdout).contains("--password-file"))
 }
 
+/// A user or password krdp can take: not empty, and no line break or NUL, which would cut it short
+/// in --password-file's first line (and in argv).
+fn fits_login(s: &str) -> bool {
+    !s.is_empty() && !s.contains(['\n', '\r', '\0'])
+}
+
+/// A paired Frame's login from frames/<frame>.json. Without a usable user and password it's an
+/// error, instead of starting krdp with an empty one.
+fn frame_login(j: &serde_json::Value) -> Result<(&str, &str), String> {
+    let field = |k: &str| j[k].as_str().filter(|v| fits_login(v)).ok_or_else(|| format!("its {k} in frames/<frame>.json is missing, empty or has a line break or NUL in it; pair the Frame again"));
+    Ok((field("user")?, field("password")?))
+}
+
 /// Gives krdp its password. With a krdp that takes --password-file, it goes through a pipe on fd 3,
 /// so it's in no argv and no file. Otherwise it's -p, which any local user can read in
 /// /proc/<pid>/cmdline, and the log says so.
 fn password(c: &mut Command, bin: &Path, pw: &str) -> std::io::Result<()> {
+    if !fits_login(pw) {
+        return Err(std::io::Error::other("the password is empty or has a line break or NUL in it"));
+    }
     if takes_password_file(bin) != Some(true) {
         eprintln!("{}: krdp without --password-file: the password is visible in the process list", bin.display());
         c.args(["-p", pw]);
@@ -1382,8 +1398,15 @@ fn frame_run(e: &Env, inst: &str) -> i32 {
     let (slot, mon) = (j["slot"].as_i64().unwrap_or(0), m.parse::<i64>().unwrap_or(0));
     let bin = krdp(e, false).unwrap_or_else(|| PathBuf::from("/usr/bin/krdpserver"));
     let mut c = Command::new(&bin);
-    c.args(["--plasma", "--monitor", m, "--port", &(3400 + 10 * slot + mon).to_string(), "-u", j["user"].as_str().unwrap_or("")]);
-    if let Err(x) = password(&mut c, &bin, j["password"].as_str().unwrap_or("")) {
+    let (user, pw) = match frame_login(&j) {
+        Ok(l) => l,
+        Err(x) => {
+            eprintln!("{inst}: {x}");
+            return 1;
+        }
+    };
+    c.args(["--plasma", "--monitor", m, "--port", &(3400 + 10 * slot + mon).to_string(), "-u", user]);
+    if let Err(x) = password(&mut c, &bin, pw) {
         eprintln!("krdpserver's password: {x}");
         return 1;
     }
@@ -1424,8 +1447,15 @@ fn window_run(e: &Env, inst: &str) -> i32 {
     };
     let slot = j["slot"].as_i64().unwrap_or(0);
     let mut c = Command::new(&bin);
-    c.args(["--plasma", "--window", &format!("{{{uuid}}}"), "--port", &(3405 + 10 * slot + k.parse::<i64>().unwrap_or(0)).to_string(), "-u", j["user"].as_str().unwrap_or("")]);
-    if let Err(x) = password(&mut c, &bin, j["password"].as_str().unwrap_or("")) {
+    let (user, pw) = match frame_login(&j) {
+        Ok(l) => l,
+        Err(x) => {
+            eprintln!("{inst}: {x}");
+            return 1;
+        }
+    };
+    c.args(["--plasma", "--window", &format!("{{{uuid}}}"), "--port", &(3405 + 10 * slot + k.parse::<i64>().unwrap_or(0)).to_string(), "-u", user]);
+    if let Err(x) = password(&mut c, &bin, pw) {
         eprintln!("window server's password: {x}");
         return 1;
     }
@@ -1898,6 +1928,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         assert_eq!(lines, 4, "one line per alert");
         assert_eq!(state.trim(), "control-center-share@1.service 150", "one state line per unit");
+    }
+
+    /// frame-run and window-run refuse a login krdp can't take, and password() too.
+    #[test]
+    fn refuses_empty_or_broken_logins() {
+        use serde_json::json;
+        assert_eq!(super::frame_login(&json!({"user": "cc-f1", "password": "pw"})), Ok(("cc-f1", "pw")));
+        for bad in [json!({"user": "cc-f1"}), json!({"user": "", "password": "pw"}), json!({"user": "cc-f1", "password": ""}),
+                    json!({"user": "cc-f1", "password": "a\nb"}), json!({"user": "cc-f1", "password": "a\rb"}), json!({"user": "cc-f1", "password": "a\u{0}b"}),
+                    json!({"user": 5, "password": "pw"})] {
+            assert!(super::frame_login(&bad).is_err(), "{bad}");
+        }
+        for pw in ["", "a\nb", "a\0b"] {
+            let mut c = Command::new("/bin/true");
+            assert!(super::password(&mut c, std::path::Path::new("/bin/true"), pw).is_err(), "{pw:?}");
+            assert_eq!(c.get_args().count(), 0, "nothing added");
+        }
     }
 
     /// The share unit hands krdp the password file with our krdp, and -p only without it.
