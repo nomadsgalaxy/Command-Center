@@ -57,6 +57,8 @@ pub struct Work {
     pub tags: Tags,
     imu: Option<ImuStream>,
     restarts: Restarts,
+    /// Since when each unit has been active without its port listening.
+    quiet: HashMap<String, f64>,
 }
 
 /// Each unit's NRestarts as status last saw it, over time, so it can count the recent ones.
@@ -77,13 +79,20 @@ impl Restarts {
     }
 }
 
+/// How long a server may be active without its port listening before it counts as degraded: krdp
+/// listens within a second or two of starting, so a minute means it's stuck.
+const QUIET_S: f64 = 60.0;
+
 /// What one of a Frame's servers is doing, from systemd and its port: down (it gave up), degraded
-/// (it keeps restarting), ok, starting, or idle (no session for it).
-pub fn health(state: &str, recent: u64, listening: bool) -> &'static str {
+/// (it keeps restarting, or runs without listening), ok, starting, idle (no session for it), or
+/// unknown (systemd didn't say). `quiet` is how long it's been active without listening.
+pub fn health(state: &str, recent: u64, listening: bool, quiet: f64) -> &'static str {
     match state {
+        "" | "unknown" => "unknown",
         "failed" => "down",
         _ if recent > DEGRADED_AFTER => "degraded",
         "active" if listening => "ok",
+        "active" if quiet > QUIET_S => "degraded",
         "active" | "activating" | "reloading" => "starting",
         _ => "idle",
     }
@@ -111,7 +120,7 @@ pub fn valid_uuid(u: &str) -> bool {
 
 impl Agent {
     fn lock_for(&self, key: &(String, String)) -> Arc<Mutex<()>> {
-        self.work.lock().unwrap().locks.entry(key.clone()).or_default().clone()
+        self.w().locks.entry(key.clone()).or_default().clone()
     }
 
     fn slot(&self, frame: &str) -> Result<u16, String> {
@@ -181,7 +190,7 @@ impl Agent {
         }
         if !self.plat.listening(port) {
             let cap = setting(self, "sessions_max", 4.0) as usize;
-            let others = self.work.lock().unwrap().sessions.keys().filter(|k| **k != key).count();
+            let others = self.w().sessions.keys().filter(|k| **k != key).count();
             if others >= cap {
                 return json!({"ok": false, "error": "busy", "detail": format!("{cap} sessions running on this host")});
             }
@@ -193,7 +202,7 @@ impl Agent {
             }
         }
         let ms = ((mono() - t0) * 1000.0).round() as i64;
-        self.work.lock().unwrap().sessions.insert(key, Sess { port, ip: Some(ip.to_owned()), idle_since: None, adopted: None, fresh: Some(mono()), uuid: None, unit });
+        self.w().sessions.insert(key, Sess { port, ip: Some(ip.to_owned()), idle_since: None, adopted: None, fresh: Some(mono()), uuid: None, unit });
         if ms > 50 {
             println!("agent: {frame} session {index} up in {ms} ms");
         }
@@ -201,7 +210,7 @@ impl Agent {
     }
 
     fn stale(&self, key: &(String, String), unit: &str) -> bool {
-        let w = self.work.lock().unwrap();
+        let w = self.w();
         match w.sessions.get(key) {
             None => true,
             Some(s) => s.adopted.is_some() || s.fresh.is_none() || self.plat.unit_started(unit) < w.out_changed,
@@ -221,7 +230,7 @@ impl Agent {
             return json!({"ok": true, "stopped": false});
         }
         self.plat.systemctl(&["stop", &format!("control-center-frame@{frame}-{index}.service")]);
-        self.work.lock().unwrap().sessions.remove(&key);
+        self.w().sessions.remove(&key);
         json!({"ok": true, "stopped": true})
     }
 
@@ -256,7 +265,7 @@ impl Agent {
             return Err("windows-off".into());
         }
         let limit = setting(self, "window_asks_per_min", 20.0) as usize;
-        let mut w = self.work.lock().unwrap();
+        let mut w = self.w();
         let q = w.asks.entry(frame.to_owned()).or_default();
         while q.front().is_some_and(|t| t.elapsed() > Duration::from_secs(60)) {
             q.pop_front();
@@ -283,7 +292,7 @@ impl Agent {
             Err(e) => return json!({"ok": false, "error": e}),
         };
         let (held, used): (Option<(String, String)>, Vec<String>) = {
-            let w = self.work.lock().unwrap();
+            let w = self.w();
             let mine: Vec<(&(String, String), &Sess)> = w.sessions.iter().filter(|(k, s)| k.0 == frame && s.uuid.is_some()).collect();
             (mine.iter().find(|(_, s)| s.uuid.as_deref() == Some(uuid)).map(|(k, _)| (*k).clone()), mine.iter().map(|(k, _)| k.1.clone()).collect())
         };
@@ -297,7 +306,7 @@ impl Agent {
                     return json!({"ok": false, "error": "busy", "detail": format!("{WINDOWS_PER_FRAME} windows popped out already")});
                 };
                 let cap = setting(self, "sessions_max", 4.0) as usize;
-                if self.work.lock().unwrap().sessions.len() >= cap {
+                if self.w().sessions.len() >= cap {
                     return json!({"ok": false, "error": "busy", "detail": format!("{cap} sessions running on this host")});
                 }
                 let need = setting(self, "window_min_free_mb", 1024.0) as u64;
@@ -320,18 +329,18 @@ impl Agent {
                 return e;
             }
         }
-        self.work.lock().unwrap().sessions.insert(key, Sess { port, ip: Some(ip.to_owned()), idle_since: None, adopted: None, fresh: Some(mono()), uuid: Some(uuid.to_owned()), unit });
+        self.w().sessions.insert(key, Sess { port, ip: Some(ip.to_owned()), idle_since: None, adopted: None, fresh: Some(mono()), uuid: Some(uuid.to_owned()), unit });
         let app = self.window_scope().into_iter().find(|w| w["uuid"] == json!(uuid)).and_then(|w| w["app"].as_str().map(str::to_owned)).unwrap_or_else(|| "?".into());
         println!("agent: {frame} window {app} on {port}"); // Log the app id, never the caption.
         json!({"ok": true, "port": port, "ready": true, "start_ms": ((mono() - t0) * 1000.0).round() as i64})
     }
 
     pub fn window_stop(&self, frame: &str, uuid: &Value) -> Value {
-        let key = self.work.lock().unwrap().sessions.iter().find(|(k, s)| k.0 == frame && s.uuid.as_ref().map(|u| json!(u)) == Some(uuid.clone())).map(|(k, _)| k.clone());
+        let key = self.w().sessions.iter().find(|(k, s)| k.0 == frame && s.uuid.as_ref().map(|u| json!(u)) == Some(uuid.clone())).map(|(k, _)| k.clone());
         let Some(key) = key else { return json!({"ok": true, "stopped": true}) };
         let lock = self.lock_for(&key);
         let _held = lock.lock().unwrap();
-        let (port, unit) = match self.work.lock().unwrap().sessions.get(&key) {
+        let (port, unit) = match self.w().sessions.get(&key) {
             Some(s) => (s.port, s.unit.clone()),
             None => return json!({"ok": true, "stopped": true}),
         };
@@ -339,11 +348,17 @@ impl Agent {
             return json!({"ok": true, "stopped": false});
         }
         self.plat.systemctl(&["stop", &unit]);
-        self.work.lock().unwrap().sessions.remove(&key);
+        self.w().sessions.remove(&key);
         json!({"ok": true, "stopped": true})
     }
 
     /// The session list `status` shows for this Frame.
+    /// The agent's bookkeeping, locked. A thread that panicked while holding it leaves it as it
+    /// was; the agent goes on answering rather than failing every command after it.
+    pub(crate) fn w(&self) -> std::sync::MutexGuard<'_, Work> {
+        self.work.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// status's health: one entry per shared monitor, for this Frame's server on it (docs/agent.md).
     pub fn health_of(&self, frame: &str) -> Vec<Value> {
         let Ok(slot) = self.slot(frame) else { return vec![] };
@@ -357,21 +372,28 @@ impl Agent {
             let field = |k: &str| block.lines().find_map(|l| l.strip_prefix(k)).unwrap_or("").to_owned();
             seen.insert(field("Id="), (field("ActiveState="), field("NRestarts=").parse().unwrap_or(0)));
         }
+        // Each port is asked before the lock is taken, so a slow check doesn't hold up the agent.
+        let ports: Vec<(u16, bool)> = indexes.iter().map(|i| 3400 + 10 * slot + *i as u16).map(|p| (p, self.plat.listening(p))).collect();
         let now = mono();
-        let mut w = self.work.lock().unwrap();
-        indexes.iter().zip(&units).map(|(i, u)| {
+        let mut w = self.w();
+        indexes.iter().zip(&units).zip(ports).map(|((i, u), (port, listening))| {
+            // A unit systemd didn't answer for (show failed, or it didn't list it) is unknown, not idle.
             let (state, n) = seen.get(u).cloned().unwrap_or_else(|| ("unknown".into(), 0));
-            let port = 3400 + 10 * slot + *i as u16;
-            let listening = self.plat.listening(port);
             let recent = w.restarts.recent(u, now, n);
+            let quiet = if state == "active" && !listening {
+                now - *w.quiet.entry(u.clone()).or_insert(now)
+            } else {
+                w.quiet.remove(u);
+                0.0
+            };
             json!({"index": i, "unit": u, "port": port, "state": state, "restarts": n, "recent_restarts": recent,
-                   "listening": listening, "health": health(&state, recent, listening)})
+                   "listening": listening, "health": health(&state, recent, listening, quiet)})
         }).collect()
     }
 
     pub fn sessions_of(&self, frame: &str) -> Vec<Value> {
         let now = mono();
-        let w = self.work.lock().unwrap();
+        let w = self.w();
         let mut out: Vec<(String, Value)> = w.sessions.iter().filter(|(k, _)| k.0 == frame).map(|(k, s)| {
             let index = k.1.parse::<i64>().map(|i| json!(i)).unwrap_or(json!(k.1));
             let mut v = json!({"index": index, "port": s.port, "idle_s": s.idle_since.map_or(0, |t| (now - t).round() as i64)});
@@ -385,7 +407,7 @@ impl Agent {
     }
 
     pub fn forget_frame(&self, frame: &str) {
-        self.work.lock().unwrap().sessions.retain(|k, _| k.0 != frame);
+        self.w().sessions.retain(|k, _| k.0 != frame);
         self.imu_stop(frame);
     }
 
@@ -401,7 +423,7 @@ impl Agent {
                     v => v.as_u64().filter(|h| (10..=125).contains(h)).ok_or("bad-rate")? as u32,
                 };
                 let path = self.plat.deck_imu().ok_or("no-imu")?;
-                if self.work.lock().unwrap().imu.as_ref().is_some_and(|s| s.frame != frame) {
+                if self.w().imu.as_ref().is_some_and(|s| s.frame != frame) {
                     return Err("busy".into());
                 }
                 self.imu_stop(frame); // A second start from the same Frame changes the rate.
@@ -416,7 +438,7 @@ impl Agent {
                     });
                     // dev drops here and puts the controller's setting back.
                 });
-                self.work.lock().unwrap().imu = Some(ImuStream { frame: frame.to_owned(), stop, thread });
+                self.w().imu = Some(ImuStream { frame: frame.to_owned(), stop, thread });
                 println!("agent: {frame} imu start {hz} Hz");
                 use cc_proto::imu::{ACCEL_PER_G, GYRO_PER_DPS, QUAT_ONE};
                 Ok(json!({"ok": true, "hz": hz, "sample_hz": crate::imu::DEVICE_HZ, "accel_per_g": ACCEL_PER_G, "gyro_per_dps": GYRO_PER_DPS, "quat_one": QUAT_ONE,
@@ -428,7 +450,7 @@ impl Agent {
 
     /// Stops this Frame's IMU stream, waits for the controller's setting to be put back, and says whether there was one.
     pub fn imu_stop(&self, frame: &str) -> bool {
-        let mut w = self.work.lock().unwrap();
+        let mut w = self.w();
         if w.imu.as_ref().is_some_and(|s| s.frame == frame) {
             let s = w.imu.take().unwrap();
             drop(w);
@@ -459,23 +481,23 @@ impl Agent {
             };
             let ip = std::fs::read_to_string(self.conf.join(format!("frames/{frame}.last"))).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
             let adopted = if ip.is_none() || uuid.is_some() { Some(mono()) } else { None };
-            self.work.lock().unwrap().sessions.insert((frame, key), Sess { port, ip, idle_since: None, adopted, fresh: None, uuid, unit: name.to_owned() });
+            self.w().sessions.insert((frame, key), Sess { port, ip, idle_since: None, adopted, fresh: None, uuid, unit: name.to_owned() });
         }
     }
 
     pub fn idle_stop(&self) {
         let limit = 60.0 * setting(self, "session_idle_min", 10.0);
         let now = mono();
-        let keys: Vec<(String, String)> = self.work.lock().unwrap().sessions.keys().cloned().collect();
+        let keys: Vec<(String, String)> = self.w().sessions.keys().cloned().collect();
         for key in keys {
-            let Some((port, ip, adopted, idle, unit)) = self.work.lock().unwrap().sessions.get(&key).map(|s| (s.port, s.ip.clone(), s.adopted, s.idle_since, s.unit.clone())) else { continue };
+            let Some((port, ip, adopted, idle, unit)) = self.w().sessions.get(&key).map(|s| (s.port, s.ip.clone(), s.adopted, s.idle_since, s.unit.clone())) else { continue };
             if !self.plat.listening(port) {
-                self.work.lock().unwrap().sessions.remove(&key);
+                self.w().sessions.remove(&key);
                 continue;
             }
             let unclaimed = adopted.is_some_and(|a| now - a >= limit);
             let watched = !unclaimed && self.plat.viewers(port, ip.as_deref()) > 0;
-            let mut w = self.work.lock().unwrap();
+            let mut w = self.w();
             if watched {
                 if let Some(s) = w.sessions.get_mut(&key) {
                     s.idle_since = None;
@@ -487,7 +509,7 @@ impl Agent {
             } else if unclaimed || idle.is_some_and(|t| now - t >= limit) {
                 drop(w);
                 self.plat.systemctl(&["stop", &unit]);
-                self.work.lock().unwrap().sessions.remove(&key);
+                self.w().sessions.remove(&key);
                 println!("agent: {} session {} stopped (idle)", key.0, key.1);
             }
         }
@@ -499,7 +521,7 @@ impl Agent {
         let now = mono();
         let sig = self.plat.outputs();
         let changed = {
-            let mut w = self.work.lock().unwrap();
+            let mut w = self.w();
             let changed = w.out_sig.as_ref().is_some_and(|s| *s != sig);
             if changed {
                 w.out_changed = now;
@@ -507,13 +529,13 @@ impl Agent {
             w.out_sig = Some(sig);
             changed
         };
-        let list: Vec<((String, String), u16, bool, String)> = self.work.lock().unwrap().sessions.iter().map(|(k, s)| (k.clone(), s.port, s.uuid.is_some(), s.unit.clone())).collect();
+        let list: Vec<((String, String), u16, bool, String)> = self.w().sessions.iter().map(|(k, s)| (k.clone(), s.port, s.uuid.is_some(), s.unit.clone())).collect();
         for (key, port, window, unit) in list {
             let restart = !window && ((changed && self.plat.viewers(port, None) == 0) || self.plat.stream_failed(&unit));
             if restart {
                 println!("agent: {} session {}: restarting its server ({})", key.0, key.1, if changed { "the monitors changed" } else { "its stream failed" });
                 self.plat.systemctl(&["restart", &unit]);
-                if let Some(s) = self.work.lock().unwrap().sessions.get_mut(&key) {
+                if let Some(s) = self.w().sessions.get_mut(&key) {
                     s.fresh = Some(now);
                 }
             }
@@ -525,7 +547,7 @@ impl Agent {
     pub fn tags(self: &Arc<Self>, frame: &str, req: &Value) -> Result<Value, String> {
         match req["op"].as_str() {
             Some("hide") => {
-                if self.work.lock().unwrap().tags.holder.as_deref() == Some(frame) {
+                if self.w().tags.holder.as_deref() == Some(frame) {
                     self.tags_hide(req["index"].as_i64());
                 }
                 Ok(json!({"ok": true}))
@@ -547,7 +569,7 @@ impl Agent {
     fn tags_show(self: &Arc<Self>, frame: &str, index: i64, output: &str, size: [i64; 2], params: &Value) -> Option<String> {
         let now = mono();
         let cap = 60.0 * setting(self, "tags_cap_min", 5.0);
-        let mut w = self.work.lock().unwrap();
+        let mut w = self.w();
         let t = &mut w.tags;
         if t.blocked.get(frame).is_some_and(|until| *until > now) {
             return Some("blocked".into());
@@ -602,7 +624,7 @@ impl Agent {
             "escaped" => {
                 self.event(frame, json!({"event": "escaped", "index": index}));
                 self.tags_hide(Some(index));
-                let mut w = self.work.lock().unwrap();
+                let mut w = self.w();
                 w.tags.last_cancel.insert(frame.to_owned(), now);
                 let c = w.tags.cancels.entry(frame.to_owned()).or_default();
                 c.retain(|t| now - t < ASK_WINDOW);
@@ -616,7 +638,7 @@ impl Agent {
                 }
             }
             "block" => {
-                let mut w = self.work.lock().unwrap();
+                let mut w = self.w();
                 w.tags.blocked.insert(frame.to_owned(), now + BLOCK_S);
                 w.tags.cancels.remove(frame);
                 drop(w);
@@ -628,7 +650,7 @@ impl Agent {
     }
 
     pub fn tags_hide(&self, index: Option<i64>) {
-        let mut w = self.work.lock().unwrap();
+        let mut w = self.w();
         let t = &mut w.tags;
         let which: Vec<i64> = match index {
             Some(i) => vec![i],
@@ -651,7 +673,7 @@ impl Agent {
     pub fn tags_expire(&self) {
         let now = mono();
         let gone: Vec<i64> = {
-            let mut w = self.work.lock().unwrap();
+            let mut w = self.w();
             w.tags.screens.iter_mut().filter_map(|(i, s)| (s.until < now || s.child.try_wait().ok().flatten().is_some()).then_some(*i)).collect()
         };
         for i in gone {
@@ -660,14 +682,14 @@ impl Agent {
     }
 
     pub fn tags_state(&self, frame: &str) -> (Vec<i64>, bool) {
-        let w = self.work.lock().unwrap();
+        let w = self.w();
         let mine = if w.tags.holder.as_deref() == Some(frame) { w.tags.screens.keys().copied().collect() } else { Vec::new() };
         (mine, w.tags.blocked.get(frame).is_some_and(|u| *u > mono()))
     }
 
     /// cc-share unlock (a SIGHUP without the lock file) lifts the blocks.
     pub fn unblock_all(&self) {
-        self.work.lock().unwrap().tags.blocked.clear();
+        self.w().tags.blocked.clear();
     }
 }
 
@@ -773,6 +795,29 @@ mod tests {
         assert_eq!((h["port"].as_u64(), h["listening"].as_bool(), h["restarts"].as_u64()), (Some(3410), Some(false), Some(5)));
     }
 
+    /// A systemctl show that fails is unknown, not idle, and a server that's been active for over a
+    /// minute without its port listening is degraded.
+    #[test]
+    fn health_says_unknown_and_stuck() {
+        let conf = std::env::temp_dir().join(format!("cc-host-health2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&conf);
+        std::fs::create_dir_all(conf.join("frames")).unwrap();
+        std::fs::write(conf.join("frames/f1.json"), r#"{"slot": 1}"#).unwrap();
+        let fake = crate::platform::Fake::default();
+        let (units, fails) = (fake.units.clone(), fake.show_fails.clone());
+        let agent = Agent::new(conf.clone(), Box::new(fake));
+        let unit = "control-center-frame@f1-0.service";
+        fails.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(agent.health_of("f1")[0]["health"], "unknown");
+        fails.store(false, std::sync::atomic::Ordering::Relaxed);
+        units.lock().unwrap().insert(unit.into(), ("active".into(), 0, "success".into()));
+        assert_eq!(agent.health_of("f1")[0]["health"], "starting", "active, not listening yet");
+        agent.w().quiet.insert(unit.into(), mono() - 61.0); // as if it's been like that for a minute
+        let h = agent.health_of("f1")[0].clone();
+        let _ = std::fs::remove_dir_all(&conf);
+        assert_eq!(h["health"], "degraded", "{h}");
+    }
+
     #[test]
     fn restarts_count_only_the_last_ten_minutes() {
         let mut r = Restarts::default();
@@ -781,9 +826,12 @@ mod tests {
         assert_eq!(r.recent("u", 700.0, 9), 0, "the restarts at 100 s are still in, but the baseline moved to them");
         assert_eq!(r.recent("u", 800.0, 12), 3);
         assert_eq!(r.recent("u", 900.0, 1), 1, "a reset count starts over");
-        assert_eq!(health("active", 0, true), "ok");
-        assert_eq!(health("active", 3, true), "degraded");
-        assert_eq!(health("inactive", 0, false), "idle");
+        assert_eq!(health("active", 0, true, 0.0), "ok");
+        assert_eq!(health("active", 3, true, 0.0), "degraded");
+        assert_eq!(health("inactive", 0, false, 0.0), "idle");
+        assert_eq!(health("unknown", 0, false, 0.0), "unknown", "systemd didn't say");
+        assert_eq!(health("active", 0, false, 30.0), "starting");
+        assert_eq!(health("active", 0, false, 61.0), "degraded", "running without listening for a minute");
     }
 
     #[test]

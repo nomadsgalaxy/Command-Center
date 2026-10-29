@@ -195,6 +195,8 @@ pub struct Fake {
     pub units: Arc<Mutex<std::collections::HashMap<String, (String, u64, String)>>>,
     /// Every systemctl call, its arguments joined with spaces.
     pub calls: Arc<Mutex<Vec<String>>>,
+    /// `systemctl show` fails (says nothing), as when the user manager doesn't answer.
+    pub show_fails: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Platform for Fake {
@@ -208,6 +210,9 @@ impl Platform for Fake {
         };
         self.calls.lock().unwrap().push(args.join(" "));
         if args.first() == Some(&"show") {
+            if self.show_fails.load(std::sync::atomic::Ordering::Relaxed) {
+                return String::new();
+            }
             let units = self.units.lock().unwrap();
             return args.iter().filter(|a| a.ends_with(".service")).map(|u| {
                 let (state, n, result) = units.get(*u).cloned().unwrap_or(("inactive".into(), 0, "success".into()));
