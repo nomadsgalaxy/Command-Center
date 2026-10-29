@@ -680,7 +680,7 @@ fn check(e: &Env) -> bool {
     }
     let bin = krdp(e, false).unwrap_or_else(|| PathBuf::from("/usr/bin/krdpserver"));
     if takes_password_file(&bin) == Some(false) {
-        println!("  need krdp doesn't take --password-file ({}): the password is visible in the process list", bin.display());
+        println!("  need a krdp that takes --password-file ({} doesn't): until then the password is visible in the process list", bin.display());
         bad = true;
     }
     for w in library_env(e, &run("systemctl", &["--user", "show-environment"]).1) {
