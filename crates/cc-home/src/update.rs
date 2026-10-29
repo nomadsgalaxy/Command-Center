@@ -14,8 +14,11 @@
 //! 5. Only then `systemd-sysupdate --component=command-center --verify=no update`, which copies it
 //!    from the work directory into /var/lib/extensions/command-center.raw.v/ (the transfer file in
 //!    /usr/lib/sysupdate.command-center.d/). --verify=no because the checking is done above.
-//! 6. `systemd-sysext refresh` only if the Desktop isn't running (its lock, tab.rs); otherwise the
-//!    new image is merged at the next boot or the next update with the Desktop closed.
+//! 6. `systemd-sysext refresh` only with the Desktop's lock (tab.rs) taken and held across the
+//!    check and the refresh, so a Desktop starting meanwhile waits for it, and with nothing else
+//!    running from the image. Otherwise the new image is merged at the next boot or the next update
+//!    with those closed. What this can't cover: SteamVR starting the dashboard tab's process in the
+//!    few milliseconds between the check and the refresh (the tab doesn't take that lock).
 //!
 //! It takes no arguments, reads no paths from anywhere, follows no symlink it makes or empties,
 //! and runs every program by its full path with an empty environment. It's a copy of cc-home
@@ -51,8 +54,13 @@ trait Ops {
     /// gpgv on SHA256SUMS.sig and SHA256SUMS in the work directory.
     fn verify_signature(&mut self) -> Result<(), String>;
     fn sysupdate(&mut self) -> Result<(), String>;
-    fn desktop_running(&self) -> bool;
+    /// Takes the Desktop's lock and holds it until `release`, so a Desktop that starts meanwhile
+    /// waits for it. False if a Desktop holds it, or who asked isn't known.
+    fn claim(&mut self) -> bool;
+    /// Something other than this helper runs a program from the image (the dashboard tab, say).
+    fn in_use(&self) -> bool;
     fn refresh(&mut self) -> Result<(), String>;
+    fn release(&mut self);
 }
 
 /// The one image SHA256SUMS lists, and its hash: `<64 hex>  command-center_<version>.raw` (a `*`
@@ -126,11 +134,14 @@ fn run(o: &mut impl Ops, dir: &Path) -> Result<String, String> {
         return Err(format!("{name} doesn't match its signed hash, so it isn't installed"));
     }
     o.sysupdate()?;
-    if o.desktop_running() {
-        return Ok(format!("{name} is installed; it's loaded at the next boot, or run cc-home update again with the Desktop closed"));
+    let later = format!("{name} is installed; it's loaded at the next boot, or run cc-home update again with the Desktop closed");
+    if !o.claim() {
+        return Ok(later);
     }
-    o.refresh()?;
-    Ok(format!("{name} is installed and loaded"))
+    // the Desktop's lock is held from here to the refresh's end, so no Desktop starts under it
+    let r = if o.in_use() { Ok(later) } else { o.refresh().map(|_| format!("{name} is installed and loaded")) };
+    o.release();
+    r
 }
 
 /// What a process running as root under pkexec may be: only the helper, by its own name. If
@@ -172,7 +183,8 @@ fn ancestors(proc: &Path, me: u32) -> Vec<u32> {
 /// The real steps.
 struct Live {
     dir: PathBuf,
-    user: Option<u32>, // who asked (PKEXEC_UID), for their Desktop's lock
+    user: Option<u32>,           // who asked (PKEXEC_UID), for their Desktop's lock
+    held: Option<std::fs::File>, // that lock, while it's ours (claim to release)
 }
 
 /// A program by its full path with nothing from the caller's environment.
@@ -218,22 +230,44 @@ impl Ops for Live {
         Ok(())
     }
 
-    fn desktop_running(&self) -> bool {
-        // Anything running from the image counts, the dashboard tab's process too, besides this
-        // helper and the cc-home update that started it.
+    fn claim(&mut self) -> bool {
+        use std::os::unix::fs::OpenOptionsExt;
+        // No PKEXEC_UID: whose Desktop it would be isn't known, so never refresh.
+        let Some(uid) = self.user else { return false };
+        // It's root in the user's runtime directory: the last part is never followed if it's a
+        // symlink, and has to be a plain file. One that isn't there yet is made, theirs, 0600, so
+        // their Desktop can still take it.
+        let path = format!("/run/user/{uid}/control-center-desktop.lock");
+        let opened = fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path).or_else(|e| {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(e);
+            }
+            let f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path)?;
+            if unsafe { libc::fchown(std::os::fd::AsRawFd::as_raw_fd(&f), uid, u32::MAX) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(f)
+        });
+        let Ok(f) = opened else { return false };
+        if !f.metadata().is_ok_and(|m| m.file_type().is_file()) {
+            return false;
+        }
+        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&f), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return false; // a Desktop has it
+        }
+        self.held = Some(f);
+        true
+    }
+
+    fn in_use(&self) -> bool {
+        // anything running from the image, the dashboard tab's process too, besides this helper
+        // and the cc-home update that started it
         let proc = Path::new("/proc");
-        if image_in_use(proc, &ancestors(proc, std::process::id())) {
-            return true;
-        }
-        // Not knowing who asked (no PKEXEC_UID) counts as running: never refresh under a Desktop.
-        let Some(uid) = self.user else { return true };
-        let Ok(f) = fs::File::open(format!("/run/user/{uid}/control-center-desktop.lock")) else { return false };
-        let fd = std::os::fd::AsRawFd::as_raw_fd(&f);
-        if unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) } != 0 {
-            return true;
-        }
-        unsafe { libc::flock(fd, libc::LOCK_UN) };
-        false
+        image_in_use(proc, &ancestors(proc, std::process::id()))
+    }
+
+    fn release(&mut self) {
+        self.held = None; // closing it lets go of the lock
     }
 
     fn refresh(&mut self) -> Result<(), String> {
@@ -258,7 +292,7 @@ pub fn helper(args: &[std::ffi::OsString]) -> i32 {
     if let Err(e) = prepare(&dir, 0) {
         return fail(e);
     }
-    match run(&mut Live { dir, user }, Path::new(WORK)) {
+    match run(&mut Live { dir, user, held: None }, Path::new(WORK)) {
         Ok(say) => {
             println!("{say}");
             0
@@ -293,6 +327,7 @@ mod tests {
         bad_sig: bool,
         image: Vec<u8>,
         desktop: bool,
+        tab: bool, // something else runs from the image
         sums: String,
     }
 
@@ -314,12 +349,19 @@ mod tests {
             self.steps.push("sysupdate".into());
             Ok(())
         }
-        fn desktop_running(&self) -> bool {
-            self.desktop
+        fn claim(&mut self) -> bool {
+            self.steps.push("claim".into());
+            !self.desktop
+        }
+        fn in_use(&self) -> bool {
+            self.tab
         }
         fn refresh(&mut self) -> Result<(), String> {
             self.steps.push("refresh".into());
             Ok(())
+        }
+        fn release(&mut self) {
+            self.steps.push("release".into());
         }
     }
 
@@ -337,7 +379,7 @@ mod tests {
     fn fake(dir: &Path) -> Fake<'_> {
         let image = b"an image".to_vec();
         let sums = format!("{}  command-center_0.9.1.raw\n{}  cc-host.tar.gz\n", sha(&image), sha(b"other"));
-        Fake { dir, steps: vec![], bad_sig: false, image, desktop: false, sums }
+        Fake { dir, steps: vec![], bad_sig: false, image, desktop: false, tab: false, sums }
     }
 
     #[test]
@@ -346,11 +388,19 @@ mod tests {
         prepare(&d, unsafe { libc::geteuid() }).unwrap();
         let mut f = fake(&d);
         assert!(run(&mut f, &d).is_ok());
-        assert_eq!(f.steps, ["fetch SHA256SUMS", "fetch SHA256SUMS.sig", "verify", "fetch command-center_0.9.1.raw", "sysupdate", "refresh"]);
+        assert_eq!(
+            f.steps,
+            ["fetch SHA256SUMS", "fetch SHA256SUMS.sig", "verify", "fetch command-center_0.9.1.raw", "sysupdate", "claim", "refresh", "release"],
+            "the Desktop's lock held across the refresh"
+        );
         let mut f = fake(&d);
         f.desktop = true;
         assert!(run(&mut f, &d).unwrap().contains("next boot"));
-        assert!(!f.steps.contains(&"refresh".into()), "never under a running Desktop");
+        assert!(!f.steps.contains(&"refresh".into()) && !f.steps.contains(&"release".into()), "never under a running Desktop, and its lock was never ours");
+        let mut f = fake(&d);
+        f.tab = true;
+        assert!(run(&mut f, &d).unwrap().contains("next boot"));
+        assert_eq!(f.steps[f.steps.len() - 2..], ["claim", "release"], "the tab runs from the image: no refresh, and the lock goes back");
         let _ = fs::remove_dir_all(&d);
     }
 

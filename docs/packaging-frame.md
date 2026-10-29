@@ -354,13 +354,16 @@ root under pkexec cc-home refuses to be anything else), and as root it does one 
    `/usr/lib/sysupdate.command-center.d/50-command-center.transfer` (source: the work directory,
    `InstancesMax=2`). `--verify=no` because steps 3 and 4 did the checking. A plain
    `command-center.raw` from the first install is removed once the `.raw.v/` directory exists.
-6. `systemd-sysext refresh` only if nothing runs from the image: no Desktop (its lock in
-   `/run/user/<uid>`, for the user pkexec says asked) and no other process whose program is under
+6. `systemd-sysext refresh` only with the Desktop's lock taken (`/run/user/<uid>`, for the user
+   pkexec says asked; exclusive, never waiting) and held across the check and the refresh, so a
+   Desktop that starts meanwhile waits for it, and only if no other process's program is under
    `/usr/lib/command-center` or a `/usr/bin/cc-*` (the dashboard tab's runs with the Desktop
    closed), apart from the helper and the `cc-home update` that started it. Otherwise the new image
    is loaded at the next boot, or by running `cc-home update` again once those have closed. It never
-   stops anything. sysupdate never installs an older version than the newest one installed unless
-   it's asked for one, which the helper never does.
+   stops anything. One gap is left: SteamVR starting the dashboard tab's process in the few
+   milliseconds between the check and the refresh, since the tab doesn't take that lock.
+   sysupdate never installs an older version than the newest one installed unless it's asked for
+   one, which the helper never does.
 
 The helper takes no arguments and reads no paths from anywhere, and every program it runs is
 called by its full path with an empty environment. Signing a release stays a step done by hand,
