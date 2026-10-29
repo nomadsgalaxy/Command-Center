@@ -2,13 +2,13 @@
 Description=Command Center share: monitor %i over RDP (port 3400+%i)
 After=graphical-session.target
 PartOf=graphical-session.target
-StartLimitIntervalSec=300
-StartLimitBurst=5
+StartLimitIntervalSec=600
+StartLimitBurst=10
 OnFailure=control-center-alert@%n.service
 
 [Service]
 ExecStartPre=/usr/bin/env QT_QPA_PLATFORM=offscreen @KRDP@ --version
-ExecStart=/bin/sh -c 'exec @KRDP@ --plasma --monitor %i --port $((3400 + %i)) -u "$USER" @PASSWORD@ --certificate %h/.config/control-center/cert.pem --certificate-key %h/.config/control-center/key.pem'
+ExecStart=/bin/sh -c 'exec "@KRDP@" --plasma --monitor %i --port $((3400 + %i)) -u "$USER" @PASSWORD@ --certificate "%h/.config/control-center/cert.pem" --certificate-key "%h/.config/control-center/key.pem"'
 Restart=on-failure
 RestartSec=2s
 RestartSteps=5

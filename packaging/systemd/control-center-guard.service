@@ -2,8 +2,8 @@
 Description=Command Center: keep shared monitors encodable while a viewer is connected
 After=graphical-session.target
 PartOf=graphical-session.target
-StartLimitIntervalSec=300
-StartLimitBurst=5
+StartLimitIntervalSec=600
+StartLimitBurst=10
 OnFailure=control-center-alert@%n.service
 
 [Service]

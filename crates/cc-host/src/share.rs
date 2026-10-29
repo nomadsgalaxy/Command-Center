@@ -680,8 +680,11 @@ fn check(e: &Env) -> bool {
     }
     let bin = krdp(e, false).unwrap_or_else(|| PathBuf::from("/usr/bin/krdpserver"));
     if takes_password_file(&bin) == Some(false) {
-        println!("  need krdp without --password-file ({}): the password is visible in the process list", bin.display());
+        println!("  need krdp doesn't take --password-file ({}): the password is visible in the process list", bin.display());
         bad = true;
+    }
+    for w in library_env(e, &run("systemctl", &["--user", "show-environment"]).1) {
+        println!("  note {w}: systemctl --user unset-environment, or remove it, if that's not what you meant");
     }
     for f in foreign_dropins(&dropin_dirs(e)) {
         println!("  need {} changes a Command Center unit and isn't ours: remove it, then systemctl --user daemon-reload", f.display());
@@ -742,7 +745,8 @@ fn check(e: &Env) -> bool {
 /// `password_file` says the krdp takes --password-file (our patched one does), so the password
 /// isn't in its argv. Without it, the unit falls back to -p.
 pub fn unit_files(host: &str, krdp: &str, password_file: bool) -> Vec<(&'static str, String)> {
-    let password = if password_file { "--password-file %h/.config/control-center/password" } else { "-p \"$(cat %h/.config/control-center/password)\"" };
+    // Quoted, because %h is the home folder's path and that can have a space in it.
+    let password = if password_file { "--password-file \"%h/.config/control-center/password\"" } else { "-p \"$(cat \"%h/.config/control-center/password\")\"" };
     let fill = |t: &str| t.replace("@HOST@", host).replace("@KRDP@", krdp).replace("@PASSWORD@", password);
     vec![
         // --plasma talks to KWin directly, so nothing asks for permission on every connect.
@@ -912,6 +916,10 @@ fn install(e: &Env, args: &[String]) -> i32 {
         eprintln!("cc-host cert: {x}");
         return 1;
     }
+    // Before any unit is written or reloaded: a leftover drop-in would change them all.
+    if !no_dropins(e) {
+        return 1;
+    }
     if packaged() {
         migrate_user_install(e);
         if !sysq(&["daemon-reload"]) {
@@ -956,16 +964,21 @@ fn install(e: &Env, args: &[String]) -> i32 {
         }
     }
     e.launcher();
-    if !no_dropins(e) {
+    if !e.units_cmd(&["start"], false) {
+        // It's running now either way, or install says it isn't.
+        eprintln!("couldn't start Command Center's units: systemctl --user status 'control-center-*'");
         return 1;
     }
-    e.units_cmd(&["start"], false); // It's running now either way.
-    if e.autostart() {
-        e.units_cmd(&["enable"], true);
-    } else {
-        e.units_cmd(&["disable"], true);
+    let (verb, at) = if e.autostart() { ("enable", "at login") } else { ("disable", "from the app menu only") };
+    if !e.units_cmd(&[verb], true) {
+        eprintln!("couldn't {verb} Command Center's units, so it may not start {at}: systemctl --user {verb} the units by hand");
+        return 1;
     }
-    sys(&["restart", "control-center-agent.service"]); // Start the new agent.
+    if !sys(&["restart", "control-center-agent.service"]) {
+        // Start the new agent.
+        eprintln!("couldn't restart the agent: systemctl --user status control-center-agent");
+        return 1;
+    }
     for _ in 0..10 {
         if listening(3399) {
             break; // It's listening before the checklist asks it.
@@ -975,7 +988,10 @@ fn install(e: &Env, args: &[String]) -> i32 {
     // The guard runs the new code too. With viewers connected, it only restarts when it hasn't lowered anything.
     let lowered = std::fs::read_dir(&e.dir).into_iter().flatten().flatten().any(|f| f.file_name().to_string_lossy().starts_with("guard-"));
     if viewers() == 0 || !lowered {
-        sys(&["restart", "control-center-guard.service"]);
+        if !sys(&["restart", "control-center-guard.service"]) {
+            eprintln!("couldn't restart the guard: systemctl --user status control-center-guard");
+            return 1;
+        }
     } else {
         println!("the guard keeps running as it was: it has lowered a monitor for a connected viewer (restart it later: systemctl --user restart control-center-guard)");
     }
@@ -1814,13 +1830,33 @@ pub fn foreign_dropins(dirs: &[PathBuf]) -> Vec<PathBuf> {
     for d in dirs {
         for entry in std::fs::read_dir(d).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with("control-center-") && name.ends_with(".d") {
+            // service.d changes every user service, ours too. The distro's own in /usr/lib (Fedora
+            // ships 10-timeout-abort.conf there) is how the system is meant to be, so not those.
+            let all = name == "service.d" && !d.starts_with("/usr/lib");
+            if (name.starts_with("control-center-") && name.ends_with(".d")) || all {
                 found.extend(std::fs::read_dir(entry.path()).into_iter().flatten().flatten().map(|f| f.path()).filter(|f| f.extension().is_some_and(|x| x == "conf")));
             }
         }
     }
     found.sort();
     found
+}
+
+/// What in the user's environment would change which libraries krdp loads: LD_LIBRARY_PATH or
+/// LD_PRELOAD set in ~/.config/environment.d, or in the user manager's environment now. Each is a
+/// line for check, as a warning, since they're the user's own settings.
+fn library_env(e: &Env, manager: &str) -> Vec<String> {
+    let risky = |l: &str| ["LD_LIBRARY_PATH=", "LD_PRELOAD="].iter().any(|k| l.trim_start().starts_with(k));
+    let mut out = vec![];
+    for f in std::fs::read_dir(e.home.join(".config/environment.d")).into_iter().flatten().flatten().map(|f| f.path()).filter(|f| f.extension().is_some_and(|x| x == "conf")) {
+        if std::fs::read_to_string(&f).unwrap_or_default().lines().any(risky) {
+            out.push(format!("{} sets LD_LIBRARY_PATH or LD_PRELOAD, which krdp would load libraries by", f.display()));
+        }
+    }
+    for l in manager.lines().filter(|l| risky(l)) {
+        out.push(format!("the user manager's environment has {}, which krdp would load libraries by", l.split('=').next().unwrap_or(l)));
+    }
+    out
 }
 
 /// Refuses to start with an unknown drop-in in place, and says which files and how to clear them.
@@ -1968,6 +2004,52 @@ mod tests {
         assert_eq!(state.trim(), "control-center-share@1.service 150", "one state line per unit");
     }
 
+    /// The share unit's ExecStart, run the way systemd would (%h and %i filled in, then sh -c), with
+    /// a home folder that has a space in it: every path still reaches krdp whole.
+    #[test]
+    fn share_unit_survives_a_home_with_a_space() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("cc-host-space {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let home = d.join("my home");
+        std::fs::create_dir_all(home.join(".config/control-center")).unwrap();
+        std::fs::write(home.join(".config/control-center/password"), "pw\n").unwrap();
+        let krdp = d.join("krdp");
+        std::fs::write(&krdp, format!("#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done > \"{}/args\"\n", d.display())).unwrap();
+        std::fs::set_permissions(&krdp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for file in [true, false] {
+            let unit = super::unit_files("/usr/bin/cc-host", &krdp.to_string_lossy(), file).into_iter().find(|(n, _)| *n == "control-center-share@.service").unwrap().1;
+            let line = unit.lines().find_map(|l| l.strip_prefix("ExecStart=/bin/sh -c '")).unwrap().strip_suffix('\'').unwrap();
+            let script = line.replace("%h", &home.to_string_lossy()).replace("%i", "0");
+            assert!(Command::new("/bin/sh").args(["-c", &script]).env("USER", "me").status().unwrap().success());
+            let args = std::fs::read_to_string(d.join("args")).unwrap();
+            let conf = home.join(".config/control-center");
+            assert!(args.lines().any(|a| a == conf.join("cert.pem").to_string_lossy()), "{args}");
+            assert!(args.lines().any(|a| a == conf.join("key.pem").to_string_lossy()), "{args}");
+            if file {
+                assert!(args.lines().any(|a| a == conf.join("password").to_string_lossy()), "{args}");
+            } else {
+                assert!(args.lines().any(|a| a == "pw"), "-p read the file through the space: {args}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// What in the environment would change krdp's libraries is found, and nothing else.
+    #[test]
+    fn library_env_finds_ld_settings() {
+        let d = std::env::temp_dir().join(format!("cc-host-envd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join(".config/environment.d")).unwrap();
+        std::fs::write(d.join(".config/environment.d/old-krdp.conf"), "LD_LIBRARY_PATH=/opt/old-krdp/lib\n").unwrap();
+        std::fs::write(d.join(".config/environment.d/fine.conf"), "EDITOR=vim\n").unwrap();
+        let e = super::Env { home: d.clone(), dir: d.join("c"), units: d.join("u"), share: d.join("s"), max: 0 };
+        let w = super::library_env(&e, "PATH=/usr/bin\nLD_PRELOAD=/x.so\n");
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[0].contains("old-krdp.conf") && w[1].contains("LD_PRELOAD"), "{w:?}");
+    }
+
     /// frame-run and window-run refuse a login krdp can't take, and password() too.
     #[test]
     fn refuses_empty_or_broken_logins() {
@@ -2004,8 +2086,8 @@ mod tests {
     fn share_unit_keeps_the_password_off_argv() {
         let unit = |file| super::unit_files("/usr/bin/cc-host", "/usr/lib/command-center/krdpserver", file).into_iter().find(|(n, _)| *n == "control-center-share@.service").unwrap().1;
         let (ours, stock) = (unit(true), unit(false));
-        assert!(ours.contains(r#"-u "$USER" --password-file %h/.config/control-center/password --certificate"#) && !ours.contains(" -p "), "{ours}");
-        assert!(stock.contains(r#"-p "$(cat %h/.config/control-center/password)""#), "{stock}");
+        assert!(ours.contains(r#"-u "$USER" --password-file "%h/.config/control-center/password" --certificate"#) && !ours.contains(" -p "), "{ours}");
+        assert!(stock.contains(r#"-p "$(cat "%h/.config/control-center/password")""#), "{stock}");
         assert!(!ours.contains("@PASSWORD@") && !stock.contains("@PASSWORD@"));
     }
 
@@ -2051,13 +2133,13 @@ mod tests {
         let d = std::env::temp_dir().join(format!("cc-host-dropins-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let (user, etc) = (d.join("user"), d.join("etc"));
-        for (dir, unit, file) in [(&user, "control-center-share@.service.d", "old-krdp.conf"), (&etc, "control-center-agent.service.d", "x.conf"), (&user, "control-center-share@0.service.d", "notes.txt"), (&user, "someone-else.service.d", "y.conf")] {
+        for (dir, unit, file) in [(&user, "control-center-share@.service.d", "old-krdp.conf"), (&etc, "control-center-agent.service.d", "x.conf"), (&user, "control-center-share@0.service.d", "notes.txt"), (&user, "someone-else.service.d", "y.conf"), (&etc, "service.d", "all.conf")] {
             std::fs::create_dir_all(dir.join(unit)).unwrap();
             std::fs::write(dir.join(unit).join(file), "[Service]\n").unwrap();
         }
         let found = super::foreign_dropins(&[user.clone(), etc.clone(), d.join("missing")]);
         let _ = std::fs::remove_dir_all(&d);
-        assert_eq!(found, [etc.join("control-center-agent.service.d/x.conf"), user.join("control-center-share@.service.d/old-krdp.conf")]);
+        assert_eq!(found, [etc.join("control-center-agent.service.d/x.conf"), etc.join("service.d/all.conf"), user.join("control-center-share@.service.d/old-krdp.conf")]);
     }
 
     /// The units' ExecStartPre: a krdp that can't load its libraries fails, with the loader's words.

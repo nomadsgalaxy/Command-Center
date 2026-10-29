@@ -78,10 +78,14 @@ per-user step after it, because a package runs as root and can't set up someone'
 
 ## When a host's units break
 
-Every `control-center-*` unit gives up instead of crash-looping forever. It's allowed 5 starts in
-5 minutes (`StartLimitIntervalSec=300`, `StartLimitBurst=5`), and the wait between restarts grows
+Every `control-center-*` unit gives up instead of crash-looping forever. It's allowed 10 starts in
+10 minutes (`StartLimitIntervalSec=600`, `StartLimitBurst=10`), and the wait between restarts grows
 from 2 s to a minute (`RestartSteps=5`, `RestartMaxDelaySec=60s`; systemd 254 and later, and older
-versions ignore those two keys with a warning). Once a unit gives up it's `failed`, so
+versions ignore those two keys with a warning). The waits go about 2, 4, 8, 15, 30 s and then a
+minute each, so the tenth start comes about 5 minutes in: a server that's down for a few minutes
+(a network drop, an update in progress) comes back by itself, and one that's really broken gives
+up within 10. With 5 starts in 5 minutes it gave up after about 30 s, before anything transient
+could pass. Once a unit gives up it's `failed`, so
 `systemctl --user --failed` lists it, and `OnFailure=` starts `control-center-alert@<unit>`. That
 runs `cc-host alert`, which shows a desktop notification and adds a line to
 `~/.cache/control-center/host-alerts`. systemd triggers `OnFailure=` on every failed start, not only
@@ -99,7 +103,12 @@ Frame's servers). A krdp that can't load its libraries then fails once, with the
 Command Center ships no drop-ins for its units, so `cc-share install` and `cc-share up` refuse to
 start while any `control-center-*.d/*.conf` exists in `~/.config/systemd/user`, `/etc/systemd/user`,
 `/run/systemd/user`, `/usr/lib/systemd/user` or `$XDG_RUNTIME_DIR/systemd/user`, and `cc-share
-check` lists them. Remove them, run `systemctl --user daemon-reload` and start again. That's the
+check` lists them. That includes `service.d/*.conf` in those folders except `/usr/lib`, since one
+there changes every user service, ours too; the distro's own (Fedora ships one) are left alone.
+Install checks this before it writes or reloads any unit. `cc-share check` also notes
+`LD_LIBRARY_PATH` or `LD_PRELOAD` set in `~/.config/environment.d` or in the user manager's
+environment, which would change the libraries krdp loads. Remove them, run `systemctl --user
+daemon-reload` and start again. That's the
 leftover that once pointed krdp at an old library and restarted it more than 5,000 times.
 
 Once a unit has given up, the agent doesn't start it again on its own. A Frame asking for that
