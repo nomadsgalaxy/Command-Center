@@ -413,8 +413,11 @@ impl Kvm {
     /// shortcut: characters a US keyboard can't type are dropped; RDP's Unicode input could send them.
     pub fn type_text(&mut self, i: usize, text: &str) -> usize {
         self.type_to(i);
-        let mut missed = 0;
+        let (mut missed, mut cr) = (0, false);
         for c in text.chars() {
+            if std::mem::replace(&mut cr, c == '\r') && c == '\n' {
+                continue; // \r\n is one Enter
+            }
             match crate::control::ui::key_for(c) {
                 Some((code, shift)) => self.tap(code, shift),
                 None => missed += 1,
@@ -1583,6 +1586,30 @@ mod tests {
         assert!(keys.contains(&(29, 0)) && all_up(&keys), "{keys:?}");
         k.click_mods(0, false);
         assert!(sent().is_empty(), "nothing held twice");
+    }
+
+    #[test]
+    fn a_line_end_is_one_enter_however_its_written() {
+        let mut k = Kvm::idle();
+        let enters = |keys: Vec<(u16, i32)>| keys.iter().filter(|&&(c, v)| c == 28 && v == 1).count();
+        k.type_text(0, "\r\n");
+        assert_eq!(enters(sent()), 1, "\\r\\n");
+        k.type_text(0, "\n");
+        assert_eq!(enters(sent()), 1);
+        k.type_text(0, "\r");
+        assert_eq!(enters(sent()), 1);
+        k.type_text(0, "\n\n");
+        assert_eq!(enters(sent()), 2, "two lines");
+    }
+
+    #[test]
+    fn typing_on_steamvrs_keyboard_isnt_a_real_keyboard() {
+        let mut k = Kvm::idle();
+        k.type_text(0, "h");
+        k.type_text(0, "i"); // two characters in a row, as osk::event hands them over
+        assert!(k.key_at.is_none() && !k.keyboard_in_use(), "it doesn't close itself after a letter");
+        k.strip_key(0, KEY_ESC);
+        assert!(k.key_at.is_none(), "nor does the key strip");
     }
 
     #[test]
