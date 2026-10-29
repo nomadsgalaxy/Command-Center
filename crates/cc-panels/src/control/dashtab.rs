@@ -18,6 +18,9 @@
 //! state to set kvm's `yielded`. That keeps one writer for it, because a second would be undone on
 //! the next frame.
 //!
+//! SteamVR draws its own control bar under the tab, and its close quits Command Center, the way it
+//! quits any overlay app from the dashboard.
+//!
 //! Not here: handing the mouse and keyboard to Steam by itself when the dashboard merely opens.
 //! `dashboard()` is where that would go, since main.rs calls it when the dashboard opens or closes.
 use super::ui::{self, BTN_H, PAD, Px, ROW, Rect, SCALE, TITLE, text, typed, typed_w};
@@ -226,6 +229,12 @@ impl Dashtab {
         }
         call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
         call!(ov, SetOverlayWidthInMeters, h, WIDTH_M);
+        // SteamVR's own bar under the tab, with its close (VREvent_OverlayClosed, in events). It's
+        // only drawn for what the dashboard hosts, so the floating windows keep our own bar.
+        // settings.json `"steamvr_bar": false` turns it off from the next start.
+        let bar = crate::config::settings()["steamvr_bar"].as_bool() != Some(false);
+        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_EnableControlBar, bar);
+        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_EnableControlBarClose, bar);
         self.ov = Some((h, thumb));
         eprintln!("dashboard tab: made");
     }
@@ -239,6 +248,8 @@ impl Dashtab {
             match e.eventType {
                 sys::EVREventType_VREvent_MouseMove => self.hover = at,
                 sys::EVREventType_VREvent_FocusLeave => self.hover = None,
+                // SteamVR's close on the tab quits Command Center, the way it quits any overlay app
+                sys::EVREventType_VREvent_OverlayClosed => crate::close_desktop("the dashboard tab's close"),
                 sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
                     if let Some(a) = at {
                         act(a, hand);

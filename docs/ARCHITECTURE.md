@@ -335,7 +335,12 @@ spot may be under its screen number, which saving removes.
    `yielded()` for kvm's one `set_yielded` call, and `panels()` to hide the panels for a game and
    show only what it hid. With no game, Steam / game just gives the keyboards and mice back to the
    Frame and leaves the panels where they are.
-4. **2D games.** A flat Steam game runs in gamescope (`--backend openvr`) as a SteamVR system
+4. **SteamVR's control bar.** The tab sets `VROverlayFlags_EnableControlBar` and
+   `EnableControlBarClose`, so SteamVR draws its own bar under it. Its close sends the tab
+   `VREvent_OverlayClosed`, and that calls `close_desktop`. settings.json `"steamvr_bar": false`
+   turns the bar off. The floating windows don't get it: see
+   [steamvr-integration.md](steamvr-integration.md).
+5. **2D games.** A flat Steam game runs in gamescope (`--backend openvr`) as a SteamVR system
    overlay, so the scene process id stays 0. `handoff::start` runs a thread that reads
    GAMESCOPE_FOCUSED_APP from gamescope's X server on :0, with a small hand-written X11 client
    because no X crate is in the tree, and falls back to a `reaper SteamLaunch AppId=` process. A real
@@ -344,7 +349,7 @@ spot may be under its screen number, which saving removes.
    mice go back to the Frame. Picking our tab (`IsActiveDashboardOverlay`, only the moment it's
    picked) or pressing Command Center takes the Desktop back for the rest of that game, and Steam /
    game hands it to the game again. When the game ends, only what it hid comes back.
-5. Not built yet: handing the input to Steam by itself when the dashboard merely opens. main.rs
+6. Not built yet: handing the input to Steam by itself when the dashboard merely opens. main.rs
    already calls `dashtab::dashboard` on `DashboardActivated`/`DashboardDeactivated`, which is where
    it goes.
 

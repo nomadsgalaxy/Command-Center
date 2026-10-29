@@ -61,7 +61,9 @@ updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
   it hid comes back.
 - **The dashboard tab:** open SteamVR's dashboard and Command Center has its own tab, next to
   Steam's. It shows or hides the Desktop, and it lets you choose where your mouse and keyboard go:
-  Command Center, or Steam and your game.
+  Command Center, or Steam and your game. SteamVR puts its own bar under the tab, and its close
+  button quits Command Center, the way it quits any overlay app
+  ([docs/steamvr-integration.md](docs/steamvr-integration.md)).
 
 On a computer, `cc-share check` says if anything's wrong and how to fix it, and `cc-share frames`
 lists the Frames paired with it.
