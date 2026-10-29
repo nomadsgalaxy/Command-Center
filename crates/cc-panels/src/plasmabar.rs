@@ -153,12 +153,13 @@ pub(crate) fn ray_at(pl: &Placement, crop: Rect, o: &V3, d: &V3) -> Option<(f64,
     Some(global(crop, fx, fy))
 }
 
-/// Where a laser event lands in the session, and whether that was the fallback: by the laser's
-/// ray (`ray`, origin and unit direction) through the overlay as placed (`pl`, showing `crop`) when
-/// there is one, otherwise by SteamVR's point (x, y) put through the bounds `b`.
-fn laser_point(pl: Option<Placement>, crop: Option<Rect>, ray: Option<(V3, V3)>, b: [f32; 4], x: f64, y: f64) -> (Option<(f64, f64)>, bool) {
-    match pl.zip(crop).zip(ray).and_then(|((pl, c), (o, d))| ray_at(&pl, c, &o, &d)) {
-        Some(p) => (Some(p), false),
+/// Where a laser event lands in the session, and whether that was the fallback. With a pose
+/// (`ray`, origin and unit direction) it's the ray through the overlay as placed (`pl`, showing
+/// `crop`), or, if the ray misses it (it's behind the laser), that device's `last` point. Only a
+/// device with no pose falls back to SteamVR's point (x, y), put through the bounds `b`.
+fn laser_point(pl: Option<Placement>, crop: Option<Rect>, ray: Option<(V3, V3)>, last: Option<(f64, f64)>, b: [f32; 4], x: f64, y: f64) -> (Option<(f64, f64)>, bool) {
+    match ray {
+        Some((o, d)) => (pl.zip(crop).and_then(|(pl, c)| ray_at(&pl, c, &o, &d)).or(last), false),
         None => {
             let (fx, fy) = in_bounds(b, x, y);
             (crop.map(|c| global(c, fx, fy)), true)
@@ -268,6 +269,7 @@ pub struct Plasma {
     held: u32,                                            // laser buttons down on it, in RDP's flags
     pub moving: bool,                                     // a laser on it this frame (events or a held press), which sets the main loop's pace
     pub released: Vec<u32>,                               // devices whose button came up on it, ending a hold on the taskbar's frame
+    last: Vec<(u32, (f64, f64))>,                         // each laser's last point in the session, for a ray that misses
 }
 
 impl Plasma {
@@ -299,6 +301,7 @@ impl Plasma {
             held: 0,
             moving: false,
             released: Vec::new(),
+            last: Vec::new(),
         }
     }
 
@@ -506,7 +509,12 @@ impl Plasma {
                 crate::trace::pose(dev, laser.as_ref());
             }
             let ray: Option<(V3, V3)> = laser.map(|l| ([l[0][3], l[1][3], l[2][3]].map(f64::from), [-l[0][2], -l[1][2], -l[2][2]].map(f64::from)));
-            let (spot, fell_back) = laser_point(pl, crop, ray, b, m.x as f64, m.y as f64);
+            let last = self.last.iter().find(|l| l.0 == dev).map(|l| l.1);
+            let (spot, fell_back) = laser_point(pl, crop, ray, last, b, m.x as f64, m.y as f64);
+            if let Some(p) = spot {
+                self.last.retain(|l| l.0 != dev);
+                self.last.push((dev, p));
+            }
             if debug() {
                 // how often the fallback fires, for the log: per run, counted on every event
                 static EVENTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -516,11 +524,11 @@ impl Plasma {
                 if e.eventType != sys::EVREventType_VREvent_MouseMove {
                     let (fx, fy) = in_bounds(b, m.x as f64, m.y as f64);
                     eprintln!(
-                        "plasma-debug: overlay event {} at {:.3},{:.3} (crop {fx:.3},{fy:.3}) -> {spot:?}{}, crop {crop:?}; fallback {f} of {n} events this run",
+                        "plasma-debug: overlay event {} at {:.3},{:.3} (crop {fx:.3},{fy:.3}) -> {spot:?}{}, crop {crop:?}; fallback {f} of {n} events this run (poses and placement both standing)",
                         e.eventType,
                         m.x,
                         m.y,
-                        if fell_back { " (fallback, no ray)" } else { " by its ray" }
+                        if fell_back { " (fallback, no pose)" } else { " by its ray" }
                     );
                 }
             }
@@ -591,6 +599,7 @@ impl Plasma {
     fn hide(&mut self) {
         call!(ov, HideOverlay, self.ov);
         (self.visible, self.placed) = (false, None);
+        self.last.clear(); // a crop from before it hid means nothing now
         *CROP.lock().unwrap() = None;
         crate::kvm::lock().plasma = None;
         self.release_held();
@@ -962,17 +971,39 @@ mod tests {
         let b = bounds(grown, WL0);
         let item = (600.0, 1200.0);
         let tex = ((item.0 - WL0[0] as f64) / 1920.0, 1.0 - (item.1 - WL0[1] as f64) / 1080.0);
-        let (at, fell_back) = laser_point(None, Some(grown), None, b, tex.0, tex.1);
+        let (at, fell_back) = laser_point(None, Some(grown), None, None, b, tex.0, tex.1);
         let at = at.unwrap();
         assert!(fell_back && (at.0 - item.0).abs() < 1.5 && (at.1 - item.1).abs() < 1.5, "{at:?}");
-        assert_eq!(laser_point(None, None, None, b, tex.0, tex.1), (None, true), "hidden: nowhere");
+        assert_eq!(laser_point(None, None, None, None, b, tex.0, tex.1), (None, true), "hidden: nowhere");
         // with a ray, the ray wins
         use crate::geometry::{Pose, panel_matrix};
         let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
         let pl = placed_for(&m, grown, 0.0006, 0.0);
         let (o, d) = laser_at(&pl, grown, (900.0, 1500.0));
-        let (at, fell_back) = laser_point(Some(pl), Some(grown), Some((o, d)), b, tex.0, tex.1);
+        let (at, fell_back) = laser_point(Some(pl), Some(grown), Some((o, d)), None, b, tex.0, tex.1);
         assert!(!fell_back && (at.unwrap().0 - 900.0).abs() < 1.5);
+        // a pose whose ray points away from the overlay: that laser's last point, never the fallback
+        let away = (o, d.map(|x| -x));
+        assert_eq!(laser_point(Some(pl), Some(grown), Some(away), Some((901.0, 1501.0)), b, tex.0, tex.1), (Some((901.0, 1501.0)), false));
+        assert_eq!(laser_point(Some(pl), Some(grown), Some(away), None, b, tex.0, tex.1), (None, false), "no last point: nowhere, not SteamVR's");
+    }
+
+    #[test]
+    fn a_ray_just_past_a_curved_edge_lands_on_the_edge() {
+        use crate::geometry::{Pose, panel_matrix};
+        let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
+        let pl = placed_for(&m, grown, 0.0006, 2.0);
+        // aimed at a point 2 cm past the right edge, along the arc, from in front of it
+        let t = pl.on_surface(pl.width / 2.0 + 0.02, 0.0, 0.0);
+        let to = [t[0][3], t[1][3], t[2][3]].map(f64::from);
+        let n = [t[0][2], t[1][2], t[2][2]].map(f64::from);
+        let from = [to[0] + n[0] * 0.6, to[1] + n[1] * 0.6, to[2] + n[2] * 0.6];
+        let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+        let l = norm(&d);
+        let (at, fell_back) = laser_point(Some(pl), Some(grown), Some((from, d.map(|x| x / l))), None, [0.0, 0.0, 1.0, 1.0], 0.5, 0.5);
+        let right = (grown[0] + grown[2] - 1) as f64;
+        assert!(!fell_back && (at.unwrap().0 - right).abs() < 0.5, "{at:?}, the right edge is {right}");
     }
 
     #[test]
