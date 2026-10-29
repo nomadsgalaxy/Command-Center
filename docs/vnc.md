@@ -5,7 +5,9 @@ workflow on 2026-10-02: a design first, then an adversarial review checked again
 LibVNCServer master. Where the two disagree, the review wins, because it checked the sources.
 
 The client side got built on 2026-10-03 (branch vnc), and the next section says what's there and how
-to test it. Everything after it is the original design and review, kept as it was. Its line
+to test it. **Status (2026-10-29):** built and reviewed, but not tested against a real server. The
+first connect (trust on first use) and a reconnect against the pinned certificate are untested,
+because there's no VNC host to try them on yet. Everything after it is the original design and review, kept as it was. Its line
 references are to the code back then, when cc-home and cc-share were scripts; they're Rust now
 (`crates/cc-home`, and cc-share is a link to `crates/cc-host`), so references like cc-home:575 or
 cc-share:183 point at the old scripts, which aren't part of this repo.

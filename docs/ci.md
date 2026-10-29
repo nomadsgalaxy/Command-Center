@@ -1,7 +1,8 @@
 # The CI gate
 
-Every push and pull request to `main` on GitHub runs `.github/workflows/ci.yml`. A change has to
-pass it before it's merged. It checks:
+Every push and pull request to `main` on GitHub runs `.github/workflows/ci.yml`. It's meant to be
+a gate, but it doesn't block anything yet: `main` has no branch protection, so a red run can still
+be merged, and it's on whoever merges to check it's green. It checks:
 
 - **Format:** `cargo fmt --all --check`. `rustfmt.toml` sets 200 columns, because the code is
   written wide on purpose.

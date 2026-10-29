@@ -9,8 +9,15 @@ Short version: **sysext works on the Frame today.** The only real blocker is tha
 libraries are built in the Fedora container, so they don't load on SteamOS. cc-panels itself, cc-home
 and the pointer driver already do. Fixing that also gets rid of the distrobox runtime dependency.
 
-Everything below was checked read-only on the Frame (SteamOS 0.3.0, build 20260922.6101926,
-`VARIANT_ID=vr`, aarch64) on October 3, 2026. Nothing was enabled, merged or refreshed.
+Most of what's below was checked read-only on the Frame (SteamOS 0.3.0, build 20260922.6101926,
+`VARIANT_ID=vr`, aarch64) on October 3, 2026, with nothing enabled, merged or refreshed.
+
+**Status (2026-10-29):** the image builds, and the update helper is built and reviewed. Tried on
+the Frame with a throwaway extension on October 29: vpick picks the newest image, and polkit lets
+the user at the headset run the helper without a password (section 4). Not done yet: the first
+live merge of the real image, a full `cc-home update` from a signed release, and cc-install's
+image install. There's no GitHub release yet, and release.yml doesn't build or publish a
+`command-center_<version>.raw`, so `cc-home update` has nothing to install.
 
 ## 1. Does SteamOS on the Frame support sysext?
 
@@ -327,9 +334,10 @@ This first one needs the password, once: the image brings the polkit action that
 updates passwordless, and polkitd doesn't know it until it restarts. Without the restart, `cc-home
 update` asks for a password until the next reboot.
 
-cc-install does this through `pkexec` and asks first. It also cleans up a checkout install:
-unregisters the vrpathreg driver, removes the `~/.local/bin` links and the per-user `.desktop`
-overrides, and leaves `~/.config/control-center` alone.
+For now these steps are done by hand. The plan is for cc-install to do them through `pkexec`,
+asking first, and to clean up a checkout install: unregister the vrpathreg driver, remove the
+`~/.local/bin` links and the per-user `.desktop` overrides, and leave `~/.config/control-center`
+alone. It doesn't yet: the installer still builds a checkout install.
 
 **Signing:** the image runs as root, so a SHA256SUMS file from the same release isn't enough, since
 anyone who can edit the release can edit both. Releases get a detached signature (`SHA256SUMS.gpg`),
@@ -538,7 +546,7 @@ a window stream.
 | First live test: merge on the Frame, Desktop tile, KWin grant, driver loading from `/opt`, an OS update | 1 day, plus waiting for an OS update |
 | cc-install's sysext path: pkexec install, the signed-update helper and polkit action, moving over from a checkout install, Remove | 2–3 days |
 | Releases: signing, building the `.raw` on the Frame as a runner, publishing per SteamOS minor | 1–2 days |
-| Phase 2: sysupdate transfer with `.raw.v/`, plus a timer | 1 day, after vpick is tested |
+| Phase 2: ~~sysupdate transfer with `.raw.v/`~~ (built; vpick tried on the Frame 2026-10-29), plus a timer (not built) | |
 
 All in, it's about one and a half to two weeks of work, and the first live merge on the Frame is the
 biggest unknown.

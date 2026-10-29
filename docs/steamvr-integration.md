@@ -181,6 +181,9 @@ profiles it does nothing. To turn it off, add `"power_saving": false` to
 
 ## SteamVR's keyboard
 
+**Status (2026-10-29):** built and reviewed, not tested in the headset yet. That covers the typed
+text and the shortcuts on our key strip.
+
 Every live panel (a computer's screen, a window, a pop-out) has a keyboard button on its bar,
 right of the curve button and, on a window, the zoom button. Press it and SteamVR's keyboard
 opens for that panel. Each key goes to the computer or window the moment you press it, the same

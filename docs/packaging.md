@@ -406,8 +406,9 @@ it with a message saying to pair the Frame again. The share unit points it at
 through a pipe, with no file on disk: cc-host writes the password into it and passes `--password-file /dev/fd/<n>`, with only that one fd left open for krdp. Whether a krdp takes the option comes from its `--help`, asked once per start with a 5 s limit; a krdp that doesn't answer isn't started, rather than quietly given `-p`. A krdp without the patch (one a distro ships, in a user
 install) still gets `-p`, cc-host logs that each time it starts one, and `cc-share check` lists it as
 a need. The Steam Deck's krdp 6.4.3 gets the same option from krdp/deck/password-file.patch. The patch
-applies to krdp 6.7.5 and, with line offsets only, to 6.8.0 (our other patches don't apply to 6.8.0
-yet). It's meant to go upstream: krdp/upstream/password-file-issue.md is the issue we're filing.
+applies to krdp 6.7.5 and, with line offsets only, to 6.8.0, but our other patches don't apply to
+6.8.0 yet, so there's no patched 6.8 build. A host whose krdp is 6.8 (the desktop host went to 6.8.0
+on 2026-10-20) runs its distro's krdp, which doesn't take `--password-file`, so it gets `-p`. It's meant to go upstream: krdp/upstream/password-file-issue.md is the issue we're filing.
 
 ## Order of work
 
