@@ -16,8 +16,9 @@
 //! The OpenVR driver API is C++ classes, so this speaks their vtables directly: #[repr(C)] tables
 //! of extern "C" fns with `this` first, which is the Itanium ABI on aarch64/x86_64 Linux. The
 //! versions match the openvr_driver.h it was written against (SteamVR 2.1 header, see
-//! INTERFACE_VERSIONS). None of the interfaces have virtual destructors. Nothing here can panic,
-//! because a panic across extern "C" aborts and takes vrserver down with it.
+//! INTERFACE_VERSIONS). None of the interfaces have virtual destructors. A panic across extern "C"
+//! aborts and takes vrserver down with it, so every callback that does work runs in guard(), which
+//! catches a panic, logs it and returns that callback's failure value.
 #![allow(non_snake_case)]
 
 use std::ffi::{CStr, c_char, c_void};
@@ -141,6 +142,7 @@ unsafe fn vt<V>(p: This) -> &'static V {
 
 const INIT_OK: i32 = 0;
 const INIT_INTERFACE_NOT_FOUND: i32 = 105;
+const INIT_DRIVER_FAILED: i32 = 200;
 const DEVICE_CLASS_CONTROLLER: i32 = 2;
 const ROLE_LEFT: i32 = 1;
 const ROLE_RIGHT: i32 = 2;
@@ -251,9 +253,30 @@ fn set_bool(c: u64, prop: i32, v: bool) {
     set_prop(c, prop, (&v as *const bool).cast(), 1, TAG_BOOL);
 }
 
-/// A poisoned lock still hands out its state (it can't happen anyway, since nothing panics).
+/// A poisoned lock still hands out its state, so a panic guard() caught doesn't break every call after it.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Runs a callback's body. If it panics, this logs it to SteamVR's log with `name` and returns
+/// `fail`, instead of unwinding into vrserver.
+fn guard<R>(name: &str, fail: R, body: impl FnOnce() -> R) -> R {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| {
+        if let Ok(msg) = std::ffi::CString::new(format!("cc_pointer: {name} panicked; it failed instead")) {
+            log(&msg);
+        }
+        fail
+    })
+}
+
+/// What get_pose says when it couldn't work the pose out: not connected, not tracking.
+fn no_pose() -> DriverPose {
+    let mut p = POSE0;
+    p.q_world_from_driver_rotation.w = 1.;
+    p.q_driver_from_head_rotation.w = 1.;
+    p.q_rotation.w = 1.;
+    p.result = TRACKING_UNINITIALIZED;
+    p
 }
 
 fn now_ms() -> i64 {
@@ -457,47 +480,51 @@ fn set_hint(role: i32) {
 }
 
 unsafe extern "C" fn device_activate(_: This, object_id: u32) -> i32 {
-    let props = iface(PROPS);
-    let c = if props.is_null() {
-        0
-    } else {
-        unsafe { (vt::<PropertiesVtbl>(props).tracked_device_to_property_container)(props, object_id) }
-    };
-    {
-        let mut d = lock(&DEVICE);
-        d.object_id = object_id;
-        d.container = c;
-    }
-    set_string(c, PROP_MODEL_NUMBER, c"cc_pointer");
-    set_string(c, PROP_MANUFACTURER_NAME, c"Command Center");
-    set_string(c, PROP_CONTROLLER_TYPE, c"cc_pointer");
-    set_string(c, PROP_DRIVER_VERSION, c"ccp/1"); // cc-panels' protocol gate
-    set_string(c, PROP_INPUT_PROFILE_PATH, c"{cc_pointer}/input/cc_pointer_profile.json");
-    set_string(c, PROP_RENDER_MODEL_NAME, c"{cc_pointer}/rendermodels/cc_pointer_invisible");
-    set_i32(c, PROP_DEVICE_CLASS, DEVICE_CLASS_CONTROLLER);
-    set_bool(c, PROP_NEVER_TRACKED, false);
-    set_hint(ROLE_OPT_OUT); // disconnected is always OptOut
-
-    let input = iface(INPUT);
-    if !input.is_null() {
-        let f = unsafe { vt::<InputVtbl>(input) };
-        let mut buttons = [0u64; 6];
-        let (mut sx, mut sy) = (0u64, 0u64);
-        for (path, h) in BUTTON_PATHS.iter().zip(&mut buttons) {
-            unsafe { (f.create_boolean_component)(input, c, path.as_ptr(), h) };
+    guard("device_activate", INIT_DRIVER_FAILED, || {
+        let props = iface(PROPS);
+        let c = if props.is_null() {
+            0
+        } else {
+            unsafe { (vt::<PropertiesVtbl>(props).tracked_device_to_property_container)(props, object_id) }
+        };
+        {
+            let mut d = lock(&DEVICE);
+            d.object_id = object_id;
+            d.container = c;
         }
-        let (abs, two) = (SCALAR_ABSOLUTE, SCALAR_NORMALIZED_TWO_SIDED);
-        unsafe { (f.create_scalar_component)(input, c, c"/input/joystick/x".as_ptr(), &mut sx, abs, two) };
-        unsafe { (f.create_scalar_component)(input, c, c"/input/joystick/y".as_ptr(), &mut sy, abs, two) };
-        let mut d = lock(&DEVICE);
-        (d.buttons, d.sx, d.sy) = (buttons, sx, sy);
-    }
-    log(c"cc_pointer: activated (ccp/1)");
-    INIT_OK
+        set_string(c, PROP_MODEL_NUMBER, c"cc_pointer");
+        set_string(c, PROP_MANUFACTURER_NAME, c"Command Center");
+        set_string(c, PROP_CONTROLLER_TYPE, c"cc_pointer");
+        set_string(c, PROP_DRIVER_VERSION, c"ccp/1"); // cc-panels' protocol gate
+        set_string(c, PROP_INPUT_PROFILE_PATH, c"{cc_pointer}/input/cc_pointer_profile.json");
+        set_string(c, PROP_RENDER_MODEL_NAME, c"{cc_pointer}/rendermodels/cc_pointer_invisible");
+        set_i32(c, PROP_DEVICE_CLASS, DEVICE_CLASS_CONTROLLER);
+        set_bool(c, PROP_NEVER_TRACKED, false);
+        set_hint(ROLE_OPT_OUT); // disconnected is always OptOut
+
+        let input = iface(INPUT);
+        if !input.is_null() {
+            let f = unsafe { vt::<InputVtbl>(input) };
+            let mut buttons = [0u64; 6];
+            let (mut sx, mut sy) = (0u64, 0u64);
+            for (path, h) in BUTTON_PATHS.iter().zip(&mut buttons) {
+                unsafe { (f.create_boolean_component)(input, c, path.as_ptr(), h) };
+            }
+            let (abs, two) = (SCALAR_ABSOLUTE, SCALAR_NORMALIZED_TWO_SIDED);
+            unsafe { (f.create_scalar_component)(input, c, c"/input/joystick/x".as_ptr(), &mut sx, abs, two) };
+            unsafe { (f.create_scalar_component)(input, c, c"/input/joystick/y".as_ptr(), &mut sy, abs, two) };
+            let mut d = lock(&DEVICE);
+            (d.buttons, d.sx, d.sy) = (buttons, sx, sy);
+        }
+        log(c"cc_pointer: activated (ccp/1)");
+        INIT_OK
+    })
 }
 
 unsafe extern "C" fn device_deactivate(_: This) {
-    lock(&DEVICE).object_id = INVALID_DEVICE;
+    guard("device_deactivate", (), || {
+        lock(&DEVICE).object_id = INVALID_DEVICE;
+    })
 }
 
 unsafe extern "C" fn device_get_component(_: This, _: *const c_char) -> *mut c_void {
@@ -505,13 +532,17 @@ unsafe extern "C" fn device_get_component(_: This, _: *const c_char) -> *mut c_v
 }
 
 unsafe extern "C" fn device_debug_request(_: This, _: *const c_char, response: *mut c_char, size: u32) {
-    if size != 0 && !response.is_null() {
-        unsafe { *response = 0 };
-    }
+    guard("device_debug_request", (), || {
+        if size != 0 && !response.is_null() {
+            unsafe { *response = 0 };
+        }
+    })
 }
 
 unsafe extern "C" fn device_get_pose(_: This) -> DriverPose {
-    lock(&DEVICE).pose
+    guard("device_get_pose", no_pose(), || {
+        lock(&DEVICE).pose
+    })
 }
 
 fn device_run_frame() {
@@ -589,27 +620,31 @@ static PROVIDER_VTBL: ProviderVtbl = ProviderVtbl {
 static PROVIDER: Obj<ProviderVtbl> = Obj { vtbl: &PROVIDER_VTBL };
 
 unsafe extern "C" fn provider_init(_: This, context: This) -> i32 {
-    CONTEXT.store(context, SeqCst);
-    clear_context();
-    if (0..6).any(|i| iface(i).is_null()) {
-        return INIT_INTERFACE_NOT_FOUND;
-    }
-    lock(&DEVICE).arb.start(now_ms());
-    let host = iface(HOST);
-    let device = &DEVICE_OBJ as *const Obj<DeviceVtbl> as This;
-    unsafe { (vt::<HostVtbl>(host).tracked_device_added)(host, c"cc_pointer_0".as_ptr(), DEVICE_CLASS_CONTROLLER, device) };
-    RUNNING.store(true, SeqCst);
-    *lock(&LISTENER) = std::thread::Builder::new().spawn(listen).ok();
-    INIT_OK
+    guard("provider_init", INIT_DRIVER_FAILED, || {
+        CONTEXT.store(context, SeqCst);
+        clear_context();
+        if (0..6).any(|i| iface(i).is_null()) {
+            return INIT_INTERFACE_NOT_FOUND;
+        }
+        lock(&DEVICE).arb.start(now_ms());
+        let host = iface(HOST);
+        let device = &DEVICE_OBJ as *const Obj<DeviceVtbl> as This;
+        unsafe { (vt::<HostVtbl>(host).tracked_device_added)(host, c"cc_pointer_0".as_ptr(), DEVICE_CLASS_CONTROLLER, device) };
+        RUNNING.store(true, SeqCst);
+        *lock(&LISTENER) = std::thread::Builder::new().spawn(listen).ok();
+        INIT_OK
+    })
 }
 
 unsafe extern "C" fn provider_cleanup(_: This) {
-    RUNNING.store(false, SeqCst);
-    if let Some(t) = lock(&LISTENER).take() {
-        let _ = t.join(); // recv times out every 200 ms
-    }
-    CONTEXT.store(std::ptr::null_mut(), SeqCst);
-    clear_context();
+    guard("provider_cleanup", (), || {
+        RUNNING.store(false, SeqCst);
+        if let Some(t) = lock(&LISTENER).take() {
+            let _ = t.join(); // recv times out every 200 ms
+        }
+        CONTEXT.store(std::ptr::null_mut(), SeqCst);
+        clear_context();
+    })
 }
 
 unsafe extern "C" fn provider_get_interface_versions(_: This) -> *const *const c_char {
@@ -617,7 +652,9 @@ unsafe extern "C" fn provider_get_interface_versions(_: This) -> *const *const c
 }
 
 unsafe extern "C" fn provider_run_frame(_: This) {
-    device_run_frame();
+    guard("provider_run_frame", (), || {
+        device_run_frame();
+    })
 }
 
 unsafe extern "C" fn provider_should_block_standby_mode(_: This) -> bool {
@@ -696,6 +733,17 @@ pub unsafe extern "C" fn HmdDriverFactory(interface_name: *const c_char, return_
 mod tests {
     // Same as the C++ selftest: the arbiter and parser, no SteamVR needed.
     use super::*;
+
+    /// A callback whose body panics gives its failure value back, and the process (vrserver) lives.
+    #[test]
+    fn a_panicking_callback_fails_instead() {
+        unsafe extern "C" fn breaks(_: This) -> i32 {
+            guard("breaks", INIT_DRIVER_FAILED, || panic!("a bad lease"))
+        }
+        let f: unsafe extern "C" fn(This) -> i32 = breaks;
+        assert_eq!(unsafe { f(std::ptr::null_mut()) }, INIT_DRIVER_FAILED);
+        assert!(!no_pose().device_is_connected && !no_pose().pose_is_valid);
+    }
 
     #[test]
     fn selftest() {

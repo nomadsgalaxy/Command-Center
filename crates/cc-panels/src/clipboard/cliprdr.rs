@@ -41,11 +41,11 @@ static STREAM: AtomicU32 = AtomicU32::new(1);
 static STAGED: Mutex<Option<(u64, Vec<PathBuf>)>> = Mutex::new(None);
 
 pub fn chans() -> Vec<Chan> {
-    CHANS.lock().unwrap().iter().map(|i| Chan { panel: i.panel, machine: i.machine.clone(), files: i.files }).collect()
+    crate::ffi::lock(&CHANS).iter().map(|i| Chan { panel: i.panel, machine: i.machine.clone(), files: i.files }).collect()
 }
 
 fn with<R>(panel: usize, f: impl FnOnce(&mut Info) -> R) -> Option<R> {
-    CHANS.lock().unwrap().iter_mut().find(|i| i.panel == panel).map(f)
+    crate::ffi::lock(&CHANS).iter_mut().find(|i| i.panel == panel).map(f)
 }
 
 fn index(c: *mut CliprdrClientContext) -> usize {
@@ -71,7 +71,7 @@ pub fn attach(p: &Panel, c: *mut CliprdrClientContext) {
         (*c).ServerFileContentsResponse = Some(on_server_file_contents_response);
     }
     let machine = crate::config::machine_of(&p.v).to_string();
-    let mut all = CHANS.lock().unwrap();
+    let mut all = crate::ffi::lock(&CHANS);
     all.retain(|i| i.panel != p.index);
     all.push(Info { panel: p.index, machine, files: false, ids: Vec::new(), asked: VecDeque::new(), relay: None });
     drop(all);
@@ -84,103 +84,115 @@ pub fn detach(p: &Panel, c: *mut CliprdrClientContext) {
     p.cliprdr.store(std::ptr::null_mut(), Release);
     unsafe { (*c).custom = std::ptr::null_mut() };
     let before = chans();
-    CHANS.lock().unwrap().retain(|i| i.panel != p.index);
-    let acts = HUB.lock().unwrap().channel_down(p.index, &before);
+    crate::ffi::lock(&CHANS).retain(|i| i.panel != p.index);
+    let acts = crate::ffi::lock(&HUB).channel_down(p.index, &before);
     run(acts);
 }
 
 unsafe extern "C" fn on_server_capabilities(c: *mut CliprdrClientContext, caps: *const CLIPRDR_CAPABILITIES) -> UINT {
-    let caps = unsafe { &*caps };
-    if caps.cCapabilitiesSets > 0 && !caps.capabilitySets.is_null() {
-        let set = caps.capabilitySets; // FreeRDP hands over the general set, the only one there is
-        if unsafe { (*set).capabilitySetType } as u32 == CB_CAPSTYPE_GENERAL {
-            let flags = unsafe { (*(set as *const CLIPRDR_GENERAL_CAPABILITY_SET)).generalFlags };
-            with(index(c), |i| i.files = flags & CB_STREAM_FILECLIP_ENABLED != 0);
+    crate::ffi::guard("on_server_capabilities", ERROR_INTERNAL_ERROR, || {
+        let caps = unsafe { &*caps };
+        if caps.cCapabilitiesSets > 0 && !caps.capabilitySets.is_null() {
+            let set = caps.capabilitySets; // FreeRDP hands over the general set, the only one there is
+            if unsafe { (*set).capabilitySetType } as u32 == CB_CAPSTYPE_GENERAL {
+                let flags = unsafe { (*(set as *const CLIPRDR_GENERAL_CAPABILITY_SET)).generalFlags };
+                with(index(c), |i| i.files = flags & CB_STREAM_FILECLIP_ENABLED != 0);
+            }
         }
-    }
-    0
+        0
+    })
 }
 
 unsafe extern "C" fn on_monitor_ready(c: *mut CliprdrClientContext, _: *const CLIPRDR_MONITOR_READY) -> UINT {
-    let mut general = CLIPRDR_GENERAL_CAPABILITY_SET {
-        capabilitySetType: CB_CAPSTYPE_GENERAL as u16,
-        capabilitySetLength: CB_CAPSTYPE_GENERAL_LEN as u16,
-        version: CB_CAPS_VERSION_2,
-        // files by stream, without local paths; we never lock (we keep each copy's file list ourselves)
-        generalFlags: CB_USE_LONG_FORMAT_NAMES | CB_STREAM_FILECLIP_ENABLED | CB_FILECLIP_NO_FILE_PATHS | CB_CAN_LOCK_CLIPDATA,
-    };
-    let mut caps = CLIPRDR_CAPABILITIES::default();
-    caps.common.msgType = CliprdrMsgType_CB_CLIP_CAPS as u16;
-    caps.cCapabilitiesSets = 1;
-    caps.capabilitySets = &mut general as *mut _ as *mut CLIPRDR_CAPABILITY_SET;
-    let rc = unsafe { ((*c).ClientCapabilities.unwrap())(c, &caps) };
-    if rc != 0 {
-        return rc;
-    }
-    let me = chans().into_iter().find(|ch| ch.panel == index(c));
-    if let Some(me) = me {
-        let acts = HUB.lock().unwrap().channel_up(&me, Instant::now()); // a machine that (re)connects gets what's been copied
-        run(acts);
-    }
-    0
+    crate::ffi::guard("on_monitor_ready", ERROR_INTERNAL_ERROR, || {
+        let mut general = CLIPRDR_GENERAL_CAPABILITY_SET {
+            capabilitySetType: CB_CAPSTYPE_GENERAL as u16,
+            capabilitySetLength: CB_CAPSTYPE_GENERAL_LEN as u16,
+            version: CB_CAPS_VERSION_2,
+            // files by stream, without local paths; we never lock (we keep each copy's file list ourselves)
+            generalFlags: CB_USE_LONG_FORMAT_NAMES | CB_STREAM_FILECLIP_ENABLED | CB_FILECLIP_NO_FILE_PATHS | CB_CAN_LOCK_CLIPDATA,
+        };
+        let mut caps = CLIPRDR_CAPABILITIES::default();
+        caps.common.msgType = CliprdrMsgType_CB_CLIP_CAPS as u16;
+        caps.cCapabilitiesSets = 1;
+        caps.capabilitySets = &mut general as *mut _ as *mut CLIPRDR_CAPABILITY_SET;
+        let rc = unsafe { ((*c).ClientCapabilities.unwrap())(c, &caps) };
+        if rc != 0 {
+            return rc;
+        }
+        let me = chans().into_iter().find(|ch| ch.panel == index(c));
+        if let Some(me) = me {
+            let acts = crate::ffi::lock(&HUB).channel_up(&me, Instant::now()); // a machine that (re)connects gets what's been copied
+            run(acts);
+        }
+        0
+    })
 }
 
 unsafe extern "C" fn on_server_format_list_response(_: *mut CliprdrClientContext, _: *const CLIPRDR_FORMAT_LIST_RESPONSE) -> UINT {
-    0
+    crate::ffi::guard("on_server_format_list_response", ERROR_INTERNAL_ERROR, || {
+        0
+    })
 }
 
 unsafe extern "C" fn on_server_format_list(c: *mut CliprdrClientContext, list: *const CLIPRDR_FORMAT_LIST) -> UINT {
-    let mut ok = CLIPRDR_FORMAT_LIST_RESPONSE::default();
-    ok.common.msgType = CliprdrMsgType_CB_FORMAT_LIST_RESPONSE as u16;
-    ok.common.msgFlags = CB_RESPONSE_OK as u16;
-    let rc = unsafe { ((*c).ClientFormatListResponse.unwrap())(c, &ok) };
-    if rc != 0 {
-        return rc;
-    }
-    let list = unsafe { &*list };
-    let raw = if list.formats.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(list.formats, list.numFormats as usize) } };
-    let named: Vec<(u32, Option<String>)> = raw.iter().map(|f| {
-        let name = (!f.formatName.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(f.formatName) }.to_string_lossy().into_owned());
-        (f.formatId, name)
-    }).collect();
-    let picked = formats::pick(&named);
-    let p = index(c);
-    let Some(machine) = with(p, |i| {
-        i.ids = picked.clone();
-        i.machine.clone()
-    }) else { return 0 };
-    let fmts: Vec<Fmt> = picked.iter().map(|(f, _)| *f).collect();
-    eprintln!("clipboard: {} announces {fmts:?}", panel(p).v.name);
-    let all = chans();
-    let acts = HUB.lock().unwrap().remote_announce(p, &machine, fmts, &all, Instant::now());
-    run(acts);
-    0
+    crate::ffi::guard("on_server_format_list", ERROR_INTERNAL_ERROR, || {
+        let mut ok = CLIPRDR_FORMAT_LIST_RESPONSE::default();
+        ok.common.msgType = CliprdrMsgType_CB_FORMAT_LIST_RESPONSE as u16;
+        ok.common.msgFlags = CB_RESPONSE_OK as u16;
+        let rc = unsafe { ((*c).ClientFormatListResponse.unwrap())(c, &ok) };
+        if rc != 0 {
+            return rc;
+        }
+        let list = unsafe { &*list };
+        let raw = if list.formats.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(list.formats, list.numFormats as usize) } };
+        let named: Vec<(u32, Option<String>)> = raw.iter().map(|f| {
+            let name = (!f.formatName.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(f.formatName) }.to_string_lossy().into_owned());
+            (f.formatId, name)
+        }).collect();
+        let picked = formats::pick(&named);
+        let p = index(c);
+        let Some(machine) = with(p, |i| {
+            i.ids = picked.clone();
+            i.machine.clone()
+        }) else { return 0 };
+        let fmts: Vec<Fmt> = picked.iter().map(|(f, _)| *f).collect();
+        eprintln!("clipboard: {} announces {fmts:?}", panel(p).v.name);
+        let all = chans();
+        let acts = crate::ffi::lock(&HUB).remote_announce(p, &machine, fmts, &all, Instant::now());
+        run(acts);
+        0
+    })
 }
 
 unsafe extern "C" fn on_server_format_data_response(c: *mut CliprdrClientContext, r: *const CLIPRDR_FORMAT_DATA_RESPONSE) -> UINT {
-    let r = unsafe { &*r };
-    let p = index(c);
-    let Some(Some(fmt)) = with(p, |i| i.asked.pop_front()) else { return 0 };
-    let ok = r.common.msgFlags as u32 & CB_RESPONSE_OK != 0 && !r.requestedFormatData.is_null();
-    let raw = if ok { unsafe { std::slice::from_raw_parts(r.requestedFormatData, r.common.dataLen as usize) } } else { &[][..] };
-    let bytes = ok.then(|| from_wire(fmt, raw)).flatten();
-    let all = chans();
-    let acts = HUB.lock().unwrap().remote_data(p, bytes, &all, Instant::now());
-    run(acts);
-    0
+    crate::ffi::guard("on_server_format_data_response", ERROR_INTERNAL_ERROR, || {
+        let r = unsafe { &*r };
+        let p = index(c);
+        let Some(Some(fmt)) = with(p, |i| i.asked.pop_front()) else { return 0 };
+        let ok = r.common.msgFlags as u32 & CB_RESPONSE_OK != 0 && !r.requestedFormatData.is_null();
+        let raw = if ok { unsafe { std::slice::from_raw_parts(r.requestedFormatData, r.common.dataLen as usize) } } else { &[][..] };
+        let bytes = ok.then(|| from_wire(fmt, raw)).flatten();
+        let all = chans();
+        let acts = crate::ffi::lock(&HUB).remote_data(p, bytes, &all, Instant::now());
+        run(acts);
+        0
+    })
 }
 
 unsafe extern "C" fn on_server_format_data_request(c: *mut CliprdrClientContext, want: *const CLIPRDR_FORMAT_DATA_REQUEST) -> UINT {
-    let id = unsafe { (*want).requestedFormatId };
-    let p = index(c);
-    let fmt = [Fmt::Text, Fmt::Html, Fmt::Image, Fmt::Files].into_iter().find(|f| formats::to_rdp(*f).0 == id);
-    let Some(fmt) = fmt else {
-        respond(p, None);
-        return 0;
-    };
-    let acts = HUB.lock().unwrap().want(Want::Rdp(p), fmt); // answered now, or once it's fetched
-    run(acts);
-    0
+    crate::ffi::guard("on_server_format_data_request", ERROR_INTERNAL_ERROR, || {
+        let id = unsafe { (*want).requestedFormatId };
+        let p = index(c);
+        let fmt = [Fmt::Text, Fmt::Html, Fmt::Image, Fmt::Files].into_iter().find(|f| formats::to_rdp(*f).0 == id);
+        let Some(fmt) = fmt else {
+            respond(p, None);
+            return 0;
+        };
+        let acts = crate::ffi::lock(&HUB).want(Want::Rdp(p), fmt); // answered now, or once it's fetched
+        run(acts);
+        0
+    })
 }
 
 /// A machine's form of a format to ours.
@@ -216,7 +228,7 @@ pub fn fetch(p: usize, fmt: Fmt) {
     let id = with(p, |i| i.ids.iter().find(|(f, _)| *f == fmt).map(|(_, id)| *id)).flatten();
     let (Some(c), Some(id)) = (ctx(p), id) else {
         let all = chans();
-        let acts = HUB.lock().unwrap().remote_data(p, None, &all, Instant::now());
+        let acts = crate::ffi::lock(&HUB).remote_data(p, None, &all, Instant::now());
         return run(acts);
     };
     with(p, |i| i.asked.push_back(fmt));
@@ -241,7 +253,7 @@ pub fn give(p: usize, fmt: Fmt, data: Data, src: Option<usize>) {
             // ponytail: walks the folders on the RDP thread; a huge tree stalls that monitor while it does
             let entries = formats::walk(&formats::from_uri_list(&d));
             let b = formats::to_descriptor(&entries);
-            *LOCAL.lock().unwrap() = entries;
+            *crate::ffi::lock(&LOCAL) = entries;
             with(p, |i| i.relay = None);
             Some(b)
         }
@@ -267,34 +279,38 @@ fn respond(p: usize, data: Option<&[u8]>) {
 // ------------------------------------------------------------------ file contents
 
 unsafe extern "C" fn on_server_file_contents_request(c: *mut CliprdrClientContext, r: *const CLIPRDR_FILE_CONTENTS_REQUEST) -> UINT {
-    let r = unsafe { *r };
-    let p = index(c);
-    let pos = (r.nPositionHigh as u64) << 32 | r.nPositionLow as u64;
-    let relay = with(p, |i| i.relay).flatten();
-    // off the RDP thread: a relay waits on another machine, and a range is a disk read
-    std::thread::spawn(move || {
-        let data = match relay {
-            Some(src) => contents(src, r.listIndex, r.dwFlags, pos, r.cbRequested.min(MOST)),
-            None => local(r.listIndex as usize, r.dwFlags, pos, r.cbRequested.min(MOST)),
-        };
-        answer(p, r.streamId, data.as_deref());
-    });
-    0
+    crate::ffi::guard("on_server_file_contents_request", ERROR_INTERNAL_ERROR, || {
+        let r = unsafe { *r };
+        let p = index(c);
+        let pos = (r.nPositionHigh as u64) << 32 | r.nPositionLow as u64;
+        let relay = with(p, |i| i.relay).flatten();
+        // off the RDP thread: a relay waits on another machine, and a range is a disk read
+        std::thread::spawn(move || {
+            let data = match relay {
+                Some(src) => contents(src, r.listIndex, r.dwFlags, pos, r.cbRequested.min(MOST)),
+                None => local(r.listIndex as usize, r.dwFlags, pos, r.cbRequested.min(MOST)),
+            };
+            answer(p, r.streamId, data.as_deref());
+        });
+        0
+    })
 }
 
 unsafe extern "C" fn on_server_file_contents_response(_: *mut CliprdrClientContext, r: *const CLIPRDR_FILE_CONTENTS_RESPONSE) -> UINT {
-    let r = unsafe { &*r };
-    let ok = r.common.msgFlags as u32 & CB_RESPONSE_OK != 0 && !r.requestedData.is_null();
-    let data = ok.then(|| unsafe { std::slice::from_raw_parts(r.requestedData, r.cbRequested as usize) }.to_vec());
-    if let Some(tx) = PENDING.lock().unwrap().as_mut().and_then(|m| m.remove(&r.streamId)) {
-        let _ = tx.send(data);
-    }
-    0
+    crate::ffi::guard("on_server_file_contents_response", ERROR_INTERNAL_ERROR, || {
+        let r = unsafe { &*r };
+        let ok = r.common.msgFlags as u32 & CB_RESPONSE_OK != 0 && !r.requestedData.is_null();
+        let data = ok.then(|| unsafe { std::slice::from_raw_parts(r.requestedData, r.cbRequested as usize) }.to_vec());
+        if let Some(tx) = crate::ffi::lock(&PENDING).as_mut().and_then(|m| m.remove(&r.streamId)) {
+            let _ = tx.send(data);
+        }
+        0
+    })
 }
 
 /// One of the Frame's files described in LOCAL: its size (FILECONTENTS_SIZE) or a range of it.
 fn local(i: usize, flags: u32, pos: u64, len: u32) -> Option<Vec<u8>> {
-    let e = LOCAL.lock().unwrap().get(i)?.clone();
+    let e = crate::ffi::lock(&LOCAL).get(i)?.clone();
     if flags & FILECONTENTS_SIZE != 0 {
         return Some(e.size.to_le_bytes().to_vec());
     }
@@ -327,7 +343,7 @@ fn contents(p: usize, list: u32, flags: u32, pos: u64, len: u32) -> Option<Vec<u
     let c = ctx(p)?;
     let stream = STREAM.fetch_add(1, Relaxed);
     let (tx, rx) = mpsc::channel();
-    PENDING.lock().unwrap().get_or_insert_with(HashMap::new).insert(stream, tx);
+    crate::ffi::lock(&PENDING).get_or_insert_with(HashMap::new).insert(stream, tx);
     let mut r = CLIPRDR_FILE_CONTENTS_REQUEST::default();
     r.common.msgType = CliprdrMsgType_CB_FILECONTENTS_REQUEST as u16;
     r.streamId = stream;
@@ -338,14 +354,14 @@ fn contents(p: usize, list: u32, flags: u32, pos: u64, len: u32) -> Option<Vec<u
     r.cbRequested = if flags & FILECONTENTS_SIZE != 0 { 8 } else { len };
     let sent = unsafe { ((*c).ClientFileContentsRequest.unwrap())(c, &r) } == 0;
     let got = if sent { rx.recv_timeout(Duration::from_secs(30)).ok().flatten() } else { None };
-    PENDING.lock().unwrap().as_mut().map(|m| m.remove(&stream));
+    crate::ffi::lock(&PENDING).as_mut().map(|m| m.remove(&stream));
     got
 }
 
 /// A machine's copied files, fetched into ~/.cache/control-center/clipboard/<copy> for a Frame
 /// paste. Returns the top-level paths, for the uri-list. A second paste of the same copy reuses them.
 pub fn download(src: usize, descriptor: &[u8], copy: u64) -> Option<Vec<PathBuf>> {
-    if let Some((g, tops)) = &*STAGED.lock().unwrap() {
+    if let Some((g, tops)) = &*crate::ffi::lock(&STAGED) {
         if *g == copy {
             return Some(tops.clone());
         }
@@ -381,6 +397,6 @@ pub fn download(src: usize, descriptor: &[u8], copy: u64) -> Option<Vec<PathBuf>
     }
     eprintln!("clipboard: fetched {} file(s), {} MB, in {:.1} s", entries.len(), total >> 20, started.elapsed().as_secs_f32());
     let tops = formats::tops(&root, &entries);
-    *STAGED.lock().unwrap() = Some((copy, tops.clone()));
+    *crate::ffi::lock(&STAGED) = Some((copy, tops.clone()));
     Some(tops)
 }

@@ -121,119 +121,139 @@ fn strdup(s: &str) -> *mut c_char {
 }
 
 unsafe extern "C" fn get_password(cl: *mut rfbClient) -> *mut c_char {
-    if !unsafe { may_send(cl) } {
-        return std::ptr::null_mut();
-    }
-    strdup(&unsafe { state(cl) }.opts.password) // libvncclient frees it
+    crate::ffi::guard("get_password", std::ptr::null_mut(), || {
+        if !unsafe { may_send(cl) } {
+            return std::ptr::null_mut();
+        }
+        strdup(&unsafe { state(cl) }.opts.password) // libvncclient frees it
+    })
 }
 
 unsafe extern "C" fn get_credential(cl: *mut rfbClient, kind: c_int) -> *mut rfbCredential {
-    let st = unsafe { state(cl) };
-    let c = unsafe { libc::calloc(1, size_of::<rfbCredential>()) as *mut rfbCredential };
-    if c.is_null() {
-        return c;
-    }
-    if kind as u32 == rfbCredentialTypeX509 {
-        // No CA file: the certificate is checked against the pin (an unpinned one goes to
-        // on_certificate). A pinned one that's also valid for the system CAs passes without
-        // the pin, which a LAN host's self-signed certificate never is.
-        if let Some(pin) = st.opts.pin {
-            let fp = unsafe { libc::malloc(32) as *mut u8 };
-            if !fp.is_null() {
-                unsafe { std::ptr::copy_nonoverlapping(pin.as_ptr(), fp, 32) };
-            }
-            unsafe { (*c).x509Credential.x509ExpectedFingerprint = fp };
+    crate::ffi::guard("get_credential", std::ptr::null_mut(), || {
+        let st = unsafe { state(cl) };
+        let c = unsafe { libc::calloc(1, size_of::<rfbCredential>()) as *mut rfbCredential };
+        if c.is_null() {
+            return c;
         }
-        return c;
-    }
-    if !unsafe { may_send(cl) } {
-        unsafe { libc::free(c as *mut c_void) };
-        return std::ptr::null_mut();
-    }
-    unsafe {
-        (*c).userCredential.username = strdup(&st.opts.user);
-        (*c).userCredential.password = strdup(&st.opts.password);
-    }
-    c
+        if kind as u32 == rfbCredentialTypeX509 {
+            // No CA file: the certificate is checked against the pin (an unpinned one goes to
+            // on_certificate). A pinned one that's also valid for the system CAs passes without
+            // the pin, which a LAN host's self-signed certificate never is.
+            if let Some(pin) = st.opts.pin {
+                let fp = unsafe { libc::malloc(32) as *mut u8 };
+                if !fp.is_null() {
+                    unsafe { std::ptr::copy_nonoverlapping(pin.as_ptr(), fp, 32) };
+                }
+                unsafe { (*c).x509Credential.x509ExpectedFingerprint = fp };
+            }
+            return c;
+        }
+        if !unsafe { may_send(cl) } {
+            unsafe { libc::free(c as *mut c_void) };
+            return std::ptr::null_mut();
+        }
+        unsafe {
+            (*c).userCredential.username = strdup(&st.opts.user);
+            (*c).userCredential.password = strdup(&st.opts.password);
+        }
+        c
+    })
 }
 
 /// The certificate isn't the pinned one, or there's no pin. With a pin that's a refusal. Without
 /// one it's trust on first use, like an unpaired RDP machine, and the log says how to pin it.
 unsafe extern "C" fn on_certificate(cl: *mut rfbClient, subject: *const c_char, _: libc::time_t, _: libc::time_t, fp: *const u8, len: usize) -> rfbBool {
-    let st = unsafe { state(cl) };
-    let hex: String = unsafe { std::slice::from_raw_parts(fp, len) }.iter().map(|b| format!("{b:02x}")).collect();
-    let subject = if subject.is_null() { String::new() } else { unsafe { CStr::from_ptr(subject) }.to_string_lossy().into_owned() };
-    if st.opts.pin.is_some() {
-        eprintln!("vnc {}: the host's certificate changed ({subject}, sha256 {hex}); not connecting", st.opts.host);
-        st.refused = Some("the host's certificate isn't the pinned one");
-        return 0;
-    }
-    eprintln!("vnc {}: certificate {subject}, sha256 {hex}, not pinned; add pin={hex} to its viewers.conf line", st.opts.host);
-    1
+    crate::ffi::guard("on_certificate", 0, || {
+        let st = unsafe { state(cl) };
+        let hex: String = unsafe { std::slice::from_raw_parts(fp, len) }.iter().map(|b| format!("{b:02x}")).collect();
+        let subject = if subject.is_null() { String::new() } else { unsafe { CStr::from_ptr(subject) }.to_string_lossy().into_owned() };
+        if st.opts.pin.is_some() {
+            eprintln!("vnc {}: the host's certificate changed ({subject}, sha256 {hex}); not connecting", st.opts.host);
+            st.refused = Some("the host's certificate isn't the pinned one");
+            return 0;
+        }
+        eprintln!("vnc {}: certificate {subject}, sha256 {hex}, not pinned; add pin={hex} to its viewers.conf line", st.opts.host);
+        1
+    })
 }
 
 unsafe extern "C" fn malloc_fb(cl: *mut rfbClient) -> rfbBool {
-    let st = unsafe { state(cl) };
-    st.cursor.drawn = None; // the old buffer (and the cursor in it) is gone
-    st.resized = true;
-    let ok = st.malloc_fb.map_or(0, |f| unsafe { f(cl) });
-    let (w, h) = unsafe { ((*cl).width, (*cl).height) };
-    st.grow(0, 0, w, h);
-    ok
+    crate::ffi::guard("malloc_fb", 0, || {
+        let st = unsafe { state(cl) };
+        st.cursor.drawn = None; // the old buffer (and the cursor in it) is gone
+        st.resized = true;
+        let ok = st.malloc_fb.map_or(0, |f| unsafe { f(cl) });
+        let (w, h) = unsafe { ((*cl).width, (*cl).height) };
+        st.grow(0, 0, w, h);
+        ok
+    })
 }
 
 unsafe extern "C" fn got_update(cl: *mut rfbClient, x: c_int, y: c_int, w: c_int, h: c_int) {
-    let st = unsafe { state(cl) };
-    st.grow(x, y, x + w, y + h);
-    st.area += w.max(0) as i64 * h.max(0) as i64;
+    crate::ffi::guard("got_update", (), || {
+        let st = unsafe { state(cl) };
+        st.grow(x, y, x + w, y + h);
+        st.area += w.max(0) as i64 * h.max(0) as i64;
+    })
 }
 
 unsafe extern "C" fn finished_update(cl: *mut rfbClient) {
-    let st = unsafe { state(cl) };
-    let all = unsafe { ((*cl).width.max(1) as i64) * ((*cl).height.max(1) as i64) };
-    st.change = st.change.max((st.area * 1000 / all).min(1000) as u32);
-    st.area = 0;
-    st.updates += 1;
-    // Any update answers the request, even one with only the desktop size or the cursor in it
-    // (TigerVNC's first answer), so the next request goes out at once if the panel wants one.
-    st.asked = false;
+    crate::ffi::guard("finished_update", (), || {
+        let st = unsafe { state(cl) };
+        let all = unsafe { ((*cl).width.max(1) as i64) * ((*cl).height.max(1) as i64) };
+        st.change = st.change.max((st.area * 1000 / all).min(1000) as u32);
+        st.area = 0;
+        st.updates += 1;
+        // Any update answers the request, even one with only the desktop size or the cursor in it
+        // (TigerVNC's first answer), so the next request goes out at once if the panel wants one.
+        st.asked = false;
+    })
 }
 
 unsafe extern "C" fn cursor_shape(cl: *mut rfbClient, xhot: c_int, yhot: c_int, w: c_int, h: c_int, bpp: c_int) {
-    let st = unsafe { state(cl) };
-    unsafe { restore(cl, st) };
-    let n = (w.max(0) * h.max(0)) as usize;
-    let (src, mask) = unsafe { ((*cl).rcSource, (*cl).rcMask) };
-    if bpp != 4 || n == 0 || src.is_null() || mask.is_null() {
-        st.cursor.w = 0; // an empty shape hides it
-        return;
-    }
-    let c = &mut st.cursor;
-    (c.w, c.h, c.hot) = (w, h, (xhot, yhot));
-    c.px = unsafe { std::slice::from_raw_parts(src as *const u32, n) }.to_vec();
-    c.mask = unsafe { std::slice::from_raw_parts(mask, n) }.to_vec();
-    unsafe { draw(cl, st) };
+    crate::ffi::guard("cursor_shape", (), || {
+        let st = unsafe { state(cl) };
+        unsafe { restore(cl, st) };
+        let n = (w.max(0) * h.max(0)) as usize;
+        let (src, mask) = unsafe { ((*cl).rcSource, (*cl).rcMask) };
+        if bpp != 4 || n == 0 || src.is_null() || mask.is_null() {
+            st.cursor.w = 0; // an empty shape hides it
+            return;
+        }
+        let c = &mut st.cursor;
+        (c.w, c.h, c.hot) = (w, h, (xhot, yhot));
+        c.px = unsafe { std::slice::from_raw_parts(src as *const u32, n) }.to_vec();
+        c.mask = unsafe { std::slice::from_raw_parts(mask, n) }.to_vec();
+        unsafe { draw(cl, st) };
+    })
 }
 
 /// Before libvncclient writes this area, the cursor comes out of it.
 unsafe extern "C" fn lock_area(cl: *mut rfbClient, x: c_int, y: c_int, w: c_int, h: c_int) {
-    let st = unsafe { state(cl) };
-    if let Some(d) = st.cursor.drawn
-        && x < d[2] && x + w > d[0] && y < d[3] && y + h > d[1]
-    {
-        unsafe { restore(cl, st) };
-    }
+    crate::ffi::guard("lock_area", (), || {
+        let st = unsafe { state(cl) };
+        if let Some(d) = st.cursor.drawn
+            && x < d[2] && x + w > d[0] && y < d[3] && y + h > d[1]
+        {
+            unsafe { restore(cl, st) };
+        }
+    })
 }
 
 /// After it wrote a rect, the cursor goes back in.
 unsafe extern "C" fn unlock(cl: *mut rfbClient) {
-    unsafe { draw(cl, state(cl)) };
+    crate::ffi::guard("unlock", (), || {
+        unsafe { draw(cl, state(cl)) };
+    })
 }
 
 /// The server moved the pointer (PointerPos).
 unsafe extern "C" fn cursor_pos(cl: *mut rfbClient, x: c_int, y: c_int) -> rfbBool {
-    unsafe { move_cursor(cl, x, y) };
-    1
+    crate::ffi::guard("cursor_pos", 0, || {
+        unsafe { move_cursor(cl, x, y) };
+        1
+    })
 }
 
 unsafe fn move_cursor(cl: *mut rfbClient, x: i32, y: i32) {
@@ -551,13 +571,13 @@ static INPUT: Mutex<Vec<(usize, Ev)>> = Mutex::new(Vec::new());
 
 fn queue(p: &Panel, e: Ev) {
     if p.connected.load(Acquire) {
-        INPUT.lock().unwrap().push((p.index, e));
+        crate::ffi::lock(&INPUT).push((p.index, e));
         crate::rdp::poke(p); // its session thread may be in its wait
     }
 }
 
 fn take_input(i: usize) -> Vec<Ev> {
-    let mut q = INPUT.lock().unwrap();
+    let mut q = crate::ffi::lock(&INPUT);
     let (mine, rest) = std::mem::take(&mut *q).into_iter().partition(|(j, _)| *j == i);
     *q = rest;
     mine.into_iter().map(|(_, e)| e).collect()
@@ -649,7 +669,7 @@ pub fn run(p: &'static Panel) {
                     break 'session;
                 }
             }
-            let _g = p.lock.lock().unwrap();
+            let _g = crate::ffi::lock(&p.lock);
             if ready {
                 let t = thread_cpu();
                 if !s.handle() {
