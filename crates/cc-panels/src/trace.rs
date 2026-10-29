@@ -197,6 +197,7 @@ pub fn fake_vr() -> std::sync::MutexGuard<'static, ()> {
     (k.plasma, k.bar) = (None, None);
     drop(k);
     crate::windows::SHELL_SENT.lock().unwrap().clear();
+    crate::windows::SHELL_OTHER.lock().unwrap().clear();
     guard
 }
 
@@ -216,6 +217,41 @@ mod tests {
         assert!(kwin && cap && win, "KWin {kwin}, capture {cap}, the session {win}");
         crate::windows::shell_mouse(freerdp_sys::PTR_FLAGS_MOVE, Some((1.0, 2.0)));
         assert_eq!(*crate::windows::SHELL_SENT.lock().unwrap(), [(freerdp_sys::PTR_FLAGS_MOVE, Some((1.0, 2.0)))], "it went to the test's list, and only there");
+    }
+
+    #[test]
+    fn each_install_gets_its_own_script() {
+        let ev = |t: u32| sys::VREvent_t { eventType: t, ..Default::default() };
+        let poll = || {
+            let mut e: sys::VREvent_t = Default::default();
+            crate::call!(ov, PollNextOverlayEvent, 1, &mut e, size_of::<sys::VREvent_t>() as u32).then_some(e.eventType)
+        };
+        let first = crate::vr::fake::Script { events: [ev(300), ev(301)].into(), ..Default::default() };
+        let guard = crate::vr::fake::install(first);
+        assert_eq!(poll(), Some(300)); // one left behind on purpose
+        drop(guard);
+        let second = crate::vr::fake::Script { events: [ev(305)].into(), ..Default::default() };
+        let _guard = crate::vr::fake::install(second);
+        assert_eq!((poll(), poll()), (Some(305), None), "the second script, and nothing from the first");
+    }
+
+    #[test]
+    fn a_replayed_pose_is_the_laser_it_recorded() {
+        let _vr = fake_vr();
+        let laser: Mat = [[0.0, 0.0, 1.0, 0.12], [0.0, 1.0, 0.0, 1.05], [-1.0, 0.0, 0.0, -0.31]]; // tip offset and all
+        let (dev, m) = pose_from(&pose_line(5, Some(&laser))).unwrap();
+        crate::vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).poses.push((dev, m.unwrap()));
+        assert_eq!(crate::vr::laser_pose(5), Some(laser), "laser_pose adds nothing to it under the fake");
+        assert_eq!(crate::vr::laser_pose(6), None, "a device the trace had no pose for");
+    }
+
+    #[test]
+    fn a_replay_reaches_no_real_input() {
+        let _vr = fake_vr();
+        crate::windows::wheel(false, 1.0);
+        crate::windows::leave();
+        crate::windows::shell_outside();
+        assert_eq!(*crate::windows::SHELL_OTHER.lock().unwrap(), ["wheel", "leave", "outside"], "each went to the test's list and returned");
     }
 
     #[test]

@@ -29,10 +29,19 @@ goes to a session or fake input. Once the fake is in, `Windows::start`, `Kwin::s
 `Capture::start` panic, so a replay can't connect to KWin, start capture or a session, or send
 real input (a test checks all four).
 
+The session's other inputs a replay can reach (`wheel`, `leave`, `shell_outside`) do the same
+onto `windows::SHELL_OTHER`, by name. The rest of what the taskbar's and Plasma's `events()` can
+reach stays inside cc-panels: Kvm's state (`set_awake`, `type_to_shell`, which only lets go of
+keys it's holding, and a replay holds none), grab.rs's holds, and Plasma's own presses. A chip's
+click could do more (the power chip closes the Desktop), but a replayed frame has no chips.
+
 `trace::fake_vr()` is what a replay test calls. It installs the fake with an empty script, clears
 what the last replay left (Plasma's crop, Kvm's placements of both bars, `SHELL_SENT`), and
 returns the guard. `VR` is a `OnceLock` and no test ever calls `vr::init`, which needs vrserver,
-so the fake is the only thing set in it, and each install replaces the last script.
+so the fake is the only thing set in it. Its tables are leaked and only reach the script through
+`vr::fake::SCRIPT`, a static, so nothing a late poll touches is ever freed. Each install swaps the
+script in under that lock while holding the guard, so a test never sees the last one's events or
+poses (`each_install_gets_its_own_script`).
 
 ## Recording a trace
 
@@ -46,6 +55,8 @@ Each line is one JSON object:
   press or release. A scroll has `dx`, `dy`, `scale` and `cursor` instead, and focus coming or
   going has nothing past `age` (SteamVR's own age of the event).
 - `{"pose":3,"m":[[…],[…],[…]]}`: a laser's pose as `laser_pose` gave it (`null`: not tracked).
+  That's the laser itself, the render model's tip offset included, and the fake has no render
+  model, so `laser_pose` hands it back unchanged in a replay (`a_replayed_pose_is_the_laser_it_recorded`).
 - `{"plasma":{"crop":…,"panel":…,"bounds":…,"world":…,"width":…,"aspect":…,"curve":…,"clickable":…}}`:
   Plasma's overlay, each time tick() places it somewhere new.
 
@@ -72,6 +83,14 @@ It's written through a 1 MB buffer flushed once a pass, so the disk never stalls
 open, a laser's move, press and release on an item, and the press lands on the item. A trace from
 the headset becomes a test the same way. Put the lines in a test, replay them, and assert on
 `SHELL_SENT`.
+
+A trace whose last line was cut off (the cap, or a crash mid-write) still replays: a line that
+isn't whole JSON is skipped.
+
+**Time.** Plasma's and the taskbar's `events()` don't read the clock, except one place: the power
+chip's second click has to come within its arm time (`press_power`), and a replay has no chips.
+Each event's own `age` is replayed as recorded. Anything later that times holds or taps from
+`Instant::now()` wouldn't replay faithfully, and would need the trace's `t` fed in as a clock.
 
 ## The taskbar's loop
 

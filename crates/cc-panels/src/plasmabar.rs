@@ -646,7 +646,7 @@ mod tests {
             ev(sys::EVREventType_VREvent_MouseButtonUp),
         ]
         .join("\n");
-        p.replay(&trace);
+        p.replay(&format!("{trace}\n{{\"tick\":\"plasma\",\"t\":1.2")); // the last line cut off mid-write: skipped
         let sent = std::mem::take(&mut *windows::SHELL_SENT.lock().unwrap());
         let flags: Vec<u32> = sent.iter().map(|s| s.0).collect();
         assert_eq!(flags, [PTR_FLAGS_MOVE, PTR_FLAGS_BUTTON1 | PTR_FLAGS_DOWN, PTR_FLAGS_BUTTON1], "a move, the press, its release");

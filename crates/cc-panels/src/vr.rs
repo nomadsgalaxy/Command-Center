@@ -304,7 +304,7 @@ pub mod fake {
     pub struct Script {
         pub events: VecDeque<sys::VREvent_t>,
         pub poses: Vec<(u32, Mat)>, // each device's pose; a device not here isn't tracked
-        next: u64,                  // the next overlay handle
+        pub next: u64,              // the last overlay handle handed out
     }
 
     pub static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -374,8 +374,11 @@ pub mod fake {
     /// Puts the fake in place of SteamVR, once for the process, and starts `s` as its script.
     /// Returns the guard that keeps other fake-SteamVR tests out until it drops. VR is a OnceLock,
     /// and no test calls vr::init (it needs vrserver), so the fake is the only thing ever set in
-    /// it; each install replaces the last test's script. Use trace::fake_vr, which also clears
-    /// what a replay leaves outside the script.
+    /// it. The tables it holds are leaked and the functions in them reach the script only through
+    /// SCRIPT, a static, so nothing they touch is ever freed, even by a poll after the guard's
+    /// gone. Each install swaps the script in under SCRIPT's lock, while holding the guard, so the
+    /// last test's events and poses are gone. Use trace::fake_vr, which also clears what a replay
+    /// leaves outside the script.
     pub fn install(s: Script) -> std::sync::MutexGuard<'static, ()> {
         let guard = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         ON.store(true, std::sync::atomic::Ordering::Relaxed);

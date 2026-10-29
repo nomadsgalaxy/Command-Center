@@ -200,6 +200,12 @@ pub fn key(code: u16, value: i32) {
 
 /// Wheel notches, positive up or right (evdev's way).
 pub fn wheel(horizontal: bool, notches: f64) {
+    #[cfg(test)]
+    return {
+        let _ = (horizontal, notches);
+        SHELL_OTHER.lock().unwrap().push("wheel")
+    };
+    #[cfg_attr(test, allow(unreachable_code))]
     let s = INPUT.lock().unwrap();
     if let Some(ses) = &s.session {
         ses.axis(horizontal, notches * s.wheel * if horizontal { 1.0 } else { -1.0 });
@@ -209,6 +215,9 @@ pub fn wheel(horizontal: bool, notches: f64) {
 /// The pointer left every window panel, so it goes to rest on the park output, which closes
 /// tooltips and clears hover states. Not while a button is held in the session, since that's a drag.
 pub fn leave() {
+    #[cfg(test)]
+    return SHELL_OTHER.lock().unwrap().push("leave");
+    #[cfg_attr(test, allow(unreachable_code))]
     let mut s = INPUT.lock().unwrap();
     if s.hover.is_none() || s.down != 0 {
         return;
@@ -283,6 +292,9 @@ pub static SHELL_SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
 /// One shell_mouse call: its RDP pointer flags and the session point.
 #[cfg(test)]
 pub type Sent = (u32, Option<(f64, f64)>);
+/// The session's other inputs a replay can reach, by name: "wheel", "leave", "outside".
+#[cfg(test)]
+pub static SHELL_OTHER: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
 /// A press outside Plasma's open popup (on a krdp panel, a card, our taskbar, or a window
 /// panel whose window may be under it) clicks on the park output, so Plasma closes the popup
@@ -292,6 +304,9 @@ pub type Sent = (u32, Option<(f64, f64)>);
 /// it is dropped (`mouse`), so it can't land in it.
 /// ponytail: a laser click into nothing (SteamVR's own space) leaves it open.
 pub fn shell_outside() {
+    #[cfg(test)]
+    return SHELL_OTHER.lock().unwrap().push("outside");
+    #[cfg_attr(test, allow(unreachable_code))]
     if !plasmabar::OPEN.load(Relaxed) {
         return;
     }
