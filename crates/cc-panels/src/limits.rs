@@ -56,6 +56,10 @@ pub const LASER_PUSH_RANGE: (f64, f64) = (0.25, 5.0);
 /// step from 1x to PUSH_ACCEL.1 times over PUSH_ACCEL.0 seconds. A pause or a turn back starts over.
 pub const PUSH_ACCEL: (f64, f64) = (1.5, 4.0);
 pub const PUSH_STREAK: f64 = 0.3;
+/// ...and only as much as the notches come quickly: at PUSH_RATE notches a second or more, the full
+/// speed-up; slower, a share of it. A light push that sends small notches every frame doesn't
+/// race off just because it never pauses.
+pub const PUSH_RATE: f64 = 5.0;
 
 /// Right Ctrl + wheel (kvm.rs `scale`): each notch multiplies the distance (or, with Shift, the
 /// width) by this, and the distance stays between these (metres).

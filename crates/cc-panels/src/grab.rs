@@ -36,7 +36,7 @@
 //! the bar, an edge or a corner.
 use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta, surface_point};
 use crate::kvm::Kvm;
-use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, PUSH_ACCEL, PUSH_STREAK, ZOOM, ZOOM_NOTCH};
+use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, PUSH_ACCEL, PUSH_RATE, PUSH_STREAK, ZOOM, ZOOM_NOTCH};
 use crate::overlay::{At, Live, Overlays, Place, apply};
 use crate::stage::Stage;
 use crate::theme::{self, Accent, Rgb, Theme, Tokens};
@@ -899,9 +899,9 @@ fn dock_for(hand: V3, head: V3, controllers: &[(u32, V3)]) -> Option<Dock> {
 const TAP: Duration = Duration::from_millis(350);
 const TAP_BEND: f64 = 0.005;
 
-/// The curve a tap on the curve button gives a panel `width` wide, `dist` from the eye: curved
-/// means a circle round you at that distance (SteamVR's "Toggle Curvature"), never tighter than a
-/// half circle; curved means flat again.
+/// The curve a tap on the curve button gives a panel `width` wide, `dist` from the eye (SteamVR's
+/// "Toggle Curvature"): a flat one curves round you at that distance, never tighter than a half
+/// circle, and a curved one goes flat again.
 fn toggled(width: f64, curve: f64, dist: f64) -> f64 {
     if curve > 0.0 { 0.0 } else { dist.max(crate::geometry::least_radius(width)) }
 }
@@ -912,21 +912,24 @@ struct Streak {
     since: Instant,
     last: Instant,
     out: bool,
+    notches: f64, // how many it's had (fractions add up), for its rate
 }
 
-/// The streak after a notch at `now`, the way `out`: it goes on, or starts over after a pause
-/// or a turn back. Returns it and how long it's been going, in seconds.
-fn streak(was: Option<Streak>, now: Instant, out: bool) -> (Streak, f64) {
+/// The streak after `n` notches at `now`, the way `out`: it goes on, or starts over after a pause
+/// or a turn back. Returns it, how long it's been going (seconds), and its rate (notches a second).
+fn streak(was: Option<Streak>, now: Instant, out: bool, n: f64) -> (Streak, f64, f64) {
     let s = match was {
-        Some(s) if s.out == out && now.duration_since(s.last).as_secs_f64() <= PUSH_STREAK => Streak { last: now, ..s },
-        _ => Streak { since: now, last: now, out },
+        Some(s) if s.out == out && now.duration_since(s.last).as_secs_f64() <= PUSH_STREAK => Streak { last: now, notches: s.notches + n.abs(), ..s },
+        _ => Streak { since: now, last: now, out, notches: n.abs() },
     };
-    (s, now.duration_since(s.since).as_secs_f64())
+    let held = now.duration_since(s.since).as_secs_f64();
+    (s, held, if held > 0.0 { s.notches / held } else { 0.0 })
 }
 
-/// How many times the first step a push or pull takes, after going on `held` seconds.
-fn accel(held: f64) -> f64 {
-    1.0 + (PUSH_ACCEL.1 - 1.0) * (held / PUSH_ACCEL.0).clamp(0.0, 1.0)
+/// How many times the first step a push or pull takes, after going on `held` seconds at `rate`
+/// notches a second.
+fn accel(held: f64, rate: f64) -> f64 {
+    1.0 + (PUSH_ACCEL.1 - 1.0) * (held / PUSH_ACCEL.0).clamp(0.0, 1.0) * (rate / PUSH_RATE).clamp(0.0, 1.0)
 }
 
 /// What a panel's card looks like right now, as uploaded and placed.
@@ -1119,7 +1122,9 @@ pub fn width_for(sx: f64, sy: f64, cu: f64, cv: f64, aspect: f64) -> f64 {
 /// resizing"), and returns the panel's new matrix, width, height and curve. With `aspect` (height
 /// per width) it keeps its shape and the corner moves along the diagonal. With None it takes any
 /// shape up to `max` (w, h), which is how a window works, as big as the output. The curve grows
-/// with the width only past a half circle.
+/// with the width only past a half circle. (cu, cv) is the corner itself, not the laser: the caller
+/// takes off the grab's offset from the corner that start() kept (gx, gy), so w = 2·cu holds and
+/// a grab a little inside the handle doesn't jump.
 fn stretched(pl: &Placement, cu: f64, cv: f64, aspect: Option<f64>, max: (f64, f64)) -> (Mat, f64, f64, f64) {
     let (w, h) = match aspect {
         Some(a) => {
@@ -1401,9 +1406,9 @@ impl Grab {
             Some(Mode::Move { .. }) if notches == 0.0 => {} // no notch: the streak goes on
             Some(Mode::Move { .. }) => {
                 let d = self.drags[i].as_mut().unwrap();
-                let (st, held) = streak(d.streak, Instant::now(), notches > 0.0);
+                let (st, held, rate) = streak(d.streak, Instant::now(), notches > 0.0, notches);
                 d.streak = Some(st);
-                self.push(i, notches * accel(held), k, s)
+                self.push(i, notches * accel(held, rate), k, s)
             }
             Some(Mode::Curve { s0, .. }) => *s0 = (*s0 + CURVE_NOTCH * notches).max(0.0),
             Some(Mode::Zoom { zoom0, .. }) => *zoom0 = (*zoom0 * ZOOM_NOTCH.powf(notches)).clamp(ZOOM.0, ZOOM.1),
@@ -2420,16 +2425,30 @@ mod tests {
     fn a_push_speeds_up_while_it_goes_on_and_starts_over_after_a_pause_or_a_turn() {
         let t0 = Instant::now();
         let ms = |n: u64| t0 + Duration::from_millis(n);
-        let (mut s, held) = streak(None, t0, true);
-        assert_eq!((held, accel(held)), (0.0, 1.0), "the first notch: the plain step");
+        let (mut s, held, rate) = streak(None, t0, true, 1.0);
+        assert_eq!(accel(held, rate), 1.0, "the first notch: the plain step");
+        let (mut held, mut rate) = (0.0, 0.0);
         for n in 1..=8 {
-            s = streak(Some(s), ms(n * 200), true).0;
+            (s, held, rate) = streak(Some(s), ms(n * 200), true, 1.0); // five notches a second
         }
-        let held = ms(1600).duration_since(s.since).as_secs_f64();
-        assert!(held >= PUSH_ACCEL.0 && accel(held) == PUSH_ACCEL.1, "1.6 s of notches: full speed");
-        assert!(accel(0.5) > 1.0 && accel(0.5) < accel(1.0), "it ramps");
-        assert_eq!(streak(Some(s), ms(1600 + 400), true).1, 0.0, "a pause starts over");
-        assert_eq!(streak(Some(s), ms(1700), false).1, 0.0, "so does a pull after a push");
+        assert!(held >= PUSH_ACCEL.0 && accel(held, rate) == PUSH_ACCEL.1, "1.6 s of quick notches: full speed ({rate}/s)");
+        assert!(accel(0.5, PUSH_RATE) > 1.0 && accel(0.5, PUSH_RATE) < accel(1.0, PUSH_RATE), "it ramps");
+        assert_eq!(streak(Some(s), ms(1600 + 400), true, 1.0).1, 0.0, "a pause starts over");
+        assert_eq!(streak(Some(s), ms(1700), false, 1.0).1, 0.0, "so does a pull after a push");
+    }
+
+    #[test]
+    fn a_light_steady_push_stays_slow_and_a_quick_fractional_one_ramps() {
+        let t0 = Instant::now();
+        let run = |step: f64| {
+            let (mut s, mut held, mut rate) = streak(None, t0, true, step);
+            for n in 1..=125u64 {
+                (s, held, rate) = streak(Some(s), t0 + Duration::from_millis(n * 16), true, step); // every frame for 2 s
+            }
+            accel(held, rate)
+        };
+        assert!(run(0.02) < 2.0, "a light push, 1.25 notches a second: {}", run(0.02));
+        assert_eq!(run(0.1), PUSH_ACCEL.1, "0.1 a frame is 6 notches a second, a quick push: full speed");
     }
 
     #[test]
@@ -2824,6 +2843,25 @@ mod tests {
             g.end_by(HAND, &k);
             g.settle(&mut k, &mut f);
             assert!(g.docked[0].is_none());
+        }
+
+        #[test]
+        fn a_hand_out_of_sight_when_the_carry_starts_can_still_take_the_dock() {
+            const OTHER: u32 = 2;
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+            f.hidden.push(OTHER); // on, but out of the cameras' sight
+            g.docking = true;
+            g.start(0, Part::Bar, HAND, &k, &f);
+            point(&mut f, OTHER, [0.38, 1.2, -0.4], p.c); // back in sight, at the carrying hand
+            f.hidden.clear();
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert!(matches!(g.docked[0], Some((Dock::Hand(OTHER), _, None))));
         }
 
         #[test]

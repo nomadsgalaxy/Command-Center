@@ -67,7 +67,9 @@ impl Stage for Live {
     }
 
     fn controllers(&self) -> Vec<u32> {
-        (1..openvr_sys::k_unMaxTrackedDeviceCount as u32).filter(|&d| vr::is_real_controller(d) && crate::grab::pose_of(d).is_some()).collect()
+        // connected, tracked or not: a hand that's out of the cameras' sight right now can still be a
+        // target later in the carry (arm() reads its pose each frame)
+        (1..openvr_sys::k_unMaxTrackedDeviceCount as u32).filter(|&d| crate::grab::connected(d) && vr::is_real_controller(d)).collect()
     }
 
     fn panel(&self, i: usize) -> PanelFacts {
@@ -100,6 +102,8 @@ pub mod fake {
         pub pulses: Vec<Handle>,
         /// Devices switched off (not just untracked).
         pub off: Vec<u32>,
+        /// Controllers that are on but untracked right now (no pose in `devices`).
+        pub hidden: Vec<u32>,
         /// The pointer moves sent, as (panel, x, y).
         pub moves: Vec<(usize, f64, f64)>,
     }
@@ -184,7 +188,8 @@ pub mod fake {
         }
 
         fn controllers(&self) -> Vec<u32> {
-            let mut c: Vec<u32> = self.devices.keys().copied().filter(|&d| d != 0 && d != crate::grab::MOUSE).collect();
+            let mut c: Vec<u32> = self.devices.keys().chain(&self.hidden).copied().filter(|&d| d != 0 && d != crate::grab::MOUSE && !self.off.contains(&d)).collect();
+            c.dedup();
             c.sort();
             c
         }
