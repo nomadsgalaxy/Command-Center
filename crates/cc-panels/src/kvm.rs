@@ -52,6 +52,7 @@ const KEY_RIGHTCTRL: u16 = 97;
 pub enum TextMode {
     Unicode, // characters as themselves, whatever the host's layout
     UsKeys,  // only as a US keyboard's keys, which the strip says before you type
+    Unknown, // not connected yet (RDP's capability isn't in): keys if anything, but nothing's said
 }
 
 /// How one character from SteamVR's keyboard goes out.
@@ -70,7 +71,7 @@ fn route(c: char, modified: bool, mode: TextMode) -> Route {
     match mode {
         _ if c.is_control() || modified => key(),
         TextMode::Unicode => Route::Char,
-        TextMode::UsKeys => key(),
+        TextMode::UsKeys | TextMode::Unknown => key(),
     }
 }
 

@@ -62,6 +62,10 @@ What it can't do:
   seconds. It never says which character, and neither does the log, since you might be typing a
   password. A character our side couldn't send (the connection dropped, or the RDP server
   refused it) counts the same way, and it isn't sent again some other way.
+- On a panel that takes characters, every character goes as a character, plain letters and
+  space too. That's right for typing text, but a program that reads keys rather than text (a
+  game's space to pause, WASD to move) won't see them from SteamVR's keyboard. Use a real keyboard
+  for those.
 - That promise is only Command Center's side. Once a character reaches the computer, its own
   remote desktop server types it: krdp and KRFB on Wayland go through the desktop portal, and
   KRFB on X11 looks the character up on the host's keyboard layout (XTest). Any of them can drop
@@ -122,6 +126,9 @@ desktop. For each of krdp and a VNC server, and for each host layout (US and Ger
 - [ ] Reconnect: drop the network for a few seconds while the keyboard is open, then type: it
       types, nothing stuck, and an RDP server that doesn't take Unicode still says "as a US
       keyboard".
+- [ ] krdp really types `é€😀` from Unicode events, not only says it takes them (its input
+      capability) and then drops them. Until this passes, krdp isn't supported for typing as
+      characters.
 - [ ] A window panel says "as a US keyboard" and types ASCII.
 - [ ] On a US host: `€` and `ł` come out, or are counted as not typed. Nothing else appears.
 - [ ] An emoji (a surrogate pair over RDP) comes out as one character.

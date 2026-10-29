@@ -697,11 +697,20 @@ fn keysym(code: u16, shift: bool) -> u32 {
 /// Input waiting for each panel's session thread.
 static INPUT: Mutex<Vec<(usize, Ev)>> = Mutex::new(Vec::new());
 
-fn queue(p: &Panel, e: Ev) {
-    if p.connected.load(Acquire) {
-        crate::ffi::lock(&INPUT).push((p.index, e));
+fn queue(p: &Panel, e: Ev) -> bool {
+    let queued = queue_if(p.connected.load(Acquire), p.index, e);
+    if queued {
         crate::rdp::poke(p); // its session thread may be in its wait
     }
+    queued
+}
+
+/// Queues e for panel i's session thread if it's connected. False if there's no session to take it.
+fn queue_if(connected: bool, i: usize, e: Ev) -> bool {
+    if connected {
+        crate::ffi::lock(&INPUT).push((i, e));
+    }
+    connected
 }
 
 fn take_input(i: usize) -> Vec<Ev> {
@@ -724,8 +733,7 @@ pub fn wheel(p: &Panel, horizontal: bool, notches: f64) {
 
 /// A character as itself (Panel::text). VNC always can, through keysyms.
 pub fn text(p: &Panel, c: char) -> bool {
-    queue(p, Ev::Sym(char_keysym(c)));
-    true
+    queue(p, Ev::Sym(char_keysym(c))) // a panel that's disconnected says so, and the character counts as missed
 }
 
 /// An evdev key: 0 up, 1 down, 2 repeat (Panel::key).
@@ -851,6 +859,15 @@ pub fn run(p: &'static Panel) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_disconnected_panel_takes_no_characters() {
+        let before = take_input(97).len();
+        assert!(!queue_if(false, 97, Ev::Sym(0x61)), "no session: refused, so it counts as missed");
+        assert_eq!(take_input(97).len(), before);
+        assert!(queue_if(true, 97, Ev::Sym(0x61)));
+        assert_eq!(take_input(97).len(), 1);
+    }
 
     #[test]
     fn a_character_is_its_latin1_or_unicode_keysym() {
