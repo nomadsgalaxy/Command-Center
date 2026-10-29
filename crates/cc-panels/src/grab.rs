@@ -868,6 +868,10 @@ const DOCK_DWELL: Duration = Duration::from_millis(400);
 const DOCK_REACH: f64 = 0.6;
 /// A head dock keeps the panel's distance from the head, within these (metres).
 const HEAD_REACH: (f64, f64) = (0.4, 2.0);
+/// A dock's controller has to be reported switched off this long in a row before its panel is
+/// left in the room, so one bad frame from SteamVR (every device "disconnected" for a moment)
+/// doesn't drop every hand dock.
+const OFF_DEBOUNCE: Duration = Duration::from_millis(100);
 
 /// rel (a panel's pose relative to what it docks on) with its offset brought within reach.
 fn within_reach(dock: Dock, mut rel: Mat) -> Mat {
@@ -975,6 +979,7 @@ pub struct Grab {
     drops: Vec<(usize, Option<Dock>)>,                 // carries a controller let go, and the target it had armed, for settle
     docked: Vec<Option<(Dock, Mat, Option<Instant>)>>, // what each slot rides on, its pose relative to that, and since when that's untracked
     pub docking: bool,                                 // settings.json "docking", read at start (main.rs): off, nothing docks
+    off_since: Vec<Option<Instant>>,                   // since when a docked slot's controller has been reported off (OFF_DEBOUNCE)
     keyboards: Vec<usize>,                             // keyboard buttons pressed, for osk.rs
     backs: crate::back::Backs,                         // panels turned away from you show their backs (back.rs)
     pub game: bool,                                    // a VR game is running (the taskbar knows), so no backs
@@ -1177,6 +1182,7 @@ impl Grab {
             drops: Vec::new(),
             docked: vec![None; n],
             docking: false,
+            off_since: vec![None; n],
             keyboards: Vec::new(),
             backs: Default::default(),
             game: false,
@@ -1719,6 +1725,10 @@ impl Grab {
                 Dock::Hand(c) => s.device(c),
                 Dock::Head => s.head_pose(),
             };
+            let off = matches!(dock, Dock::Hand(c) if !s.connected(c));
+            if !off {
+                self.off_since[i] = None;
+            }
             match on {
                 Some(m) => {
                     self.docked[i] = Some((dock, rel, None));
@@ -1727,9 +1737,9 @@ impl Grab {
                 }
                 // the headset untracked: it keeps its place on the head, since world poses are off then too
                 None if dock == Dock::Head => {}
-                // its controller switched off: it stays in the room where it last was, at once (not saved)
-                None if matches!(dock, Dock::Hand(c) if !s.connected(c)) => {
-                    self.docked[i] = None;
+                // its controller switched off, for OFF_DEBOUNCE in a row: it stays in the room where it last was (not saved)
+                None if off && now.duration_since(*self.off_since[i].get_or_insert(now)) >= OFF_DEBOUNCE => {
+                    (self.docked[i], self.off_since[i]) = (None, None);
                     eprintln!("{}: the controller it was docked on is off, so it's left in the room", self.owner(i).map_or("", |o| o.name));
                 }
                 // ...or only out of tracking for LOST
@@ -2429,6 +2439,7 @@ mod tests {
         assert_eq!((held, rate), (0.0, 0.0), "the first notch has no time behind it");
         assert_eq!(accel(held, rate), 1.0, "the first notch: the plain step");
         assert_eq!(accel(0.0, PUSH_RATE * 10.0), 1.0, "however quick, no time held is no speed-up");
+        assert!(accel(0.016, PUSH_RATE * 10.0) < 1.05, "one frame held, however quick: about the plain step");
         let (mut held, mut rate) = (0.0, 0.0);
         for n in 1..=8 {
             (s, held, rate) = streak(Some(s), ms(n * 200), true, 1.0); // five notches a second
@@ -2927,12 +2938,23 @@ mod tests {
             assert!(g.docked[0].is_some(), "a blink of lost tracking isn't gone");
             g.carry(&mut k, &mut f, t0 + LOST + Duration::from_millis(10));
             assert!(g.docked[0].is_none() && k.place[0].c == at, "left where it was");
-            // switched off: at once
+            // switched off: after OFF_DEBOUNCE, not LOST
             let (mut g, mut k, mut f) = docked_on_other(p, [0.3, 1.2, -0.4]);
+            let back = f.devices[&2];
             f.devices.remove(&2);
             f.off.push(2);
-            g.carry(&mut k, &mut f, Instant::now());
-            assert!(g.docked[0].is_none(), "no wait for a controller that's off");
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            assert!(g.docked[0].is_some(), "one frame reported off is a hiccup");
+            f.off.clear();
+            f.devices.insert(2, back);
+            g.carry(&mut k, &mut f, t0 + Duration::from_millis(16));
+            assert!(g.docked[0].is_some(), "back the next frame: still docked");
+            f.devices.remove(&2);
+            f.off.push(2);
+            g.carry(&mut k, &mut f, t0 + Duration::from_millis(32));
+            g.carry(&mut k, &mut f, t0 + Duration::from_millis(32) + OFF_DEBOUNCE);
+            assert!(g.docked[0].is_none(), "off for 100 ms: it's really off, and LOST isn't waited for");
         }
 
         #[test]
