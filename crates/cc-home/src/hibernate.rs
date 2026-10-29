@@ -364,11 +364,11 @@ mod tests {
                 _ => vec![],
             }
         };
-        let poses = json!({"{1}": {"yaw": 1}, "{5}": {"yaw": 5}});
+        let poses = json!({"{1}": {"yaw": 1, "room": 111}, "{5}": {"yaw": 5}});
         let one = |s: &str| [s.to_owned()].into_iter().collect::<HashSet<_>>();
         let apps = pick(&wins, cmds, &poses, &(one("1password"), one("1password")));
         assert_eq!(apps.iter().map(|a| a["app"].as_str().unwrap()).collect::<Vec<_>>(), ["org.kde.konsole", "xterm"]);
-        assert_eq!(apps[0]["poses"], json!([{"yaw": 1}, {"yaw": 5}]));
+        assert_eq!(apps[0]["poses"], json!([{"yaw": 1, "room": 111}, {"yaw": 5}]), "each pose keeps the room it was put in (cc-panels skips another room's)");
         assert_eq!(apps[0]["minimized"], false);
         assert_eq!(apps[1], json!({"app": "xterm", "desktop": "", "cmdline": ["xterm", "-e", "top"], "minimized": false, "poses": []}));
         // autostart is caught by program name alone

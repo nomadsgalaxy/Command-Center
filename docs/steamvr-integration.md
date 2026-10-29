@@ -67,7 +67,10 @@ it anywhere in this room (a new room, or travelling), it opens in front of you i
 yourself: another room's places are never carried over, since there they'd be somewhere else
 entirely. A room with its own workspace keeps its places; Temporary, the travel workspace, keeps
 the places from the room you last laid it out in, and starts empty in a different one. A window
-panel's own last place (kept while its window stays open) follows the same rule.
+panel's own last place (kept while its window stays open, and the one an app reopened after the
+Desktop was closed comes back to) follows the same rule. The Machines, Preferences and Workspace
+windows too: with no place for them in this room, they open 1.4 m in front of you like
+everything else.
 
 Docking doesn't change any of this: a docked panel's place in the room stays where you last put
 it down, so after a restart it's there (in the same room) or in front of you (somewhere new).

@@ -20,9 +20,11 @@ pub const BTN_H: f64 = 28.0;
 pub const GAP: f64 = 8.0;
 const RADIUS: f64 = 8.0;
 pub const SCALE: f64 = 1.5; // texture pixels per unit
-pub const MPP: f64 = 0.0006; // calibration knob: metres per unit (matches the taskbar's text size at OUT)
-const OUT: f64 = 0.6; // this far ahead of the eyes (nearer than panels and follow's taskbar),
-const DROP: f64 = 0.12; // this far below them
+pub const MPP: f64 = 0.0006; // calibration knob: metres per unit (matches the taskbar's text size at 0.6 m)
+/// With no spot for it in this room, a window opens this far ahead of the eyes, level and facing
+/// you, like every new surface (Anthony's rule). n5's limits::NEW_AHEAD and geometry::new_pose are
+/// the same thing; this one goes when they're on main.
+const NEW_AHEAD: f64 = 1.4;
 pub const SORT: u32 = 193; // over the taskbar (190, Plasma's 191) and its card (192), under the scan's HUD (195/196)
 
 pub type Px = ([f64; 3], f64);
@@ -209,16 +211,17 @@ pub fn patch(buf: &mut [u8], tw: usize, th: usize, s: f64, (x0, y0, x1, y1): Rec
     }
 }
 
-/// Where a window `name` w metres wide opens: where it was last put down (spots.home.<name>),
-/// else OUT ahead of the eyes and DROP below them, facing you.
+/// Where a window `name` w metres wide opens: where it was last put down in this room
+/// (spots.home.<name> of this room's workspace), else in front of you (`fresh`).
 pub fn spot(name: &str, w: f64) -> Pose {
-    config::home_pose(name, None).unwrap_or_else(|| {
-        let m = vr::head().unwrap_or(STAND_IN_HEAD);
-        let eye = [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64];
-        let centre = ahead_of(&eye, &level_ahead(&m), OUT, DROP, 0.0);
-        let (yaw, pitch) = angles(&[centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]]);
-        Pose { centre, yaw, pitch, width: w, ..Default::default() }
-    })
+    config::home_pose(name, None).unwrap_or_else(|| fresh(&vr::head().unwrap_or(STAND_IN_HEAD), w))
+}
+
+/// NEW_AHEAD ahead of the eyes of `head`, level, facing you, w metres wide.
+fn fresh(head: &crate::geometry::Mat, w: f64) -> Pose {
+    let (eye, f) = ([0, 1, 2].map(|i| head[i][3] as f64), level_ahead(head));
+    let (yaw, pitch) = angles(&f);
+    Pose { centre: ahead_of(&eye, &f, NEW_AHEAD, 0.0, 0.0), yaw, pitch, width: w, ..Default::default() }
 }
 
 /// A window's texture: px (tw x th) for a w x ht window (`size`). `full` means it was drawn whole.
@@ -345,6 +348,16 @@ pub fn next_event(h: vr::Handle, e: &mut vr::VREvent_t) -> bool {
 mod tests {
     use super::*;
     use crate::theme;
+
+    #[test]
+    fn a_window_with_no_spot_here_opens_14_m_ahead_level_and_facing_you() {
+        let head: crate::geometry::Mat = [[0.0, 0.0, 1.0, 0.4], [0.0, 1.0, 0.0, 1.6], [-1.0, 0.0, 0.0, -0.3]]; // facing -x
+        let p = fresh(&head, 0.36);
+        let eye = [0, 1, 2].map(|i| head[i][3] as f64);
+        let to = [p.centre[0] - eye[0], p.centre[1] - eye[1], p.centre[2] - eye[2]];
+        assert!((crate::geometry::norm(&to) - NEW_AHEAD).abs() < 1e-6 && to[1].abs() < 1e-6 && p.pitch.abs() < 1e-6, "{to:?}");
+        assert!((p.yaw - angles(&to).0).abs() < 1e-6 && p.width == 0.36);
+    }
 
     #[test]
     fn every_printable_ascii_types_back_as_itself() {

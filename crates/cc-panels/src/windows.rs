@@ -755,8 +755,9 @@ impl Windows {
         p.set_size(cw, ch);
         // Where it was (a restart, or a hibernated app reopened), else its app's spot (the first one open), else `ahead`.
         let app_open = (0..SLOTS).any(|j| win(self.first + j).is_some_and(|o| o.key == w.key && !o.popup()));
-        let hibernated = || self.resumed.get_mut(&w.key)?.as_array_mut().filter(|v| !v.is_empty()).map(|v| v.remove(0));
         let here = config::UNIVERSE.load(Relaxed);
+        // cc-home hibernate's copy of a pose keeps its room stamp: one from another room isn't used
+        let hibernated = || self.resumed.get_mut(&w.key)?.as_array_mut().filter(|v| !v.is_empty()).map(|v| v.remove(0)).filter(|v| same_room(v, here));
         let kept = self.poses.get(&w.uuid).filter(|v| same_room(v, here)).cloned();
         let (pose, zoom, from) = match kept.or_else(hibernated).and_then(|v| Some((config::pose_from(&v)?, v["zoom"].as_f64()))) {
             Some((pose, zoom)) => (pose, zoom, "where it was"),
