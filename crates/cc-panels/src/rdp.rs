@@ -126,11 +126,82 @@ fn is_cliprdr(name: *const std::os::raw::c_char) -> bool {
     unsafe { CStr::from_ptr(name) }.to_bytes_with_nul() == CLIPRDR_SVC_CHANNEL_NAME
 }
 
+// ------------------------------------------------------------------ which codec it got (docs/rdp-text.md)
+
+/// The GDI's own graphics pipeline callbacks, the same for every session, which ours log then call.
+static GFX_CAPS: std::sync::OnceLock<pcRdpgfxCapsConfirm> = std::sync::OnceLock::new();
+static GFX_SURFACE: std::sync::OnceLock<pcRdpgfxSurfaceCommand> = std::sync::OnceLock::new();
+
+/// The rdpContext behind a graphics pipeline context: its custom is the GDI (gdi_graphics_pipeline_init).
+unsafe fn gfx_context(g: *mut RdpgfxClientContext) -> *mut rdpContext {
+    unsafe { if g.is_null() || (*g).custom.is_null() { std::ptr::null_mut() } else { (*((*g).custom as *mut rdpGdi)).context } }
+}
+
+/// A codec's name for the log.
+#[allow(non_upper_case_globals)] // FreeRDP's own name, AVC444v2
+fn codec_name(id: u32) -> String {
+    match id {
+        RDPGFX_CODECID_RDPGFX_CODECID_AVC420 => "H.264 4:2:0 (AVC420)".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_AVC444 => "H.264 4:4:4 (AVC444)".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_AVC444v2 => "H.264 4:4:4 (AVC444v2)".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE | RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE_V2 => "RemoteFX Progressive".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_UNCOMPRESSED => "uncompressed".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_PLANAR => "planar".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_CLEARCODEC => "ClearCodec".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_ALPHA => "alpha".into(),
+        id => format!("codec {id:#x}"),
+    }
+}
+
+/// The server's choice of capability set, which says whether it can send H.264 at all.
+unsafe extern "C" fn on_caps_confirm(g: *mut RdpgfxClientContext, pdu: *const RDPGFX_CAPS_CONFIRM_PDU) -> UINT {
+    crate::ffi::guard("on_caps_confirm", CHANNEL_RC_OK, || unsafe {
+        if !pdu.is_null() && !(*pdu).capsSet.is_null() {
+            let set = *(*pdu).capsSet;
+            with_panel(gfx_context(g), |p| eprintln!("{}: graphics caps {:#x}, flags {:#x}", p.v.name, set.version, set.flags));
+        }
+        GFX_CAPS.get().copied().flatten().map_or(CHANNEL_RC_OK, |f| f(g, pdu))
+    })
+}
+
+/// Each frame's codec; the log says it once, then again whenever it changes (krdp picks per
+/// session, another server could mix them).
+unsafe extern "C" fn on_surface_command(g: *mut RdpgfxClientContext, cmd: *const RDPGFX_SURFACE_COMMAND) -> UINT {
+    crate::ffi::guard("on_surface_command", CHANNEL_RC_OK, || unsafe {
+        if !cmd.is_null() {
+            let id = (*cmd).codecId;
+            with_panel(gfx_context(g), |p| {
+                if p.codec.swap(id, Relaxed) != id {
+                    eprintln!("{}: the server sends {}", p.v.name, codec_name(id));
+                }
+            });
+        }
+        GFX_SURFACE.get().copied().flatten().map_or(CHANNEL_RC_OK, |f| f(g, cmd))
+    })
+}
+
+/// Wraps the GDI's graphics pipeline callbacks with the logging ones above.
+unsafe fn watch_gfx(g: *mut RdpgfxClientContext) {
+    unsafe {
+        if g.is_null() {
+            return;
+        }
+        GFX_CAPS.get_or_init(|| (*g).CapsConfirm);
+        GFX_SURFACE.get_or_init(|| (*g).SurfaceCommand);
+        (*g).CapsConfirm = Some(on_caps_confirm);
+        (*g).SurfaceCommand = Some(on_surface_command);
+    }
+}
+
 unsafe extern "C" fn on_channel_connected(context: *mut c_void, e: *const ChannelConnectedEventArgs) {
     crate::ffi::guard("on_channel_connected", (), || {
         let e = unsafe { &*e };
         if !is_cliprdr(e.name) {
-            return unsafe { freerdp_client_OnChannelConnectedEventHandler(context, e) }; // graphics pipeline to the GDI
+            unsafe { freerdp_client_OnChannelConnectedEventHandler(context, e) }; // graphics pipeline to the GDI
+            if unsafe { CStr::from_ptr(e.name) }.to_bytes_with_nul() == RDPGFX_DVC_CHANNEL_NAME {
+                unsafe { watch_gfx(e.pInterface as *mut RdpgfxClientContext) };
+            }
+            return;
         }
         unsafe { with_panel(context as *mut rdpContext, |p| crate::clipboard::cliprdr::attach(p, e.pInterface as *mut CliprdrClientContext)) };
     })
@@ -464,8 +535,14 @@ pub fn run(p: &'static Panel) {
                 b(FreeRDP_Settings_Keys_Bool_FreeRDP_AutoAcceptCertificate, true); // trust on first use, then insist
             }
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_SupportGraphicsPipeline, true);
-            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxH264, true);
-            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxAVC444, false);
+            // H.264, offering 4:4:4 (AVC444, v2) as well, so a server that has it can send text with
+            // full colour detail; krdp only encodes 4:2:0 and picks that. Its other mode is RemoteFX
+            // Progressive, full colour too, which it sends when we don't ask for H.264: settings.json
+            // "rdp_codec": "progressive" does that, for text that has to stay sharp (docs/rdp-text.md).
+            let h264 = crate::config::settings()["rdp_codec"] != "progressive";
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxH264, h264);
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxAVC444, h264);
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxAVC444v2, h264);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_RemoteFxCodec, false);
             // Decode the graphics pipeline (H.264) inside check_event_handles, on this thread and
             // under p.lock, instead of on drdynvc's own thread, so gpu::write right after it sees the finished frame

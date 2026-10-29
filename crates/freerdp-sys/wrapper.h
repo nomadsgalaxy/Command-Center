@@ -3,6 +3,7 @@
 #include <freerdp/client.h>
 #include <freerdp/client/channels.h>
 #include <freerdp/client/cliprdr.h>
+#include <freerdp/client/rdpgfx.h>
 #include <freerdp/channels/channels.h>
 #include <freerdp/channels/cliprdr.h>
 #include <freerdp/event.h>
