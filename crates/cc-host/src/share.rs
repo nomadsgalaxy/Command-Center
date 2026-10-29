@@ -1321,10 +1321,41 @@ fn frame_json(e: &Env, f: &str) -> Result<Value, String> {
 
 /// Runs one paired Frame's server for one monitor. The instance is <frame>-<monitor>, and the slot and login come from frames/<frame>.json.
 /// Whether bin takes --password-file (our krdp patch, krdp/password-file.patch), from its --help.
-/// None when it can't be run at all.
+/// None when it can't be run, or doesn't answer in 5 s. The answer is kept for this process, so
+/// frame-run and window-run ask once per start.
 fn takes_password_file(bin: &Path) -> Option<bool> {
-    let o = Command::new(bin).arg("--help").env("QT_QPA_PLATFORM", "offscreen").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    Some(String::from_utf8_lossy(&o.stdout).contains("--password-file"))
+    use std::sync::Mutex;
+    static SEEN: Mutex<Vec<(PathBuf, Option<bool>)>> = Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, v)) = seen.iter().find(|(b, _)| b == bin) {
+        return *v;
+    }
+    let v = ask_help(bin, std::time::Duration::from_secs(5));
+    seen.push((bin.to_owned(), v));
+    v
+}
+
+fn ask_help(bin: &Path, wait: std::time::Duration) -> Option<bool> {
+    let mut child = Command::new(bin).arg("--help").env("QT_QPA_PLATFORM", "offscreen").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut out = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = std::io::Read::read_to_string(&mut out, &mut s);
+        s
+    });
+    let until = std::time::Instant::now() + wait;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < until => std::thread::sleep(std::time::Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    Some(reader.join().ok()?.contains("--password-file"))
 }
 
 /// A user or password krdp can take: not empty, and no line break or NUL, which would cut it short
@@ -1340,42 +1371,49 @@ fn frame_login(j: &serde_json::Value) -> Result<(&str, &str), String> {
     Ok((field("user")?, field("password")?))
 }
 
-/// Gives krdp its password. With a krdp that takes --password-file, it goes through a pipe on fd 3,
-/// so it's in no argv and no file. Otherwise it's -p, which any local user can read in
-/// /proc/<pid>/cmdline, and the log says so.
+/// Gives krdp its password. With a krdp that takes --password-file, it goes through a pipe that
+/// krdp inherits and opens as /dev/fd/<n>, so it's in no argv and no file. With one that doesn't,
+/// it's -p, which any local user can read in /proc/<pid>/cmdline. Either way the log says which.
+/// When it can't tell (krdp's --help didn't answer), it doesn't start krdp at all.
 fn password(c: &mut Command, bin: &Path, pw: &str) -> std::io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     if !fits_login(pw) {
         return Err(std::io::Error::other("the password is empty or has a line break or NUL in it"));
     }
-    if takes_password_file(bin) != Some(true) {
-        eprintln!("{}: krdp without --password-file: the password is visible in the process list", bin.display());
-        c.args(["-p", pw]);
-        return Ok(());
+    match takes_password_file(bin) {
+        Some(true) => {}
+        Some(false) => {
+            eprintln!("{}: krdp doesn't take --password-file: the password is visible in the process list (-p)", bin.display());
+            c.args(["-p", pw]);
+            return Ok(());
+        }
+        None => return Err(std::io::Error::other(format!("couldn't tell whether {} takes --password-file: its --help didn't answer in 5 s", bin.display()))),
     }
     let mut fds = [0; 2];
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
-    let (r, w) = (fds[0], fds[1]);
-    let line = format!("{pw}\n"); // far under a pipe's buffer, so this never blocks
-    let wrote = unsafe { libc::write(w, line.as_ptr().cast(), line.len()) };
-    unsafe { libc::close(w) };
-    if wrote != line.len() as isize {
-        unsafe { libc::close(r) };
-        return Err(std::io::Error::other("couldn't write the password into its pipe"));
+    let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    // Non-blocking, so a password longer than the pipe holds fails instead of hanging.
+    unsafe { libc::fcntl(w.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+    let line = format!("{pw}\n");
+    let wrote = std::io::Write::write(&mut std::fs::File::from(w), line.as_bytes())?;
+    if wrote != line.len() {
+        return Err(std::io::Error::other("couldn't write the whole password into its pipe"));
     }
-    // SAFETY: dup2 and fcntl are async-signal-safe. dup2 onto 3 leaves the copy without O_CLOEXEC.
+    let n = r.as_raw_fd();
+    // SAFETY: fcntl is async-signal-safe. Only the read end loses O_CLOEXEC, in the child only, so
+    // krdp gets that one fd and no others. r stays open in the closure until the exec.
     unsafe {
         c.pre_exec(move || {
-            if r == 3 {
-                libc::fcntl(3, libc::F_SETFD, 0);
-            } else if libc::dup2(r, 3) < 0 {
+            if libc::fcntl(r.as_raw_fd(), libc::F_SETFD, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
         });
     }
-    c.args(["--password-file", "/dev/fd/3"]);
+    eprintln!("{}: the password goes over a pipe (--password-file /dev/fd/{n})", bin.display());
+    c.arg("--password-file").arg(format!("/dev/fd/{n}"));
     Ok(())
 }
 
@@ -1947,6 +1985,20 @@ mod tests {
         }
     }
 
+    /// A krdp whose --help hangs is "can't tell" after the wait, not a quiet fall back to -p.
+    #[test]
+    fn a_hung_help_is_unknown() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = std::env::temp_dir().join(format!("cc-host-hung-{}", std::process::id()));
+        std::fs::write(&f, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let t = std::time::Instant::now();
+        let v = super::ask_help(&f, std::time::Duration::from_millis(300));
+        let _ = std::fs::remove_file(&f);
+        assert_eq!(v, None);
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "it gave up at the wait");
+    }
+
     /// The share unit hands krdp the password file with our krdp, and -p only without it.
     #[test]
     fn share_unit_keeps_the_password_off_argv() {
@@ -1967,7 +2019,8 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let shim = |name: &str, help: &str| {
             let p = d.join(name);
-            let body = format!("#!/bin/sh\n[ \"$1\" = --help ] && {{ echo '{help}'; exit 0; }}\necho \"$@\" > {dir}/{name}.argv\ncat /dev/fd/3 > {dir}/{name}.pw 2>/dev/null\nexit 0\n", dir = d.display());
+            // krdp opens the path it's given, so the shim does too, instead of reading an inherited fd.
+            let body = format!("#!/bin/sh\n[ \"$1\" = --help ] && {{ echo '{help}'; exit 0; }}\necho \"$@\" > {dir}/{name}.argv\nf=\nwhile [ $# -gt 0 ]; do [ \"$1\" = --password-file ] && f=$2; shift; done\n[ -n \"$f\" ] && cat \"$f\" > {dir}/{name}.pw\nexit 0\n", dir = d.display());
             std::fs::write(&p, body).unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
             p
@@ -1986,8 +2039,8 @@ mod tests {
         let (pa, pw, sa) = (read("patched.argv"), read("patched.pw"), read("stock.argv"));
         let _ = std::fs::remove_dir_all(&d);
         assert!(!a.iter().any(|x| x.contains("s3cret")) && !pa.contains("s3cret"), "patched argv {a:?} / {pa}");
-        assert!(a.ends_with(&["--password-file".to_string(), "/dev/fd/3".to_string()]), "{a:?}");
-        assert_eq!(pw, "s3cret-pw\n", "it read the password from fd 3");
+        assert!(a[a.len() - 2] == "--password-file" && a[a.len() - 1].starts_with("/dev/fd/"), "{a:?}");
+        assert_eq!(pw, "s3cret-pw\n", "it read the password by opening /dev/fd/<n>");
         assert!(b.ends_with(&["-p".to_string(), "s3cret-pw".to_string()]) && sa.contains("-p s3cret-pw"), "stock falls back to -p: {b:?}");
     }
 

@@ -382,13 +382,13 @@ password-file.patch, and builds it into our private directory. The clipboard wor
 images, the echo guard) goes on in clipboard.patch unchanged and ships with the next package.
 
 password-file.patch adds `--password-file <path>`: krdp reads the password from the first line of
-that file (or an inherited pipe, `/dev/fd/3`), because `-p` puts it in argv, where any local user
+that file (or an inherited pipe, `/dev/fd/<n>`), because `-p` puts it in argv, where any local user
 can read it in `/proc/<pid>/cmdline`. It needs `-u`, can't go with `-p`, and an empty first line is
 an error, so krdp never starts with an empty password. cc-host checks the same before it starts a
 paired Frame's server: a missing or empty user or password, or one with a line break or NUL, stops
 it with a message saying to pair the Frame again. The share unit points it at
 `~/.config/control-center/password`, and a paired Frame's servers (frame-run, window-run) get theirs
-through a pipe, with no file on disk. A krdp without the patch (one a distro ships, in a user
+through a pipe, with no file on disk: cc-host writes the password into it and passes `--password-file /dev/fd/<n>`, with only that one fd left open for krdp. Whether a krdp takes the option comes from its `--help`, asked once per start with a 5 s limit; a krdp that doesn't answer isn't started, rather than quietly given `-p`. A krdp without the patch (one a distro ships, in a user
 install) still gets `-p`, cc-host logs that each time it starts one, and `cc-share check` lists it as
 a need. The Steam Deck's krdp 6.4.3 gets the same option from krdp/deck/password-file.patch. The patch
 applies to krdp 6.7.5 and, with line offsets only, to 6.8.0 (our other patches don't apply to 6.8.0
