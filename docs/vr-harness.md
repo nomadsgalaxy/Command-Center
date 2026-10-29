@@ -46,7 +46,9 @@ poses (`each_install_gets_its_own_script`).
 ## Recording a trace
 
 With `~/.cache/control-center/vr-trace` there when cc-panels starts (`touch` it, then restart the
-Desktop), cc-panels writes `~/.cache/control-center/vr-trace.jsonl` (`trace.rs`), up to 64 MB.
+Desktop), cc-panels writes a new `~/.cache/control-center/vr-trace-<epoch>-<pid>.jsonl` each time it
+starts (`trace.rs`), so a restart never overwrites the last one, up to 64 MB. The log says which
+file. It's made 0600, private to you, like `viewers.conf`.
 Each line is one JSON object:
 
 - `{"tick":"plasma","t":12.5,"dropped":0}` (or `"taskbar"`): an events() pass starting, with the
@@ -69,7 +71,8 @@ and you should delete the flag file and the trace when you're done.
 It's written through a 1 MB buffer flushed once a pass, so the disk never stalls a frame, and at
 64 MB it stops with one line in the log. The buffer's also flushed however cc-panels ends: a normal quit, closing
 the Desktop, SteamVR's Quit, SIGTERM or SIGINT, a panic, and the exits after a drawing thread's
-panic. Only a SIGKILL or a power cut loses the last pass.
+panic. Only a SIGKILL or a power cut loses the last pass. Flushing is best effort: if a write or a flush
+fails (a full disk, say), the log says so once, and the trace is missing lines from there on.
 
 ## Replaying one
 

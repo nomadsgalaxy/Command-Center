@@ -1,6 +1,7 @@
 //! A trace of what cc-panels polls from SteamVR, so a bug only the headset shows can be replayed
 //! as a test (docs/vr-harness.md). With ~/.cache/control-center/vr-trace there when cc-panels
-//! starts, it writes ~/.cache/control-center/vr-trace.jsonl, one JSON object a line:
+//! starts, it writes a new ~/.cache/control-center/vr-trace-<epoch>-<pid>.jsonl each start (so a
+//! restart never overwrites the last), private to you (0600), one JSON object a line:
 //!   {"tick":"plasma","t":12.5,"dropped":0}     an events() pass starting: seconds since the trace began, events left out so far
 //!   {"ev":"plasma","type":300,"dev":3,"age":0,"x":..,"y":..,"button":..,"cursor":..}   a pointer event
 //!   {"ev":"plasma","type":305,"dev":3,"age":0,"dx":..,"dy":..,"scale":..,"cursor":..}  a scroll
@@ -22,6 +23,41 @@ struct Out {
     file: std::io::BufWriter<std::fs::File>, // flushed once a pass (tick), so writing never stalls a frame on the disk
     written: u64,
     since: std::time::Instant, // what the ticks' "t" counts from
+    failed: bool,              // a write or flush failed, and the log has said so once
+}
+
+impl Out {
+    fn new(file: std::fs::File) -> Out {
+        Out { file: std::io::BufWriter::with_capacity(1 << 20, file), written: 0, since: std::time::Instant::now(), failed: false }
+    }
+
+    /// A write's or flush's result: the first failure goes to the log, so a trace with a hole in
+    /// it never looks whole.
+    fn check(&mut self, r: std::io::Result<()>) -> bool {
+        if let Err(e) = &r
+            && !std::mem::replace(&mut self.failed, true)
+        {
+            eprintln!("vr-trace: writing it failed ({e}), so it's missing lines from here on");
+        }
+        r.is_ok()
+    }
+}
+
+/// A new trace file in `dir`: vr-trace-<epoch>-<pid>.jsonl, or with -2, -3 ... after it if that's
+/// taken, made new (never an old one opened again) and 0600, like viewers.conf.
+fn create(dir: &std::path::Path) -> std::io::Result<(std::fs::File, std::path::PathBuf)> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let epoch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let base = format!("vr-trace-{epoch}-{}", std::process::id());
+    for n in 1..100 {
+        let path = dir.join(if n == 1 { format!("{base}.jsonl") } else { format!("{base}-{n}.jsonl") });
+        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path) {
+            Ok(f) => return Ok((f, path)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other("no free name for it"))
 }
 
 static OUT: Mutex<Option<Out>> = Mutex::new(None);
@@ -31,12 +67,12 @@ fn out() -> &'static Mutex<Option<Out>> {
     STARTED.call_once(|| {
         let dir = format!("{}/.cache/control-center", crate::config::home_dir());
         if std::path::Path::new(&dir).join("vr-trace").exists() {
-            match std::fs::File::create(format!("{dir}/vr-trace.jsonl")) {
-                Ok(file) => {
-                    eprintln!("vr-trace: writing {dir}/vr-trace.jsonl");
-                    *OUT.lock().unwrap() = Some(Out { file: std::io::BufWriter::with_capacity(1 << 20, file), written: 0, since: std::time::Instant::now() });
+            match create(std::path::Path::new(&dir)) {
+                Ok((file, path)) => {
+                    eprintln!("vr-trace: writing {}", path.display());
+                    *OUT.lock().unwrap() = Some(Out::new(file));
                 }
-                Err(e) => eprintln!("vr-trace: {dir}/vr-trace.jsonl: {e}"),
+                Err(e) => eprintln!("vr-trace: can't make a trace in {dir}: {e}"),
             }
         }
     });
@@ -52,16 +88,19 @@ fn write(v: Value) {
     let mut o = out().lock().unwrap();
     let Some(o) = o.as_mut().filter(|o| o.written < MAX) else { return };
     let line = format!("{v}\n");
-    if o.file.write_all(line.as_bytes()).is_ok() {
+    let r = o.file.write_all(line.as_bytes());
+    if o.check(r) {
         o.written += line.len() as u64;
         if o.written >= MAX {
-            let _ = o.file.flush();
+            let r = o.file.flush();
+            o.check(r);
             eprintln!("vr-trace: it's {} MB, so that's all it writes", MAX >> 20);
         }
     }
 }
 
-/// Writes what's buffered to the disk. It's called on every way cc-panels ends: GiveBack's drop
+/// Writes what's buffered to the disk, as best it can: a failure is logged once (Out::check), and
+/// if the lock's held it gives up rather than wait. It's called on every way cc-panels ends: GiveBack's drop
 /// (a normal quit, closing the Desktop, SteamVR's Quit, and SIGTERM or SIGINT, which only set
 /// QUIT so main ends through it), the panic hook, and the exits after the cards' or the UI's
 /// thread panicked. It never waits on the lock, since a panic can come while it's held, and
@@ -73,7 +112,8 @@ pub fn flush() {
         Err(std::sync::TryLockError::WouldBlock) => return,
     };
     if let Some(o) = o.as_mut() {
-        let _ = o.file.flush();
+        let r = o.file.flush();
+        o.check(r);
     }
 }
 
@@ -160,7 +200,8 @@ pub fn tick(who: &str) {
     let t = {
         let mut o = out().lock().unwrap();
         let Some(o) = o.as_mut().filter(|o| o.written < MAX) else { return };
-        let _ = o.file.flush();
+        let r = o.file.flush();
+        o.check(r);
         o.since.elapsed().as_secs_f64()
     };
     write(json!({ "tick": who, "t": t, "dropped": DROPPED.load(std::sync::atomic::Ordering::Relaxed) }));
@@ -240,7 +281,7 @@ mod tests {
         let _vr = fake_vr(); // the replays write through OUT too, so not while one runs
         let path = std::env::temp_dir().join(format!("cc-trace-flush-{}.jsonl", std::process::id()));
         let file = std::fs::File::create(&path).unwrap();
-        *OUT.lock().unwrap() = Some(Out { file: std::io::BufWriter::with_capacity(1 << 20, file), written: 0, since: std::time::Instant::now() });
+        *OUT.lock().unwrap() = Some(Out::new(file));
         state("plasma", json!({"crop": [1, 2, 3, 4]}));
         pose(3, None);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "", "still in the buffer");
@@ -251,6 +292,32 @@ mod tests {
         assert_eq!(text.lines().count(), 2, "{text}");
         assert!(text.starts_with(r#"{"plasma":{"crop":[1,2,3,4]}}"#), "{text}");
         flush(); // with no trace: nothing, and no panic
+    }
+
+    #[test]
+    fn each_start_makes_a_new_private_trace_and_never_reuses_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("cc-trace-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_a, first) = create(&dir).unwrap();
+        std::fs::write(&first, "a restart's predecessor\n").unwrap();
+        let (_b, second) = create(&dir).unwrap(); // the same second and pid: a new name, not the old file
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "a restart's predecessor\n", "never truncated");
+        for p in [&first, &second] {
+            assert_eq!(std::fs::metadata(p).unwrap().permissions().mode() & 0o777, 0o600, "{}", p.display());
+            assert!(p.file_name().unwrap().to_str().unwrap().starts_with("vr-trace-"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_write_is_logged_once_and_not_claimed() {
+        let mut o = Out::new(std::fs::File::open("/dev/null").unwrap());
+        assert!(!o.check(Err(std::io::Error::other("disk full"))) && o.failed);
+        assert!(!o.check(Err(std::io::Error::other("again"))), "still failing, said once");
+        assert!(o.check(Ok(())));
     }
 
     #[test]
