@@ -5,7 +5,8 @@
 # krdp 6.5 fixed. input-thread.patch runs input on krdp's own thread (6.4 runs it on FreeRDP's
 # and drops every event). fake-input.patch authenticates with KWin, which ignores fake input
 # otherwise, and sends pointer positions and scrolls as wl_fixed, which puts the pointer where
-# you point instead of near the top-left corner.
+# you point instead of near the top-left corner. password-file.patch is the same --password-file as
+# ../password-file.patch, for 6.4's _qs strings, so cc-host never puts the password in argv.
 #
 # It builds in an Arch container pointed at SteamOS's own package repos, so it links against
 # exactly the Deck's libraries. The result is ./command-center: krdpserver and libKRdp.so.6 in
@@ -33,7 +34,7 @@ podman run --rm -v "$here":/w:z $image bash -euxc '
   pacman -Q krdp qt6-base freerdp kpipewire
   cd /w && rm -rf krdp-6.4.3 build root
   [ -f krdp.tar.xz ] || curl -fsSL -o krdp.tar.xz https://download.kde.org/stable/plasma/6.4.3/krdp-6.4.3.tar.xz
-  tar xf krdp.tar.xz && patch -d krdp-6.4.3 -p1 < input-thread.patch && patch -d krdp-6.4.3 -p1 < fake-input.patch
+  tar xf krdp.tar.xz && patch -d krdp-6.4.3 -p1 < input-thread.patch && patch -d krdp-6.4.3 -p1 < fake-input.patch && patch -d krdp-6.4.3 -p1 < password-file.patch
   lib=/usr/lib/command-center
   cmake -S krdp-6.4.3 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF -DCMAKE_INSTALL_RPATH=$lib >/dev/null
   cmake --build build

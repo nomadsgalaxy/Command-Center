@@ -678,6 +678,11 @@ fn check(e: &Env) -> bool {
         println!("  need the firewall to let the Frame in (ports 3399-3449, private ranges only): cc-share fix");
         bad = true;
     }
+    let bin = krdp(e, false).unwrap_or_else(|| PathBuf::from("/usr/bin/krdpserver"));
+    if takes_password_file(&bin) == Some(false) {
+        println!("  need krdp without --password-file ({}): the password is visible in the process list", bin.display());
+        bad = true;
+    }
     for f in foreign_dropins(&dropin_dirs(e)) {
         println!("  need {} changes a Command Center unit and isn't ours: remove it, then systemctl --user daemon-reload", f.display());
         bad = true;
@@ -734,8 +739,11 @@ fn check(e: &Env) -> bool {
 
 /// The user units, for cc-host at `host` and the monitor servers' krdp at `krdp`. A user install
 /// writes them to ~/.config/systemd/user; a package build writes them with `cc-host units`.
-pub fn unit_files(host: &str, krdp: &str) -> Vec<(&'static str, String)> {
-    let fill = |t: &str| t.replace("@HOST@", host).replace("@KRDP@", krdp);
+/// `password_file` says the krdp takes --password-file (our patched one does), so the password
+/// isn't in its argv. Without it, the unit falls back to -p.
+pub fn unit_files(host: &str, krdp: &str, password_file: bool) -> Vec<(&'static str, String)> {
+    let password = if password_file { "--password-file %h/.config/control-center/password" } else { "-p \"$(cat %h/.config/control-center/password)\"" };
+    let fill = |t: &str| t.replace("@HOST@", host).replace("@KRDP@", krdp).replace("@PASSWORD@", password);
     vec![
         // --plasma talks to KWin directly, so nothing asks for permission on every connect.
         ("control-center-share@.service", fill(include_str!("../../../packaging/systemd/control-center-share@.service"))),
@@ -916,7 +924,8 @@ fn install(e: &Env, args: &[String]) -> i32 {
             eprintln!("{x}");
             return 1;
         }
-        for (name, body) in unit_files("%h/.local/share/control-center/cc-host", "/usr/bin/krdpserver") {
+        let file = takes_password_file(Path::new("/usr/bin/krdpserver")) == Some(true);
+        for (name, body) in unit_files("%h/.local/share/control-center/cc-host", "/usr/bin/krdpserver", file) {
             let f = e.units.join(name);
             if let Err(x) = std::fs::write(&f, body) {
                 return failed(&f, x);
@@ -1311,6 +1320,49 @@ fn frame_json(e: &Env, f: &str) -> Result<Value, String> {
 }
 
 /// Runs one paired Frame's server for one monitor. The instance is <frame>-<monitor>, and the slot and login come from frames/<frame>.json.
+/// Whether bin takes --password-file (our krdp patch, krdp/password-file.patch), from its --help.
+/// None when it can't be run at all.
+fn takes_password_file(bin: &Path) -> Option<bool> {
+    let o = Command::new(bin).arg("--help").env("QT_QPA_PLATFORM", "offscreen").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    Some(String::from_utf8_lossy(&o.stdout).contains("--password-file"))
+}
+
+/// Gives krdp its password. With a krdp that takes --password-file, it goes through a pipe on fd 3,
+/// so it's in no argv and no file. Otherwise it's -p, which any local user can read in
+/// /proc/<pid>/cmdline, and the log says so.
+fn password(c: &mut Command, bin: &Path, pw: &str) -> std::io::Result<()> {
+    if takes_password_file(bin) != Some(true) {
+        eprintln!("{}: krdp without --password-file: the password is visible in the process list", bin.display());
+        c.args(["-p", pw]);
+        return Ok(());
+    }
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let (r, w) = (fds[0], fds[1]);
+    let line = format!("{pw}\n"); // far under a pipe's buffer, so this never blocks
+    let wrote = unsafe { libc::write(w, line.as_ptr().cast(), line.len()) };
+    unsafe { libc::close(w) };
+    if wrote != line.len() as isize {
+        unsafe { libc::close(r) };
+        return Err(std::io::Error::other("couldn't write the password into its pipe"));
+    }
+    // SAFETY: dup2 and fcntl are async-signal-safe. dup2 onto 3 leaves the copy without O_CLOEXEC.
+    unsafe {
+        c.pre_exec(move || {
+            if r == 3 {
+                libc::fcntl(3, libc::F_SETFD, 0);
+            } else if libc::dup2(r, 3) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    c.args(["--password-file", "/dev/fd/3"]);
+    Ok(())
+}
+
 fn frame_run(e: &Env, inst: &str) -> i32 {
     let Some((f, m)) = inst.rsplit_once('-') else {
         eprintln!("bad instance: {inst}");
@@ -1328,8 +1380,14 @@ fn frame_run(e: &Env, inst: &str) -> i32 {
         }
     };
     let (slot, mon) = (j["slot"].as_i64().unwrap_or(0), m.parse::<i64>().unwrap_or(0));
-    let err = Command::new(krdp(e, false).unwrap_or_else(|| PathBuf::from("/usr/bin/krdpserver"))).args(["--plasma", "--monitor", m, "--port", &(3400 + 10 * slot + mon).to_string(), "-u", j["user"].as_str().unwrap_or(""), "-p", j["password"].as_str().unwrap_or("")])
-        .arg("--certificate").arg(e.dir.join("cert.pem")).arg("--certificate-key").arg(e.dir.join("key.pem")).exec();
+    let bin = krdp(e, false).unwrap_or_else(|| PathBuf::from("/usr/bin/krdpserver"));
+    let mut c = Command::new(&bin);
+    c.args(["--plasma", "--monitor", m, "--port", &(3400 + 10 * slot + mon).to_string(), "-u", j["user"].as_str().unwrap_or("")]);
+    if let Err(x) = password(&mut c, &bin, j["password"].as_str().unwrap_or("")) {
+        eprintln!("krdpserver's password: {x}");
+        return 1;
+    }
+    let err = c.arg("--certificate").arg(e.dir.join("cert.pem")).arg("--certificate-key").arg(e.dir.join("key.pem")).exec();
     eprintln!("krdpserver: {err}");
     1
 }
@@ -1365,8 +1423,13 @@ fn window_run(e: &Env, inst: &str) -> i32 {
         }
     };
     let slot = j["slot"].as_i64().unwrap_or(0);
-    let err = Command::new(bin).args(["--plasma", "--window", &format!("{{{uuid}}}"), "--port", &(3405 + 10 * slot + k.parse::<i64>().unwrap_or(0)).to_string(), "-u", j["user"].as_str().unwrap_or(""), "-p", j["password"].as_str().unwrap_or("")])
-        .arg("--certificate").arg(e.dir.join("cert.pem")).arg("--certificate-key").arg(e.dir.join("key.pem")).exec();
+    let mut c = Command::new(&bin);
+    c.args(["--plasma", "--window", &format!("{{{uuid}}}"), "--port", &(3405 + 10 * slot + k.parse::<i64>().unwrap_or(0)).to_string(), "-u", j["user"].as_str().unwrap_or("")]);
+    if let Err(x) = password(&mut c, &bin, j["password"].as_str().unwrap_or("")) {
+        eprintln!("window server's password: {x}");
+        return 1;
+    }
+    let err = c.arg("--certificate").arg(e.dir.join("cert.pem")).arg("--certificate-key").arg(e.dir.join("key.pem")).exec();
     eprintln!("window server: {err}");
     1
 }
@@ -1724,6 +1787,50 @@ pub fn main(cmd: &str, args: &[String]) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    /// The share unit hands krdp the password file with our krdp, and -p only without it.
+    #[test]
+    fn share_unit_keeps_the_password_off_argv() {
+        let unit = |file| super::unit_files("/usr/bin/cc-host", "/usr/lib/command-center/krdpserver", file).into_iter().find(|(n, _)| *n == "control-center-share@.service").unwrap().1;
+        let (ours, stock) = (unit(true), unit(false));
+        assert!(ours.contains(r#"-u "$USER" --password-file %h/.config/control-center/password --certificate"#) && !ours.contains(" -p "), "{ours}");
+        assert!(stock.contains(r#"-p "$(cat %h/.config/control-center/password)""#), "{stock}");
+        assert!(!ours.contains("@PASSWORD@") && !stock.contains("@PASSWORD@"));
+    }
+
+    /// frame-run and window-run: with a krdp that takes --password-file the password goes through
+    /// fd 3 and never into argv; with one that doesn't, it's -p.
+    #[test]
+    fn frame_run_passes_the_password_by_pipe() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("cc-host-pwpipe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let shim = |name: &str, help: &str| {
+            let p = d.join(name);
+            let body = format!("#!/bin/sh\n[ \"$1\" = --help ] && {{ echo '{help}'; exit 0; }}\necho \"$@\" > {dir}/{name}.argv\ncat /dev/fd/3 > {dir}/{name}.pw 2>/dev/null\nexit 0\n", dir = d.display());
+            std::fs::write(&p, body).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let (patched, stock) = (shim("patched", "  --password-file <path>  Read the password"), shim("stock", "  -p, --password <password>"));
+        let run = |bin: &std::path::Path| {
+            let mut c = Command::new(bin);
+            c.args(["--plasma", "--monitor", "0", "-u", "cc-f1"]);
+            super::password(&mut c, bin, "s3cret-pw").unwrap();
+            let argv: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+            assert!(c.status().unwrap().success());
+            argv
+        };
+        let (a, b) = (run(&patched), run(&stock));
+        let read = |f: &str| std::fs::read_to_string(d.join(f)).unwrap_or_default();
+        let (pa, pw, sa) = (read("patched.argv"), read("patched.pw"), read("stock.argv"));
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(!a.iter().any(|x| x.contains("s3cret")) && !pa.contains("s3cret"), "patched argv {a:?} / {pa}");
+        assert!(a.ends_with(&["--password-file".to_string(), "/dev/fd/3".to_string()]), "{a:?}");
+        assert_eq!(pw, "s3cret-pw\n", "it read the password from fd 3");
+        assert!(b.ends_with(&["-p".to_string(), "s3cret-pw".to_string()]) && sa.contains("-p s3cret-pw"), "stock falls back to -p: {b:?}");
+    }
+
     /// The drop-in check finds a leftover for any of our units (template or instance) in any of the
     /// dirs, and nothing else.
     #[test]

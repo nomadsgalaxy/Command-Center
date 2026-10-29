@@ -94,7 +94,7 @@ fn main() {
             let (bin, krdp) = (opt("--bin").unwrap_or("/usr/bin/cc-host".into()), opt("--krdp").unwrap_or("/usr/lib/command-center/krdpserver".into()));
             let dir = PathBuf::from(&args[2]);
             std::fs::create_dir_all(&dir).expect("units dir");
-            for (name, body) in share::unit_files(&bin, &krdp).into_iter().chain([("control-center-announce.service", share::announce_unit(&bin))]) {
+            for (name, body) in share::unit_files(&bin, &krdp, true).into_iter().chain([("control-center-announce.service", share::announce_unit(&bin))]) {
                 std::fs::write(dir.join(name), body).expect("unit");
             }
         }
