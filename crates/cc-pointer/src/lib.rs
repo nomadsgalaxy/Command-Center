@@ -59,8 +59,28 @@ struct DriverPose {
     device_is_connected: bool,
 }
 const _: () = assert!(size_of::<DriverPose>() == 280);
-// SAFETY: DriverPose is plain floats, doubles and bools (checked at 280 bytes above): all zeros is a valid, untracked pose. A const can't call Default.
-const POSE0: DriverPose = unsafe { std::mem::zeroed() };
+/// No rotation.
+const IDENTITY: Quat = Quat { w: 1., x: 0., y: 0., z: 0. };
+/// An untracked pose at the origin, with every rotation the identity (not all zeros, which isn't a
+/// rotation): the device's pose before the first update, and what every pose starts from.
+const POSE0: DriverPose = DriverPose {
+    pose_time_offset: 0.,
+    q_world_from_driver_rotation: IDENTITY,
+    vec_world_from_driver_translation: [0.; 3],
+    q_driver_from_head_rotation: IDENTITY,
+    vec_driver_from_head_translation: [0.; 3],
+    vec_position: [0.; 3],
+    vec_velocity: [0.; 3],
+    vec_acceleration: [0.; 3],
+    q_rotation: IDENTITY,
+    vec_angular_velocity: [0.; 3],
+    vec_angular_acceleration: [0.; 3],
+    result: 0,
+    pose_is_valid: false,
+    will_drift_in_yaw: false,
+    should_apply_head_model: false,
+    device_is_connected: false,
+};
 
 /// vr::PropertyWrite_t
 #[repr(C)]
@@ -264,12 +284,7 @@ fn guard<R>(name: &str, fail: R, body: impl FnOnce() -> R) -> R {
 
 /// What get_pose says when it couldn't work the pose out: not connected, not tracking.
 fn no_pose() -> DriverPose {
-    let mut p = POSE0;
-    p.q_world_from_driver_rotation.w = 1.;
-    p.q_driver_from_head_rotation.w = 1.;
-    p.q_rotation.w = 1.;
-    p.result = TRACKING_UNINITIALIZED;
-    p
+    DriverPose { result: TRACKING_UNINITIALIZED, ..POSE0 }
 }
 
 fn now_ms() -> i64 {
@@ -524,15 +539,11 @@ fn device_run_frame() {
     let on = d.arb.connected;
     let hint = if d.arb.hinted { d.arb.hand } else { ROLE_OPT_OUT };
 
-    let mut pose = POSE0;
-    pose.q_world_from_driver_rotation.w = 1.; // driver space = raw space
-    pose.q_driver_from_head_rotation.w = 1.;
+    let mut pose = POSE0; // driver space = raw space, both identity
     if on {
         let p = l.pose.map(f64::from);
         pose.vec_position = [p[0], p[1], p[2]];
         pose.q_rotation = Quat { w: p[3], x: p[4], y: p[5], z: p[6] };
-    } else {
-        pose.q_rotation.w = 1.;
     }
     pose.pose_is_valid = on;
     pose.result = if on { TRACKING_RUNNING_OK } else { TRACKING_UNINITIALIZED };
@@ -702,6 +713,16 @@ pub unsafe extern "C" fn HmdDriverFactory(interface_name: *const c_char, return_
 mod tests {
     // Same as the C++ selftest: the arbiter and parser, no SteamVR needed.
     use super::*;
+
+    #[test]
+    fn the_starting_pose_turns_nothing() {
+        let unit = |q: Quat| ((q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z) - 1.0).abs() < 1e-12 && q.w == 1.0;
+        for q in [POSE0.q_rotation, POSE0.q_world_from_driver_rotation, POSE0.q_driver_from_head_rotation] {
+            assert!(unit(q), "every rotation the identity");
+        }
+        let n = no_pose();
+        assert!(unit(n.q_rotation) && n.result == TRACKING_UNINITIALIZED);
+    }
 
     /// A callback whose body panics gives its failure value back, and the process (vrserver) lives.
     #[test]

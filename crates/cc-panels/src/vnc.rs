@@ -222,7 +222,13 @@ unsafe extern "C" fn on_certificate(cl: *mut rfbClient, subject: *const c_char, 
     })
 }
 
-/// on_certificate's answer, before anything is compared or pinned.
+/// on_certificate's answer, before anything is compared or pinned. libvncclient (OpenSSL backend,
+/// src/libvncclient/tls_openssl.c) only asks from cert_verify_callback, when the certificate isn't
+/// valid for the system CAs and doesn't match x509ExpectedFingerprint, which is our pin (credential):
+/// a pinned host that matches is taken without asking, so a question with a pin is always a
+/// mismatch. Its fingerprint is always X509_digest's 32 bytes, and anonymous TLS never asks (the
+/// verify callback is only set without anonTLS), so an empty one never comes in practice; it's
+/// refused all the same.
 #[derive(Debug, PartialEq)]
 enum Cert {
     NoFingerprint, // nothing to know it by: never trusted

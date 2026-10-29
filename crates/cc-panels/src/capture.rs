@@ -216,9 +216,11 @@ fn damaged(buf: &spa::sys::spa_buffer, (w, h): (u32, u32)) -> u32 {
         return 1000;
     };
     let n = m.size as usize / size_of::<spa::sys::spa_meta_region>();
-    // SAFETY: m.data is non-null (the find above) and m.size bytes long, so n whole regions fit in it.
-    let rects = unsafe { std::slice::from_raw_parts(m.data as *const spa::sys::spa_meta_region, n) };
-    let area: u64 = rects.iter().map(|r| r.region.size).take_while(|s| s.width > 0 && s.height > 0).map(|s| s.width as u64 * s.height as u64).sum();
+    // SAFETY: m.data is non-null (the find above) and m.size bytes long, so n whole regions fit in
+    // it. Each is read unaligned: nothing promises the metadata area is aligned for the struct.
+    let base = m.data as *const spa::sys::spa_meta_region;
+    let rects = (0..n).map(|k| unsafe { base.add(k).read_unaligned() });
+    let area: u64 = rects.map(|r| r.region.size).take_while(|s| s.width > 0 && s.height > 0).map(|s| s.width as u64 * s.height as u64).sum();
     (area * 1000 / (w as u64 * h as u64).max(1)).min(1000) as u32
 }
 
