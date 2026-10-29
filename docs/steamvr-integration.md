@@ -35,6 +35,33 @@ apps, and it stays off. `cc-home install remove` takes it out.
 What it costs: one OpenVR connection each time SteamVR starts, and the memory of one idle process.
 It has no action manifest and takes no controller input except the laser on its own page.
 
+## Moving and resizing windows
+
+Every panel works the way SteamVR's own windows do, with the trigger (never the grip, which the
+Frame keeps for switching a controller between gamepad and hands). What changed for you:
+
+- **New windows open 1.4 m in front of you,** level and facing you, and stay where you put them.
+  Before, window panels opened at 1.2 m, and a computer's screen with no saved place opened at a
+  fixed spot in the room, whichever way you faced. The Machines, Preferences and Workspace windows
+  still open close by, at 0.6 m, and a pop-out still opens in front of its monitor.
+- **Push and pull speed up.** While you carry a panel, keep the thumbstick (or the wheel) going
+  one way and it moves faster the longer you hold it, up to four times as fast after a second
+  and a half. Let go of the stick or turn back and it starts slow again. It stops at 0.25 m and 5 m.
+- **The bottom-right corner resizes about the centre.** It's the resize handle, as on SteamVR's
+  windows, and the panel now grows and shrinks around its middle instead of hanging from its
+  top-left corner. A window still takes any shape there, and a computer's screen keeps its
+  monitor's shape. The other three corners work as before.
+- **Tap the curve button** (beside the bar) to flip a panel between flat and curved round you.
+  Holding it and pulling, or the thumbstick while it's held, still bends it as finely as you like.
+- **Dock a panel on a hand or your head.** Carry it to your other controller and let go: it rides
+  on that controller. Let go with your hand at your face and it rides on your head. Grab it again
+  to take it off; let go anywhere else and it stays in the room. Docking lasts until the Desktop
+  closes, and the panel's saved place stays where it last was in the room.
+
+Everything else stays: face me, snap back, the curve button's pull, zoom, the other corners,
+Right Ctrl and the wheel. The card and its buttons still fade in when a laser comes near and out
+after it leaves.
+
 ## The look
 
 Command Center uses SteamVR's own colours: its dark greys (#24272d, #3d4450, #464d58), its light

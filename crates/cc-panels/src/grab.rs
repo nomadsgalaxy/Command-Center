@@ -4,7 +4,10 @@
 //! mouse's SteamVR laser) and pull the trigger. Not the grip, because on the Frame SteamVR
 //! keeps the grip for switching a controller between gamepad and hands. What the trigger does depends on where:
 //!   - the bar or an edge of the card: the panel rides rigidly on that device until you let
-//!     go, and the joystick (or the wheel) pushes it away or pulls it closer;
+//!     go, and the joystick (or the wheel) pushes it away or pulls it closer, faster the longer
+//!     you keep at it, between 0.25 and 5 m. Let go with that hand at your other controller and
+//!     the panel docks on it; at your face, it docks on the head. Docked, it rides along until
+//!     you grab it again;
 //!   - the curve button beside the bar: a tap flips the panel between flat and curved round you
 //!     (SteamVR's "Toggle Curvature"). Held, the point you took rides on the device: pull it
 //!     toward you to bend the panel, push it back to flatten it. The joystick or wheel bends it
@@ -939,14 +942,14 @@ pub struct Grab {
     extra: Option<Extra>,       // the window in the slot after the panels', while it's open
     scanned: Vec<Option<Pose>>, // each panel's aligned place (home.json "scanned"), reread every second
     scanned_read: Option<Instant>,
-    stale: Vec<Option<Pose>>,  // those places as of the last relocalization; if they're still the same, they moved with the room
-    aligns: Vec<usize>,        // align buttons pressed after a relocalization, for machines.rs
-    taps: Vec<usize>,          // the curve button tapped (not pulled), for settle
-    drops: Vec<(usize, u32)>,  // carries a controller let go (slot, device), for settle to dock or not
+    stale: Vec<Option<Pose>>,         // those places as of the last relocalization; if they're still the same, they moved with the room
+    aligns: Vec<usize>,               // align buttons pressed after a relocalization, for machines.rs
+    taps: Vec<usize>,                 // the curve button tapped (not pulled), for settle
+    drops: Vec<(usize, u32)>,         // carries a controller let go (slot, device), for settle to dock or not
     docked: Vec<Option<(Dock, Mat)>>, // what each slot rides on, and its pose relative to that
-    keyboards: Vec<usize>,     // keyboard buttons pressed, for osk.rs
-    backs: crate::back::Backs, // panels turned away from you show their backs (back.rs)
-    pub game: bool,            // a VR game is running (the taskbar knows), so no backs
+    keyboards: Vec<usize>,            // keyboard buttons pressed, for osk.rs
+    backs: crate::back::Backs,        // panels turned away from you show their backs (back.rs)
+    pub game: bool,                   // a VR game is running (the taskbar knows), so no backs
 }
 
 /// A window that isn't a panel (Machines, Preferences) but gets a card like theirs. It takes
@@ -1583,7 +1586,6 @@ impl Grab {
         self.drags[i] = None;
         self.docked[i] = None; // a recall puts it in the world
     }
-
 
     /// Whether anything was carried, a laser or the cursor was near a panel, or a card or the
     /// theater backdrop was fading, as of the last update.

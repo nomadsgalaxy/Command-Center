@@ -278,7 +278,7 @@ Instead, a press only goes through once its window is known to be on top:
 2. cc-panels takes a slot and starts the stream.
 3. The overlay is shown on the **first imported frame**, so there's no black flash.
 4. The pose comes from the first of these that exists: the grace map, `win-poses.json`, the
-   `app:` spot, or 1.2 m ahead of the head with an 8 cm cascade.
+   `app:` spot, or 1.4 m ahead of the head (geometry.rs `new_pose`) with an 8 cm cascade.
 5. The tag is fetched (§9).
 
 **Idle windows**
