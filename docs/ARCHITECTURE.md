@@ -139,7 +139,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `work.rs` | What Frames ask for: monitor sessions (`session_start/stop`, idle stop, adoption), window streams, tag screens (`tags`, `check_tags`). |
 | `imu.rs` | A Steam Deck's motion sensors through hidraw: finds the controller, turns the IMU on and puts the setting back, decodes the reports. `imu-probe` is its local check. The agent's `imu` command (work.rs) streams it (docs/agent.md 3c, docs/deck-tracking.md). |
 | `pair.rs` | `cc-host pair`: the 6-digit key (and the address tags beside it), slots (max 4 Frames), lockout, `reply`. |
-| `share.rs` | Everything cc-share was: `install`, `up`/`down`, `check`, `guard`, `announce`, firewall, `frames`, `unpair`, `uninstall`, units. |
+| `share.rs` | Everything cc-share was: `install`, `up`/`down`, `check`, `guard`, `announce`, firewall, `frames`, `unpair`, `uninstall`, units (their text is in `packaging/systemd/`). |
 | `platform.rs` | The per-platform layer (`Linux` = KDE + systemd user units, `Fake` for tests). |
 | `draw.rs`, `aruco.rs`, `screen.rs` | Tag/key screens drawn into a buffer, the ArUco bit table, and the pure-Rust Wayland layer-shell that shows them. |
 | `hostcert.rs` | krdp's fixed TLS certificate and `check --agent`. |

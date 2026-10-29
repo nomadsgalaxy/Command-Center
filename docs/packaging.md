@@ -9,7 +9,9 @@ gets a systemd-sysext image, which cc-dev is designing separately.
 > cc-host's packaged mode: it finds the package's krdp, leaves the units, launcher and grants to the
 > package, moves an old user install out of the way, restarts itself after an update, and `check`
 > and `uninstall` know about the package. `cc-host units <dir>` writes the units for a package
-> build. CI builds it for x86_64 and aarch64 (`.github/workflows/arch.yml`, which runs
+> build. The units' text lives in `packaging/systemd/` (`@HOST@` and `@KRDP@` get filled in), and a
+> user install writes the same files. If install can't write the password, the units or its settings,
+> or `daemon-reload` fails, it stops with the file and the error instead of starting anything. CI builds it for x86_64 and aarch64 (`.github/workflows/arch.yml`, which runs
 > `packaging/arch/ci-build.sh` in the build root), and a release signs it into
 > `arch-repo-<arch>` along with a signed SHA256SUMS. Publishing waits for the signing key below.
 > The installer adding the repo comes once the key exists, since it embeds the fingerprint. The

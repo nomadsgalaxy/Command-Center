@@ -1,0 +1,12 @@
+[Unit]
+Description=Command Center share: monitor %i over RDP (port 3400+%i)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/bin/sh -c 'exec @KRDP@ --plasma --monitor %i --port $((3400 + %i)) -u "$USER" -p "$(cat %h/.config/control-center/password)" --certificate %h/.config/control-center/cert.pem --certificate-key %h/.config/control-center/key.pem'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

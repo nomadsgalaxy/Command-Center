@@ -1,0 +1,17 @@
+[Unit]
+Description=Command Center agent: paired Frames on port 3399 (docs/agent.md)
+After=graphical-session.target network-online.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=@HOST@ serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.config/control-center %h/.cache %h/.config/systemd/user %t
+
+[Install]
+WantedBy=graphical-session.target

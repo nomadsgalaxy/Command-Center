@@ -735,17 +735,17 @@ fn check(e: &Env) -> bool {
 /// The user units, for cc-host at `host` and the monitor servers' krdp at `krdp`. A user install
 /// writes them to ~/.config/systemd/user; a package build writes them with `cc-host units`.
 pub fn unit_files(host: &str, krdp: &str) -> Vec<(&'static str, String)> {
-    let agent = format!("{host} serve");
+    let fill = |t: &str| t.replace("@HOST@", host).replace("@KRDP@", krdp);
     vec![
         // --plasma talks to KWin directly, so nothing asks for permission on every connect.
-        ("control-center-share@.service", "[Unit]\nDescription=Command Center share: monitor %i over RDP (port 3400+%i)\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n[Service]\nExecStart=/bin/sh -c 'exec KRDP --plasma --monitor %i --port $((3400 + %i)) -u \"$USER\" -p \"$(cat %h/.config/control-center/password)\" --certificate %h/.config/control-center/cert.pem --certificate-key %h/.config/control-center/key.pem'\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=graphical-session.target\n".replace("KRDP", krdp)),
+        ("control-center-share@.service", fill(include_str!("../../../packaging/systemd/control-center-share@.service"))),
         // A paired Frame's own server for one monitor, instance <frame>-<monitor>.
-        ("control-center-frame@.service", format!("[Unit]\nDescription=Command Center share for paired Frame %i\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n[Service]\nExecStart={host} frame-run %i\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=graphical-session.target\n")),
+        ("control-center-frame@.service", fill(include_str!("../../../packaging/systemd/control-center-frame@.service"))),
         // A paired Frame's popped-out window, instance <frame>-<k>-<uuid>.
-        ("control-center-window@.service", format!("[Unit]\nDescription=Command Center window stream for paired Frame %i\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n[Service]\nExecStart={host} window-run %i\nRestart=no\n")),
+        ("control-center-window@.service", fill(include_str!("../../../packaging/systemd/control-center-window@.service"))),
         // The agent (docs/agent.md). It runs as this user, never root, and it's sandboxed as far as krdp control still works.
-        ("control-center-agent.service", format!("[Unit]\nDescription=Command Center agent: paired Frames on port 3399 (docs/agent.md)\nAfter=graphical-session.target network-online.target\nPartOf=graphical-session.target\n\n[Service]\nExecStart={agent}\nExecReload=/bin/kill -HUP $MAINPID\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nReadWritePaths=%h/.config/control-center %h/.cache %h/.config/systemd/user %t\n\n[Install]\nWantedBy=graphical-session.target\n")),
-        ("control-center-guard.service", format!("[Unit]\nDescription=Command Center: keep shared monitors encodable while a viewer is connected\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n[Service]\nExecStart={host} guard\nTimeoutStopSec=20\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=graphical-session.target\n")),
+        ("control-center-agent.service", fill(include_str!("../../../packaging/systemd/control-center-agent.service"))),
+        ("control-center-guard.service", fill(include_str!("../../../packaging/systemd/control-center-guard.service"))),
     ]
 }
 
@@ -799,6 +799,12 @@ fn migrate_user_install(e: &Env) {
         gone(&e.home.join(".local/share/applications").join(d));
     }
     let _ = std::fs::remove_dir_all(e.share.join("krdp-window"));
+}
+
+/// Says which file install couldn't write and why, and gives install's failure code.
+fn failed(path: &Path, x: impl std::fmt::Display) -> i32 {
+    eprintln!("{}: {x}; nothing was started", path.display());
+    1
 }
 
 fn install(e: &Env, args: &[String]) -> i32 {
@@ -873,15 +879,22 @@ fn install(e: &Env, args: &[String]) -> i32 {
             None => return 2,
         }
     }
-    let _ = std::fs::create_dir_all(&e.dir);
-    let _ = std::fs::set_permissions(&e.dir, std::fs::Permissions::from_mode(0o700));
+    // Each of these failing used to be ignored, and krdp then started with an old or empty password,
+    // or systemd ran stale units. Now install stops and says which file.
+    if let Err(x) = std::fs::create_dir_all(&e.dir).and_then(|_| std::fs::set_permissions(&e.dir, std::fs::Permissions::from_mode(0o700))) {
+        return failed(&e.dir, x);
+    }
     let pw = e.dir.join("password");
     if let Ok(p) = std::env::var("CC_PASSWORD").map(|p| p.trim_end_matches('\n').to_owned()).and_then(|p| if p.is_empty() { Err(std::env::VarError::NotPresent) } else { Ok(p) }) {
-        let _ = crate::agent::write_private(&pw, format!("{p}\n").as_bytes());
+        if let Err(x) = crate::agent::write_private(&pw, format!("{p}\n").as_bytes()) {
+            return failed(&pw, x);
+        }
     } else if !std::fs::metadata(&pw).is_ok_and(|m| m.len() > 0) {
         use base64::Engine;
         let p: String = base64::engine::general_purpose::STANDARD.encode(crate::agent::urandom::<24>()).chars().filter(|c| !"/+=".contains(*c)).take(20).collect();
-        let _ = crate::agent::write_private(&pw, format!("{p}\n").as_bytes());
+        if let Err(x) = crate::agent::write_private(&pw, format!("{p}\n").as_bytes()) {
+            return failed(&pw, x);
+        }
         println!("generated a password in {}: store it in your password manager, and on the Frame", pw.display());
     }
     // A fixed certificate, so the Frame can pin it. It's kept once made.
@@ -891,7 +904,10 @@ fn install(e: &Env, args: &[String]) -> i32 {
     }
     if packaged() {
         migrate_user_install(e);
-        sysq(&["daemon-reload"]);
+        if !sysq(&["daemon-reload"]) {
+            eprintln!("systemctl --user daemon-reload failed, so systemd would run the old units; nothing was started");
+            return 1;
+        }
         e.units_cmd(&["disable"], true); // links to the old unit files go; enable below makes the package's
     } else {
         if let Err(x) = copy_self(e) {
@@ -899,22 +915,34 @@ fn install(e: &Env, args: &[String]) -> i32 {
             return 1;
         }
         for (name, body) in unit_files("%h/.local/share/control-center/cc-host", "/usr/bin/krdpserver") {
-            let _ = std::fs::write(e.units.join(name), body);
+            let f = e.units.join(name);
+            if let Err(x) = std::fs::write(&f, body) {
+                return failed(&f, x);
+            }
         }
-        sysq(&["daemon-reload"]);
+        if !sysq(&["daemon-reload"]) {
+            eprintln!("systemctl --user daemon-reload failed, so systemd would run the old units; nothing was started");
+            return 1;
+        }
     }
     // Paired Frames' servers start when they connect (the agent does it), not at login. Older installs enabled them.
     for u in frame_wants(e) {
         sysq(&["disable", &u]); // A running one keeps running.
     }
-    let _ = std::fs::write(e.dir.join("shared"), mons.iter().map(|m| format!("{m}\n")).collect::<String>());
+    let shared = e.dir.join("shared");
+    if let Err(x) = std::fs::write(&shared, mons.iter().map(|m| format!("{m}\n")).collect::<String>()) {
+        return failed(&shared, x);
+    }
     // I wanted the choice between starting at login or from the app menu / taskbar. It's asked, or set with --autostart / --no-autostart.
     if autostart.is_none() && is_tty() && !e.dir.join("autostart").exists() {
         let a = ask("start Command Center when you log in, or from the app menu / taskbar? [L/t] ");
         autostart = Some(if a.starts_with(['t', 'T']) { "off" } else { "on" }.into());
     }
     if let Some(a) = &autostart {
-        let _ = std::fs::write(e.dir.join("autostart"), format!("{a}\n"));
+        let f = e.dir.join("autostart");
+        if let Err(x) = std::fs::write(&f, format!("{a}\n")) {
+            return failed(&f, x);
+        }
     }
     e.launcher();
     e.units_cmd(&["start"], false); // It's running now either way.
@@ -1140,7 +1168,7 @@ fn guard(e: &Env) -> i32 {
 
 /// The announce unit, for cc-host at `host`. `cc-share announce on` writes it in a user install.
 pub fn announce_unit(host: &str) -> String {
-    format!("[Unit]\nDescription=Command Center: announce this machine on the network (mDNS _controlcenter._tcp)\nAfter=graphical-session.target network-online.target\nPartOf=graphical-session.target\n\n[Service]\nExecStart={host} announce-run\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=graphical-session.target\n")
+    include_str!("../../../packaging/systemd/control-center-announce.service").replace("@HOST@", host)
 }
 
 fn announce_cmd(e: &Env, what: &str) -> i32 {
