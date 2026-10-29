@@ -42,7 +42,9 @@ root. When this file and the code disagree, the code wins, and this file should 
 - **The headless session** (`cc-desktop`): Plasma in a headless KWin, started by
   `cc-home session` as its own systemd user unit so it outlives cc-panels. It has its own
   `XDG_CONFIG_HOME` (`~/.config/control-center/desktop`) and runtime dir
-  (`$XDG_RUNTIME_DIR/cc-desktop`), so it never touches the Frame's own Plasma config.
+  (`$XDG_RUNTIME_DIR/cc-desktop`), so it never touches the Frame's own Plasma config. The OpenVR
+  and OpenXR registries are the user's own: `desktop/openvr` and `desktop/openxr` link to
+  `~/.config/openvr` and `~/.config/openxr`, so SteamVR and its OpenXR runtime see the same paths.
 
 ### Hosts
 
@@ -373,7 +375,7 @@ spot may be under its screen number, which saving removes.
 | `trusted-hosts/<id>.json`, `passwords/<id>`, `password`, `frame-key` | Pairing results and this Frame's Ed25519 key (`cc_proto::conf`, `agent::frame_key`). `pair-tries.json` limits retries. |
 | `mirror-camera.json` | The mirror camera fit (`cc-home refit`). |
 | `hibernate-allow` | Apps hibernate may reopen. |
-| `desktop/` | The headless session's own `XDG_CONFIG_HOME` (kwinrc, autostart, ...). |
+| `desktop/` | The headless session's own `XDG_CONFIG_HOME` (kwinrc, autostart, ...). Its `openvr` and `openxr` are links to the user's `~/.config/openvr` and `~/.config/openxr`, so the registries are shared. |
 
 **Frame, `~/.cache/control-center/`**: `cc-panels.log` (rotated), `cc-panels.lock`,
 `desktop-closed`, `desktop-session.env`, `autoconnect.txt`, `workspace-hint.txt`, `assets/`

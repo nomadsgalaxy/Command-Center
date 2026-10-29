@@ -681,6 +681,32 @@ fn session() -> i32 {
     status
 }
 
+/// Makes `link` a symlink to `target`, the user's own registry, if `target` exists. A real directory or
+/// file already at `link` is renamed aside as `<link>.bak` (or `.bak2`, ...), never deleted, and that
+/// name is returned. A stale link is replaced, and a link that's already right is left alone.
+fn share_registry(target: &Path, link: &Path) -> std::io::Result<Option<PathBuf>> {
+    if !target.exists() || fs::read_link(link).is_ok_and(|t| t == target) {
+        return Ok(None);
+    }
+    let mut moved = None;
+    match fs::symlink_metadata(link) {
+        Ok(m) if m.file_type().is_symlink() => fs::remove_file(link)?,
+        Ok(_) => {
+            let mut bak = PathBuf::from(format!("{}.bak", link.display()));
+            let mut n = 2;
+            while fs::symlink_metadata(&bak).is_ok() {
+                bak = PathBuf::from(format!("{}.bak{n}", link.display()));
+                n += 1;
+            }
+            fs::rename(link, &bak)?;
+            moved = Some(bak);
+        }
+        Err(_) => {}
+    }
+    std::os::unix::fs::symlink(target, link)?;
+    Ok(moved)
+}
+
 fn session_body(home: &str, host: &str, runtime: &Path) -> Result<i32, i32> {
     use std::os::unix::fs::{DirBuilderExt, symlink};
     let config = PathBuf::from(format!("{home}/.config/control-center/desktop"));
@@ -709,6 +735,14 @@ fn session_body(home: &str, host: &str, runtime: &Path) -> Result<i32, i32> {
     // Its own Plasma config, so the panel, wallpaper and shortcuts here don't touch the Frame's own.
     io(config.display(), fs::create_dir_all(&config))?;
     io(state.display(), fs::create_dir_all(&state))?;
+    // The Desktop's XDG_CONFIG_HOME hides the user's OpenVR and OpenXR registries, which SteamVR's
+    // client and its OpenXR runtime read from there, so the apps here couldn't find SteamVR.
+    for name in ["openvr", "openxr"] {
+        let link = config.join(name);
+        if let Some(bak) = io(link.display(), share_registry(Path::new(&format!("{home}/.config/{name}")), &link))? {
+            eprintln!("{} was a real directory; moved it aside to {}", link.display(), bak.display());
+        }
+    }
     // KWin set up for our pointer: focus on click, because it crosses other windows on its way,
     // and no edge barrier, because that holds back absolute motion too. No file indexing either
     // (docs/efficiency-plan.md 6): unlike the Frame's own config, it doesn't skip network
@@ -771,6 +805,43 @@ mod tests {
         }
         fs::create_dir_all(d.join("self")).unwrap(); // not a pid
         d
+    }
+
+    /// The Desktop's openvr and openxr links point at the user's own registries: made when the target
+    /// exists, left alone on a second run, a real directory with content moved aside (not deleted), and
+    /// a stale link replaced.
+    #[test]
+    fn shares_the_user_registries() {
+        let d = temp("registry");
+        let (user, desk) = (d.join("user/openvr"), d.join("desk/openvr"));
+        fs::create_dir_all(&user).unwrap();
+        fs::create_dir_all(desk.parent().unwrap()).unwrap();
+        fs::write(user.join("openvrpaths.vrpath"), "{}").unwrap();
+        assert_eq!(share_registry(&user, &desk).unwrap(), None);
+        assert_eq!(fs::read_link(&desk).unwrap(), user);
+        assert_eq!(share_registry(&user, &desk).unwrap(), None, "a second run changes nothing");
+        assert!(desk.join("openvrpaths.vrpath").exists());
+
+        let old = d.join("desk/openxr");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("active_runtime.json"), "old").unwrap();
+        let user_xr = d.join("user/openxr");
+        fs::create_dir_all(&user_xr).unwrap();
+        let bak = share_registry(&user_xr, &old).unwrap().expect("moved aside");
+        assert_eq!(bak, d.join("desk/openxr.bak"));
+        assert_eq!(fs::read_to_string(bak.join("active_runtime.json")).unwrap(), "old");
+        assert_eq!(fs::read_link(&old).unwrap(), user_xr);
+
+        let other = d.join("elsewhere");
+        fs::create_dir_all(&other).unwrap();
+        fs::remove_file(&desk).unwrap();
+        std::os::unix::fs::symlink(&other, &desk).unwrap();
+        assert_eq!(share_registry(&user, &desk).unwrap(), None);
+        assert_eq!(fs::read_link(&desk).unwrap(), user, "a stale link is replaced");
+
+        assert_eq!(share_registry(&d.join("none"), &d.join("desk/none")).unwrap(), None);
+        assert!(fs::symlink_metadata(d.join("desk/none")).is_err(), "no target, no link");
+        let _ = fs::remove_dir_all(d);
     }
 
     #[test]
