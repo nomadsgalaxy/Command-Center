@@ -13,9 +13,10 @@
 //!     moved with the room, so it aligns that monitor again instead;
 //!   - a corner of the card: the corner follows the laser along the panel's diagonal and
 //!     resizes it about its centre, so it shrinks and grows from any corner and keeps its shape;
-//!   - the bottom-right corner: works like a desktop window's, the top-left stays put. A window
-//!     panel takes any width and height (its window follows, windows.rs), and a remote screen
-//!     keeps the remote monitor's shape. In theater mode it's just a corner like the others.
+//!   - the bottom-right corner is the resize handle, as on SteamVR's own windows: it scales the
+//!     panel about its centre, but a window panel takes any width and height there (its window
+//!     follows, windows.rs), while a remote screen keeps the remote monitor's shape. In theater
+//!     mode it's just a corner like the others.
 //! The Machines and Preferences windows (control/) get a card too, in a slot after the
 //! panels' (`Extra`), taken in turn.
 //! Letting go saves the panel into the "home" spot. The card and bar stay shown but fully
@@ -1038,24 +1039,21 @@ pub fn width_for(sx: f64, sy: f64, cu: f64, cv: f64, aspect: f64) -> f64 {
     2.0 * (sx * cu + aspect * sy * cv) / (1.0 + aspect * aspect)
 }
 
-/// Puts the bottom-right corner at (cu, cv) (from the centre, along the surface) while the
-/// top-left stays where it is, and returns the panel's new matrix, width, height and curve.
-/// With `aspect` (height per width) it keeps its shape and the corner moves along the diagonal
-/// from the top-left. With None it takes any shape up to `max` (w, h), which is how a window
-/// works, as big as the output. The new panel sits on the cylinder through the top-left, or a
-/// new cylinder when the curve grows with the width.
+/// Puts the bottom-right corner at (cu, cv) (from the centre, along the surface) while the centre
+/// stays where it is, as SteamVR's resize handle does ("keep floating frames centered when
+/// resizing"), and returns the panel's new matrix, width, height and curve. With `aspect` (height
+/// per width) it keeps its shape and the corner moves along the diagonal. With None it takes any
+/// shape up to `max` (w, h), which is how a window works, as big as the output. The curve grows
+/// with the width only past a half circle.
 fn stretched(pl: &Placement, cu: f64, cv: f64, aspect: Option<f64>, max: (f64, f64)) -> (Mat, f64, f64, f64) {
-    let (du, dv) = (cu + pl.width / 2.0, pl.height / 2.0 - cv); // from the top-left
     let (w, h) = match aspect {
         Some(a) => {
-            let w = ((du + a * dv) / (1.0 + a * a)).clamp(MIN_WIDTH, MAX_WIDTH);
+            let w = width_for(1.0, -1.0, cu, cv, a).clamp(MIN_WIDTH, MAX_WIDTH);
             (w, a * w)
         }
-        None => (du.clamp(MIN_WIDTH, max.0.clamp(MIN_WIDTH, MAX_WIDTH)), dv.clamp(MIN_WIDTH, max.1.clamp(MIN_WIDTH, MAX_WIDTH))),
+        None => ((2.0 * cu).clamp(MIN_WIDTH, max.0.clamp(MIN_WIDTH, MAX_WIDTH)), (-2.0 * cv).clamp(MIN_WIDTH, max.1.clamp(MIN_WIDTH, MAX_WIDTH))),
     };
-    let curve = curve_for_width(pl.curve, w);
-    let top_left = pl.on_surface(-pl.width / 2.0, pl.height / 2.0, 0.0);
-    (Placement::from_matrix(&top_left, w, h / w, curve).on_surface(w / 2.0, -h / 2.0, 0.0), w, h, curve)
+    (pl.matrix(), w, h, curve_for_width(pl.curve, w))
 }
 
 impl Grab {
@@ -2081,49 +2079,39 @@ mod tests {
     }
 
     #[test]
-    fn the_bottom_right_corner_stretches_from_the_top_left() {
+    fn the_bottom_right_corner_scales_about_the_centre() {
         use crate::geometry::{Pose, panel_matrix};
         let at = |m: Mat| [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64];
         let near = |a: [f64; 3], b: [f64; 3]| norm(&[a[0] - b[0], a[1] - b[1], a[2] - b[2]]) < 1e-5;
         let pose = Pose { centre: [0.3, 1.5, -1.4], yaw: 25.0, pitch: 6.0, roll: 2.0, width: 1.2, curve: 0.0, vert: false };
         for curve in [0.0, 1.8] {
             let pl = Placement::from_matrix(&panel_matrix(&pose), 1.2, 0.5625, curve);
-            let top_left = at(pl.on_surface(-0.6, 0.3375, 0.0));
-            // A window takes any shape: the corner lands where the laser put it and the top-left stays.
-            let (cu, cv) = (0.9, -0.1); // 1.5 wide, 0.4375 high
             let big = (MAX_WIDTH, MAX_WIDTH);
+            // A window takes any shape: the corner lands where the laser put it, and the centre stays.
+            let (cu, cv) = (0.9, -0.1); // 1.8 wide, 0.2 high
             let (m, w, h, c) = stretched(&pl, cu, cv, None, big);
-            assert!((w - 1.5).abs() < 1e-9 && (h - 0.4375).abs() < 1e-9, "curve {curve}: {w} x {h}");
+            assert!((w - 1.8).abs() < 1e-9 && (h - 0.2).abs() < 1e-9, "curve {curve}: {w} x {h}");
+            assert!(near(at(m), pl.c), "curve {curve}: the centre moved");
             let np = Placement::from_matrix(&m, w, h / w, c);
-            assert!(near(at(np.on_surface(-w / 2.0, h / 2.0, 0.0)), top_left), "curve {curve}: the top-left moved");
             assert!(near(at(np.on_surface(w / 2.0, -h / 2.0, 0.0)), at(pl.on_surface(cu, cv, 0.0))), "curve {curve}: the corner isn't at the laser");
-            // A remote screen keeps its shape, with the top-left still fixed.
-            let (m, w, h, c) = stretched(&pl, cu, cv, Some(0.5625), big);
-            assert!((h / w - 0.5625).abs() < 1e-9 && w > 1.2, "curve {curve}: {w} x {h}");
-            let np = Placement::from_matrix(&m, w, h / w, c);
-            assert!(near(at(np.on_surface(-w / 2.0, h / 2.0, 0.0)), top_left), "curve {curve}: the top-left moved");
+            // A remote screen keeps its shape, about the same centre.
+            let (m, w, h, _) = stretched(&pl, cu, cv, Some(0.5625), big);
+            assert!((h / w - 0.5625).abs() < 1e-9 && w > 1.2 && near(at(m), pl.c), "curve {curve}: {w} x {h}");
             // Left where it is, nothing changes.
             let (m, w, h, _) = stretched(&pl, 0.6, -0.3375, Some(0.5625), big);
             assert!((w - 1.2).abs() < 1e-9 && (h - 0.675).abs() < 1e-9 && near(at(m), pl.c));
-            // Dragged past the top-left, it's the smallest panel, still hanging from the top-left.
-            let (m, w, h, c) = stretched(&pl, -1.0, 1.0, None, big);
+            // Dragged past the centre, it's the smallest panel, still where it was.
+            let (m, w, h, _) = stretched(&pl, -1.0, 1.0, None, big);
             assert_eq!((w, h), (MIN_WIDTH, MIN_WIDTH));
-            let np = Placement::from_matrix(&m, w, h / w, c);
-            assert!(near(at(np.on_surface(-w / 2.0, h / 2.0, 0.0)), top_left));
+            assert!(near(at(m), pl.c));
             // A window can't get bigger than the output, so the corner stops there.
-            let (m, w, h, c) = stretched(&pl, 3.0, -2.0, None, (1.83, 1.03));
+            let (_, w, h, _) = stretched(&pl, 3.0, -2.0, None, (1.83, 1.03));
             assert_eq!((w, h), (1.83, 1.03));
-            let np = Placement::from_matrix(&m, w, h / w, c);
-            assert!(near(at(np.on_surface(-w / 2.0, h / 2.0, 0.0)), top_left), "curve {curve}: the top-left moved");
         }
-        // Widened past a half circle, the curve grows (a new cylinder), and it still hangs from
-        // the top-left.
+        // Widened past a half circle, the curve grows (a new cylinder).
         let pl = Placement::from_matrix(&panel_matrix(&Pose { width: 5.6, curve: 1.8, ..pose }), 5.6, 0.5625, 1.8);
-        let top_left = at(pl.on_surface(-2.8, 1.575, 0.0));
-        let (m, w, h, c) = stretched(&pl, 3.2, -1.575, None, (MAX_WIDTH, MAX_WIDTH));
+        let (_, w, _, c) = stretched(&pl, 3.2, -1.575, None, (MAX_WIDTH, MAX_WIDTH));
         assert!((w - 6.0).abs() < 1e-9 && c > 1.8, "{w} m, curve {c}");
-        let np = Placement::from_matrix(&m, w, h / w, c);
-        assert!(near(at(np.on_surface(-w / 2.0, h / 2.0, 0.0)), top_left), "the top-left moved");
     }
 
     #[test]
@@ -2597,7 +2585,7 @@ mod tests {
         }
 
         #[test]
-        fn the_bottom_right_corner_stretches_with_the_top_left_held() {
+        fn the_bottom_right_corner_scales_about_the_centre_like_steamvrs_handle() {
             let p = flat();
             let (mut g, mut k, mut f) = world(p);
             point(&mut f, HAND, EYE, surface_point(&p, 0.8, -0.45));
@@ -2607,8 +2595,7 @@ mod tests {
             g.carry(&mut k, &mut f, Instant::now());
             let n = k.place[0];
             assert!(n.width > 2.0 && (n.height / n.width - 0.5625).abs() < 1e-6, "{} x {}", n.width, n.height);
-            let (was, now) = (surface_point(&p, -0.8, 0.45), surface_point(&n, -n.width / 2.0, n.height / 2.0));
-            assert!(far(&was, &now) < 1e-4, "the top-left corner didn't move");
+            assert!(far(&p.c, &n.c) < 1e-4, "the centre didn't move");
         }
 
         #[test]
