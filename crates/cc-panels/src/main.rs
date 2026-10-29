@@ -1008,6 +1008,7 @@ fn run() -> Result<(), String> {
         eprintln!("running until stopped; Right Ctrl + Esc ends it");
     }
     let mut grab = grab::Grab::new(panels().len());
+    grab.docking = config::settings()["docking"] == true; // off until there are targets you can see (docs/steamvr-integration.md)
     let mut bar = taskbar::Taskbar::new(&assets);
     let mut machines = control::machines::Machines::new(&assets);
     let mut prefs = control::prefs::Prefs::new(&assets);

@@ -5,9 +5,9 @@
 //! keeps the grip for switching a controller between gamepad and hands. What the trigger does depends on where:
 //!   - the bar or an edge of the card: the panel rides rigidly on that device until you let
 //!     go, and the joystick (or the wheel) pushes it away or pulls it closer, faster the longer
-//!     you keep at it, between 0.25 and 5 m. Let go with that hand at your other controller and
-//!     the panel docks on it; at your face, it docks on the head. Docked, it rides along until
-//!     you grab it again;
+//!     you keep at it, between 0.25 and 5 m. With settings.json "docking" on, hold that hand at
+//!     your other controller (or your face) until it buzzes and let go, and the panel docks there,
+//!     pulled within reach. Docked, it rides along until you grab it again;
 //!   - the curve button beside the bar: a tap flips the panel between flat and curved round you
 //!     (SteamVR's "Toggle Curvature"). Held, the point you took rides on the device: pull it
 //!     toward you to bend the panel, push it back to flatten it. The joystick or wheel bends it
@@ -842,9 +842,11 @@ struct Drag {
     dev: u32,
     mode: Mode,
     lost: Option<Instant>,
-    streak: Option<Streak>, // the push or pull going on, for its speed-up
-    since: Instant,         // when it started, to tell a tap on the curve button from a pull
-    bent0: f64,             // ...and how bent the panel was then (its sagitta, metres)
+    streak: Option<Streak>,             // the push or pull going on, for its speed-up
+    since: Instant,                     // when it started, to tell a tap on the curve button from a pull
+    bent0: f64,                         // ...and how bent the panel was then (its sagitta, metres)
+    others: Vec<u32>,                   // a carry's dock targets: the other controllers (none with docking off)
+    arm: Option<(Dock, Instant, bool)>, // the target the hand's in, since when, and whether it's armed (DOCK_DWELL)
 }
 
 /// What a docked panel rides on (the spec's rule 7). World is not docked.
@@ -858,6 +860,28 @@ pub enum Dock {
 /// controller, and this near the head (a hand at your face) docks it on the head (metres).
 const DOCK_HAND: f64 = 0.15;
 const DOCK_HEAD: f64 = 0.15; // calibration knob: not so far out that pulling a panel close to read it docks it
+/// Calibration knob: the hand has to stay in a target this long before letting go docks there,
+/// and a buzz says when it's armed, so a carry that only passes by doesn't dock.
+const DOCK_DWELL: Duration = Duration::from_millis(400);
+/// A hand dock pulls the panel's centre in to at most this far from the hand, keeping how it's
+/// turned, so a panel docked from across the room doesn't swing about with every turn of the wrist.
+const DOCK_REACH: f64 = 0.6;
+/// A head dock keeps the panel's distance from the head, within these (metres).
+const HEAD_REACH: (f64, f64) = (0.4, 2.0);
+
+/// rel (a panel's pose relative to what it docks on) with its offset brought within reach.
+fn within_reach(dock: Dock, mut rel: Mat) -> Mat {
+    let t = [rel[0][3] as f64, rel[1][3] as f64, rel[2][3] as f64];
+    let d = norm(&t);
+    let (lo, hi) = if dock == Dock::Head { HEAD_REACH } else { (0.0, DOCK_REACH) };
+    let want = d.clamp(lo, hi);
+    if d > 1e-9 && (want - d).abs() > 1e-9 {
+        for (r, row) in rel.iter_mut().enumerate() {
+            row[3] = (t[r] * want / d) as f32;
+        }
+    }
+    rel
+}
 
 /// Where a panel let go by a hand at `hand` goes: onto one of the other `controllers` (their
 /// positions), onto the head, or the world (None).
@@ -942,14 +966,15 @@ pub struct Grab {
     extra: Option<Extra>,       // the window in the slot after the panels', while it's open
     scanned: Vec<Option<Pose>>, // each panel's aligned place (home.json "scanned"), reread every second
     scanned_read: Option<Instant>,
-    stale: Vec<Option<Pose>>,         // those places as of the last relocalization; if they're still the same, they moved with the room
-    aligns: Vec<usize>,               // align buttons pressed after a relocalization, for machines.rs
-    taps: Vec<usize>,                 // the curve button tapped (not pulled), for settle
-    drops: Vec<(usize, u32)>,         // carries a controller let go (slot, device), for settle to dock or not
-    docked: Vec<Option<(Dock, Mat)>>, // what each slot rides on, and its pose relative to that
-    keyboards: Vec<usize>,            // keyboard buttons pressed, for osk.rs
-    backs: crate::back::Backs,        // panels turned away from you show their backs (back.rs)
-    pub game: bool,                   // a VR game is running (the taskbar knows), so no backs
+    stale: Vec<Option<Pose>>,                          // those places as of the last relocalization; if they're still the same, they moved with the room
+    aligns: Vec<usize>,                                // align buttons pressed after a relocalization, for machines.rs
+    taps: Vec<usize>,                                  // the curve button tapped (not pulled), for settle
+    drops: Vec<(usize, Option<Dock>)>,                 // carries a controller let go, and the target it had armed, for settle
+    docked: Vec<Option<(Dock, Mat, Option<Instant>)>>, // what each slot rides on, its pose relative to that, and since when that's untracked
+    pub docking: bool,                                 // settings.json "docking", read at start (main.rs): off, nothing docks
+    keyboards: Vec<usize>,                             // keyboard buttons pressed, for osk.rs
+    backs: crate::back::Backs,                         // panels turned away from you show their backs (back.rs)
+    pub game: bool,                                    // a VR game is running (the taskbar knows), so no backs
 }
 
 /// A window that isn't a panel (Machines, Preferences) but gets a card like theirs. It takes
@@ -1140,6 +1165,7 @@ impl Grab {
             taps: Vec::new(),
             drops: Vec::new(),
             docked: vec![None; n],
+            docking: false,
             keyboards: Vec::new(),
             backs: Default::default(),
             game: false,
@@ -1366,6 +1392,7 @@ impl Grab {
     /// closer, a bend gets 3 cm more (or less) curve a notch, and a zoom changes 10% a notch.
     fn scroll(&mut self, i: usize, notches: f64, k: &mut Kvm, s: &mut impl Stage) {
         match self.drags[i].as_mut().map(|d| &mut d.mode) {
+            Some(Mode::Move { .. }) if notches == 0.0 => {} // no notch: the streak goes on
             Some(Mode::Move { .. }) => {
                 let d = self.drags[i].as_mut().unwrap();
                 let (st, held) = streak(d.streak, Instant::now(), notches > 0.0);
@@ -1432,7 +1459,9 @@ impl Grab {
             Mode::Zoom { .. } => "zoomed",
             Mode::Move { .. } => "carried",
         };
-        self.drags[i] = Some(Drag { dev, mode, lost: None, streak: None, since: Instant::now(), bent0: sagitta(pl.width, pl.curve) });
+        // a controller's carry can dock: its targets are the other controllers, looked up once here
+        let others = if self.docking && matches!(mode, Mode::Move { .. }) && dev != MOUSE { s.controllers().into_iter().filter(|&c| c != dev).collect() } else { Vec::new() };
+        self.drags[i] = Some(Drag { dev, mode, lost: None, streak: None, since: Instant::now(), bent0: sagitta(pl.width, pl.curve), others, arm: None });
         eprintln!("{}: {what} by device {dev}", self.owner(i).map_or("", |o| o.name));
     }
 
@@ -1440,7 +1469,8 @@ impl Grab {
     fn end(&mut self, i: usize, k: &Kvm) {
         let Some(d) = self.drags[i].take() else { return };
         if matches!(d.mode, Mode::Move { .. }) && d.dev != MOUSE && crate::THEATER.load(Relaxed) != i {
-            return self.drops.push((i, d.dev)); // settle docks it, or puts it in the world and saves it
+            let armed = d.arm.filter(|a| a.2).map(|a| a.0);
+            return self.drops.push((i, armed)); // settle docks it, or puts it in the world and saves it
         }
         if let Mode::Curve { .. } = d.mode {
             let pl = self.at(i, k);
@@ -1451,14 +1481,35 @@ impl Grab {
         self.save(i, k);
     }
 
-    /// What was let go since the last frame. A carry let go near another controller or the head
-    /// docks there; anywhere else it's in the world and saved. A tap on the curve button flips
+    /// A carry's hand at `hand`: which dock target it's in, for how long, and whether that's armed
+    /// yet (DOCK_DWELL, with a buzz). Only with docking on.
+    fn arm(&mut self, i: usize, hand: &Mat, s: &mut impl Stage, now: Instant) {
+        if !self.docking || self.drags[i].as_ref().is_none_or(|d| d.dev == MOUSE) || crate::THEATER.load(Relaxed) == i {
+            return;
+        }
+        let pos = |m: Mat| [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64];
+        let others: Vec<(u32, V3)> = self.drags[i].as_ref().unwrap().others.iter().filter_map(|&c| Some((c, pos(s.device(c)?)))).collect();
+        let want = dock_for(pos(*hand), s.head(), &others);
+        let card = self.owner(i).map_or_else(|| s.panel(i).overlay, |o| o.card); // a slot with no owner is only a test's
+        let d = self.drags[i].as_mut().unwrap();
+        d.arm = match (want, d.arm) {
+            (None, _) => None,
+            (Some(w), Some((a, since, armed))) if a == w => {
+                let now_armed = armed || now.duration_since(since) >= DOCK_DWELL;
+                if now_armed && !armed {
+                    s.pulse(card);
+                }
+                Some((a, since, now_armed))
+            }
+            (Some(w), _) => Some((w, now, false)),
+        };
+    }
+
+    /// What was let go since the last frame. A carry let go in a dock target it had armed docks
+    /// there, pulled within reach (`within_reach`); anywhere else it's in the world and saved. A tap on the curve button flips
     /// its panel flat or curved.
     fn settle(&mut self, k: &mut Kvm, s: &mut impl Stage) {
-        for (i, dev) in std::mem::take(&mut self.drops) {
-            let pos = |m: Mat| [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64];
-            let others: Vec<(u32, V3)> = s.controllers().into_iter().filter(|&c| c != dev).filter_map(|c| Some((c, pos(s.device(c)?)))).collect();
-            let dock = s.device(dev).and_then(|m| dock_for(pos(m), s.head(), &others));
+        for (i, dock) in std::mem::take(&mut self.drops) {
             let on = match dock {
                 Some(Dock::Hand(c)) => s.device(c),
                 Some(Dock::Head) => s.head_pose(),
@@ -1466,7 +1517,10 @@ impl Grab {
             };
             match (dock, on) {
                 (Some(dock), Some(m)) => {
-                    self.docked[i] = Some((dock, mul(&inv_rigid(&m), &self.at(i, k).matrix())));
+                    let rel = within_reach(dock, mul(&inv_rigid(&m), &self.at(i, k).matrix()));
+                    let pl = self.at(i, k);
+                    self.put(i, k, s, &mul(&m, &rel), pl.width, None, pl.curve);
+                    self.docked[i] = Some((dock, rel, None));
                     eprintln!("{}: docked on {dock:?} (home keeps its last place in the room)", self.owner(i).map_or("", |o| o.name));
                 }
                 _ => {
@@ -1485,6 +1539,11 @@ impl Grab {
 
     /// Saves slot i's place into "home", same as releasing a carry does.
     fn save(&self, i: usize, k: &Kvm) {
+        if self.docked.get(i).is_some_and(Option::is_some) {
+            return; // docked: home keeps its last place in the room
+        }
+        #[cfg(test)]
+        tests::SAVES.with(|n| n.set(n.get() + 1));
         let pl = self.at(i, k);
         if crate::THEATER.load(Relaxed) == i {
             return; // theater mode's place is just for now, not its spot
@@ -1644,14 +1703,23 @@ impl Grab {
             if self.drags[i].is_some() {
                 continue;
             }
-            let Some((dock, rel)) = self.docked[i] else { continue };
+            let Some((dock, rel, lost)) = self.docked[i] else { continue };
             let on = match dock {
                 Dock::Hand(c) => s.device(c),
                 Dock::Head => s.head_pose(),
             };
-            if let Some(m) = on {
-                let pl = self.at(i, k);
-                self.put(i, k, s, &mul(&m, &rel), pl.width, None, pl.curve); // it rides along, like a carry that never ends
+            match on {
+                Some(m) => {
+                    self.docked[i] = Some((dock, rel, None));
+                    let pl = self.at(i, k);
+                    self.put(i, k, s, &mul(&m, &rel), pl.width, None, pl.curve); // it rides along, like a carry that never ends
+                }
+                // what it rode on went off or out of tracking: it stays in the room where it last was (not saved)
+                None if lost.is_some_and(|t| now - t > LOST) => {
+                    self.docked[i] = None;
+                    eprintln!("{}: what it was docked on is gone, so it's left in the room", self.owner(i).map_or("", |o| o.name));
+                }
+                None => self.docked[i] = Some((dock, rel, lost.or(Some(now)))),
             }
         }
         for i in 0..self.drags.len() {
@@ -1672,6 +1740,7 @@ impl Grab {
                 Mode::Move { rel } => {
                     let m = mul(&tracked.unwrap(), &rel);
                     self.put(i, k, s, &m, pl.width, None, pl.curve);
+                    self.arm(i, &tracked.unwrap(), s, now);
                 }
                 Mode::Resize { sx, sy, gx, gy } => {
                     let Some((u, v)) = laser_on_by(s, &pl, dev) else { continue };
@@ -2329,6 +2398,11 @@ mod tests {
         }
     }
 
+    thread_local! {
+        /// How many times save() got past its docked check on this test's thread.
+        pub static SAVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     #[test]
     fn a_push_speeds_up_while_it_goes_on_and_starts_over_after_a_pause_or_a_turn() {
         let t0 = Instant::now();
@@ -2710,10 +2784,19 @@ mod tests {
             let (mut g, mut k, mut f) = world(p);
             point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
             point(&mut f, OTHER, [0.38, 1.2, -0.4], p.c); // 8 cm away: in reach
+            g.docking = true;
             g.start(0, Part::Bar, HAND, &k, &f);
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL / 2);
+            assert!(f.pulses.is_empty(), "not armed yet");
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
+            assert_eq!(f.pulses.len(), 1, "a buzz when it arms");
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL * 2);
+            assert_eq!(f.pulses.len(), 1, "only once");
             g.end_by(HAND, &k);
             g.settle(&mut k, &mut f);
-            assert!(matches!(g.docked[0], Some((Dock::Hand(OTHER), _))), "{:?}", g.docked[0].map(|d| d.0));
+            assert!(matches!(g.docked[0], Some((Dock::Hand(OTHER), _, None))), "{:?}", g.docked[0].map(|d| d.0));
             // the other hand moves 30 cm left: the panel goes with it, the same way round
             let was = k.place[0];
             let mut m = f.devices[&OTHER];
@@ -2731,16 +2814,124 @@ mod tests {
         }
 
         #[test]
+        fn a_carry_that_only_passes_a_target_or_has_docking_off_stays_in_the_world() {
+            const OTHER: u32 = 2;
+            for (docking, dwell) in [(true, DOCK_DWELL / 2), (false, DOCK_DWELL * 2)] {
+                let p = flat();
+                let (mut g, mut k, mut f) = world(p);
+                point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+                point(&mut f, OTHER, [0.38, 1.2, -0.4], p.c);
+                g.docking = docking;
+                g.start(0, Part::Bar, HAND, &k, &f);
+                let t0 = Instant::now();
+                g.carry(&mut k, &mut f, t0);
+                g.carry(&mut k, &mut f, t0 + dwell);
+                g.end_by(HAND, &k);
+                g.settle(&mut k, &mut f);
+                assert!(g.docked[0].is_none() && f.pulses.is_empty(), "docking {docking}, {dwell:?} in the target");
+            }
+        }
+
+        /// Docks slot 0 on controller 2 from a hand at `hand`, the panel where world() puts it.
+        fn docked_on_other(p: Placement, hand: V3) -> (Grab, Kvm, Fake) {
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, hand, p.c);
+            point(&mut f, 2, [hand[0] + 0.05, hand[1], hand[2]], p.c);
+            g.docking = true;
+            g.start(0, Part::Bar, HAND, &k, &f);
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert!(matches!(g.docked[0], Some((Dock::Hand(2), _, None))));
+            (g, k, f)
+        }
+
+        #[test]
+        fn a_hand_dock_pulls_a_far_panel_in_to_its_reach() {
+            let p = Placement { c: [0.0, 1.5, -3.0], ..flat() };
+            let (_, k, f) = docked_on_other(p, [0.3, 1.2, -0.4]);
+            let hand = f.devices[&2];
+            let d = far(&k.place[0].c, &[hand[0][3] as f64, hand[1][3] as f64, hand[2][3] as f64]);
+            assert!((d - DOCK_REACH).abs() < 1e-5, "{d} m from the hand");
+            assert!(far(&k.place[0].x, &p.x) < 1e-6 && far(&k.place[0].z, &p.z) < 1e-6, "turned the same way");
+            let rel = within_reach(Dock::Head, crate::stage::fake::aimed([0.0, 0.0, 0.0], [0.0, 0.0, -0.1]));
+            assert!(norm(&[rel[0][3] as f64, rel[1][3] as f64, rel[2][3] as f64]) < 1e-9, "at the head itself: left alone");
+            let mut near = crate::stage::fake::aimed([0.0, 0.0, -0.1], [0.0, 0.0, -1.0]);
+            near = within_reach(Dock::Head, near);
+            assert!((near[2][3] + HEAD_REACH.0 as f32).abs() < 1e-6, "a head dock at 10 cm goes out to 40");
+        }
+
+        #[test]
+        fn a_docked_panel_whose_controller_goes_away_stays_in_the_room() {
+            let p = flat();
+            let (mut g, mut k, mut f) = docked_on_other(p, [0.3, 1.2, -0.4]);
+            let at = k.place[0].c;
+            f.devices.remove(&2); // switched off
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            assert!(g.docked[0].is_some(), "a blink of lost tracking isn't gone");
+            g.carry(&mut k, &mut f, t0 + LOST + Duration::from_millis(10));
+            assert!(g.docked[0].is_none() && k.place[0].c == at, "left where it was");
+        }
+
+        #[test]
+        fn bending_a_docked_panel_doesnt_save_its_docked_place_as_home() {
+            let p = flat();
+            let (mut g, mut k, mut f) = docked_on_other(p, [0.3, 1.2, -0.4]);
+            let saved = SAVES.with(|n| n.get());
+            point(&mut f, HAND, EYE, k.place[0].c);
+            g.start(0, Part::Knob, HAND, &k, &f); // a tap
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            g.start(0, Part::Knob, HAND, &k, &f); // and a hold
+            g.scroll(0, 1.0, &mut k, &mut f);
+            g.carry(&mut k, &mut f, Instant::now());
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert_eq!(SAVES.with(|n| n.get()), saved, "home keeps its last place in the room");
+            assert!(g.docked[0].is_some(), "and it's still docked");
+        }
+
+        #[test]
+        fn taking_the_resize_handle_without_moving_changes_nothing() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, EYE, surface_point(&p, 0.8 - 0.02, -0.45 + 0.02)); // a little inside the corner
+            g.start(0, Part::Corner(BOTTOM_RIGHT), HAND, &k, &f);
+            g.carry(&mut k, &mut f, Instant::now());
+            g.carry(&mut k, &mut f, Instant::now());
+            assert_eq!((k.place[0].width, k.place[0].height, k.place[0].c), (p.width, p.height, p.c), "no jump");
+        }
+
+        #[test]
+        fn a_zero_notch_doesnt_break_a_push_streak() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &f);
+            g.scroll(0, 1.0, &mut k, &mut f);
+            let st = g.drags[0].as_ref().unwrap().streak;
+            g.scroll(0, 0.0, &mut k, &mut f);
+            assert_eq!(g.drags[0].as_ref().unwrap().streak, st);
+        }
+
+        #[test]
         fn let_go_by_a_hand_at_your_face_it_docks_on_the_head() {
             let p = flat();
             let (mut g, mut k, mut f) = world(p);
             let head = crate::stage::fake::aimed(EYE, [0.0, 1.6, -1.0]);
             f.head_pose = Some(head);
             point(&mut f, HAND, [0.05, 1.57, -0.05], p.c); // 8 cm from the eye
+            g.docking = true;
             g.start(0, Part::Bar, HAND, &k, &f);
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
             g.end_by(HAND, &k);
             g.settle(&mut k, &mut f);
-            assert!(matches!(g.docked[0], Some((Dock::Head, _))));
+            assert!(matches!(g.docked[0], Some((Dock::Head, _, None))));
             let mut turned = head;
             turned[1][3] += 0.2; // stood up 20 cm
             f.head_pose = Some(turned);

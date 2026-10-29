@@ -31,6 +31,8 @@ pub trait Stage: Overlays {
     fn head_pose(&self) -> Option<Mat>;
     /// The real controllers SteamVR tracks (not the mouse's pointer device), for docking (grab.rs).
     fn controllers(&self) -> Vec<u32>;
+    /// A short buzz in the hand whose laser last worked overlay h (a dock target arming, grab.rs).
+    fn pulse(&mut self, h: Handle);
     /// Slot i's overlay facts.
     fn panel(&self, i: usize) -> PanelFacts;
     /// Sends panel i's machine (or window) a pointer move to pixel (x, y).
@@ -52,6 +54,10 @@ impl Stage for Live {
 
     fn head_pose(&self) -> Option<Mat> {
         vr::head()
+    }
+
+    fn pulse(&mut self, h: Handle) {
+        crate::call!(ov, TriggerLaserMouseHapticVibration, h, 0.05, 160.0, 0.6);
     }
 
     fn controllers(&self) -> Vec<u32> {
@@ -84,6 +90,8 @@ pub mod fake {
         /// The head's pose, when it's tracked; None is an untracked headset.
         pub head_pose: Option<Mat>,
         pub panels: Vec<PanelFacts>,
+        /// The haptic pulses, by overlay.
+        pub pulses: Vec<Handle>,
         /// The pointer moves sent, as (panel, x, y).
         pub moves: Vec<(usize, f64, f64)>,
     }
@@ -157,6 +165,10 @@ pub mod fake {
 
         fn head_pose(&self) -> Option<Mat> {
             self.head_pose
+        }
+
+        fn pulse(&mut self, h: Handle) {
+            self.pulses.push(h);
         }
 
         fn controllers(&self) -> Vec<u32> {

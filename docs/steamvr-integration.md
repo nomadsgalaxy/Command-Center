@@ -53,10 +53,16 @@ Frame keeps for switching a controller between gamepad and hands). What changed 
   monitor's shape. The other three corners work as before.
 - **Tap the curve button** (beside the bar) to flip a panel between flat and curved round you.
   Holding it and pulling, or the thumbstick while it's held, still bends it as finely as you like.
-- **Dock a panel on a hand or your head.** Carry it to your other controller and let go: it rides
-  on that controller. Let go with your hand at your face and it rides on your head. Grab it again
-  to take it off; let go anywhere else and it stays in the room. Docking lasts until the Desktop
-  closes, and the panel's saved place stays where it last was in the room.
+- **Dock a panel on a hand or your head** (off for now). With `"docking": true` in
+  `~/.config/control-center/settings.json`, carry a panel to your other controller and hold it
+  there until the controller buzzes (about half a second), then let go: it rides on that
+  controller, pulled in to within 60 cm of it. Do the same with your hand at your face and it rides
+  on your head, between 40 cm and 2 m away. Passing by without the buzz doesn't dock. Grab it again
+  to take it off; let go anywhere else and it stays in the room. If the controller goes off or
+  loses tracking for half a second, the panel stays in the room where it was. Docking lasts until
+  the Desktop closes, and the panel's saved place stays where it last was in the room, even if you
+  bend or resize it while it's docked. It's off by default until the dock spots show while you
+  carry something.
 
 Everything else stays: face me, snap back, the curve button's pull, zoom, the other corners,
 Right Ctrl and the wheel. The card and its buttons still fade in when a laser comes near and out
