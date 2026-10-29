@@ -10,7 +10,8 @@
 //!
 //! Security (review B2, B3): without `tls=no` the only way in is VeNCrypt with an X509
 //! certificate, the password goes out only inside that TLS session, and the certificate has to
-//! match the pin (pin= on the line, or the paired machine's). `tls=no` also allows VNC's own
+//! match the pin (pin= on the line, or the paired machine's; with neither, the first connect saves
+//! one, see on_certificate). `tls=no` also allows VNC's own
 //! password check and Apple's (ARD), which macOS and TightVNC need for now.
 #![allow(non_upper_case_globals)] // libvncclient's rfb* constants, matched as patterns
 use crate::{Panel, QUIT, config};
@@ -28,9 +29,12 @@ pub struct Opts {
     pub port: u32,
     pub user: String,
     pub password: String,
-    /// The certificate's SHA-256. None takes any certificate (and logs its fingerprint for pin=).
+    /// The certificate's SHA-256. None means it isn't pinned yet: the first certificate becomes its pin.
     pub pin: Option<[u8; 32]>,
     pub insecure: bool,
+    /// Its viewers.conf line's name, and the folder with viewers.conf, where a first pin is saved.
+    pub name: String,
+    pub conf: std::path::PathBuf,
 }
 
 /// A pin in hex. Anything that isn't 64 hex digits matches no certificate (fails closed).
@@ -181,7 +185,9 @@ unsafe fn credential(cl: *mut rfbClient, st: &mut State, kind: c_int) -> *mut rf
 }
 
 /// The certificate isn't the pinned one, or there's no pin. With a pin that's a refusal. Without
-/// one it's trust on first use, like an unpaired RDP machine, and the log says how to pin it.
+/// one it's trust on first use: this certificate becomes the line's pin= (cc_proto::conf), and only
+/// it is taken from then on. If the pin can't be saved, it doesn't connect, since an unsaved first
+/// use would trust whatever shows up next time too.
 unsafe extern "C" fn on_certificate(cl: *mut rfbClient, subject: *const c_char, _: libc::time_t, _: libc::time_t, fp: *const u8, len: usize) -> rfbBool {
     crate::ffi::guard("on_certificate", 0, || {
         let hex: String = unsafe { std::slice::from_raw_parts(fp, len) }.iter().map(|b| format!("{b:02x}")).collect();
@@ -193,8 +199,23 @@ unsafe extern "C" fn on_certificate(cl: *mut rfbClient, subject: *const c_char, 
                     st.refused = Some("the host's certificate isn't the pinned one");
                     return 0;
                 }
-                eprintln!("vnc {}: certificate {subject}, sha256 {hex}, not pinned; add pin={hex} to its viewers.conf line", st.opts.host);
-                1
+                match cc_proto::conf::pin_first_use(&st.opts.conf, &st.opts.name, &hex) {
+                    Ok(cc_proto::conf::FirstPin::Saved) => {
+                        eprintln!("vnc {}: first connect, pinned its certificate ({subject}, sha256 {hex}) as pin= on {}'s line", st.opts.host, st.opts.name);
+                        1
+                    }
+                    Ok(cc_proto::conf::FirstPin::Same) => 1,
+                    Ok(cc_proto::conf::FirstPin::Other(pin)) => {
+                        eprintln!("vnc {}: certificate {subject}, sha256 {hex}, isn't its pin {pin}; not connecting", st.opts.host);
+                        st.refused = Some("the host's certificate isn't the pinned one");
+                        0
+                    }
+                    Err(e) => {
+                        eprintln!("vnc {}: can't save its certificate's pin ({e}); not connecting", st.opts.host);
+                        st.refused = Some("couldn't save the host's certificate pin");
+                        0
+                    }
+                }
             })
         }
         .unwrap_or(0)
@@ -669,8 +690,10 @@ pub fn run(p: &'static Panel) {
     while !QUIT.load(Relaxed) && p.live() {
         let v = &p.v;
         let o = v.vnc.clone().unwrap_or_default();
-        let pin = if o.pin.is_empty() { config::pin(&v.machine) } else { Some(o.pin.clone()) };
-        let opts = Opts { host: v.host.clone(), port: v.port, user: v.user.clone(), password: config::password(&v.machine), pin: pin.map(|h| pin_bytes(&h)), insecure: o.insecure };
+        // the line's pin (read again each try, since a first connect may have just saved one), else the paired machine's
+        let conf = std::path::PathBuf::from(config::config(""));
+        let pin = if o.pin.is_empty() { cc_proto::conf::viewer_pin(&conf, &v.name).or_else(|| config::pin(&v.machine)) } else { Some(o.pin.clone()) };
+        let opts = Opts { host: v.host.clone(), port: v.port, user: v.user.clone(), password: config::password(&v.machine), pin: pin.map(|h| pin_bytes(&h)), insecure: o.insecure, name: v.name.clone(), conf };
         let mut s = match Session::connect(&opts) {
             Ok(s) => s,
             Err(why) => {
@@ -740,6 +763,32 @@ pub fn run(p: &'static Panel) {
 mod tests {
     use super::*;
 
+    /// An unpinned server's first certificate is saved as its pin and taken. A different one after
+    /// that is refused, even by a session that started before the pin was saved (fails closed).
+    #[test]
+    fn pins_on_first_connect_and_refuses_another() {
+        let d = std::env::temp_dir().join(format!("cc-panels-vnc-pin-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("viewers.conf"), "# mine\nmac  me@10.0.0.5:5900  1  2560x1440  proto=vnc\n").unwrap();
+        unsafe {
+            let cl = rfbGetClient(8, 3, 4);
+            let tag = &TAG as *const u8 as *mut c_void;
+            let opts = Opts { host: "10.0.0.5".into(), name: "mac".into(), conf: d.clone(), ..Default::default() };
+            let st = Box::into_raw(Box::new(State { opts, ..Default::default() }));
+            rfbClientSetClientData(cl, tag, st as *mut c_void);
+            let (first, other) = ([0xab; 32], [0xcd; 32]);
+            assert_eq!(on_certificate(cl, std::ptr::null(), 0, 0, first.as_ptr(), 32), 1, "the first one is taken");
+            assert_eq!(cc_proto::conf::viewer_pin(&d, "mac"), Some("ab".repeat(32)), "and saved");
+            assert_eq!(on_certificate(cl, std::ptr::null(), 0, 0, first.as_ptr(), 32), 1, "the same one again");
+            assert_eq!(on_certificate(cl, std::ptr::null(), 0, 0, other.as_ptr(), 32), 0, "another one fails closed");
+            assert!((*st).refused.is_some());
+            rfbClientSetClientData(cl, tag, std::ptr::null_mut());
+            drop(Box::from_raw(st));
+            rfbClientCleanup(cl);
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// with_state hands out the State only while the client points at it, and only once at a time.
     /// After teardown has cleared the pointer, a late callback gets nothing and fails.
     #[test]
@@ -791,7 +840,7 @@ mod tests {
     fn against_the_test_server() {
         let env = std::env::var("CC_VNC_TEST").expect("CC_VNC_TEST=host:port:password:pin (tools/vnc-test-server.sh test)");
         let f: Vec<&str> = env.splitn(4, ':').collect();
-        let opts = Opts { host: f[0].into(), port: f[1].parse().unwrap(), user: "cc".into(), password: f[2].into(), pin: Some(pin_bytes(f[3])), insecure: false };
+        let opts = Opts { host: f[0].into(), port: f[1].parse().unwrap(), user: "cc".into(), password: f[2].into(), pin: Some(pin_bytes(f[3])), insecure: false, ..Default::default() };
 
         // 1. security: a wrong pin, and a server without TLS, are refused before the password goes out
         let wrong = Opts { pin: Some([7; 32]), ..opts.clone() };

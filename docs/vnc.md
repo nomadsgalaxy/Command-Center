@@ -52,8 +52,11 @@ newer than the patched source.
   and the sub-type is X509VNC or X509Plain, whatever the server picked, and after connecting I
   check that again.
 - The certificate has to match its pin: `pin=` on the line, or the paired machine's
-  `cert_sha256`, the same pin format RDP uses. An unpinned one is trust on first use, like an
-  unpaired RDP machine, and the log prints the `pin=` to add.
+  `cert_sha256`, the same pin format RDP uses. With neither, the first connect pins it: the
+  certificate it shows is saved as `pin=` on its viewers.conf line (only that line changes, and
+  comments stay), and from then on a different certificate is refused. If the pin can't be
+  saved, it doesn't connect. To trust a new certificate on purpose, delete the `pin=` and connect
+  again.
 - A session that didn't ask for a password is refused, since a fake desktop would get every
   keystroke.
 - `tls=no` also allows VNC's own password check and Apple's (ARD, type 30). macOS and TightVNC

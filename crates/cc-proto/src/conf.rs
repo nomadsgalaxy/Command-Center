@@ -178,6 +178,42 @@ pub fn set_options(line: &str, opts: &[(String, String)]) -> Result<String, Stri
     Ok(line)
 }
 
+/// The pin= on the line for the monitor `name` in viewers.conf, if it has one.
+pub fn viewer_pin(conf: &Path, name: &str) -> Option<String> {
+    let lines: Vec<String> = std::fs::read_to_string(conf.join("viewers.conf")).ok()?.lines().map(str::to_owned).collect();
+    let l = &lines[entry(&lines, name)?];
+    opt(&line_opts(l), "pin").map(str::to_owned)
+}
+
+/// What pin_first_use found.
+#[derive(Debug, PartialEq)]
+pub enum FirstPin {
+    /// The line had no pin, and now it has this one.
+    Saved,
+    /// It already had this one.
+    Same,
+    /// It has a different one (the hex), so this certificate isn't the host's.
+    Other(String),
+}
+
+/// Trust on first use for a VNC server (docs/vnc.md): the first certificate it shows becomes the
+/// line's pin=, and after that only that one is taken. It never replaces a pin. Only that line
+/// changes, so comments and every other line stay as they were, and the file is replaced in one
+/// rename.
+pub fn pin_first_use(conf: &Path, name: &str, hex: &str) -> Result<FirstPin, String> {
+    let path = conf.join("viewers.conf");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let i = entry(&lines, name).ok_or_else(|| format!("no {name} in {}", path.display()))?;
+    if let Some(pin) = opt(&line_opts(&lines[i]), "pin") {
+        return Ok(if pin.eq_ignore_ascii_case(hex) { FirstPin::Same } else { FirstPin::Other(pin.to_owned()) });
+    }
+    lines[i] = set_options(&lines[i], &[("pin".into(), hex.to_ascii_lowercase())])?;
+    let tmp = conf.join("viewers.conf.tmp");
+    std::fs::write(&tmp, lines.join("\n") + "\n").and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(FirstPin::Saved)
+}
+
 /// The line for the monitor `name` (cc-home's entry).
 pub fn entry(lines: &[String], name: &str) -> Option<usize> {
     lines.iter().position(|l| words(l).first() == Some(&name) && words(l).len() >= 4)
@@ -1194,6 +1230,26 @@ pub fn enter_workspace(data: &mut Json, name: &str, universe: u64, saved: &Json,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first certificate becomes the pin, the same one passes, a different one doesn't, and the
+    /// comments and the other lines are left as they were.
+    #[test]
+    fn vnc_pins_on_first_use() {
+        let d = std::env::temp_dir().join(format!("cc-proto-pin-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let conf = "# my monitors\nmac   me@10.0.0.5:5900  1  2560x1440  proto=vnc\n\nother me@10.0.0.6:3410  2  1920x1080\n";
+        std::fs::write(d.join("viewers.conf"), conf).unwrap();
+        let (a, b) = ("ab".repeat(32), "cd".repeat(32));
+        assert_eq!(viewer_pin(&d, "mac"), None);
+        assert_eq!(pin_first_use(&d, "mac", &a.to_uppercase()), Ok(FirstPin::Saved));
+        assert_eq!(viewer_pin(&d, "mac"), Some(a.clone()));
+        assert_eq!(pin_first_use(&d, "mac", &a), Ok(FirstPin::Same));
+        assert_eq!(pin_first_use(&d, "mac", &b), Ok(FirstPin::Other(a.clone())), "never replaced");
+        let text = std::fs::read_to_string(d.join("viewers.conf")).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(text, conf.replace("proto=vnc", &format!("proto=vnc  pin={a}")));
+        assert!(pin_first_use(&d, "mac", &a).is_err(), "no file, no pin");
+    }
 
     #[test]
     fn set_option_as_cc_home() {
