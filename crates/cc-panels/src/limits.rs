@@ -51,6 +51,11 @@ pub const THEATER: (f64, f64, f64) = (1.8, 2.0, 1.8); // ahead, width, curve rad
 /// by this fraction of its distance a notch, between these distances (metres).
 pub const LASER_PUSH_STEP: f64 = 0.08;
 pub const LASER_PUSH_RANGE: (f64, f64) = (0.25, 5.0);
+/// ...and it speeds up the longer you keep at it, as SteamVR's grab handles do
+/// (grabHandleAcceleration): notches the same way, each within PUSH_STREAK of the last, take the
+/// step from 1x to PUSH_ACCEL.1 times over PUSH_ACCEL.0 seconds. A pause or a turn back starts over.
+pub const PUSH_ACCEL: (f64, f64) = (1.5, 4.0);
+pub const PUSH_STREAK: f64 = 0.3;
 
 /// Right Ctrl + wheel (kvm.rs `scale`): each notch multiplies the distance (or, with Shift, the
 /// width) by this, and the distance stays between these (metres).

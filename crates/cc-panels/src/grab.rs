@@ -31,7 +31,7 @@
 //! the bar, an edge or a corner.
 use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta, surface_point};
 use crate::kvm::Kvm;
-use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, ZOOM, ZOOM_NOTCH};
+use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, PUSH_ACCEL, PUSH_STREAK, ZOOM, ZOOM_NOTCH};
 use crate::overlay::{At, Live, Overlays, Place, apply};
 use crate::stage::Stage;
 use crate::theme::{self, Accent, Rgb, Theme, Tokens};
@@ -837,6 +837,30 @@ struct Drag {
     dev: u32,
     mode: Mode,
     lost: Option<Instant>,
+    streak: Option<Streak>, // the push or pull going on, for its speed-up
+}
+
+/// Notches that keep coming the same way: since when, the last one, and which way (out is away).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Streak {
+    since: Instant,
+    last: Instant,
+    out: bool,
+}
+
+/// The streak after a notch at `now`, the way `out`: it goes on, or starts over after a pause
+/// or a turn back. Returns it and how long it's been going, in seconds.
+fn streak(was: Option<Streak>, now: Instant, out: bool) -> (Streak, f64) {
+    let s = match was {
+        Some(s) if s.out == out && now.duration_since(s.last).as_secs_f64() <= PUSH_STREAK => Streak { last: now, ..s },
+        _ => Streak { since: now, last: now, out },
+    };
+    (s, now.duration_since(s.since).as_secs_f64())
+}
+
+/// How many times the first step a push or pull takes, after going on `held` seconds.
+fn accel(held: f64) -> f64 {
+    1.0 + (PUSH_ACCEL.1 - 1.0) * (held / PUSH_ACCEL.0).clamp(0.0, 1.0)
 }
 
 /// What a panel's card looks like right now, as uploaded and placed.
@@ -1296,7 +1320,12 @@ impl Grab {
     /// closer, a bend gets 3 cm more (or less) curve a notch, and a zoom changes 10% a notch.
     fn scroll(&mut self, i: usize, notches: f64, k: &mut Kvm, s: &mut impl Stage) {
         match self.drags[i].as_mut().map(|d| &mut d.mode) {
-            Some(Mode::Move { .. }) => self.push(i, notches, k, s),
+            Some(Mode::Move { .. }) => {
+                let d = self.drags[i].as_mut().unwrap();
+                let (st, held) = streak(d.streak, Instant::now(), notches > 0.0);
+                d.streak = Some(st);
+                self.push(i, notches * accel(held), k, s)
+            }
             Some(Mode::Curve { s0, .. }) => *s0 = (*s0 + CURVE_NOTCH * notches).max(0.0),
             Some(Mode::Zoom { zoom0, .. }) => *zoom0 = (*zoom0 * ZOOM_NOTCH.powf(notches)).clamp(ZOOM.0, ZOOM.1),
             _ => {}
@@ -1356,7 +1385,7 @@ impl Grab {
             Mode::Zoom { .. } => "zoomed",
             Mode::Move { .. } => "carried",
         };
-        self.drags[i] = Some(Drag { dev, mode, lost: None });
+        self.drags[i] = Some(Drag { dev, mode, lost: None, streak: None });
         eprintln!("{}: {what} by device {dev}", self.owner(i).map_or("", |o| o.name));
     }
 
@@ -1501,7 +1530,7 @@ impl Grab {
         let mut p = mul(&d, rel);
         let to = [0, 1, 2].map(|r| p[r][3] as f64 - head[r]);
         let len = norm(&to);
-        let next = (len * (1.0 + LASER_PUSH_STEP * notches)).clamp(LASER_PUSH_RANGE.0, LASER_PUSH_RANGE.1);
+        let next = (len * (1.0 + LASER_PUSH_STEP * notches).max(0.0)).clamp(LASER_PUSH_RANGE.0, LASER_PUSH_RANGE.1); // a fast pull stops at the near end, not past the head
         for r in 0..3 {
             p[r][3] = (head[r] + to[r] / (len + 1e-9) * next) as f32;
         }
@@ -2205,6 +2234,22 @@ mod tests {
             assert_eq!((f.width, f.curve, f.vert), (at.width, at.curve, at.vert));
             assert!(turn(&m.pose(), &facing(&m, &eye)) < FACE_TURN, "facing: no button");
         }
+    }
+
+    #[test]
+    fn a_push_speeds_up_while_it_goes_on_and_starts_over_after_a_pause_or_a_turn() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let (mut s, held) = streak(None, t0, true);
+        assert_eq!((held, accel(held)), (0.0, 1.0), "the first notch: the plain step");
+        for n in 1..=8 {
+            s = streak(Some(s), ms(n * 200), true).0;
+        }
+        let held = ms(1600).duration_since(s.since).as_secs_f64();
+        assert!(held >= PUSH_ACCEL.0 && accel(held) == PUSH_ACCEL.1, "1.6 s of notches: full speed");
+        assert!(accel(0.5) > 1.0 && accel(0.5) < accel(1.0), "it ramps");
+        assert_eq!(streak(Some(s), ms(1600 + 400), true).1, 0.0, "a pause starts over");
+        assert_eq!(streak(Some(s), ms(1700), false).1, 0.0, "so does a pull after a push");
     }
 
     #[test]
