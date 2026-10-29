@@ -232,7 +232,10 @@ VNC is the same shape: `vnc.rs:run` → libvncclient update callbacks → `gpu::
 6. SteamVR's keyboard: the keyboard button on a live panel's card (`grab.rs` `Part::Keys`, queued for
    `take_keyboards`) opens it in minimal mode on the panel's overlay (`osk.rs`). Its
    `KeyboardCharInput` events come in with the panel's own user value, and `kvm.rs:type_text`
-   turns each character into US-layout key presses through the same `Panel::key`. A physical key
+   sends each character the way `route` says: as itself through `Panel::text` (RDP Unicode input
+   when the server's input capability has INPUT_FLAG_UNICODE, `rdp::unicode`; VNC keysyms,
+   Unicode ones past Latin-1), or as US-layout keys through the same `Panel::key` for control
+   characters, sticky-modifier shortcuts and panels that only take keys (`Panel::text_mode`). A physical key
    (`Kvm::key_at`) closes it. While it's open, `osk::Keys` draws a key strip (`Kind::Keys`) under the
    panel's card: Esc, Tab and the arrows (`Kvm::strip_key`), and sticky Ctrl, Alt and Super
    (`Kvm::latched`) that `tap` wraps around the next key, or `click_mods` holds through the next

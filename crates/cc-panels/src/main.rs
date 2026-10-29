@@ -367,6 +367,30 @@ impl Panel {
         }
     }
 
+    /// How a character typed on SteamVR's keyboard gets here (kvm.rs `type_text`): as itself
+    /// where the transport can (VNC's keysyms, RDP's Unicode input when the server announces it),
+    /// else as a US keyboard's keys. A window panel's input is evdev keys only.
+    pub fn text_mode(&self) -> kvm::TextMode {
+        match self.src {
+            Source::Rdp if self.v.vnc.is_some() => kvm::TextMode::Unicode,
+            Source::Rdp => match rdp::unicode(self) {
+                Some(true) => kvm::TextMode::Unicode,
+                Some(false) => kvm::TextMode::UsKeys,
+                None => kvm::TextMode::Unknown, // not connected yet: don't tell anyone it's a US keyboard
+            },
+            Source::Window(_) => kvm::TextMode::UsKeys,
+        }
+    }
+
+    /// A character as itself, when text_mode says it can. False if the transport refused it.
+    pub fn text(&self, c: char) -> bool {
+        match self.src {
+            Source::Rdp if self.v.vnc.is_some() => vnc::text(self, c),
+            Source::Rdp => rdp::text(self, c),
+            Source::Window(_) => false,
+        }
+    }
+
     /// A key: its evdev code, and 0 for up, 1 for down, 2 for the kernel's repeat.
     pub fn key(&self, code: u16, value: i32) {
         match self.src {

@@ -56,6 +56,16 @@ pub enum Ev {
     Mouse(u32, f64, f64),
     Wheel(bool, f64),
     Key(u16, i32),
+    Sym(u32), // a character as itself (SteamVR's keyboard): its keysym pressed and let go
+}
+
+/// The X keysym that types c whatever the host's layout: Latin-1 is its code point, anything else
+/// the Unicode keysym 0x01000000 + its code point.
+pub fn char_keysym(c: char) -> u32 {
+    match c as u32 {
+        cp @ (0x20..=0x7e | 0xa0..=0xff) => cp,
+        cp => 0x0100_0000 + cp,
+    }
 }
 
 /// The soft cursor (the cursor pseudo-encodings): the server sends its shape, and we draw it
@@ -560,6 +570,13 @@ impl Session {
                 let bit = 1 << (button - 1);
                 (0..n.abs() as i32).all(|_| unsafe { SendPointerEvent(cl, self.at.0, self.at.1, self.mask | bit) != 0 && SendPointerEvent(cl, self.at.0, self.at.1, self.mask) != 0 })
             }
+            Ev::Sym(sym) => {
+                let sent = unsafe { SendKeyEvent(cl, sym, 1) != 0 && SendKeyEvent(cl, sym, 0) != 0 };
+                if !sent {
+                    crate::osk::missed(1); // queued as typed (vnc::text), but the connection went: the strip counts it
+                }
+                sent
+            }
             Ev::Key(code, value) => {
                 let down = value != 0;
                 let shift = [42u16, 54].iter().any(|k| self.keys.contains_key(k));
@@ -680,11 +697,20 @@ fn keysym(code: u16, shift: bool) -> u32 {
 /// Input waiting for each panel's session thread.
 static INPUT: Mutex<Vec<(usize, Ev)>> = Mutex::new(Vec::new());
 
-fn queue(p: &Panel, e: Ev) {
-    if p.connected.load(Acquire) {
-        crate::ffi::lock(&INPUT).push((p.index, e));
+fn queue(p: &Panel, e: Ev) -> bool {
+    let queued = queue_if(p.connected.load(Acquire), p.index, e);
+    if queued {
         crate::rdp::poke(p); // its session thread may be in its wait
     }
+    queued
+}
+
+/// Queues e for panel i's session thread if it's connected. False if there's no session to take it.
+fn queue_if(connected: bool, i: usize, e: Ev) -> bool {
+    if connected {
+        crate::ffi::lock(&INPUT).push((i, e));
+    }
+    connected
 }
 
 fn take_input(i: usize) -> Vec<Ev> {
@@ -703,6 +729,11 @@ pub fn mouse(p: &Panel, flags: u32, x: f64, y: f64) {
 /// Wheel notches, positive is up or right (Panel::wheel).
 pub fn wheel(p: &Panel, horizontal: bool, notches: f64) {
     queue(p, Ev::Wheel(horizontal, notches));
+}
+
+/// A character as itself (Panel::text). VNC always can, through keysyms.
+pub fn text(p: &Panel, c: char) -> bool {
+    queue(p, Ev::Sym(char_keysym(c))) // a panel that's disconnected says so, and the character counts as missed
 }
 
 /// An evdev key: 0 up, 1 down, 2 repeat (Panel::key).
@@ -828,6 +859,23 @@ pub fn run(p: &'static Panel) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_disconnected_panel_takes_no_characters() {
+        let before = take_input(97).len();
+        assert!(!queue_if(false, 97, Ev::Sym(0x61)), "no session: refused, so it counts as missed");
+        assert_eq!(take_input(97).len(), before);
+        assert!(queue_if(true, 97, Ev::Sym(0x61)));
+        assert_eq!(take_input(97).len(), 1);
+    }
+
+    #[test]
+    fn a_character_is_its_latin1_or_unicode_keysym() {
+        assert_eq!(char_keysym('a'), 0x61);
+        assert_eq!(char_keysym('é'), 0xe9);
+        assert_eq!(char_keysym('€'), 0x0100_20ac);
+        assert_eq!(char_keysym('😀'), 0x0101_f600);
+    }
 
     /// A hostile 65535x65535 cursor (or any too big, or not 4 bytes a pixel) hides the cursor.
     #[test]

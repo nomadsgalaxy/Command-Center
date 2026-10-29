@@ -451,6 +451,7 @@ pub fn run(p: &'static Panel) {
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_NlaSecurity, true);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_TlsSecurity, true);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_RdpSecurity, false);
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_UnicodeInput, true); // asked for; the server's capability decides (unicode())
             if let Some(pin) = &pin {
                 // paired (H2): only that certificate. FreeRDP accepts it by fingerprint before
                 // anything else, and any other one goes to on_other_cert, which refuses it
@@ -602,6 +603,41 @@ pub fn mouse(p: &Panel, flags: u32, x: f64, y: f64) {
     }
 }
 
+/// Whether the server takes Unicode keyboard input: we ask for it before connecting, and FreeRDP
+/// keeps that only if the server's input capability says INPUT_FLAG_UNICODE. None until connected.
+pub fn unicode(p: &Panel) -> Option<bool> {
+    let c = p.rdp.load(Acquire);
+    (p.connected.load(Acquire) && !c.is_null()).then(|| unsafe { freerdp_settings_get_bool((*c).settings, FreeRDP_Settings_Keys_Bool_FreeRDP_UnicodeInput) != 0 })
+}
+
+/// c's UTF-16 units: one, or a surrogate pair past the BMP, which RDP's Unicode input takes one at a time.
+fn units(c: char) -> Vec<u16> {
+    c.encode_utf16(&mut [0u16; 2]).to_vec()
+}
+
+/// A character as itself (SteamVR's keyboard): each UTF-16 unit pressed and let go. False if
+/// FreeRDP refused one, and the caller never retries it as keys.
+pub fn text(p: &Panel, c: char) -> bool {
+    let Some(i) = input(p) else { return false };
+    send_units(&units(c), |flags, u| unsafe { freerdp_input_send_unicode_keyboard_event(i, flags, u) != 0 })
+}
+
+/// Presses and lets go of each unit through `send` (flags, unit). The release always goes, even
+/// when its press failed, so nothing stays down; after a failure no further unit is pressed, so a
+/// surrogate pair never goes out half. True only if every press and release went.
+fn send_units(units: &[u16], mut send: impl FnMut(u16, u16) -> bool) -> bool {
+    let mut ok = true;
+    for &u in units {
+        if !ok {
+            break;
+        }
+        let down = send(0, u);
+        let up = send(KBD_FLAGS_RELEASE as u16, u);
+        ok = down && up;
+    }
+    ok
+}
+
 pub fn key(p: &Panel, down: bool, repeat: bool, scancode: u32) {
     if let Some(i) = input(p) {
         unsafe { freerdp_input_send_keyboard_event_ex(i, down as BOOL, repeat as BOOL, scancode) };
@@ -618,6 +654,30 @@ pub fn wheel(p: &Panel, horizontal: bool, rotation: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_unit_is_still_let_go_and_the_rest_of_its_pair_isnt_pressed() {
+        let rel = KBD_FLAGS_RELEASE as u16;
+        let mut sent = Vec::new();
+        assert!(send_units(&[0xd83d, 0xde00], |f, u| {
+            sent.push((f, u));
+            true
+        }));
+        assert_eq!(sent, [(0, 0xd83d), (rel, 0xd83d), (0, 0xde00), (rel, 0xde00)]);
+        let mut sent = Vec::new();
+        assert!(!send_units(&[0xd83d, 0xde00], |f, u| {
+            sent.push((f, u));
+            f != 0 // every press fails
+        }));
+        assert_eq!(sent, [(0, 0xd83d), (rel, 0xd83d)], "its release still went, and the low half was never pressed");
+    }
+
+    #[test]
+    fn a_character_past_the_bmp_goes_as_its_surrogate_pair() {
+        assert_eq!(units('a'), [0x61]);
+        assert_eq!(units('€'), [0x20ac]);
+        assert_eq!(units('😀'), [0xd83d, 0xde00]);
+    }
 
     /// A panel whose host server is down waits five minutes, or until Connect, or until it's closed.
     #[test]

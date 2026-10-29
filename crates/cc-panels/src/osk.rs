@@ -1,13 +1,14 @@
 //! SteamVR's keyboard, for typing to a remote from a controller. The keyboard button on a live
 //! panel's card (grab.rs `Part::Keys`) opens it for that panel in minimal mode, so each character
-//! comes the moment it's typed (VREvent_KeyboardCharInput), and kvm.rs `type_text` sends it on as
-//! key presses, the same way a physical keyboard's keys go. It has no Esc, arrows or Ctrl, so those
-//! stay on a real keyboard.
+//! comes the moment it's typed (VREvent_KeyboardCharInput), and kvm.rs `type_text` sends it on: as
+//! the character itself where the panel takes that (VNC keysyms, RDP Unicode input), so the host's
+//! layout can't change it, else as a US keyboard's keys.
 //!
 //! While it's open, a key strip of ours sits under the panel's card with the keys it lacks: Esc,
 //! Tab, the arrows, and sticky Ctrl, Alt and Super that apply to the next key or laser click
 //! (kvm.rs `tap`, `click_mods`). It also says when a character couldn't be typed, without ever
-//! saying which, since it may be a password.
+//! saying which, since it may be a password, and, before you type, when the panel only takes a US
+//! keyboard's keys. Characters go as themselves where they can (kvm.rs `route`).
 //!
 //! A physical key pressed while it's open closes it, since you've gone back to the real one. So
 //! does the panel disconnecting, and a dropped session lets go of anything held. Closing lets go of every modifier we pressed. The Machines and
@@ -32,6 +33,13 @@ static OPEN: Mutex<Option<(usize, Instant)>> = Mutex::new(None);
 static MISSED: Mutex<(usize, Option<Instant>)> = Mutex::new((0, None));
 const MISSED_FOR: Duration = Duration::from_secs(5); // how long the strip says so
 
+/// n characters couldn't be typed: the strip says so for MISSED_FOR. Any thread (a VNC session's
+/// send that failed counts too).
+pub fn missed(n: usize) {
+    let mut m = MISSED.lock().unwrap();
+    *m = (if m.1.is_some_and(|t| t.elapsed() < MISSED_FOR) { m.0 } else { 0 } + n, Some(Instant::now()));
+}
+
 /// Whether the panel keyboard is open for panel i.
 pub fn open_for(i: usize) -> bool {
     OPEN.lock().unwrap().is_some_and(|(j, _)| j == i)
@@ -53,7 +61,9 @@ fn closed() {
 }
 
 fn show(p: &Panel) {
-    let hint = CString::new(format!("Typing to {}", p.v.name)).unwrap_or_default();
+    // said before you type, not after: a panel that can't take characters gets a US keyboard's keys
+    let us = if p.text_mode() == crate::kvm::TextMode::UsKeys { " as a US keyboard" } else { "" };
+    let hint = CString::new(format!("Typing to {}{us}", p.v.name)).unwrap_or_default();
     let mode = sys::EGamepadTextInputMode_k_EGamepadTextInputModeNormal;
     let lines = sys::EGamepadTextInputLineMode_k_EGamepadTextInputLineModeSingleLine;
     let flags = sys::EKeyboardFlags_KeyboardFlag_Minimal;
@@ -85,11 +95,10 @@ pub fn event(p: &Panel, e: &vr::VREvent_t) -> bool {
     match e.eventType {
         sys::EVREventType_VREvent_KeyboardCharInput if ours => {
             if let Some(text) = typed(&k.cNewInput) {
-                let missed = KVM.lock().unwrap().type_text(p.index, &text);
-                if missed > 0 {
-                    let mut m = MISSED.lock().unwrap();
-                    *m = (if m.1.is_some_and(|t| t.elapsed() < MISSED_FOR) { m.0 } else { 0 } + missed, Some(Instant::now()));
-                    eprintln!("{}: {missed} character(s) from SteamVR's keyboard aren't on a US keyboard, so they weren't sent", p.v.name);
+                let n = KVM.lock().unwrap().type_text(p.index, &text);
+                if n > 0 {
+                    missed(n);
+                    eprintln!("{}: {n} character(s) from SteamVR's keyboard couldn't be typed", p.v.name);
                 }
             }
         }
@@ -138,6 +147,7 @@ struct Key {
     hover: Option<usize>,
     latched: [bool; 3],
     missed: usize,
+    us: bool, // the panel only takes a US keyboard's keys (Panel::text_mode)
     theme: u32,
 }
 
@@ -166,8 +176,12 @@ fn pixel(k: &Key, p: &Paint, ascii: Option<&TagImg>, x: f64, y: f64) -> Px {
         let ink = if sticky { p.acc.ink } else { t.wtext };
         out = over(out, tint(ui::typed(ascii, label, x, y, (x0 + x1 - ui::typed_w(ascii, label)) / 2.0, CY), ink, ink, ink));
     }
-    if k.missed > 0 {
-        let s = format!("Couldn't type {} character{}", k.missed, if k.missed == 1 { "" } else { "s" });
+    let note = match (k.missed, k.us) {
+        (0, false) => None,
+        (0, true) => Some("Typing as a US keyboard".to_string()),
+        (n, _) => Some(format!("Couldn't type {n} character{}", if n == 1 { "" } else { "s" })),
+    };
+    if let Some(s) = note {
         out = over(out, tint(ui::typed(ascii, &s, x, y, PAD + 4.0, LINE_Y), t.wdim, t.wdim, t.wdim));
     }
     over(out, (t.border, line(d + 0.5, 0.5)))
@@ -288,7 +302,8 @@ impl Keys {
     fn paint(&mut self, h: vr::Handle, accent: theme::Rgb) {
         let missed = MISSED.lock().unwrap();
         let missed = if missed.1.is_some_and(|t| t.elapsed() < MISSED_FOR) { missed.0 } else { 0 };
-        let key = Key { hover: self.hover, latched: KVM.lock().unwrap().latched, missed, theme: theme::generation() };
+        let us = self.ov.is_some_and(|(_, i)| panel(i).text_mode() == crate::kvm::TextMode::UsKeys);
+        let key = Key { hover: self.hover, latched: KVM.lock().unwrap().latched, missed, us, theme: theme::generation() };
         self.painter.paint(h, key, || {
             let (ascii, p) = (self.ascii.clone(), Paint::new(&theme::get(), accent));
             move |_: Option<Key>, px, k: &Key| {

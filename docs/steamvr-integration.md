@@ -94,11 +94,26 @@ else, and when the panel's connection drops.
 What it can't do:
 
 - Function keys. Use a real keyboard for those.
-- It types as a US keyboard does. A character that isn't on one (an accented letter, the euro
-  sign, an emoji) isn't sent, and the strip says "Couldn't type 1 character" for a few seconds.
-  It never says which character, and neither does the log, since you might be typing a password.
-- The remote computer reads the keys with its own layout, the same as a real keyboard's keys. If
-  it isn't set to US, some punctuation comes out as what's on that key in its layout.
+- What you type goes as the characters themselves where the panel can take that: a VNC screen
+  always, and an RDP screen when its server says it takes Unicode input. Then the computer's own
+  keyboard layout doesn't matter, and accented letters, the euro sign and emoji all work. Window
+  panels, and RDP servers that don't take Unicode, get a US keyboard's keys instead, and the
+  keyboard's hint and the strip say "as a US keyboard" before you type. On those, a character a US
+  keyboard doesn't have isn't sent, and the strip says "Couldn't type 1 character" for a few
+  seconds. It never says which character, and neither does the log, since you might be typing a
+  password. A character our side couldn't send (the connection dropped, or the RDP server
+  refused it) counts the same way, and it isn't sent again some other way.
+- On a panel that takes characters, every character goes as a character, plain letters and
+  space too. That's right for typing text, but a program that reads keys rather than text (a
+  game's space to pause, WASD to move) won't see them from SteamVR's keyboard. Use a real keyboard
+  for those.
+- That promise is only Command Center's side. Once a character reaches the computer, its own
+  remote desktop server types it: krdp and KRFB on Wayland go through the desktop portal, and
+  KRFB on X11 looks the character up on the host's keyboard layout (XTest). Any of them can drop
+  a character the host's layout has no key for, and we can't see that from here.
+- Backspace, Enter and Tab, the strip's keys, and anything you type with a sticky Ctrl, Alt or
+  Super are keys, not characters, because a shortcut means a key. They go by the US layout's key
+  positions, the same as a real keyboard's keys do.
 - Press a key on a real keyboard while it's open and it closes, since you've gone back to the
   real one. Pressing the keyboard button always opens it, even right after you typed on a real
   keyboard.
@@ -132,3 +147,38 @@ To turn them off, add this to `~/.config/control-center/settings.json` (it appli
 Whether they show in the headset hasn't been checked on every SteamOS version yet. To try it,
 open the Desktop and run `cc-home notify-test` for a notification, or `cc-home notify-test toast`
 for SteamVR's toast on its own.
+
+### Typing: checks before calling it supported
+
+Typing characters as themselves (RDP Unicode input, VNC keysyms) is built and unit-tested, but it
+hasn't been tried against real hosts yet, so it isn't supported until this list passes on the
+desktop. For each of krdp and a VNC server, and for each host layout (US and German):
+
+- [ ] `zyYZ` comes out as typed (a German layout swaps Z and Y as keys).
+- [ ] Punctuation: `@"#$%^&*()[]{};:'<>?/\|`~`.
+- [ ] `€£éß` and an emoji (😀) come out as typed, or on US-keys panels the strip counts them as
+      not typed and nothing else appears.
+- [ ] Backspace deletes one character, Enter makes one new line (also for a \r\n), Tab moves on.
+- [ ] Sticky Ctrl then `c`, `v`, `a` on SteamVR's keyboard copy, paste and select all. Sticky Alt
+      then Tab switches windows. Sticky Super opens the launcher.
+- [ ] A sticky Ctrl held through a click on the panel makes a Ctrl-click, and nothing stays
+      pressed after it (type a letter: it's lowercase and plain).
+- [ ] Focus loss: laser off the panel mid-click, then type: no modifier stuck.
+- [ ] Reconnect: drop the network for a few seconds while the keyboard is open, then type: it
+      types, nothing stuck, and an RDP server that doesn't take Unicode still says "as a US
+      keyboard".
+- [ ] krdp really types `é€😀` from Unicode events, not only says it takes them (its input
+      capability) and then drops them. Until this passes, krdp isn't supported for typing as
+      characters.
+- [ ] A window panel says "as a US keyboard" and types ASCII.
+- [ ] On a US host: `€` and `ł` come out, or are counted as not typed. Nothing else appears.
+- [ ] An emoji (a surrogate pair over RDP) comes out as one character.
+- [ ] On a German host: `ß ä ö ü é`, and a dead-key character (`^` or `´` followed by a letter),
+      come out as typed.
+- [ ] Sticky Ctrl plus a non-US character counts as not typed, and Ctrl isn't stuck afterwards
+      (the next letter is plain).
+- [ ] Paste 500 characters through SteamVR's keyboard: all arrive, in order, none dropped.
+- [ ] With Caps Lock on at the host, typed characters come out as typed (not swapped case) on
+      Unicode panels.
+- [ ] After a reconnect, an RDP panel's "as a US keyboard" note (or its absence) is the same as
+      before (`rdp::unicode()` read again from the new connection).
