@@ -338,8 +338,11 @@ unsafe fn move_cursor(cl: *mut rfbClient, st: &mut State, x: i32, y: i32) {
     unsafe { draw(cl, st) };
 }
 
+/// Puts back the pixels under the cursor. `drawn` is only cleared once they're all back, so a
+/// restore that stopped partway (a panic) is tried again by the next one, instead of leaving the
+/// cursor's pixels in the picture.
 unsafe fn restore(cl: *mut rfbClient, st: &mut State) {
-    let Some([x0, y0, x1, y1]) = st.cursor.drawn.take() else { return };
+    let Some([x0, y0, x1, y1]) = st.cursor.drawn else { return };
     let (fb, w) = unsafe { ((*cl).frameBuffer as *mut u32, (*cl).width) };
     let mut i = 0;
     for y in y0..y1 {
@@ -348,6 +351,7 @@ unsafe fn restore(cl: *mut rfbClient, st: &mut State) {
             i += 1;
         }
     }
+    st.cursor.drawn = None;
     st.grow(x0, y0, x1, y1);
 }
 
@@ -391,6 +395,7 @@ unsafe impl Send for Session {}
 impl Session {
     pub fn connect(opts: &Opts) -> Result<Session, String> {
         unsafe {
+            crate::ffi::new_session();
             let cl = rfbGetClient(8, 3, 4);
             if cl.is_null() {
                 return Err("out of memory".into());
@@ -490,8 +495,9 @@ impl Session {
     }
 
     /// Reads and decodes one server message. False when the connection's gone.
+    /// A callback that panicked ends it too (ffi::session_failed), so it reconnects from a clean start.
     pub fn handle(&mut self) -> bool {
-        unsafe { HandleRFBServerMessage(self.cl) != 0 }
+        unsafe { HandleRFBServerMessage(self.cl) != 0 && !crate::ffi::session_failed() }
     }
 
     /// What changed since the last take: the region, D-045's change, and how many updates ended.

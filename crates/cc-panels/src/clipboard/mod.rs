@@ -24,6 +24,12 @@ use std::time::{Duration, Instant};
 
 pub static HUB: Mutex<Hub> = Mutex::new(Hub::new());
 
+/// HUB, locked. Every session shares it, so after a caught panic poisoned it, it starts over (what
+/// was copied is forgotten) instead of going on half-changed.
+pub fn hub() -> std::sync::MutexGuard<'static, Hub> {
+    crate::ffi::lock_or_reset(&HUB, |h| *h = Hub::new())
+}
+
 /// How long after we announce something to a machine its own announcements of the same
 /// formats are taken for our echo.
 pub const ECHO_TTL: Duration = Duration::from_secs(3);

@@ -7,7 +7,7 @@
 //! when something pastes it. Ours is a machine's copy we put there, and a Frame app pasting it
 //! asks our source for it.
 use super::formats::{from_mime, from_mimes, mimes, to_uri_list};
-use super::{Data, Fmt, HUB, Want, cliprdr, run};
+use super::{Data, Fmt, Want, cliprdr, run};
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
@@ -118,7 +118,7 @@ fn selection(id: Option<Offer>) {
     }
     eprintln!("clipboard: the Frame session copied {fmts:?}");
     let chans = cliprdr::chans();
-    let acts = crate::ffi::lock(&HUB).frame_announce(fmts, &chans, Instant::now());
+    let acts = crate::clipboard::hub().frame_announce(fmts, &chans, Instant::now());
     run(acts);
 }
 
@@ -150,7 +150,7 @@ pub fn fetch(copy: u64, fmt: Fmt) {
     });
     let (Some((o, mime, conn)), Some((r, w))) = (target, pipe()) else {
         drop(g);
-        let acts = crate::ffi::lock(&HUB).frame_data(copy, fmt, None);
+        let acts = crate::clipboard::hub().frame_data(copy, fmt, None);
         return run(acts);
     };
     o.receive(mime, w.as_fd());
@@ -158,7 +158,7 @@ pub fn fetch(copy: u64, fmt: Fmt) {
     drop((w, g)); // ours closed, so the app's close ends the read
     std::thread::spawn(move || {
         let data = read_all(r);
-        let acts = crate::ffi::lock(&HUB).frame_data(copy, fmt, data); // not held while they run
+        let acts = crate::clipboard::hub().frame_data(copy, fmt, data); // not held while they run
         run(acts);
     });
 }
@@ -242,7 +242,7 @@ impl Dispatch<Source, ()> for St {
                 let Some(fmt) = from_mime(&mime_type) else { return };
                 let token = TOKEN.fetch_add(1, Relaxed);
                 crate::ffi::lock(&PIPES).push((token, fd));
-                let acts = crate::ffi::lock(&HUB).want(Want::Frame(token), fmt);
+                let acts = crate::clipboard::hub().want(Want::Frame(token), fmt);
                 run(acts);
             }
             source::Event::Cancelled => {
@@ -333,9 +333,9 @@ mod tests {
         src.offer("text/html".into());
         dev.set_selection(Some(&src));
         q.roundtrip(&mut app).unwrap();
-        wait_for("the Frame copy", || crate::ffi::lock(&HUB).owner() == Some(&super::super::Owner::Frame));
-        let copy = crate::ffi::lock(&HUB).copy();
-        let acts = crate::ffi::lock(&HUB).want(Want::Rdp(0), Fmt::Text);
+        wait_for("the Frame copy", || crate::clipboard::hub().owner() == Some(&super::super::Owner::Frame));
+        let copy = crate::clipboard::hub().copy();
+        let acts = crate::clipboard::hub().want(Want::Rdp(0), Fmt::Text);
         assert_eq!(acts, vec![super::super::Act::FetchFrame(copy, Fmt::Text)]);
         let pump = std::thread::spawn(move || {
             while !app.sent {
@@ -345,14 +345,14 @@ mod tests {
         });
         fetch(copy, Fmt::Text);
         let (mut q, mut app) = pump.join().unwrap();
-        wait_for("the text read", || crate::ffi::lock(&HUB).cached(Fmt::Text).is_some());
-        assert_eq!(crate::ffi::lock(&HUB).cached(Fmt::Text).as_deref(), Some(&b"from a Frame app"[..]));
+        wait_for("the text read", || crate::clipboard::hub().cached(Fmt::Text).is_some());
+        assert_eq!(crate::clipboard::hub().cached(Fmt::Text).as_deref(), Some(&b"from a Frame app"[..]));
 
         // a machine copies: it becomes the Frame selection, and the app pastes it from us
         let t = Instant::now();
-        let acts = crate::ffi::lock(&HUB).remote_announce(0, "desktop", vec![Fmt::Text], &[], t);
+        let acts = crate::clipboard::hub().remote_announce(0, "desktop", vec![Fmt::Text], &[], t);
         assert_eq!(acts, vec![super::super::Act::FetchRdp(0, Fmt::Text)]);
-        let acts = crate::ffi::lock(&HUB).remote_data(0, Some(b"from the desktop".to_vec()), &[], t);
+        let acts = crate::clipboard::hub().remote_data(0, Some(b"from the desktop".to_vec()), &[], t);
         run(acts); // OfferFrame
         q.roundtrip(&mut app).unwrap();
         let o = app.offer.clone().expect("our selection");
@@ -363,6 +363,6 @@ mod tests {
         drop(w);
         assert_eq!(read_all(r).as_deref(), Some(&b"from the desktop"[..]));
         // and our own selection didn't come back to the hub as a Frame copy
-        assert_eq!(crate::ffi::lock(&HUB).owner(), Some(&super::super::Owner::Machine("desktop".into())));
+        assert_eq!(crate::clipboard::hub().owner(), Some(&super::super::Owner::Machine("desktop".into())));
     }
 }

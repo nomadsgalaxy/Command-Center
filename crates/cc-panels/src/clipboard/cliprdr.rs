@@ -7,7 +7,7 @@
 //! Frame's files that way, pass a machine's requests through to another machine's channel when
 //! the files came from there, and fetch them into a staging folder when a Frame app pastes them.
 use super::formats::{self, Entry};
-use super::{Chan, Data, Fmt, HUB, Want, run};
+use super::{Chan, Data, Fmt, Want, run};
 use crate::{Panel, panel};
 use freerdp_sys::*;
 use std::collections::{HashMap, VecDeque};
@@ -40,12 +40,18 @@ static STREAM: AtomicU32 = AtomicU32::new(1);
 /// A machine's files fetched for the Frame: the copy (copy) and the top-level paths.
 static STAGED: Mutex<Option<(u64, Vec<PathBuf>)>> = Mutex::new(None);
 
+/// CHANS, locked. After a caught panic poisoned it, the list starts over empty; the channels that
+/// are still up come back as their sessions reconnect.
+fn chans_lock() -> std::sync::MutexGuard<'static, Vec<Info>> {
+    crate::ffi::lock_or_reset(&CHANS, Vec::clear)
+}
+
 pub fn chans() -> Vec<Chan> {
-    crate::ffi::lock(&CHANS).iter().map(|i| Chan { panel: i.panel, machine: i.machine.clone(), files: i.files }).collect()
+    chans_lock().iter().map(|i| Chan { panel: i.panel, machine: i.machine.clone(), files: i.files }).collect()
 }
 
 fn with<R>(panel: usize, f: impl FnOnce(&mut Info) -> R) -> Option<R> {
-    crate::ffi::lock(&CHANS).iter_mut().find(|i| i.panel == panel).map(f)
+    chans_lock().iter_mut().find(|i| i.panel == panel).map(f)
 }
 
 fn index(c: *mut CliprdrClientContext) -> usize {
@@ -71,7 +77,7 @@ pub fn attach(p: &Panel, c: *mut CliprdrClientContext) {
         (*c).ServerFileContentsResponse = Some(on_server_file_contents_response);
     }
     let machine = crate::config::machine_of(&p.v).to_string();
-    let mut all = crate::ffi::lock(&CHANS);
+    let mut all = chans_lock();
     all.retain(|i| i.panel != p.index);
     all.push(Info { panel: p.index, machine, files: false, ids: Vec::new(), asked: VecDeque::new(), relay: None });
     drop(all);
@@ -84,8 +90,8 @@ pub fn detach(p: &Panel, c: *mut CliprdrClientContext) {
     p.cliprdr.store(std::ptr::null_mut(), Release);
     unsafe { (*c).custom = std::ptr::null_mut() };
     let before = chans();
-    crate::ffi::lock(&CHANS).retain(|i| i.panel != p.index);
-    let acts = crate::ffi::lock(&HUB).channel_down(p.index, &before);
+    chans_lock().retain(|i| i.panel != p.index);
+    let acts = crate::clipboard::hub().channel_down(p.index, &before);
     run(acts);
 }
 
@@ -122,7 +128,7 @@ unsafe extern "C" fn on_monitor_ready(c: *mut CliprdrClientContext, _: *const CL
         }
         let me = chans().into_iter().find(|ch| ch.panel == index(c));
         if let Some(me) = me {
-            let acts = crate::ffi::lock(&HUB).channel_up(&me, Instant::now()); // a machine that (re)connects gets what's been copied
+            let acts = crate::clipboard::hub().channel_up(&me, Instant::now()); // a machine that (re)connects gets what's been copied
             run(acts);
         }
         0
@@ -159,7 +165,7 @@ unsafe extern "C" fn on_server_format_list(c: *mut CliprdrClientContext, list: *
         let fmts: Vec<Fmt> = picked.iter().map(|(f, _)| *f).collect();
         eprintln!("clipboard: {} announces {fmts:?}", panel(p).v.name);
         let all = chans();
-        let acts = crate::ffi::lock(&HUB).remote_announce(p, &machine, fmts, &all, Instant::now());
+        let acts = crate::clipboard::hub().remote_announce(p, &machine, fmts, &all, Instant::now());
         run(acts);
         0
     })
@@ -174,7 +180,7 @@ unsafe extern "C" fn on_server_format_data_response(c: *mut CliprdrClientContext
         let raw = if ok { unsafe { std::slice::from_raw_parts(r.requestedFormatData, r.common.dataLen as usize) } } else { &[][..] };
         let bytes = ok.then(|| from_wire(fmt, raw)).flatten();
         let all = chans();
-        let acts = crate::ffi::lock(&HUB).remote_data(p, bytes, &all, Instant::now());
+        let acts = crate::clipboard::hub().remote_data(p, bytes, &all, Instant::now());
         run(acts);
         0
     })
@@ -189,7 +195,7 @@ unsafe extern "C" fn on_server_format_data_request(c: *mut CliprdrClientContext,
             respond(p, None);
             return 0;
         };
-        let acts = crate::ffi::lock(&HUB).want(Want::Rdp(p), fmt); // answered now, or once it's fetched
+        let acts = crate::clipboard::hub().want(Want::Rdp(p), fmt); // answered now, or once it's fetched
         run(acts);
         0
     })
@@ -228,7 +234,7 @@ pub fn fetch(p: usize, fmt: Fmt) {
     let id = with(p, |i| i.ids.iter().find(|(f, _)| *f == fmt).map(|(_, id)| *id)).flatten();
     let (Some(c), Some(id)) = (ctx(p), id) else {
         let all = chans();
-        let acts = crate::ffi::lock(&HUB).remote_data(p, None, &all, Instant::now());
+        let acts = crate::clipboard::hub().remote_data(p, None, &all, Instant::now());
         return run(acts);
     };
     with(p, |i| i.asked.push_back(fmt));

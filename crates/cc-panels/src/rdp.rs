@@ -30,9 +30,22 @@ unsafe fn with_panel<R>(c: *mut rdpContext, f: impl FnOnce(&Panel) -> R) -> Opti
     crate::panels().get(unsafe { (*(c as *mut PanelContext)).panel }).map(f)
 }
 
+/// The GDI's window and its invalid region, or None if any link on the way there is null, so a
+/// callback fails instead of reading through a null pointer.
+unsafe fn gdi_window(c: *mut rdpContext) -> Option<(HGDI_WND, *mut rdpGdi)> {
+    unsafe {
+        if c.is_null() || (*c).gdi.is_null() || (*(*c).gdi).primary.is_null() || (*(*(*c).gdi).primary).hdc.is_null() {
+            return None;
+        }
+        let hwnd = (*(*(*(*c).gdi).primary).hdc).hwnd;
+        (!hwnd.is_null() && !(*hwnd).invalid.is_null()).then_some((hwnd, (*c).gdi))
+    }
+}
+
 unsafe extern "C" fn on_begin_paint(c: *mut rdpContext) -> BOOL {
     crate::ffi::guard("on_begin_paint", 0, || {
-        let hwnd = unsafe { &mut *(*(*(*(*c).gdi).primary).hdc).hwnd };
+        let Some((hwnd, _)) = (unsafe { gdi_window(c) }) else { return 0 };
+        let hwnd = unsafe { &mut *hwnd };
         unsafe { (*hwnd.invalid).null = 1 };
         hwnd.ninvalid = 0; // clear its rects like gdi_begin_paint does, or they'd pile up
         1
@@ -41,8 +54,9 @@ unsafe extern "C" fn on_begin_paint(c: *mut rdpContext) -> BOOL {
 
 unsafe extern "C" fn on_end_paint(c: *mut rdpContext) -> BOOL {
     crate::ffi::guard("on_end_paint", 0, || {
+        let Some((hwnd, gdi)) = (unsafe { gdi_window(c) }) else { return 0 };
         let f = |p: &Panel| {
-            let r = unsafe { &*(*(*(*(*(*c).gdi).primary).hdc).hwnd).invalid };
+            let r = unsafe { &*(*hwnd).invalid };
             if r.null != 0 {
                 return 1;
             }
@@ -51,7 +65,7 @@ unsafe extern "C" fn on_end_paint(c: *mut rdpContext) -> BOOL {
             }
             // D-045: how much of the picture this update changed, for attention.rs. It sums the rects
             // instead of their bounds, since a caret and a clock in opposite corners are only a little.
-            let (hwnd, gdi) = unsafe { (&*(*(*(*(*c).gdi).primary).hdc).hwnd, &*(*c).gdi) };
+            let (hwnd, gdi) = unsafe { (&*hwnd, &*gdi) };
             let n = if hwnd.cinvalid.is_null() { 0 } else { hwnd.ninvalid.max(0) as usize };
             let rects = if n == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(hwnd.cinvalid, n) } };
             let area: i64 = rects.iter().map(|r| r.w.max(0) as i64 * r.h.max(0) as i64).sum();
@@ -87,6 +101,9 @@ unsafe extern "C" fn on_desktop_resize(c: *mut rdpContext) -> BOOL {
             let (w, h) = unsafe { desktop(c) };
             if p.v.pop.is_some() {
                 crate::popout::resized(p.index, w, h, false); // a popup or the window resized its stream
+            }
+            if unsafe { (*c).gdi.is_null() } {
+                return 0;
             }
             unsafe { gdi_resize((*c).gdi, w, h) }
         };
@@ -433,6 +450,7 @@ pub fn run(p: &'static Panel) {
             // WinPR's 8-thread pool (3.5-4 ms less CPU a 3840x1080 frame, ~5 ms more latency; efficiency-plan.md 2a)
             n(FreeRDP_Settings_Keys_UInt32_FreeRDP_ThreadingFlags, THREADING_FLAGS_DISABLE_THREADS);
             p.rdp.store(c, Release);
+            crate::ffi::new_session();
             if freerdp_client_start(c) == 0 && freerdp_connect((*c).instance) != 0 {
                 p.connected.store(true, Release);
                 p.down.store(false, Relaxed);
@@ -474,6 +492,10 @@ pub fn run(p: &'static Panel) {
                     let ok = freerdp_check_event_handles(c);
                     IN_SESSION.set(false);
                     if ok == 0 {
+                        break;
+                    }
+                    if crate::ffi::session_failed() {
+                        eprintln!("{}: a callback panicked, so this session ends and reconnects", p.v.name);
                         break;
                     }
                     // Still holding the lock, write the decoded picture into the spare GPU buffer
