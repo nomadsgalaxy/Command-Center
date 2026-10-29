@@ -143,6 +143,27 @@ pub fn head() -> Option<Mat> {
     pose.bPoseIsValid.then_some(pose.mDeviceToAbsoluteTracking.m)
 }
 
+/// How far ahead of now this frame's picture reaches your eyes: the rest of this frame, plus the
+/// display's vsync-to-photons delay. Poses read at that time line up with what's shown, so a
+/// carried or docked panel doesn't trail behind the hand (the scan wants poses at now, `head`).
+pub fn to_photons() -> f32 {
+    let (mut since, mut frame) = (0f32, 0u64);
+    if !call!(sys, GetTimeSinceLastVsync, &mut since, &mut frame) {
+        return 0.0;
+    }
+    let mut err = 0;
+    let hz = call!(sys, GetFloatTrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &mut err);
+    let v2p = call!(sys, GetFloatTrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_SecondsFromVsyncToPhotons_Float, &mut err);
+    if hz <= 0.0 { 0.0 } else { (1.0 / hz - since).max(0.0) + v2p.max(0.0) }
+}
+
+/// The headset's pose when this frame's picture reaches your eyes (`to_photons`), if it's tracked.
+pub fn head_predicted() -> Option<Mat> {
+    let mut pose: sys::TrackedDevicePose_t = unsafe { std::mem::zeroed() };
+    call!(sys, GetDeviceToAbsoluteTrackingPose, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, to_photons(), &mut pose, 1);
+    pose.bPoseIsValid.then_some(pose.mDeviceToAbsoluteTracking.m)
+}
+
 /// The headset's pose in SteamVR's raw tracking space (drivers report raw poses).
 pub fn head_raw() -> Option<Mat> {
     let mut pose: sys::TrackedDevicePose_t = unsafe { std::mem::zeroed() };

@@ -1035,12 +1035,18 @@ fn paint_backdrop(h: vr::Handle) {
     call!(ov, SetOverlayRaw, h, px.as_mut_ptr() as *mut _, 4, 4, 4);
 }
 
-/// Every tracked device's pose in standing space.
+/// Every tracked device's pose in standing space, as it'll be when this frame's picture reaches
+/// your eyes (vr::to_photons), so what's carried or docked keeps up with the hand.
 fn poses() -> Vec<sys::TrackedDevicePose_t> {
     let n = sys::k_unMaxTrackedDeviceCount as usize;
     let mut all: Vec<sys::TrackedDevicePose_t> = vec![unsafe { std::mem::zeroed() }; n];
-    call!(sys, GetDeviceToAbsoluteTrackingPose, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0, all.as_mut_ptr(), n as u32);
+    call!(sys, GetDeviceToAbsoluteTrackingPose, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, vr::to_photons(), all.as_mut_ptr(), n as u32);
     all
+}
+
+/// Whether device dev is connected at all (it can be connected and still untracked for a moment).
+pub fn connected(dev: u32) -> bool {
+    dev == MOUSE || poses().get(dev as usize).is_some_and(|p| p.bDeviceIsConnected)
 }
 
 /// The mouse, as a device number just past SteamVR's (kvm.rs card_mouse). Its pose and laser
@@ -1714,7 +1720,14 @@ impl Grab {
                     let pl = self.at(i, k);
                     self.put(i, k, s, &mul(&m, &rel), pl.width, None, pl.curve); // it rides along, like a carry that never ends
                 }
-                // what it rode on went off or out of tracking: it stays in the room where it last was (not saved)
+                // the headset untracked: it keeps its place on the head, since world poses are off then too
+                None if dock == Dock::Head => {}
+                // its controller switched off: it stays in the room where it last was, at once (not saved)
+                None if matches!(dock, Dock::Hand(c) if !s.connected(c)) => {
+                    self.docked[i] = None;
+                    eprintln!("{}: the controller it was docked on is off, so it's left in the room", self.owner(i).map_or("", |o| o.name));
+                }
+                // ...or only out of tracking for LOST
                 None if lost.is_some_and(|t| now - t > LOST) => {
                     self.docked[i] = None;
                     eprintln!("{}: what it was docked on is gone, so it's left in the room", self.owner(i).map_or("", |o| o.name));
@@ -2868,12 +2881,37 @@ mod tests {
             let p = flat();
             let (mut g, mut k, mut f) = docked_on_other(p, [0.3, 1.2, -0.4]);
             let at = k.place[0].c;
-            f.devices.remove(&2); // switched off
+            f.devices.remove(&2); // out of tracking, still on
             let t0 = Instant::now();
             g.carry(&mut k, &mut f, t0);
             assert!(g.docked[0].is_some(), "a blink of lost tracking isn't gone");
             g.carry(&mut k, &mut f, t0 + LOST + Duration::from_millis(10));
             assert!(g.docked[0].is_none() && k.place[0].c == at, "left where it was");
+            // switched off: at once
+            let (mut g, mut k, mut f) = docked_on_other(p, [0.3, 1.2, -0.4]);
+            f.devices.remove(&2);
+            f.off.push(2);
+            g.carry(&mut k, &mut f, Instant::now());
+            assert!(g.docked[0].is_none(), "no wait for a controller that's off");
+        }
+
+        #[test]
+        fn a_head_dock_waits_out_an_untracked_headset() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            f.head_pose = Some(crate::stage::fake::aimed(EYE, [0.0, 1.6, -1.0]));
+            point(&mut f, HAND, [0.05, 1.57, -0.05], p.c);
+            g.docking = true;
+            g.start(0, Part::Bar, HAND, &k, &f);
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            f.head_pose = None; // the headset lost its tracking
+            g.carry(&mut k, &mut f, t0);
+            g.carry(&mut k, &mut f, t0 + LOST * 4);
+            assert!(matches!(g.docked[0], Some((Dock::Head, _, None))), "still on the head");
         }
 
         #[test]

@@ -61,12 +61,32 @@ Frame keeps for switching a controller between gamepad and hands). What changed 
   to take it off; let go anywhere else and it stays in the room. If the controller goes off or
   loses tracking for half a second, the panel stays in the room where it was. Docking lasts until
   the Desktop closes, and the panel's saved place stays where it last was in the room, even if you
-  bend or resize it while it's docked. It's off by default until the dock spots show while you
-  carry something.
+  bend or resize it while it's docked. If the headset loses tracking, a panel on your head stays
+  put on it; a controller that's switched off leaves its panel in the room straight away.
+
+  Docking stays off by default until two things are done. You'll see the dock spots while you
+  carry something. And SteamVR will move a docked panel itself, tied to the controller or
+  headset (a device-relative transform), instead of Command Center moving it once a frame,
+  which can trail a fast hand a little.
 
 Everything else stays: face me, snap back, the curve button's pull, zoom, the other corners,
 Right Ctrl and the wheel. The card and its buttons still fade in when a laser comes near and out
 after it leaves.
+
+### Docking: checks in the headset
+
+With `"docking": true`:
+
+- [ ] The carrying hand buzzes when a dock arms (about half a second in the spot), and only once.
+  If the other hand buzzes, or neither does, the buzz needs its own output action instead.
+- [ ] Passing a hand by the other controller without waiting doesn't dock.
+- [ ] A panel docked on a hand from across the room comes in to about 60 cm and turns with the
+  wrist without swinging wide.
+- [ ] A docked panel keeps up with a quick hand move (no visible trailing). If it trails, that's the
+  device-relative blocker above.
+- [ ] Switching the controller off leaves the panel where it was, at once; covering the
+  controller's tracking for a moment doesn't.
+- [ ] Taking the headset off and on keeps a head-docked panel on the head.
 
 ## The look
 

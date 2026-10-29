@@ -33,6 +33,8 @@ pub trait Stage: Overlays {
     fn controllers(&self) -> Vec<u32>;
     /// A short buzz in the hand whose laser last worked overlay h (a dock target arming, grab.rs).
     fn pulse(&mut self, h: Handle);
+    /// Whether device dev is connected (switched on), tracked or not.
+    fn connected(&self, dev: u32) -> bool;
     /// Slot i's overlay facts.
     fn panel(&self, i: usize) -> PanelFacts;
     /// Sends panel i's machine (or window) a pointer move to pixel (x, y).
@@ -53,11 +55,15 @@ impl Stage for Live {
     }
 
     fn head_pose(&self) -> Option<Mat> {
-        vr::head()
+        vr::head_predicted()
     }
 
     fn pulse(&mut self, h: Handle) {
         crate::call!(ov, TriggerLaserMouseHapticVibration, h, 0.05, 160.0, 0.6);
+    }
+
+    fn connected(&self, dev: u32) -> bool {
+        crate::grab::connected(dev)
     }
 
     fn controllers(&self) -> Vec<u32> {
@@ -92,6 +98,8 @@ pub mod fake {
         pub panels: Vec<PanelFacts>,
         /// The haptic pulses, by overlay.
         pub pulses: Vec<Handle>,
+        /// Devices switched off (not just untracked).
+        pub off: Vec<u32>,
         /// The pointer moves sent, as (panel, x, y).
         pub moves: Vec<(usize, f64, f64)>,
     }
@@ -169,6 +177,10 @@ pub mod fake {
 
         fn pulse(&mut self, h: Handle) {
             self.pulses.push(h);
+        }
+
+        fn connected(&self, dev: u32) -> bool {
+            !self.off.contains(&dev)
         }
 
         fn controllers(&self) -> Vec<u32> {
