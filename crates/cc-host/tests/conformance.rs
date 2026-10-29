@@ -54,8 +54,11 @@ impl Conn {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let seen = Arc::new(Any(Mutex::new(None), provider.clone()));
         let cfg = rustls::ClientConfig::builder_with_provider(provider)
-            .with_protocol_versions(&[&rustls::version::TLS13]).unwrap()
-            .dangerous().with_custom_certificate_verifier(seen.clone()).with_no_client_auth();
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(seen.clone())
+            .with_no_client_auth();
         let tcp = TcpStream::connect(("127.0.0.1", PORT))?;
         tcp.set_read_timeout(Some(Duration::from_secs(10)))?;
         let conn = ClientConnection::new(Arc::new(cfg), ServerName::try_from("cc-host").unwrap()).map_err(std::io::Error::other)?;
@@ -185,8 +188,7 @@ impl Suite {
         let frame = key();
         write(&dir.join("trusted-frames/steam-frame.pub"), &B64.encode(frame.verifying_key().to_bytes()));
         write(&dir.join("frames/steam-frame.json"), r#"{"slot": 1}"#);
-        let mut server = Command::new(env!("CARGO_BIN_EXE_cc-host")).args(["serve", "--fake", "--port", &PORT.to_string()])
-            .env("CC_CONF", &dir).stdout(Stdio::piped()).spawn().expect("cc-host serve");
+        let mut server = Command::new(env!("CARGO_BIN_EXE_cc-host")).args(["serve", "--fake", "--port", &PORT.to_string()]).env("CC_CONF", &dir).stdout(Stdio::piped()).spawn().expect("cc-host serve");
         let mut out = server.stdout.take().unwrap();
         let mut first = [0u8; 64];
         let n = out.read(&mut first).unwrap_or(0);
@@ -363,7 +365,9 @@ fn agent_conformance() {
         c.tls.sock.set_read_timeout(Some(Duration::from_secs(20))).ok();
         while got.len() < 3 {
             let l = c.line().expect("answers");
-            if let Some(id) = l["id"].as_u64() && l.get("event").is_none() {
+            if let Some(id) = l["id"].as_u64()
+                && l.get("event").is_none()
+            {
                 order.push(id);
                 got.insert(id, l);
             }
@@ -422,10 +426,15 @@ fn agent_conformance() {
     s.case("tag screens: drawn from checked parameters, hidden", |s| {
         let mut c = s.client().unwrap();
         let many: Vec<Value> = (0..65).map(|_| json!([0, 0, 0, 12])).collect();
-        for (bad, why) in [(json!({"bg": "white", "tags": many}), "too-many-tags"), (json!({"bg": "white", "tags": [[0, 1800, 200, 240]]}), "tag-outside"),
-                           (json!({"bg": "white", "tags": [[0, 100, 200, 240], [1, 200, 300, 240]]}), "tags-overlap"), (json!({"bg": "white", "tags": [[0, 100, 10, 240]]}), "tag-in-banner"),
-                           (json!({"bg": "white", "tags": [[250, 100, 200, 240]]}), "tag-outside"), (json!({"bg": "red", "tags": []}), "bad-params"),
-                           (json!({"bg": "white", "tags": [], "image": "x"}), "bad-params")] {
+        for (bad, why) in [
+            (json!({"bg": "white", "tags": many}), "too-many-tags"),
+            (json!({"bg": "white", "tags": [[0, 1800, 200, 240]]}), "tag-outside"),
+            (json!({"bg": "white", "tags": [[0, 100, 200, 240], [1, 200, 300, 240]]}), "tags-overlap"),
+            (json!({"bg": "white", "tags": [[0, 100, 10, 240]]}), "tag-in-banner"),
+            (json!({"bg": "white", "tags": [[250, 100, 200, 240]]}), "tag-outside"),
+            (json!({"bg": "red", "tags": []}), "bad-params"),
+            (json!({"bg": "white", "tags": [], "image": "x"}), "bad-params"),
+        ] {
             assert_eq!(c.call("tags", json!({"op": "show", "index": 0, "params": bad}))["error"], why);
         }
         assert_eq!(c.call("tags", json!({"op": "show", "index": 0, "params": good}))["ok"], json!(true));

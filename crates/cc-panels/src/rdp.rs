@@ -151,13 +151,11 @@ type Disconnected = unsafe extern "C" fn(*mut c_void, *const ChannelDisconnected
 // ------------------------------------------------------------------ the session
 
 unsafe extern "C" fn on_pre_connect(instance: *mut freerdp) -> BOOL {
-    crate::ffi::guard("on_pre_connect", 0, || {
-        unsafe {
-            let c = (*instance).context;
-            PubSub_Subscribe((*c).pubSub, c"ChannelConnected".as_ptr(), on_channel_connected as Connected);
-            PubSub_Subscribe((*c).pubSub, c"ChannelDisconnected".as_ptr(), on_channel_disconnected as Disconnected);
-            freerdp_settings_set_uint32((*c).settings, FreeRDP_Settings_Keys_UInt32_FreeRDP_OsMajorType, OSMAJORTYPE_UNIX)
-        }
+    crate::ffi::guard("on_pre_connect", 0, || unsafe {
+        let c = (*instance).context;
+        PubSub_Subscribe((*c).pubSub, c"ChannelConnected".as_ptr(), on_channel_connected as Connected);
+        PubSub_Subscribe((*c).pubSub, c"ChannelDisconnected".as_ptr(), on_channel_disconnected as Disconnected);
+        freerdp_settings_set_uint32((*c).settings, FreeRDP_Settings_Keys_UInt32_FreeRDP_OsMajorType, OSMAJORTYPE_UNIX)
     })
 }
 
@@ -177,13 +175,11 @@ unsafe extern "C" fn on_post_connect(instance: *mut freerdp) -> BOOL {
 }
 
 unsafe extern "C" fn on_post_disconnect(instance: *mut freerdp) {
-    crate::ffi::guard("on_post_disconnect", (), || {
-        unsafe {
-            let c = (*instance).context;
-            PubSub_Unsubscribe((*c).pubSub, c"ChannelConnected".as_ptr(), on_channel_connected as Connected);
-            PubSub_Unsubscribe((*c).pubSub, c"ChannelDisconnected".as_ptr(), on_channel_disconnected as Disconnected);
-            gdi_free(instance);
-        }
+    crate::ffi::guard("on_post_disconnect", (), || unsafe {
+        let c = (*instance).context;
+        PubSub_Unsubscribe((*c).pubSub, c"ChannelConnected".as_ptr(), on_channel_connected as Connected);
+        PubSub_Unsubscribe((*c).pubSub, c"ChannelDisconnected".as_ptr(), on_channel_disconnected as Disconnected);
+        gdi_free(instance);
     })
 }
 
@@ -532,7 +528,6 @@ pub fn run(p: &'static Panel) {
                 p.connected.store(false, Release);
                 detach(p);
                 freerdp_disconnect((*c).instance); // frees the GDI
-
             } else {
                 p.down.store(true, Relaxed);
                 eprintln!("{}: can't connect (0x{:08x})", p.v.name, freerdp_get_last_error(c));

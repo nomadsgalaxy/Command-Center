@@ -61,16 +61,19 @@ impl Platform for Linux {
         let v: Value = serde_json::from_str(&run("kscreen-doctor", &["-j"])).unwrap_or(json!({}));
         let mut outs: Vec<&Value> = v["outputs"].as_array().map(|a| a.iter().filter(|o| o["enabled"] == json!(true)).collect()).unwrap_or_default();
         outs.sort_by_key(|o| o["priority"].as_i64().unwrap_or(0));
-        shared.iter().filter_map(|&i| {
-            let o = outs.get(i as usize)?;
-            let (w, h) = (o["size"]["width"].as_i64()?, o["size"]["height"].as_i64()?);
-            let (mut mw, mut mh) = (o["sizeMM"]["width"].as_i64().unwrap_or(0), o["sizeMM"]["height"].as_i64().unwrap_or(0));
-            if (w > h) != (mw > mh) {
-                std::mem::swap(&mut mw, &mut mh); // A rotated output reports its size unrotated.
-            }
-            Some(json!({"index": i, "output": o["name"], "width": w, "height": h, "mm": [mw, mh],
+        shared
+            .iter()
+            .filter_map(|&i| {
+                let o = outs.get(i as usize)?;
+                let (w, h) = (o["size"]["width"].as_i64()?, o["size"]["height"].as_i64()?);
+                let (mut mw, mut mh) = (o["sizeMM"]["width"].as_i64().unwrap_or(0), o["sizeMM"]["height"].as_i64().unwrap_or(0));
+                if (w > h) != (mw > mh) {
+                    std::mem::swap(&mut mw, &mut mh); // A rotated output reports its size unrotated.
+                }
+                Some(json!({"index": i, "output": o["name"], "width": w, "height": h, "mm": [mw, mh],
                         "x": o["pos"]["x"], "y": o["pos"]["y"], "rotation": o["rotation"], "primary": o["priority"] == json!(1)}))
-        }).collect()
+            })
+            .collect()
     }
     fn systemctl(&self, args: &[&str]) -> String {
         let mut a = vec!["--user"];
@@ -82,27 +85,37 @@ impl Platform for Linux {
     }
     fn viewers(&self, port: u16, ip: Option<&str>) -> usize {
         // Established on that port from that address, or from anywhere but this machine if there's no address.
-        crate::share::sockets().iter().filter(|(p, s, a)| *s == 1 && *p == port && match ip {
-            Some(ip) => ip.parse::<std::net::IpAddr>().is_ok_and(|x| x == *a),
-            None => !a.is_loopback(),
-        }).count()
+        crate::share::sockets()
+            .iter()
+            .filter(|(p, s, a)| {
+                *s == 1
+                    && *p == port
+                    && match ip {
+                        Some(ip) => ip.parse::<std::net::IpAddr>().is_ok_and(|x| x == *a),
+                        None => !a.is_loopback(),
+                    }
+            })
+            .count()
     }
     fn hostname(&self) -> String {
         std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_owned()
     }
     fn windows(&self) -> (Vec<Value>, Option<String>, Vec<[f64; 4]>) {
-        kwin::windows().unwrap_or_default()
-            .map_or((Vec::new(), None, Vec::new()), |(w, d)| (w, d, self.shared_rects()))
+        kwin::windows().unwrap_or_default().map_or((Vec::new(), None, Vec::new()), |(w, d)| (w, d, self.shared_rects()))
     }
     fn memory_mb(&self) -> u64 {
-        std::fs::read_to_string("/proc/meminfo").unwrap_or_default().lines()
+        std::fs::read_to_string("/proc/meminfo")
+            .unwrap_or_default()
+            .lines()
             .find_map(|l| l.strip_prefix("MemAvailable:").and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok()))
             .map_or(0, |kb| kb / 1024)
     }
     fn outputs(&self) -> String {
         let v: Value = serde_json::from_str(&run("kscreen-doctor", &["-j"])).unwrap_or(json!({}));
-        let mut sig: Vec<String> = v["outputs"].as_array().map(|a| a.iter().filter(|o| o["enabled"] == json!(true))
-            .map(|o| format!("{} {} {} {} {}", o["name"], o["currentModeId"], o["rotation"], o["pos"], o["priority"])).collect()).unwrap_or_default();
+        let mut sig: Vec<String> = v["outputs"]
+            .as_array()
+            .map(|a| a.iter().filter(|o| o["enabled"] == json!(true)).map(|o| format!("{} {} {} {} {}", o["name"], o["currentModeId"], o["rotation"], o["pos"], o["priority"])).collect())
+            .unwrap_or_default();
         sig.sort();
         sig.join("|")
     }
@@ -123,8 +136,7 @@ impl Platform for Linux {
     }
 
     fn tagshow(&self, output: &str) -> Option<std::process::Child> {
-        Command::new("/proc/self/exe").arg("tagscreen").arg(output)
-            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().ok()
+        Command::new("/proc/self/exe").arg("tagscreen").arg(output).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().ok()
     }
 }
 
@@ -133,12 +145,23 @@ impl Linux {
     fn shared_rects(&self) -> Vec<[f64; 4]> {
         let names: Vec<String> = self.monitors().iter().filter_map(|m| m["output"].as_str().map(str::to_owned)).collect();
         let v: Value = serde_json::from_str(&run("kscreen-doctor", &["-j"])).unwrap_or(json!({}));
-        v["outputs"].as_array().map(|a| a.iter().filter(|o| o["enabled"] == json!(true) && names.iter().any(|n| o["name"] == json!(n)))
-            .map(|o| {
-                let scale = o["scale"].as_f64().unwrap_or(1.0).max(0.1);
-                [o["pos"]["x"].as_f64().unwrap_or(0.0), o["pos"]["y"].as_f64().unwrap_or(0.0),
-                 o["size"]["width"].as_f64().unwrap_or(0.0) / scale, o["size"]["height"].as_f64().unwrap_or(0.0) / scale]
-            }).collect()).unwrap_or_default()
+        v["outputs"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter(|o| o["enabled"] == json!(true) && names.iter().any(|n| o["name"] == json!(n)))
+                    .map(|o| {
+                        let scale = o["scale"].as_f64().unwrap_or(1.0).max(0.1);
+                        [
+                            o["pos"]["x"].as_f64().unwrap_or(0.0),
+                            o["pos"]["y"].as_f64().unwrap_or(0.0),
+                            o["size"]["width"].as_f64().unwrap_or(0.0) / scale,
+                            o["size"]["height"].as_f64().unwrap_or(0.0) / scale,
+                        ]
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -179,9 +202,14 @@ mod kwin {
                 out.push(Value::Object(info.iter().map(|(k, v)| (k.clone(), to_json(v))).collect::<Map<_, _>>()));
             }
         }
-        let desktop: Option<String> = bus.call_method(Some("org.kde.KWin"), "/VirtualDesktopManager", Some("org.freedesktop.DBus.Properties"), "Get",
-                                                      &("org.kde.KWin.VirtualDesktopManager", "current"))
-            .ok().and_then(|r| r.body().deserialize::<OwnedValue>().ok()).and_then(|v| match to_json(&v) { Value::String(s) => Some(s), _ => None });
+        let desktop: Option<String> = bus
+            .call_method(Some("org.kde.KWin"), "/VirtualDesktopManager", Some("org.freedesktop.DBus.Properties"), "Get", &("org.kde.KWin.VirtualDesktopManager", "current"))
+            .ok()
+            .and_then(|r| r.body().deserialize::<OwnedValue>().ok())
+            .and_then(|v| match to_json(&v) {
+                Value::String(s) => Some(s),
+                _ => None,
+            });
         Ok(Some((out, desktop)))
     }
 }
@@ -206,7 +234,11 @@ impl Platform for Fake {
     fn systemctl(&self, args: &[&str]) -> String {
         let port = |unit: &str| -> Option<u16> {
             let i = unit.split('@').nth(1)?;
-            if unit.contains("window@") { Some(3405 + 10 + i.split('-').nth_back(5)?.parse::<u16>().ok()?) } else { Some(3410 + i.trim_end_matches(".service").rsplit('-').next()?.parse::<u16>().ok()?) }
+            if unit.contains("window@") {
+                Some(3405 + 10 + i.split('-').nth_back(5)?.parse::<u16>().ok()?)
+            } else {
+                Some(3410 + i.trim_end_matches(".service").rsplit('-').next()?.parse::<u16>().ok()?)
+            }
         };
         self.calls.lock().unwrap().push(args.join(" "));
         if args.first() == Some(&"show") {
@@ -214,11 +246,15 @@ impl Platform for Fake {
                 return String::new();
             }
             let units = self.units.lock().unwrap();
-            return args.iter().filter(|a| a.ends_with(".service")).map(|u| {
-                let (state, n, result) = units.get(*u).cloned().unwrap_or(("inactive".into(), 0, "success".into()));
-                let sub = if state == "failed" { "failed" } else { "dead" };
-                format!("Id={u}\nActiveState={state}\nSubState={sub}\nNRestarts={n}\nResult={result}\n\n")
-            }).collect();
+            return args
+                .iter()
+                .filter(|a| a.ends_with(".service"))
+                .map(|u| {
+                    let (state, n, result) = units.get(*u).cloned().unwrap_or(("inactive".into(), 0, "success".into()));
+                    let sub = if state == "failed" { "failed" } else { "dead" };
+                    format!("Id={u}\nActiveState={state}\nSubState={sub}\nNRestarts={n}\nResult={result}\n\n")
+                })
+                .collect();
         }
         if args.first() == Some(&"reset-failed") {
             for u in &args[1..] {
@@ -290,7 +326,14 @@ pub fn fake_windows() -> Vec<Value> {
         }
         v
     };
-    vec![w(1, json!({})), w(2, json!({"excludeFromCapture": true})), w(3, json!({"minimized": true})),
-         w(4, json!({"desktops": ["D2"]})), w(5, json!({"x": 5000.0})), w(6, json!({"type": 2})),
-         w(7, json!({"x": 1000.0, "width": 400.0, "desktopFile": "org.kde.kate"})), w(8, json!({"x": 1500.0, "width": 300.0, "desktopFile": "org.kde.konsole"}))]
+    vec![
+        w(1, json!({})),
+        w(2, json!({"excludeFromCapture": true})),
+        w(3, json!({"minimized": true})),
+        w(4, json!({"desktops": ["D2"]})),
+        w(5, json!({"x": 5000.0})),
+        w(6, json!({"type": 2})),
+        w(7, json!({"x": 1000.0, "width": 400.0, "desktopFile": "org.kde.kate"})),
+        w(8, json!({"x": 1500.0, "width": 300.0, "desktopFile": "org.kde.konsole"})),
+    ]
 }

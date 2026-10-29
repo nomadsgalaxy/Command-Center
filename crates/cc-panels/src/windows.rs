@@ -55,12 +55,12 @@ struct Input {
     raised: Option<String>, // the window last raised for us, as long as nothing else can be above it
     asked: Option<String>,  // the raise in flight: only its answer (seq) counts
     seq: u64,
-    hover: Option<usize>,   // the window panel the pointer is on (SHELL: Plasma's bar; None held: off every window, drag_off)
-    at: (f64, f64),         // where the pointer was last sent on a window
+    hover: Option<usize>, // the window panel the pointer is on (SHELL: Plasma's bar; None held: off every window, drag_off)
+    at: (f64, f64),       // where the pointer was last sent on a window
     pending: Option<Press>,
-    down: u32, // buttons down in the session (bit: code - BTN_LEFT)
-    wheel: f64, // wl_pointer units a notch (CC_WHEEL; 15 is libinput's)
-    wait: Duration, // how long a press waits for its raise (CC_RAISE_MS)
+    down: u32,             // buttons down in the session (bit: code - BTN_LEFT)
+    wheel: f64,            // wl_pointer units a notch (CC_WHEEL; 15 is libinput's)
+    wait: Duration,        // how long a press waits for its raise (CC_RAISE_MS)
     last: Option<Instant>, // the last button or key sent, or popup seen: a popup soon after is a menu, not a tooltip
 }
 
@@ -73,20 +73,8 @@ struct Press {
     since: Instant,
 }
 
-static INPUT: Mutex<Input> = Mutex::new(Input {
-    session: None,
-    cmds: None,
-    raised: None,
-    asked: None,
-    seq: 0,
-    hover: None,
-    at: (0.0, 0.0),
-    pending: None,
-    down: 0,
-    wheel: 15.0,
-    wait: Duration::from_millis(100),
-    last: None,
-});
+static INPUT: Mutex<Input> =
+    Mutex::new(Input { session: None, cmds: None, raised: None, asked: None, seq: 0, hover: None, at: (0.0, 0.0), pending: None, down: 0, wheel: 15.0, wait: Duration::from_millis(100), last: None });
 
 impl Input {
     /// Raise a window. Nothing counts as raised until its answer comes back, since a raise of
@@ -164,7 +152,11 @@ pub fn mouse(p: &Panel, flags: u32, x: f64, y: f64) {
     let under = plasmabar::covers(at.0, at.1);
     let mut s = INPUT.lock().unwrap();
     let Some(ses) = s.session.clone() else { return };
-    if s.hover.is_none() && s.down != 0 && !press && let Some(b) = button_code(flags) {
+    if s.hover.is_none()
+        && s.down != 0
+        && !press
+        && let Some(b) = button_code(flags)
+    {
         return let_go_off(&mut s, &ses, b); // a drag taken off every window (drag_off) ends there
     }
     // A drag carried here from another window panel raises this one too. KWin's own drags
@@ -310,9 +302,9 @@ pub struct Win {
     pub key: String, // its spot: app:<desktop file name, else resource class>
     pub app: String,
     pub caption: String,
-    pub cg: [i32; 4], // clientGeometry in the session: x, y, w, h
-    pub parent: String, // a dialog's window ("" for none)
-    pub kind: String,   // window | dialog | popup
+    pub cg: [i32; 4],    // clientGeometry in the session: x, y, w, h
+    pub parent: String,  // a dialog's window ("" for none)
+    pub kind: String,    // window | dialog | popup
     pub minimized: bool, // minimized in KWin, so its panel is hidden
 }
 
@@ -347,18 +339,18 @@ struct Slot {
     created: Option<Instant>, // KWin made its node
     nudged: u8,
     placing: Option<(Instant, (u32, u32))>, // the last size sent to the window, and when
-    tag: Option<mpsc::Receiver<()>>, // assets.rs drawing its tag
-    frames: u32,                     // shown, as of the last status line
-    arrived: u32,                    // and arrived
-    theater: Option<(Pose, f64)>,    // in theater mode: where it was before, and its height
-    anchored: bool,                  // last resized by its bottom-right corner, so it hangs from its top-left
-    fmt: ((u32, u32), (i32, i32)),   // the stream's size as last seen, and the window's then
-    stuck: Option<Instant>,          // the window resized since, but its stream hasn't
-    paused: bool,                    // its stream is paused (attention.rs), so KWin renders nothing for it
-    last_up: Option<Instant>,        // its last frame up; a peripheral panel only gets a few a second
-    fps: u32,                        // its stream's frame-rate cap, as last asked
-    edge: Option<Instant>,           // peripheral since
-    follow: Option<(Mat, f64)>,      // a popup's place on its parent's panel, as last set
+    tag: Option<mpsc::Receiver<()>>,        // assets.rs drawing its tag
+    frames: u32,                            // shown, as of the last status line
+    arrived: u32,                           // and arrived
+    theater: Option<(Pose, f64)>,           // in theater mode: where it was before, and its height
+    anchored: bool,                         // last resized by its bottom-right corner, so it hangs from its top-left
+    fmt: ((u32, u32), (i32, i32)),          // the stream's size as last seen, and the window's then
+    stuck: Option<Instant>,                 // the window resized since, but its stream hasn't
+    paused: bool,                           // its stream is paused (attention.rs), so KWin renders nothing for it
+    last_up: Option<Instant>,               // its last frame up; a peripheral panel only gets a few a second
+    fps: u32,                               // its stream's frame-rate cap, as last asked
+    edge: Option<Instant>,                  // peripheral since
+    follow: Option<(Mat, f64)>,             // a popup's place on its parent's panel, as last set
 }
 
 /// A panel centred at the cursor's point p, facing you level (like `ahead`), 10 cm nearer so
@@ -450,13 +442,13 @@ pub struct Windows {
     sessions: mpsc::Receiver<Arc<Session>>,
     kwin: kwin::Kwin,
     cap: capture::Capture,
-    saved: Map<String, Value>, // kwin-restore.json: each window's state from before we changed it
-    poses: Map<String, Value>, // win-poses.json: each window's panel, by uuid
+    saved: Map<String, Value>,   // kwin-restore.json: each window's state from before we changed it
+    poses: Map<String, Value>,   // win-poses.json: each window's panel, by uuid
     resumed: Map<String, Value>, // hibernated apps' panels by key, each taken once (take_resumed)
-    seen: HashSet<String>,     // windows the script has reported since it (re)loaded
-    lost: Option<Instant>,     // KWin's bus went
-    density: f64,              // window pixels per metre
-    plasma: plasmabar::Plasma, // Plasma's own taskbar, placed by taskbar.rs
+    seen: HashSet<String>,       // windows the script has reported since it (re)loaded
+    lost: Option<Instant>,       // KWin's bus went
+    density: f64,                // window pixels per metre
+    plasma: plasmabar::Plasma,   // Plasma's own taskbar, placed by taskbar.rs
 }
 
 pub fn win(i: usize) -> Option<Win> {
@@ -1312,7 +1304,17 @@ impl Windows {
         for i in 0..SLOTS {
             let p = panel(self.first + i);
             if let Some(w) = win(p.index) {
-                out += &line(&p.v.name, &w, if p.minimized() { "minimized" } else if p.live() { "shown" } else { "waiting-for-frame" });
+                out += &line(
+                    &p.v.name,
+                    &w,
+                    if p.minimized() {
+                        "minimized"
+                    } else if p.live() {
+                        "shown"
+                    } else {
+                        "waiting-for-frame"
+                    },
+                );
             }
         }
         for w in &self.unslotted {
@@ -1341,7 +1343,8 @@ mod tests {
     #[test]
     fn only_the_latest_raise_counts() {
         let q: kwin::Queue = Default::default();
-        let mut s = Input { session: None, cmds: Some(q.clone()), raised: None, asked: None, seq: 0, hover: None, at: (0.0, 0.0), pending: None, down: 0, wheel: 15.0, wait: Duration::ZERO, last: None };
+        let mut s =
+            Input { session: None, cmds: Some(q.clone()), raised: None, asked: None, seq: 0, hover: None, at: (0.0, 0.0), pending: None, down: 0, wheel: 15.0, wait: Duration::ZERO, last: None };
         s.raise("A");
         assert!(s.answered("A", Some(1)));
         s.raise("B"); // pointer onto B: A no longer counts as on top

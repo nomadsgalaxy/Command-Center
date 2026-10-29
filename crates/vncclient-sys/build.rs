@@ -6,9 +6,8 @@ use std::path::PathBuf;
 fn main() {
     let here = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     println!("cargo:rerun-if-env-changed=VNC_PREFIX");
-    let prefix = std::env::var("VNC_PREFIX")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| here.join("../../panels/third_party/vnc-prefix").canonicalize().expect("no libvncclient build: run cc-home install"));
+    let prefix =
+        std::env::var("VNC_PREFIX").map(PathBuf::from).unwrap_or_else(|_| here.join("../../panels/third_party/vnc-prefix").canonicalize().expect("no libvncclient build: run cc-home install"));
     println!("cargo:rustc-link-search=native={}", prefix.join("lib64").display());
     println!("cargo:rustc-link-lib=static=vncclient");
     for l in ["ssl", "crypto", "jpeg", "z"] {

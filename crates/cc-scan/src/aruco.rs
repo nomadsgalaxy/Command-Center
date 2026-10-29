@@ -67,15 +67,7 @@ impl Params {
     /// scan.py's PARAMS. Passthrough is soft and low contrast, so bit reading is more forgiving and the
     /// threshold search is wider. Corners get refined.
     pub fn passthrough() -> Params {
-        Params {
-            subpix: true,
-            error_correction_rate: 1.0,
-            ignored_margin_per_cell: 0.3,
-            pixel_per_cell: 10,
-            win_max: 63,
-            win_step: 6,
-            ..Params::default()
-        }
+        Params { subpix: true, error_correction_rate: 1.0, ignored_margin_per_cell: 0.3, pixel_per_cell: 10, win_max: 63, win_step: 6, ..Params::default() }
     }
 }
 

@@ -3,7 +3,7 @@
 //! I check that against the exact key in trusted-frames/<name>.pub. An unknown name and a wrong
 //! signature look the same from outside (closed, no reason) so nobody can use this to find out which
 //! Frames exist.
-use crate::agent::{canon, signed, VERSION};
+use crate::agent::{VERSION, canon, signed};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -18,8 +18,7 @@ pub const AUTH_S: Duration = Duration::from_secs(5);
 /// Whether this is a Frame name H1 allows: `[a-z0-9][a-z0-9-]{0,31}`.
 pub fn valid_name(n: &str) -> bool {
     let b = n.as_bytes();
-    !b.is_empty() && b.len() <= 32 && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
-        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+    !b.is_empty() && b.len() <= 32 && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit()) && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
 /// Reads one line straight off the stream, at most `limit` bytes before its newline, within

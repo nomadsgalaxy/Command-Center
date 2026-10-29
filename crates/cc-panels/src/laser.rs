@@ -28,10 +28,7 @@ pub enum Hand {
 /// One lease datagram. It carries the full state, so a lost packet strands nothing. Pose is in raw space.
 pub fn lease(seq: u32, hand: Hand, p: &V3, q: &[f64; 4], buttons: u32, scroll: (f64, f64)) -> String {
     let h = if hand == Hand::Left { 'L' } else { 'R' };
-    format!(
-        "L {seq} {h} {:.5} {:.5} {:.5} {:.6} {:.6} {:.6} {:.6} {buttons} {:.3} {:.3}",
-        p[0], p[1], p[2], q[0], q[1], q[2], q[3], scroll.0, scroll.1
-    )
+    format!("L {seq} {h} {:.5} {:.5} {:.5} {:.6} {:.6} {:.6} {:.6} {buttons} {:.3} {:.3}", p[0], p[1], p[2], q[0], q[1], q[2], q[3], scroll.0, scroll.1)
 }
 
 /// The hand to lease, or none. It's the non-dominant hand (never the `dominant_hand` setting's),
@@ -565,10 +562,12 @@ mod tests {
     #[test]
     fn laser_origin_rule() {
         let eye = [0.0, 1.6, 0.0];
-        let at = |d: f64, ours| norm(&{
-            let o = laser_origin(&eye, &[0.0, 1.6, -d], ours);
-            [o[0] - eye[0], o[1] - eye[1], o[2] - eye[2]]
-        });
+        let at = |d: f64, ours| {
+            norm(&{
+                let o = laser_origin(&eye, &[0.0, 1.6, -d], ours);
+                [o[0] - eye[0], o[1] - eye[1], o[2] - eye[2]]
+            })
+        };
         assert!((at(2.0, true) - 1.85).abs() < 1e-9); // d - 0.15
         assert!((at(1.0, true) - 0.85).abs() < 1e-9);
         assert!((at(0.2, true) - 0.05).abs() < 1e-9);

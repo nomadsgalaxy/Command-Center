@@ -192,9 +192,7 @@ fn store(spots: Json) {
 /// Spots are keyed by viewer name. Older ones used the viewer's screen number (viewers.conf) instead.
 fn key_name(key: &str) -> String {
     match key.parse::<i64>() {
-        Ok(n) if key.bytes().all(|c| c.is_ascii_digit()) => {
-            viewers().iter().find(|v| v.screen == n).map_or(format!("screen {n}"), |v| v.name.clone())
-        }
+        Ok(n) if key.bytes().all(|c| c.is_ascii_digit()) => viewers().iter().find(|v| v.screen == n).map_or(format!("screen {n}"), |v| v.name.clone()),
         _ => key.into(),
     }
 }
@@ -322,7 +320,9 @@ impl Panels {
     fn ask(&self, text: &str, timeout: f64) -> Result<String, String> {
         let to = SocketAddr::from_abstract_name(panels_name()).map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; 65536];
-        let n = self.0.set_read_timeout(Some(std::time::Duration::from_secs_f64(timeout)))
+        let n = self
+            .0
+            .set_read_timeout(Some(std::time::Duration::from_secs_f64(timeout)))
             .and_then(|_| self.0.send_to_addr(text.as_bytes(), &to))
             .and_then(|_| self.0.recv(&mut buf))
             .map_err(|e| format!("cc-panels didn't answer ({})", py_err(&e)))?;
@@ -349,9 +349,21 @@ fn place(sock: &Panels, key: &str, pose: &Json) -> Result<(), String> {
     if pose.at("vcurve").truthy() {
         height = format!(" {:.4} {:.3}", num(pose, "height"), num(pose, "vcurve"));
     }
-    sock.ask(&format!("place {name} {:.4} {:.4} {:.4} {:.3} {:.3} {:.3} {:.4} {:.3}{height}", c[0], c[1], c[2],
-                      num(pose, "yaw"), num(pose, "pitch"), num(pose, "roll"), num(pose, "width"), num(pose, "curve")), 10.0)
-        .map(|_| ())
+    sock.ask(
+        &format!(
+            "place {name} {:.4} {:.4} {:.4} {:.3} {:.3} {:.3} {:.4} {:.3}{height}",
+            c[0],
+            c[1],
+            c[2],
+            num(pose, "yaw"),
+            num(pose, "pitch"),
+            num(pose, "roll"),
+            num(pose, "width"),
+            num(pose, "curve")
+        ),
+        10.0,
+    )
+    .map(|_| ())
 }
 
 /// Where every panel is now, keyed by viewer name.
@@ -470,7 +482,8 @@ fn forget(spot: &str) {
     }
 }
 
-const WORKSPACE_USAGE: &str = "cc-home workspace [use <name> | new <name> | save-as <name> | load <name> | enter <name> [monitor ...] | rename <old> <new> | forget <name> | machines <name> [add|remove <machine>]]";
+const WORKSPACE_USAGE: &str =
+    "cc-home workspace [use <name> | new <name> | save-as <name> | load <name> | enter <name> [monitor ...] | rename <old> <new> | forget <name> | machines <name> [add|remove <machine>]]";
 
 /// cc-panels' room (its SteamVR universe) when it's running, else 0 (none).
 fn panels_universe() -> u64 {
@@ -599,7 +612,13 @@ fn workspace(args: &[&str]) {
     all.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, w) in all {
         let rooms = conf::rooms(w);
-        let room = if !rooms.is_empty() { format!("room {}", rooms.join(", room ")) } else if name == conf::TEMPORARY { "any room".into() } else { "no room yet".into() };
+        let room = if !rooms.is_empty() {
+            format!("room {}", rooms.join(", room "))
+        } else if name == conf::TEMPORARY {
+            "any room".into()
+        } else {
+            "no room yet".into()
+        };
         let mut anchor = String::new();
         if w.at("primary").truthy() {
             anchor += &format!(", primary {}", w.at("primary").text());
@@ -629,9 +648,14 @@ fn nmcli(args: &[&str]) -> Result<Vec<Vec<String>>, String> {
     use std::io::Read;
     use std::os::unix::process::ExitStatusExt;
     let pre = "can't read the network name";
-    let mut child = std::process::Command::new("nmcli").arg("-t").args(args)
-        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-        .spawn().map_err(|e| format!("{pre}: {}: 'nmcli'", py_err(&e)))?;
+    let mut child = std::process::Command::new("nmcli")
+        .arg("-t")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{pre}: {}: 'nmcli'", py_err(&e)))?;
     let start = std::time::Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -657,9 +681,7 @@ fn nmcli(args: &[&str]) -> Result<Vec<Vec<String>>, String> {
 /// The networks the headset is on, from NetworkManager: the wifi name, plus the connection name
 /// of a wired link, since a hardlined headset has no wifi. Empty when offline.
 fn current_networks() -> Result<Vec<String>, String> {
-    let pick = |rows: Vec<Vec<String>>, want: &str| -> Vec<String> {
-        rows.into_iter().filter(|f| f[0] == want).filter_map(|f| f.get(1).map(|n| n.replace('\0', ":"))).collect()
-    };
+    let pick = |rows: Vec<Vec<String>>, want: &str| -> Vec<String> { rows.into_iter().filter(|f| f[0] == want).filter_map(|f| f.get(1).map(|n| n.replace('\0', ":"))).collect() };
     let wifi = pick(nmcli(&["-f", "active,ssid", "dev", "wifi"])?, "yes");
     let wired = pick(nmcli(&["-f", "type,name", "connection", "show", "--active"])?, "802-3-ethernet");
     Ok([wifi, wired].concat())
@@ -710,8 +732,7 @@ fn write_autoconnect() {
     let names: Vec<String> = data.at("workspaces").items().iter().map(|(n, _)| n.clone()).collect();
     let nets = if names.iter().any(|n| data.at("workspaces").at(n).at("known_networks").truthy()) { current_networks() } else { Ok(vec![]) };
     let (mut lines, hint) = match nets {
-        Ok(nets) => (names.iter().map(|n| format!("{n}\t{}", autoconnect_list(&nets, &data, Some(n)).join(","))).collect::<Vec<_>>(),
-                     workspace_for(&nets, &data).unwrap_or_default()),
+        Ok(nets) => (names.iter().map(|n| format!("{n}\t{}", autoconnect_list(&nets, &data, Some(n)).join(","))).collect::<Vec<_>>(), workspace_for(&nets, &data).unwrap_or_default()),
         Err(e) => {
             eprintln!("autoconnect: {e}; only the monitors marked autoconnect=yes, network not checked");
             (names.iter().map(|n| format!("{n}\t{yes}")).collect(), String::new())
@@ -733,8 +754,7 @@ fn autoconnect(args: &[&str]) {
     let data = read_all();
     let all = args.contains(&"--all");
     let mut nets: Vec<String> = args.iter().filter(|a| !a.starts_with("--")).map(|a| a.to_string()).collect();
-    let names: Vec<Option<String>> =
-        if all { data.at("workspaces").items().iter().map(|(n, _)| Some(n.clone())).collect() } else { vec![data.at("workspace").str().map(str::to_owned)] };
+    let names: Vec<Option<String>> = if all { data.at("workspaces").items().iter().map(|(n, _)| Some(n.clone())).collect() } else { vec![data.at("workspace").str().map(str::to_owned)] };
     if nets.is_empty() && any_known(&data, &names) {
         nets = current_networks().unwrap_or_else(|e| die(e)); // only asked when some workspace needs it
     }

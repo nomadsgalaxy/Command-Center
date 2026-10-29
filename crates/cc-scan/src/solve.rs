@@ -122,11 +122,13 @@ pub fn least_squares(fun: &dyn Fn(&DVector<f64>) -> DVector<f64>, x0: DVector<f6
 /// Local points (x right, y up, z towards the viewer) of a panel curved around the viewer. uv is in
 /// metres along its surface, measured from the middle.
 pub fn surface(uv: &[Uv], axis: &str, r: f64) -> Vec<Vector3<f64>> {
-    uv.iter().map(|&[u, v]| match axis {
-        "h" if r != 0.0 => Vector3::new(r * (u / r).sin(), v, r * (1.0 - (u / r).cos())),
-        "v" if r != 0.0 => Vector3::new(u, r * (v / r).sin(), r * (1.0 - (v / r).cos())),
-        _ => Vector3::new(u, v, 0.0),
-    }).collect()
+    uv.iter()
+        .map(|&[u, v]| match axis {
+            "h" if r != 0.0 => Vector3::new(r * (u / r).sin(), v, r * (1.0 - (u / r).cos())),
+            "v" if r != 0.0 => Vector3::new(u, r * (v / r).sin(), r * (1.0 - (v / r).cos())),
+            _ => Vector3::new(u, v, 0.0),
+        })
+        .collect()
 }
 
 pub fn frac_to_uv(f: &[f64], size: (f64, f64)) -> Uv {
@@ -227,11 +229,14 @@ fn pnp(obj: &[Vector3<f64>], px: &[[f64; 2]], k: K) -> Option<(Vector3<f64>, Vec
     let x0 = DVector::from_vec(vec![rotvec(&r).x, rotvec(&r).y, rotvec(&r).z, t.x, t.y, t.z]);
     let res = |p: &DVector<f64>| {
         let (rr, tt) = (rotmat(&Vector3::new(p[0], p[1], p[2])), Vector3::new(p[3], p[4], p[5]));
-        DVector::from_iterator(2 * obj.len(), obj.iter().zip(px).flat_map(|(o, q)| {
-            let c = rr * o + tt;
-            let pr = project(k, &c);
-            [pr[0] - q[0], pr[1] - q[1]]
-        }))
+        DVector::from_iterator(
+            2 * obj.len(),
+            obj.iter().zip(px).flat_map(|(o, q)| {
+                let c = rr * o + tt;
+                let pr = project(k, &c);
+                [pr[0] - q[0], pr[1] - q[1]]
+            }),
+        )
     };
     let (p, _) = least_squares(&res, x0, 1e6);
     Some((Vector3::new(p[0], p[1], p[2]), Vector3::new(p[3], p[4], p[5])))
@@ -245,10 +250,14 @@ fn cam_points(p: &DVector<f64>, heads: &[Matrix4<f64>], world: &[Vector3<f64>]) 
     eye[(0, 3)] = p[7];
     eye[(1, 3)] = p[8];
     eye[(2, 3)] = p[9];
-    heads.iter().zip(world).map(|(h, w)| {
-        let w2c = flip() * (h * eye).try_inverse().unwrap_or(Matrix4::identity());
-        apply(&w2c, w)
-    }).collect()
+    heads
+        .iter()
+        .zip(world)
+        .map(|(h, w)| {
+            let w2c = flip() * (h * eye).try_inverse().unwrap_or(Matrix4::identity());
+            apply(&w2c, w)
+        })
+        .collect()
 }
 
 /// Fits the eye pose, and with no old camera the intrinsics too, robustly, from virtual corners at known
@@ -299,13 +308,16 @@ fn fit_seeds(heads: &[Matrix4<f64>], world: &[Vector3<f64>], pixels: &[[f64; 2]]
         }
         DVector::from_vec(r)
     };
-    let fits: Vec<(DVector<f64>, DVector<f64>)> = [EYE_SEED, -EYE_SEED].into_iter().map(|seed| {
-        let x0 = match old {
-            Some(_) => vec![0.0, 0.0, 0.0, seed, 0.0, 0.0],
-            None => vec![1070.0, 1070.0, 960.0, 540.0, 0.0, 0.0, 0.0, seed, 0.0, 0.0],
-        };
-        least_squares(&res, DVector::from_vec(x0), 2.0)
-    }).collect();
+    let fits: Vec<(DVector<f64>, DVector<f64>)> = [EYE_SEED, -EYE_SEED]
+        .into_iter()
+        .map(|seed| {
+            let x0 = match old {
+                Some(_) => vec![0.0, 0.0, 0.0, seed, 0.0, 0.0],
+                None => vec![1070.0, 1070.0, 960.0, 540.0, 0.0, 0.0, 0.0, seed, 0.0, 0.0],
+            };
+            least_squares(&res, DVector::from_vec(x0), 2.0)
+        })
+        .collect();
     fits.into_iter().min_by(|a, b| median(&pixel_errors(&a.1, pixels.len())).total_cmp(&median(&pixel_errors(&b.1, pixels.len())))).expect("two seeds")
 }
 
@@ -366,10 +378,13 @@ impl Monitor<'_> {
 
     fn best_radius(&self, axis: &str, p0: &DVector<f64>) -> (f64, DVector<f64>, f64) {
         let grid: Vec<f64> = (0..25).map(|i| 0.4 * (20.0f64 / 0.4).powf(i as f64 / 24.0)).collect();
-        let fits: Vec<(f64, DVector<f64>, f64)> = grid.iter().map(|&r| {
-            let (p, e) = self.fit(axis, r, p0);
-            (r, p, e)
-        }).collect();
+        let fits: Vec<(f64, DVector<f64>, f64)> = grid
+            .iter()
+            .map(|&r| {
+                let (p, e) = self.fit(axis, r, p0);
+                (r, p, e)
+            })
+            .collect();
         let i = (0..fits.len()).min_by(|&a, &b| fits[a].2.partial_cmp(&fits[b].2).unwrap()).unwrap();
         let (mut lo, mut hi) = (grid[i.saturating_sub(1)], grid[(i + 1).min(grid.len() - 1)]);
         let g = (5f64.sqrt() - 1.0) / 2.0;
@@ -500,8 +515,17 @@ pub fn solve(job: &Value, out: &mut dyn FnMut(String)) -> Result<(), String> {
         let old = camera.clone().filter(|c| c.len() == 10);
         let (p, med, p90, kept) = fit_camera(&h, &w, &q, old.as_ref().map(|c| &c[..]));
         let off: Vec<f64> = p[7..10].iter().map(|v| round(v * 1000.0, 1)).collect();
-        out(format!("# mirror camera from {} virtual tags ({} corners kept): f {:.0}/{:.0}, centre {:.0},{:.0}, eye offset {:?} mm, tilt {:.2} deg; median {med:.2} px, p90 {p90:.2} px",
-            pixels.len() / 4, kept, p[0], p[1], p[2], p[3], off, Vector3::new(p[4], p[5], p[6]).norm().to_degrees(), ));
+        out(format!(
+            "# mirror camera from {} virtual tags ({} corners kept): f {:.0}/{:.0}, centre {:.0},{:.0}, eye offset {:?} mm, tilt {:.2} deg; median {med:.2} px, p90 {p90:.2} px",
+            pixels.len() / 4,
+            kept,
+            p[0],
+            p[1],
+            p[2],
+            p[3],
+            off,
+            Vector3::new(p[4], p[5], p[6]).norm().to_degrees(),
+        ));
         if med < 2.0 && (camera.is_none() || job["refit_camera"].as_bool().unwrap_or(false)) {
             out(format!("#camera {}", json!(p)));
             camera = Some(p);
@@ -536,7 +560,8 @@ pub fn solve(job: &Value, out: &mut dyn FnMut(String)) -> Result<(), String> {
     for (si, shot) in hid.iter().enumerate() {
         for t in shot["tags"].as_array().into_iter().flatten() {
             let Some(mi) = mon_of(t) else { continue };
-            if t["side_px"].as_f64().unwrap_or(0.0) >= MIN_CHECK_PX && mine(shot, mi)
+            if t["side_px"].as_f64().unwrap_or(0.0) >= MIN_CHECK_PX
+                && mine(shot, mi)
                 && let Some((w, d)) = place_of(t, shot, mi)
             {
                 readings.entry(t["id"].as_i64().unwrap()).or_default().push((si, w, d));
@@ -549,10 +574,13 @@ pub fn solve(job: &Value, out: &mut dyn FnMut(String)) -> Result<(), String> {
         if seen.is_empty() {
             continue;
         }
-        let medians: Vec<(Vector3<f64>, f64)> = seen.iter().map(|(_, r)| {
-            let comp = |i: usize| median(&r.iter().map(|x| x.1[i]).collect::<Vec<_>>());
-            (Vector3::new(comp(0), comp(1), comp(2)), median(&r.iter().map(|x| x.2).collect::<Vec<_>>()))
-        }).collect();
+        let medians: Vec<(Vector3<f64>, f64)> = seen
+            .iter()
+            .map(|(_, r)| {
+                let comp = |i: usize| median(&r.iter().map(|x| x.1[i]).collect::<Vec<_>>());
+                (Vector3::new(comp(0), comp(1), comp(2)), median(&r.iter().map(|x| x.2).collect::<Vec<_>>()))
+            })
+            .collect();
         let dist = median(&medians.iter().map(|m| m.1).collect::<Vec<_>>());
         for ((tid, r), (mw, md)) in seen.iter().zip(&medians) {
             if (md - dist).abs() > 0.25 * dist {
@@ -640,7 +668,13 @@ pub fn solve(job: &Value, out: &mut dyn FnMut(String)) -> Result<(), String> {
         let (flat_p, flat_err) = mon.fit("flat", 0.0, &p0);
         let known = m["curve"].as_str();
         let pinned = if matches!(known, Some("h" | "v")) { m["radius"].as_f64().filter(|r| *r != 0.0) } else { None };
-        let axes: Vec<&str> = if pinned.is_some() || known == Some("flat") { vec![] } else if let Some(a @ ("h" | "v")) = known { vec![a] } else { vec!["h", "v"] };
+        let axes: Vec<&str> = if pinned.is_some() || known == Some("flat") {
+            vec![]
+        } else if let Some(a @ ("h" | "v")) = known {
+            vec![a]
+        } else {
+            vec!["h", "v"]
+        };
         let mut fits: Vec<(String, f64, DVector<f64>, f64)> = vec![("flat".into(), 0.0, flat_p.clone(), flat_err)];
         for a in axes {
             let (r, p, e) = mon.best_radius(a, &flat_p);
@@ -658,11 +692,14 @@ pub fn solve(job: &Value, out: &mut dyn FnMut(String)) -> Result<(), String> {
             if best.0 != "flat" && best.3 > 0.8 * flat_err { fits[0].clone() } else { best }
         };
         // Drop frames that are far off the rest, then fit again.
-        let per: Vec<f64> = frames.iter().map(|f| {
-            let one = Monitor { frames: std::slice::from_ref(f), k };
-            let res = one.residuals(&p, &axis, r);
-            (res.iter().map(|v| v * v).sum::<f64>() / res.len() as f64).sqrt()
-        }).collect();
+        let per: Vec<f64> = frames
+            .iter()
+            .map(|f| {
+                let one = Monitor { frames: std::slice::from_ref(f), k };
+                let res = one.residuals(&p, &axis, r);
+                (res.iter().map(|v| v * v).sum::<f64>() / res.len() as f64).sqrt()
+            })
+            .collect();
         let med = median(&per);
         let keep: Vec<usize> = (0..frames.len()).filter(|&i| per[i] <= 2.0 * med).collect();
         if keep.len() < frames.len() && keep.len() >= 5 {
@@ -677,13 +714,26 @@ pub fn solve(job: &Value, out: &mut dyn FnMut(String)) -> Result<(), String> {
         let centre = Vector3::new(p[3], p[4], p[5]);
         let dist = frames.iter().map(|f| (f.w2c.try_inverse().unwrap_or(Matrix4::identity()).fixed_view::<3, 1>(0, 3) - centre).norm()).fold(f64::INFINITY, f64::min);
         let fits_s: Vec<String> = fits.iter().map(|(a, rr, _, e)| format!("{a}{} {e:.2}", if a != "flat" { format!(" R {rr:.2} m") } else { String::new() })).collect();
-        out(format!("# {}: {} tag positions in {} frames, {dist:.2} m away; rms px {} -> {axis}{}{}", name(mi), ids.len(), frames.len(), fits_s.join(", "),
+        out(format!(
+            "# {}: {} tag positions in {} frames, {dist:.2} m away; rms px {} -> {axis}{}{}",
+            name(mi),
+            ids.len(),
+            frames.len(),
+            fits_s.join(", "),
             if r != 0.0 { format!(" R {r:.2} m") } else { String::new() },
-            if pinned.is_some() { " (radius pinned by viewers.conf)" } else if known.is_some() { " (as viewers.conf says)" } else { "" }));
+            if pinned.is_some() {
+                " (radius pinned by viewers.conf)"
+            } else if known.is_some() {
+                " (as viewers.conf says)"
+            } else {
+                ""
+            }
+        ));
         let col = |j: usize| -> Vec<f64> { (0..3).map(|i| round(rot[(i, j)], 5)).collect() };
         out(json!({"name": m["name"], "screen": m["screen"], "centre": (0..3).map(|i| round(centre[i], 4)).collect::<Vec<_>>(),
                    "x": col(0), "y": col(1), "z": col(2), "width": size.0, "height": size.1, "axis": axis, "radius": round(r, 3),
-                   "rms": round(err, 2), "rms_mm": round(err * dist / k.fx * 1000.0, 1), "distance": round(dist, 3)}).to_string());
+                   "rms": round(err, 2), "rms_mm": round(err * dist / k.fx * 1000.0, 1), "distance": round(dist, 3)})
+        .to_string());
     }
     Ok(())
 }
@@ -727,11 +777,14 @@ mod tests {
                     head.fixed_view_mut::<3, 3>(0, 0).copy_from(&rotmat(&Vector3::new(0.02 * ((j % 3) as f64 - 1.0), 0.31 + 0.01 * j as f64, 0.0)));
                     head.fixed_view_mut::<3, 1>(0, 3).copy_from(&Vector3::new(0.01 * j as f64, 1.7, 0.0));
                     let w2c = flip() * head.try_inverse().unwrap();
-                    let px = surface(&uv, axis, true_r).iter().map(|s| {
-                        let c = apply(&w2c, &apply(&m2w, s));
-                        let p = project(k, &c);
-                        [p[0] + noise(), p[1] + noise()]
-                    }).collect();
+                    let px = surface(&uv, axis, true_r)
+                        .iter()
+                        .map(|s| {
+                            let c = apply(&w2c, &apply(&m2w, s));
+                            let p = project(k, &c);
+                            [p[0] + noise(), p[1] + noise()]
+                        })
+                        .collect();
                     frames.push(Frame { w2c, uv, px });
                     j += 1;
                 }
@@ -837,9 +890,7 @@ mod tests {
     fn quick_corners_pin_the_desk() {
         let k = K { fx: 1070.0, fy: 1070.0, cx: 960.0, cy: 540.0 };
         let (w, h) = (0.6, 0.34);
-        let lay = |l: crate::pattern::Layout| -> Vec<Vec<Uv>> {
-            l.json["tags"].as_object().unwrap().values().map(|c| fracs(c).iter().map(|f| frac_to_uv(f, (w, h))).collect()).collect()
-        };
+        let lay = |l: crate::pattern::Layout| -> Vec<Vec<Uv>> { l.json["tags"].as_object().unwrap().values().map(|c| fracs(c).iter().map(|f| frac_to_uv(f, (w, h))).collect()).collect() };
         let corners: Vec<Vec<Uv>> = lay(crate::pattern::frame(1920, 1080, 0)).into_iter().take(4).collect();
         let one = vec![corners[0].clone()];
         let grid = lay(crate::pattern::dense(1920, 1080, 0, 150));

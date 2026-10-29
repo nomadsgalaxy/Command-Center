@@ -130,7 +130,13 @@ pub fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
     let bits = u16::from_le_bytes(dib.get(14..16)?.try_into().unwrap());
     let compression = u32_at(16)?;
     let used = u32_at(32)? as usize;
-    let colours = if used != 0 { used } else if bits <= 8 { 1 << bits } else { 0 };
+    let colours = if used != 0 {
+        used
+    } else if bits <= 8 {
+        1 << bits
+    } else {
+        0
+    };
     let masks = if size == 40 && compression == 3 { 12 } else { 0 }; // BI_BITFIELDS after a plain header
     let off = 14 + size + masks + colours * 4;
     if size < 40 || off - 14 > dib.len() {
@@ -206,11 +212,16 @@ pub fn from_descriptor(b: &[u8]) -> Option<Vec<Entry>> {
 
 /// The paths in a text/uri-list (file: URIs only).
 pub fn from_uri_list(b: &[u8]) -> Vec<PathBuf> {
-    String::from_utf8_lossy(b).lines().map(str::trim).filter(|l| !l.starts_with('#')).filter_map(|l| {
-        let rest = l.strip_prefix("file://")?;
-        let path = &rest[rest.find('/')?..]; // past a host name, if there's one
-        Some(PathBuf::from(unescape(path)))
-    }).collect()
+    String::from_utf8_lossy(b)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| {
+            let rest = l.strip_prefix("file://")?;
+            let path = &rest[rest.find('/')?..]; // past a host name, if there's one
+            Some(PathBuf::from(unescape(path)))
+        })
+        .collect()
 }
 
 pub fn to_uri_list(paths: &[PathBuf]) -> Vec<u8> {
@@ -305,7 +316,8 @@ mod tests {
         assert_eq!(from_mimes(&offered), vec![(Fmt::Text, "text/plain;charset=utf-8"), (Fmt::Html, "text/html"), (Fmt::Files, "text/uri-list")]);
         assert_eq!(from_mime("UTF8_STRING"), Some(Fmt::Text));
         assert_eq!(from_mime("image/png"), None);
-        let list = vec![(CF_TEXT, None), (CF_DIBV5, None), (CF_DIB, None), (0xC123, Some("HTML Format".into())), (0xC124, Some("FileGroupDescriptorW".into())), (0xC125, Some("Rich Text Format".into()))];
+        let list =
+            vec![(CF_TEXT, None), (CF_DIBV5, None), (CF_DIB, None), (0xC123, Some("HTML Format".into())), (0xC124, Some("FileGroupDescriptorW".into())), (0xC125, Some("Rich Text Format".into()))];
         assert_eq!(pick(&list), vec![(Fmt::Text, CF_UNICODETEXT), (Fmt::Image, CF_DIB), (Fmt::Html, 0xC123), (Fmt::Files, 0xC124)]);
         for f in [Fmt::Text, Fmt::Html, Fmt::Image, Fmt::Files] {
             let (id, name) = to_rdp(f);
@@ -345,10 +357,7 @@ mod tests {
 
     #[test]
     fn descriptors_round_trip_and_staging_stays_inside() {
-        let e = vec![
-            Entry { name: "photos".into(), size: 0, dir: true, local: None },
-            Entry { name: "photos\\a b.jpg".into(), size: 5_000_000_000, dir: false, local: None },
-        ];
+        let e = vec![Entry { name: "photos".into(), size: 0, dir: true, local: None }, Entry { name: "photos\\a b.jpg".into(), size: 5_000_000_000, dir: false, local: None }];
         let b = to_descriptor(&e);
         assert_eq!(b.len(), 4 + 2 * 592);
         assert_eq!(from_descriptor(&b).unwrap(), e);

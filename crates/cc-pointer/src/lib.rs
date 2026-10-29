@@ -194,15 +194,7 @@ const PROPS: usize = 2;
 const LOG: usize = 3;
 const INPUT: usize = 6;
 /// InitServer fetches the first six in this order and fails if one is missing. Input is fetched lazily.
-const IFACES: [&CStr; 7] = [
-    c"IVRServerDriverHost_006",
-    c"IVRSettings_003",
-    c"IVRProperties_001",
-    c"IVRDriverLog_001",
-    c"IVRDriverManager_001",
-    c"IVRResources_001",
-    c"IVRDriverInput_003",
-];
+const IFACES: [&CStr; 7] = [c"IVRServerDriverHost_006", c"IVRSettings_003", c"IVRProperties_001", c"IVRDriverLog_001", c"IVRDriverManager_001", c"IVRResources_001", c"IVRDriverInput_003"];
 static SLOTS: [AtomicPtr<c_void>; 7] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 7];
 
 /// The runtime's interface, fetched once (null if there's none).
@@ -287,14 +279,7 @@ fn now_ms() -> i64 {
 
 // --- the lease and the arbiter (pure) ---------------------------------------------------------
 
-const BUTTON_PATHS: [&CStr; 6] = [
-    c"/input/trigger/click",
-    c"/input/b/click",
-    c"/input/x/click",
-    c"/input/a/click",
-    c"/input/system/click",
-    c"/input/joystick/click",
-]; // btnmask bit i
+const BUTTON_PATHS: [&CStr; 6] = [c"/input/trigger/click", c"/input/b/click", c"/input/x/click", c"/input/a/click", c"/input/system/click", c"/input/joystick/click"]; // btnmask bit i
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Lease {
@@ -306,8 +291,7 @@ struct Lease {
     sx: f32,
     sy: f32,
 }
-const LEASE0: Lease =
-    Lease { at: 0, hidden: true, hand: ROLE_RIGHT, pose: [0., 0., 0., 1., 0., 0., 0.], buttons: 0, sx: 0., sy: 0. };
+const LEASE0: Lease = Lease { at: 0, hidden: true, hand: ROLE_RIGHT, pose: [0., 0., 0., 1., 0., 0., 0.], buttons: 0, sx: 0., sy: 0. };
 
 impl Lease {
     fn finite(&self) -> bool {
@@ -325,8 +309,7 @@ struct Arbiter {
     connected: bool,
     hand: i32,
 }
-const ARBITER0: Arbiter =
-    Arbiter { init: 0, last_connect: 0, backoff_until: 0, hinted: false, connected: false, hand: ROLE_RIGHT };
+const ARBITER0: Arbiter = Arbiter { init: 0, last_connect: 0, backoff_until: 0, hinted: false, connected: false, hand: ROLE_RIGHT };
 
 impl Arbiter {
     fn start(&mut self, now: i64) {
@@ -404,7 +387,15 @@ fn parse_lease(msg: &str) -> Option<Lease> {
         return None;
     }
     l.hand = hand;
-    let clamp = |v: f32| if v < -1. { -1. } else if v > 1. { 1. } else { v }; // NaN passes; finite() rejects it
+    let clamp = |v: f32| {
+        if v < -1. {
+            -1.
+        } else if v > 1. {
+            1.
+        } else {
+            v
+        }
+    }; // NaN passes; finite() rejects it
     (l.sx, l.sy) = (clamp(l.sx), clamp(l.sy));
     l.hidden = false;
     Some(l)
@@ -439,25 +430,10 @@ struct Device {
     sy: u64,
 }
 // Host calls happen with this unlocked, because SteamVR may call back into the device from them.
-static DEVICE: Mutex<Device> = Mutex::new(Device {
-    arb: ARBITER0,
-    object_id: INVALID_DEVICE,
-    container: 0,
-    hint: -1,
-    pose: POSE0,
-    buttons: [0; 6],
-    sx: 0,
-    sy: 0,
-});
+static DEVICE: Mutex<Device> = Mutex::new(Device { arb: ARBITER0, object_id: INVALID_DEVICE, container: 0, hint: -1, pose: POSE0, buttons: [0; 6], sx: 0, sy: 0 });
 
-static DEVICE_VTBL: DeviceVtbl = DeviceVtbl {
-    activate: device_activate,
-    deactivate: device_deactivate,
-    enter_standby: noop,
-    get_component: device_get_component,
-    debug_request: device_debug_request,
-    get_pose: device_get_pose,
-};
+static DEVICE_VTBL: DeviceVtbl =
+    DeviceVtbl { activate: device_activate, deactivate: device_deactivate, enter_standby: noop, get_component: device_get_component, debug_request: device_debug_request, get_pose: device_get_pose };
 static DEVICE_OBJ: Obj<DeviceVtbl> = Obj { vtbl: &DEVICE_VTBL };
 
 unsafe extern "C" fn noop(_: This) {}
@@ -482,11 +458,7 @@ fn set_hint(role: i32) {
 unsafe extern "C" fn device_activate(_: This, object_id: u32) -> i32 {
     guard("device_activate", INIT_DRIVER_FAILED, || {
         let props = iface(PROPS);
-        let c = if props.is_null() {
-            0
-        } else {
-            unsafe { (vt::<PropertiesVtbl>(props).tracked_device_to_property_container)(props, object_id) }
-        };
+        let c = if props.is_null() { 0 } else { unsafe { (vt::<PropertiesVtbl>(props).tracked_device_to_property_container)(props, object_id) } };
         {
             let mut d = lock(&DEVICE);
             d.object_id = object_id;
@@ -540,9 +512,7 @@ unsafe extern "C" fn device_debug_request(_: This, _: *const c_char, response: *
 }
 
 unsafe extern "C" fn device_get_pose(_: This) -> DriverPose {
-    guard("device_get_pose", no_pose(), || {
-        lock(&DEVICE).pose
-    })
+    guard("device_get_pose", no_pose(), || lock(&DEVICE).pose)
 }
 
 fn device_run_frame() {

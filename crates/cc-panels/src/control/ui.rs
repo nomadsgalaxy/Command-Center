@@ -123,7 +123,13 @@ pub fn segmented(p: &Paint, labels: &[Option<&TagImg>], chosen: usize, hover: Op
     let sw = (x1 - x0) / labels.len() as f64;
     for (k, l) in labels.iter().enumerate() {
         let (s0, s1) = (x0 + k as f64 * sw, x0 + (k + 1) as f64 * sw);
-        let look = if k == chosen { Look::Carry } else if hover == Some(k) { Look::Lit } else { Look::Rest };
+        let look = if k == chosen {
+            Look::Carry
+        } else if hover == Some(k) {
+            Look::Lit
+        } else {
+            Look::Rest
+        };
         if look != Look::Rest {
             let d = rbox(x - (s0 + s1) / 2.0, y - cy, sw / 2.0 - 2.0, BTN_H / 2.0 - 2.0, 3.0);
             out = over(out, grab::button(t, acc, look, d, 2.0, 1.0)); // keeps the glow inside the segment's edge
@@ -151,10 +157,7 @@ pub enum Edit {
 
 /// evdev codes 2 (1) to 53 (/) on a US keyboard, unshifted and shifted. 0 means it isn't a
 /// character.
-const US: [&[u8; 52]; 2] = [
-    b"1234567890-=\0\0qwertyuiop[]\0\0asdfghjkl;'`\0\\zxcvbnm,./",
-    b"!@#$%^&*()_+\0\0QWERTYUIOP{}\0\0ASDFGHJKL:\"~\0|ZXCVBNM<>?",
-];
+const US: [&[u8; 52]; 2] = [b"1234567890-=\0\0qwertyuiop[]\0\0asdfghjkl;'`\0\\zxcvbnm,./", b"!@#$%^&*()_+\0\0QWERTYUIOP{}\0\0ASDFGHJKL:\"~\0|ZXCVBNM<>?"];
 
 /// Turns an evdev key (value 1 is down, 2 is held, i.e. its repeat) into a field edit.
 /// Characters and Backspace repeat.
@@ -353,9 +356,19 @@ mod tests {
 
     #[test]
     fn a_us_keyboard_types_ascii() {
-        let typed = |keys: &[(u16, bool)]| keys.iter().filter_map(|&(c, sh)| match edit(c, 1, sh) { Some(Edit::Char(c)) => Some(c), _ => None }).collect::<String>();
+        let typed = |keys: &[(u16, bool)]| {
+            keys.iter()
+                .filter_map(|&(c, sh)| match edit(c, 1, sh) {
+                    Some(Edit::Char(c)) => Some(c),
+                    _ => None,
+                })
+                .collect::<String>()
+        };
         assert_eq!(typed(&[(22, false), (31, false), (18, false), (19, false), (3, true), (35, false), (24, false), (31, false), (20, false), (52, false), (2, false)]), "user@host.1");
-        assert_eq!(typed(&[(2, false), (11, false), (2, true), (11, true), (12, true), (13, false), (39, true), (40, true), (43, false), (43, true), (41, true), (53, true), (57, true)]), "10!)_=:\"\\|~? ");
+        assert_eq!(
+            typed(&[(2, false), (11, false), (2, true), (11, true), (12, true), (13, false), (39, true), (40, true), (43, false), (43, true), (41, true), (53, true), (57, true)]),
+            "10!)_=:\"\\|~? "
+        );
         assert_eq!(typed(&[(16, true), (44, false), (50, true)]), "QzM");
         assert_eq!(edit(30, 2, false), Some(Edit::Char('a')), "held: repeats");
         assert_eq!(edit(30, 0, false), None, "up: nothing");

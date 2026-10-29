@@ -123,8 +123,15 @@ fn mask(s: &str, pre: &str, post: &str) -> String {
 }
 
 fn cc_home(home: &Path, argv: &[&str], env: &[(String, String)], stdin: &str) -> std::process::Output {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_cc-home")).args(argv).env("HOME", home).envs(env.iter().map(|(k, v)| (k, v)))
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_cc-home"))
+        .args(argv)
+        .env("HOME", home)
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut i = c.stdin.take().unwrap();
     let input = stdin.to_owned();
     std::thread::spawn(move || i.write_all(input.as_bytes()));
@@ -136,8 +143,11 @@ fn cc_host_bin() -> PathBuf {
         return p.into();
     }
     let t = root().join("target");
-    ["aarch64-unknown-linux-musl/release", "x86_64-unknown-linux-musl/release", "release", "debug"].iter().map(|d| t.join(d).join("cc-host"))
-        .find(|p| p.exists()).expect("no cc-host build: cargo build --release --target aarch64-unknown-linux-musl -p cc-host (or CC_HOST_BIN=)")
+    ["aarch64-unknown-linux-musl/release", "x86_64-unknown-linux-musl/release", "release", "debug"]
+        .iter()
+        .map(|d| t.join(d).join("cc-host"))
+        .find(|p| p.exists())
+        .expect("no cc-host build: cargo build --release --target aarch64-unknown-linux-musl -p cc-host (or CC_HOST_BIN=)")
 }
 
 /// A real cc-host on this namespace's port 3399 (`serve --fake` or `pair --test`), running on its
@@ -232,7 +242,13 @@ fn cli_case(c: &Value, bindir: &Path) {
             let (all, refused) = (p[0].as_str().unwrap().to_owned(), p[1].clone());
             Panels::start(move |text| {
                 let w: Vec<&str> = text.split_whitespace().collect();
-                if w[0] == "panels" { all.clone() } else if refused.as_array().unwrap().iter().any(|r| r == w[1]) { format!("error no panel {}", w[1]) } else { "ok".into() }
+                if w[0] == "panels" {
+                    all.clone()
+                } else if refused.as_array().unwrap().iter().any(|r| r == w[1]) {
+                    format!("error no panel {}", w[1])
+                } else {
+                    "ok".into()
+                }
             })
         }
     };
@@ -264,8 +280,12 @@ fn cli_case(c: &Value, bindir: &Path) {
 fn conf_cross() {
     if std::env::var("CC_CROSS_NETNS").as_deref() != Ok("1") {
         // a network of its own (the hosts' port 3399 on a loopback nobody else has), plus a hostname
-        let ok = Command::new("unshare").args(["-rnu", "env", "CC_CROSS_NETNS=1"]).arg(std::env::current_exe().unwrap())
-            .args(["conf_cross", "--exact", "--nocapture", "--test-threads=1"]).status().unwrap();
+        let ok = Command::new("unshare")
+            .args(["-rnu", "env", "CC_CROSS_NETNS=1"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["conf_cross", "--exact", "--nocapture", "--test-threads=1"])
+            .status()
+            .unwrap();
         assert!(ok.success(), "conf_cross in its namespace (above)");
         return;
     }
@@ -286,8 +306,7 @@ fn conf_cross() {
         cli_case(c, &bindir);
     }
     let _ = std::fs::remove_dir_all(bindir);
-    eprintln!("conf-cross ok: {} cc-home command cases ({} against cc-host) printed, exited and wrote what cc-home.py did",
-              cases.len(), cases.iter().filter(|c| !c["host"].is_null()).count());
+    eprintln!("conf-cross ok: {} cc-home command cases ({} against cc-host) printed, exited and wrote what cc-home.py did", cases.len(), cases.iter().filter(|c| !c["host"].is_null()).count());
 }
 
 /// The align's last step: a solve's output lines get placed and saved (CC_HOME_SOLVED, so no
@@ -338,7 +357,8 @@ fn enter_a_workspace_in_a_new_room() {
     let line = |name: &str, centre: Vec<f64>, yaw: f64, rms: f64| {
         let y = yaw.to_radians();
         json!({"name": name, "screen": 1, "centre": centre, "x": [y.cos(), 0.0, -y.sin()], "y": [0.0, 1.0, 0.0], "z": [y.sin(), 0.0, y.cos()],
-               "width": 0.6, "height": 0.34, "axis": "flat", "radius": 0.0, "rms": 0.4, "rms_mm": rms, "distance": 0.7}).to_string()
+               "width": 0.6, "height": 0.34, "axis": "flat", "radius": 0.0, "rms": 0.4, "rms_mm": rms, "distance": 0.7})
+        .to_string()
     };
     let cases = [
         ("same desk", vec![line("side", c(&side), 60.0, 3.0), line("desk", vec![2.0, 1.2, 0.5], 90.0, 2.0)], "444", 0),

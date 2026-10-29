@@ -176,9 +176,10 @@ fn panels_running(proc: &Path) -> Vec<u32> {
 /// The transient unit the session runs as. On a stop its apps get 10 s to quit before they're
 /// killed. Its output goes to /tmp/cc-desktop.log, fresh each start.
 pub fn session_unit(exe: &Path) -> Vec<String> {
-    let mut v: Vec<String> = ["systemd-run", "--user", "--collect", "--quiet", "--unit", "cc-desktop", "-p", "TimeoutStopSec=10", "-p", "StandardOutput=truncate:/tmp/cc-desktop.log", "-p", "StandardError=inherit"]
-        .map(String::from)
-        .into();
+    let mut v: Vec<String> =
+        ["systemd-run", "--user", "--collect", "--quiet", "--unit", "cc-desktop", "-p", "TimeoutStopSec=10", "-p", "StandardOutput=truncate:/tmp/cc-desktop.log", "-p", "StandardError=inherit"]
+            .map(String::from)
+            .into();
     v.extend([exe.display().to_string(), "session".into()]);
     v
 }
@@ -394,7 +395,16 @@ fn panels(args: &[String]) -> i32 {
     if args.first().map(String::as_str) == Some("stop") {
         let found = panels_running(proc);
         let sent = !DRY.load(Relaxed) && found.iter().filter(|&&p| unsafe { libc::kill(p as i32, libc::SIGINT) } == 0).count() > 0;
-        println!("{}", if sent { "stopped" } else if DRY.load(Relaxed) && !found.is_empty() { "dry: would stop" } else { "not running" });
+        println!(
+            "{}",
+            if sent {
+                "stopped"
+            } else if DRY.load(Relaxed) && !found.is_empty() {
+                "dry: would stop"
+            } else {
+                "not running"
+            }
+        );
         for _ in 0..50 {
             if DRY.load(Relaxed) || panels_running(proc).is_empty() {
                 break;
@@ -421,12 +431,14 @@ fn panels(args: &[String]) -> i32 {
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     let envloop = {
         let (stop, cache, xdg) = (stop.clone(), cache.clone(), xdg.clone());
-        thread::spawn(move || loop {
-            sleep_s(5);
-            if stop.load(Relaxed) {
-                break;
+        thread::spawn(move || {
+            loop {
+                sleep_s(5);
+                if stop.load(Relaxed) {
+                    break;
+                }
+                session_env(Path::new("/proc"), &cache, &xdg);
             }
-            session_env(Path::new("/proc"), &cache, &xdg);
         })
     };
     let mut log = start_log(&cache, &stamp()).ok();
@@ -846,7 +858,8 @@ mod tests {
 
     #[test]
     fn steam_env() {
-        for v in ["LD_LIBRARY_PATH", "LD_PRELOAD", "STEAM_RUNTIME", "STEAM_", "SteamAppId", "SRT_X", "PRESSURE_VESSEL_A", "MANGOHUD_CONFIG", "ENABLE_VK_LAYER_VALVE_steam_overlay_1", "STEAMVIDEOTOKEN"] {
+        for v in ["LD_LIBRARY_PATH", "LD_PRELOAD", "STEAM_RUNTIME", "STEAM_", "SteamAppId", "SRT_X", "PRESSURE_VESSEL_A", "MANGOHUD_CONFIG", "ENABLE_VK_LAYER_VALVE_steam_overlay_1", "STEAMVIDEOTOKEN"]
+        {
             assert!(steam_var(v, false) && steam_var(v, true), "{v}");
         }
         for v in ["ENABLE_GAMESCOPE_WSI", "XDG_DESKTOP_PORTAL_DIR"] {
@@ -859,8 +872,20 @@ mod tests {
 
     #[test]
     fn process_tree() {
-        let p = fake_proc("tree", &[(1, 0, "systemd", &[], ""), (50, 1, "worker", &[], ""), (51, 50, "bash", &[], ""), (60, 51, "job", &[], ""),
-            (52, 50, "bash", &[], ""), (70, 1, "bash", &[], ""), (71, 70, "job", &[], ""), (80, 1, "workerx", &[], ""), (90, 1, "worker", &[], "")]);
+        let p = fake_proc(
+            "tree",
+            &[
+                (1, 0, "systemd", &[], ""),
+                (50, 1, "worker", &[], ""),
+                (51, 50, "bash", &[], ""),
+                (60, 51, "job", &[], ""),
+                (52, 50, "bash", &[], ""),
+                (70, 1, "bash", &[], ""),
+                (71, 70, "job", &[], ""),
+                (80, 1, "workerx", &[], ""),
+                (90, 1, "worker", &[], ""),
+            ],
+        );
         assert_eq!(named(&p, "worker"), [50, 90]);
         assert_eq!(tree(&p, 50), [50, 51, 60, 52]);
         assert_eq!(tree(&p, 90), [90]);
@@ -874,14 +899,33 @@ mod tests {
         assert!(!is_panels(b"/home/u/control-center/cc-panels\0--for\00\0")); // the wrapper itself
         assert!(!is_panels(b"nice\0-n\00\0/x/distrobox\0enter\0control-center\0--\0/x/target/release/cc-panels\0"));
         assert!(!is_panels(b"/bin/sh\0/x/target/release/cc-panels\0"));
-        let p = fake_proc("env", &[
-            (10, 1, "plasmashell", &["XDG_RUNTIME_DIR=/run/user/1000/other", "WAYLAND_DISPLAY=wrong"], ""),
-            (20, 1, "plasmashell", &["HOME=/h", "WAYLAND_DISPLAY=wayland-0", "XDG_RUNTIME_DIR=/run/user/1000/cc-desktop", "DISPLAY=:1", "DBUS_SESSION_BUS_ADDRESS=unix:path=/x", "XAUTHORITY=/a", "XDG_RUNTIME_DIRX=no"], ""),
-        ]);
+        let p = fake_proc(
+            "env",
+            &[
+                (10, 1, "plasmashell", &["XDG_RUNTIME_DIR=/run/user/1000/other", "WAYLAND_DISPLAY=wrong"], ""),
+                (
+                    20,
+                    1,
+                    "plasmashell",
+                    &[
+                        "HOME=/h",
+                        "WAYLAND_DISPLAY=wayland-0",
+                        "XDG_RUNTIME_DIR=/run/user/1000/cc-desktop",
+                        "DISPLAY=:1",
+                        "DBUS_SESSION_BUS_ADDRESS=unix:path=/x",
+                        "XAUTHORITY=/a",
+                        "XDG_RUNTIME_DIRX=no",
+                    ],
+                    "",
+                ),
+            ],
+        );
         let cache = temp("cache");
         session_env(&p, &cache, "/run/user/1000");
-        assert_eq!(fs::read_to_string(cache.join("desktop-session.env")).unwrap(),
-            "WAYLAND_DISPLAY=wayland-0\nXDG_RUNTIME_DIR=/run/user/1000/cc-desktop\nDISPLAY=:1\nDBUS_SESSION_BUS_ADDRESS=unix:path=/x\nXAUTHORITY=/a\n");
+        assert_eq!(
+            fs::read_to_string(cache.join("desktop-session.env")).unwrap(),
+            "WAYLAND_DISPLAY=wayland-0\nXDG_RUNTIME_DIR=/run/user/1000/cc-desktop\nDISPLAY=:1\nDBUS_SESSION_BUS_ADDRESS=unix:path=/x\nXAUTHORITY=/a\n"
+        );
         session_env(&p, &cache, "/run/user/1001"); // no such session: the file goes
         assert!(!cache.join("desktop-session.env").exists());
         let _ = (fs::remove_dir_all(p), fs::remove_dir_all(cache));
@@ -908,8 +952,7 @@ mod tests {
         let a = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
         let args = a(&["--args", "44", "--", "vivaldi"]);
         let app = b"--tmpfs\0/run/user/1000\0--bind\0/run/user/1000/cc-desktop/doc/by-app/x\0/run/flatpak/doc\0";
-        assert_eq!(doc_link(&args, app, 1000),
-            a(&["--args", "44", "--symlink", "/run/flatpak/doc", "/run/user/1000/cc-desktop/doc", "--", "vivaldi"]));
+        assert_eq!(doc_link(&args, app, 1000), a(&["--args", "44", "--symlink", "/run/flatpak/doc", "/run/user/1000/cc-desktop/doc", "--", "vivaldi"]));
         // the D-Bus proxy's sandbox, the host's own portal, no --args: unchanged
         assert_eq!(doc_link(&args, b"--bind\0/run\0/run\0", 1000), args);
         assert_eq!(doc_link(&args, b"--bind\0/run/user/1000/doc/by-app/x\0/run/flatpak/doc\0", 1000), args);
@@ -919,8 +962,10 @@ mod tests {
     #[test]
     fn commands() {
         // session/cc-launch's systemd-run, its bash -c "exec ... > /tmp/cc-desktop.log 2>&1" as unit properties
-        assert_eq!(session_unit(Path::new("/r/target/aarch64-unknown-linux-musl/release/cc-home")).join(" "),
-            "systemd-run --user --collect --quiet --unit cc-desktop -p TimeoutStopSec=10 -p StandardOutput=truncate:/tmp/cc-desktop.log -p StandardError=inherit /r/target/aarch64-unknown-linux-musl/release/cc-home session");
+        assert_eq!(
+            session_unit(Path::new("/r/target/aarch64-unknown-linux-musl/release/cc-home")).join(" "),
+            "systemd-run --user --collect --quiet --unit cc-desktop -p TimeoutStopSec=10 -p StandardOutput=truncate:/tmp/cc-desktop.log -p StandardError=inherit /r/target/aarch64-unknown-linux-musl/release/cc-home session"
+        );
         let a: Vec<OsString> = ["/r/target/release/cc-panels", "--for", "0"].map(OsString::from).into();
         assert_eq!(box_argv("0", "/h", Some("control-center"), &a), ["nice", "-n", "0", "/h/.local/bin/distrobox", "enter", "control-center", "--", "/r/target/release/cc-panels", "--for", "0"]);
         assert_eq!(box_argv("10", "/h", None, &a), ["nice", "-n", "10", "/r/target/release/cc-panels", "--for", "0"]);

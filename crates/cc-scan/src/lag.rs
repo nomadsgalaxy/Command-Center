@@ -58,11 +58,15 @@ pub fn phase_correlate(a: &[f32], b: &[f32], w: usize, h: usize) -> ((f64, f64),
     fft2(&mut fa, w, h, false);
     fft2(&mut fb, w, h, false);
     let eps = f32::EPSILON as f64;
-    let mut c: Vec<Complex<f64>> = fa.iter().zip(&fb).map(|(x, y)| {
-        let p = x * y.conj();
-        let m = p.norm();
-        p * m / (m * m + eps)
-    }).collect();
+    let mut c: Vec<Complex<f64>> = fa
+        .iter()
+        .zip(&fb)
+        .map(|(x, y)| {
+            let p = x * y.conj();
+            let m = p.norm();
+            p * m / (m * m + eps)
+        })
+        .collect();
     fft2(&mut c, w, h, true);
     // fftShift, then find the peak and its 5x5 weighted centroid.
     let (xm, ym) = (w / 2, h / 2);
@@ -115,9 +119,8 @@ impl Lag {
     /// if there isn't one. That's what it found on the Frame, because polled poses are stamped when
     /// their answer arrives, which is a little late.
     pub fn new(conf: &std::path::Path) -> Lag {
-        let guess = std::fs::read(conf.join("mirror-lag.json")).ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .and_then(|v| v["lag_ms"].as_f64()).map_or(-0.02, |ms| ms / 1000.0);
+        let guess =
+            std::fs::read(conf.join("mirror-lag.json")).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).and_then(|v| v["lag_ms"].as_f64()).map_or(-0.02, |ms| ms / 1000.0);
         Lag { value: guess, measured: false, frames: VecDeque::with_capacity(60) }
     }
 
@@ -194,14 +197,18 @@ mod tests {
         let (w, h) = SMALL;
         // A texture shifted circularly by (7, -3), since that's what the DFT assumes.
         let mut seed = 12345u32;
-        let tex: Vec<f32> = (0..w * h).map(|_| {
-            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-            (seed >> 24) as f32
-        }).collect();
-        let shifted: Vec<f32> = (0..w * h).map(|i| {
-            let (x, y) = (i % w, i / w);
-            tex[((y + h + 3) % h) * w + (x + w - 7) % w]
-        }).collect();
+        let tex: Vec<f32> = (0..w * h)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                (seed >> 24) as f32
+            })
+            .collect();
+        let shifted: Vec<f32> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                tex[((y + h + 3) % h) * w + (x + w - 7) % w]
+            })
+            .collect();
         let ((dx, dy), r) = phase_correlate(&tex, &shifted, w, h);
         assert!((dx - 7.0).abs() < 0.3 && (dy + 3.0).abs() < 0.3 && r > 0.05, "{dx} {dy} {r}");
     }

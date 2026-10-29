@@ -217,7 +217,10 @@ fn main() {
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin()) && std::io::IsTerminal::is_terminal(&std::io::stdout());
     let code = if yes || dry || remove || !tty {
         if !(yes || dry) {
-            eprintln!("There's no terminal to ask questions on here. Run it with --yes to {} without questions, or --dry-run to see what it would do.", if remove { "remove Command Center" } else { "install" });
+            eprintln!(
+                "There's no terminal to ask questions on here. Run it with --yes to {} without questions, or --dry-run to see what it would do.",
+                if remove { "remove Command Center" } else { "install" }
+            );
             2
         } else {
             plain(&f, remove, dry, &mons, Arc::new(Log::new(log_path, true)), &work_dir)
@@ -233,10 +236,13 @@ fn main() {
 /// log under it.
 fn plain(f: &Facts, remove: bool, dry: bool, mons: &[String], log: Arc<Log>, work_dir: &Path) -> i32 {
     println!("Command Center installer {}", env!("CARGO_PKG_VERSION"));
-    println!("{}", match f.kind {
-        Kind::Frame => "This is a Steam Frame.".to_owned(),
-        Kind::Host => format!("This is {}, a computer the Frame can show ({}).", f.host, f.arch),
-    });
+    println!(
+        "{}",
+        match f.kind {
+            Kind::Frame => "This is a Steam Frame.".to_owned(),
+            Kind::Host => format!("This is {}, a computer the Frame can show ({}).", f.host, f.arch),
+        }
+    );
     println!("{}", f.installed.as_ref().map_or("Command Center isn't installed here yet.".into(), |v| format!("Command Center is installed here: {v}.")));
     if f.kind == Kind::Frame && f.desktop_open {
         println!("Your Desktop is open. It keeps running while this works, and an update loads the next time you open it.");
@@ -256,7 +262,11 @@ fn plain(f: &Facts, remove: bool, dry: bool, mons: &[String], log: Arc<Log>, wor
             return 0;
         }
         Action::Remove
-    } else if f.installed.is_some() { Action::Update } else { Action::Install };
+    } else if f.installed.is_some() {
+        Action::Update
+    } else {
+        Action::Install
+    };
     let share = if mons.is_empty() {
         plan::ticked(f).iter().enumerate().filter(|(_, t)| **t).map(|(i, _)| i).collect()
     } else {
@@ -323,9 +333,11 @@ fn tui(f: Facts, log: Arc<Log>, work_dir: PathBuf) -> i32 {
                     match app.key(k.code) {
                         Some(ui::Out::Start) => {
                             let (f, action, steps, log, tx) = (app.f.clone(), app.action, app.steps.clone(), log.clone(), tx.take().expect("started once"));
-                            std::thread::spawn(move || work(&f, action, &steps, &log, &|e| {
-                                let _ = tx.send(e);
-                            }));
+                            std::thread::spawn(move || {
+                                work(&f, action, &steps, &log, &|e| {
+                                    let _ = tx.send(e);
+                                })
+                            });
                         }
                         Some(o) => break o,
                         None => {}

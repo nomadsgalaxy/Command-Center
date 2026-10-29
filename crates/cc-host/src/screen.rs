@@ -84,9 +84,13 @@ impl Screen {
         queue.roundtrip(&mut st).map_err(|e| format!("Wayland: {e}"))?;
         let on = match output {
             None => None,
-            Some(name) => Some(st.outputs.iter().find(|(_, n)| n == name).map(|(o, _)| o.clone()).ok_or_else(|| {
-                format!("no screen {name}: {}", st.outputs.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(" "))
-            })?),
+            Some(name) => Some(
+                st.outputs
+                    .iter()
+                    .find(|(_, n)| n == name)
+                    .map(|(o, _)| o.clone())
+                    .ok_or_else(|| format!("no screen {name}: {}", st.outputs.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(" ")))?,
+            ),
         };
         let surface = compositor.create_surface(&qh, ());
         let viewport = viewporter.get_viewport(&surface, &qh, ());
@@ -143,11 +147,14 @@ impl Screen {
     /// Waits up to `ms` and returns what happened: keys, a new size, or the end.
     pub fn wait(&mut self, ms: i32) -> Vec<Ev> {
         let ok = self.queue.flush().is_ok() && self.queue.dispatch_pending(&mut self.st).is_ok();
-        if ok && self.st.events.is_empty()
+        if ok
+            && self.st.events.is_empty()
             && let Some(guard) = self.queue.prepare_read()
         {
             let mut p = libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 };
-            if unsafe { libc::poll(&mut p, 1, ms) } > 0 && let Err(e) = guard.read() {
+            if unsafe { libc::poll(&mut p, 1, ms) } > 0
+                && let Err(e) = guard.read()
+            {
                 eprintln!("cc-host tagscreen: Wayland read: {e}");
                 self.st.events.push(Ev::Closed);
             }

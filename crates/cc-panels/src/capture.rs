@@ -29,7 +29,7 @@ pub type BufId = (usize, u32);
 
 pub enum Pixels {
     Dmabuf { fd: OwnedFd, offset: u32, stride: u32, modifier: u64 }, // our own dup, since PipeWire closes its fd on remove_buffer
-    Mem(Vec<u8>),                                               // RGBA, already copied out
+    Mem(Vec<u8>),                                                    // RGBA, already copied out
 }
 
 pub struct Frame {
@@ -42,8 +42,8 @@ pub struct Frame {
 #[derive(Default)]
 struct Shared {
     newest: Option<Frame>,
-    gone: Vec<BufId>,       // removed buffers for the main thread to unref
-    bufs: Vec<BufId>,       // live buffers, so a late give-back can't queue a freed one
+    gone: Vec<BufId>, // removed buffers for the main thread to unref
+    bufs: Vec<BufId>, // live buffers, so a late give-back can't queue a freed one
 }
 
 /// One stream's hand-off between the PipeWire thread and the main thread.
@@ -100,7 +100,7 @@ impl Capture {
     }
 
     /// Sets a new frame-rate cap, like the theater panel's 60. It's offered again, so the stream
-/// renegotiates.
+    /// renegotiates.
     pub fn set_rate(&self, key: u64, fps: u32) {
         let _ = self.tx.send(Cmd::Rate(key, fps));
     }
@@ -130,8 +130,8 @@ struct Data {
     modifier: Option<u64>,
     maps: HashMap<BufId, (*mut libc::c_void, usize, usize)>, // memfd mmaps: base, length and data offset
     told: bool,
-    epoch: u32,  // the buffers' generation
-    stale: bool, // buffers were removed, so the next add starts a new generation
+    epoch: u32,         // the buffers' generation
+    stale: bool,        // buffers were removed, so the next add starts a new generation
     fps: Rc<Cell<u32>>, // the frame-rate cap as offered
 }
 
@@ -163,11 +163,7 @@ fn format(modifier: Option<i64>, fixed: bool, fps: u32) -> Vec<u8> {
             prop(F::VideoModifier.as_raw(), PropertyFlags::MANDATORY | PropertyFlags::DONT_FIXATE, Value::Choice(ChoiceValue::Long(c)))
         });
     }
-    let size = ChoiceEnum::Range {
-        default: Rectangle { width: 1280, height: 800 },
-        min: Rectangle { width: 1, height: 1 },
-        max: Rectangle { width: 8192, height: 8192 },
-    };
+    let size = ChoiceEnum::Range { default: Rectangle { width: 1280, height: 800 }, min: Rectangle { width: 1, height: 1 }, max: Rectangle { width: 8192, height: 8192 } };
     p.push(prop(F::VideoSize.as_raw(), none, Value::Choice(ChoiceValue::Rectangle(Choice(ChoiceFlags::empty(), size)))));
     let rate = ChoiceEnum::Range { default: Fraction { num: 0, denom: 1 }, min: Fraction { num: 0, denom: 1 }, max: Fraction { num: 1000, denom: 1 } };
     p.push(prop(F::VideoFramerate.as_raw(), none, Value::Choice(ChoiceValue::Fraction(Choice(ChoiceFlags::empty(), rate)))));
@@ -284,11 +280,8 @@ fn pw_thread(rx: pw::channel::Receiver<Cmd>) -> Result<(), pw::Error> {
 
 fn open(core: &pw::core::CoreRc, node: u32, name: &str, feed: Arc<Feed>, fps: u32) -> Result<Live, pw::Error> {
     use pw::properties::properties;
-    let stream = pw::stream::StreamRc::new(
-        core.clone(),
-        &format!("cc-{name}"),
-        properties! { *pw::keys::MEDIA_TYPE => "Video", *pw::keys::MEDIA_CATEGORY => "Capture", *pw::keys::MEDIA_ROLE => "Screen" },
-    )?;
+    let stream =
+        pw::stream::StreamRc::new(core.clone(), &format!("cc-{name}"), properties! { *pw::keys::MEDIA_TYPE => "Video", *pw::keys::MEDIA_CATEGORY => "Capture", *pw::keys::MEDIA_ROLE => "Screen" })?;
     let fps = Rc::new(Cell::new(fps));
     let data = Data { name: name.into(), feed: feed.clone(), size: (0, 0), modifier: None, maps: HashMap::new(), told: false, epoch: 0, stale: false, fps: fps.clone() };
     let listener = stream
@@ -468,17 +461,14 @@ impl Shown {
                     let mut s = feed.s.lock().unwrap();
                     match s.newest {
                         None if s.bufs.contains(&f.buf) => s.newest = Some(f),
-                        None => {} // removed in the meantime, so PipeWire has it back
+                        None => {}                            // removed in the meantime, so PipeWire has it back
                         Some(_) => cap.give_back(key, f.buf), // a newer one came in the meantime
                     }
                     return false;
                 }
                 let mut h = h;
-                let mut t = sys::Texture_t {
-                    handle: &mut h as *mut _ as *mut std::ffi::c_void,
-                    eType: sys::ETextureType_TextureType_SharedTextureHandle,
-                    eColorSpace: sys::EColorSpace_ColorSpace_Gamma,
-                };
+                let mut t =
+                    sys::Texture_t { handle: &mut h as *mut _ as *mut std::ffi::c_void, eType: sys::ETextureType_TextureType_SharedTextureHandle, eColorSpace: sys::EColorSpace_ColorSpace_Gamma };
                 let ok = call!(ov, SetOverlayTexture, overlay, &mut t) == 0;
                 if ok {
                     crate::back::shown(overlay, h); // its back too, if it has one

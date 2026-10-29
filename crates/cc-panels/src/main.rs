@@ -19,13 +19,13 @@ mod attention;
 mod back;
 mod capture;
 mod clipboard;
-mod ffi;
 mod config;
 mod control;
-mod geometry;
+mod ffi;
 mod gaze;
-mod grab;
+mod geometry;
 mod gpu;
+mod grab;
 mod handoff;
 mod kvm;
 mod kwin;
@@ -35,13 +35,13 @@ mod overlay;
 mod plasmabar;
 mod popout;
 mod rdp;
-mod vnc;
 #[allow(dead_code)] // virtual outputs for desktop mode aren't wired up yet; the spike uses them
 mod session;
 mod stage;
 mod surface;
 mod taskbar;
 mod theme;
+mod vnc;
 mod vr;
 mod windows;
 
@@ -110,7 +110,21 @@ const SPARES: usize = 2;
 /// a pop-out's slot is emptied again when it ends.
 /// ponytail: each fill leaks its Viewer (a few hundred bytes), so `p.v` stays a plain reference
 pub struct Fill(Mutex<Option<&'static config::Viewer>>);
-static NONE: config::Viewer = config::Viewer { name: String::new(), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1920, h: 1080, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None, no_audio: false };
+static NONE: config::Viewer = config::Viewer {
+    name: String::new(),
+    user: String::new(),
+    host: String::new(),
+    port: 0,
+    screen: 0,
+    w: 1920,
+    h: 1080,
+    auto: false,
+    machine: String::new(),
+    label: String::new(),
+    pop: None,
+    vnc: None,
+    no_audio: false,
+};
 
 impl std::ops::Deref for Fill {
     type Target = config::Viewer;
@@ -124,29 +138,29 @@ pub struct Panel {
     pub v: Fill, // ponytail: for a window slot it's only the name (win-N); move it into Source::Rdp(Viewer) if that confuses
     pub src: Source,
     pub overlay: vr::Handle,
-    pub card: vr::Handle,  // its frame, grab bar and tag, all one overlay (grab.rs)
-    pub accent: [f64; 3], // its kind's colour: cyan for a remote machine, violet for a Frame window
+    pub card: vr::Handle,                         // its frame, grab bar and tag, all one overlay (grab.rs)
+    pub accent: [f64; 3],                         // its kind's colour: cyan for a remote machine, violet for a Frame window
     tag: Mutex<(u32, Option<Arc<grab::TagImg>>)>, // its border tag's image (assets.rs) and how many times it's changed
-    zoom: AtomicU64, // a window panel's text size, which window_px_per_m is divided by (f64 bits)
-    size: [AtomicU32; 2],         // its picture in pixels: the remote's desktop or the window's stream
-    live: AtomicBool,             // shown and in use (for a window slot: it has a window and a frame)
-    gone: AtomicBool,             // a remote removed in the Machines window: no row, no chip, never connects again
-    min: AtomicBool,              // hidden by its taskbar chip or its v (taskbar.rs), so picture and card are gone
-    vert: AtomicBool,             // curved top to bottom, so its overlay and picture are turned a quarter (gpu.rs)
-    pub lock: Mutex<()>, // guards the GDI between its RDP thread (decode, then gpu::write) and resizes or detach
-    pub gpu: Mutex<gpu::Shared>, // its two GPU buffers: its RDP thread writes them, the main loop shows them
+    zoom: AtomicU64,                              // a window panel's text size, which window_px_per_m is divided by (f64 bits)
+    size: [AtomicU32; 2],                         // its picture in pixels: the remote's desktop or the window's stream
+    live: AtomicBool,                             // shown and in use (for a window slot: it has a window and a frame)
+    gone: AtomicBool,                             // a remote removed in the Machines window: no row, no chip, never connects again
+    min: AtomicBool,                              // hidden by its taskbar chip or its v (taskbar.rs), so picture and card are gone
+    vert: AtomicBool,                             // curved top to bottom, so its overlay and picture are turned a quarter (gpu.rs)
+    pub lock: Mutex<()>,                          // guards the GDI between its RDP thread (decode, then gpu::write) and resizes or detach
+    pub gpu: Mutex<gpu::Shared>,                  // its two GPU buffers: its RDP thread writes them, the main loop shows them
     pub rdp: AtomicPtr<freerdp_sys::rdpContext>,
     pub wake: AtomicPtr<std::ffi::c_void>, // wakes its RDP thread's wait (rdp::poke)
     pub dirty: AtomicBool,
     pub connected: AtomicBool,
-    pub down: AtomicBool,  // its last try to connect failed (rdp.rs): audio doesn't wait on it
-    pub host_health: AtomicU8, // what its host says of its server (rdp::HOST_*), shown in the machines window
-    pub retry: AtomicBool, // Connect was pressed: the next session start asks the host to try a server that gave up
-    pub audio: AtomicBool, // its session connected carrying the machine's sound and microphone (rdp.rs)
-    pub stale: [Stale; 2], // per GPU buffer
+    pub down: AtomicBool,                                      // its last try to connect failed (rdp.rs): audio doesn't wait on it
+    pub host_health: AtomicU8,                                 // what its host says of its server (rdp::HOST_*), shown in the machines window
+    pub retry: AtomicBool,                                     // Connect was pressed: the next session start asks the host to try a server that gave up
+    pub audio: AtomicBool,                                     // its session connected carrying the machine's sound and microphone (rdp.rs)
+    pub stale: [Stale; 2],                                     // per GPU buffer
     pub cliprdr: AtomicPtr<freerdp_sys::CliprdrClientContext>, // its clipboard channel, while connected
-    level: AtomicU8,            // how much of its stream is worth having (attention.rs)
-    pub change: AtomicU32,      // the most of its picture one frame changed since the last tick, in thousandths (attention.rs)
+    level: AtomicU8,                                           // how much of its stream is worth having (attention.rs)
+    pub change: AtomicU32,                                     // the most of its picture one frame changed since the last tick, in thousandths (attention.rs)
 }
 
 impl Panel {
@@ -426,7 +440,11 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
         }
         worked |= matches!(
             e.eventType,
-            sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp | sys::EVREventType_VREvent_ScrollDiscrete | sys::EVREventType_VREvent_ScrollSmooth
+            sys::EVREventType_VREvent_MouseMove
+                | sys::EVREventType_VREvent_MouseButtonDown
+                | sys::EVREventType_VREvent_MouseButtonUp
+                | sys::EVREventType_VREvent_ScrollDiscrete
+                | sys::EVREventType_VREvent_ScrollSmooth
         );
         let m = unsafe { e.data.mouse };
         let (w, h) = p.size();
@@ -805,8 +823,18 @@ fn run() -> Result<(), String> {
         }
     }
     let all = config::viewers(&[]);
-    let tags: Vec<String> = viewers.iter().flat_map(|v| remote_tags(v, &all)) // each panel's border tag and its taskbar chip's label
-        .chain(control::machines::LABELS.iter().chain(&control::prefs::LABELS).chain(&control::workspace::LABELS).chain(&control::dashtab::LABELS).chain(&taskbar::LABELS).map(|(k, text)| format!("tag=ui-{k},{text},frame,0,0,0"))) // the Machines and Preferences windows'
+    let tags: Vec<String> = viewers
+        .iter()
+        .flat_map(|v| remote_tags(v, &all)) // each panel's border tag and its taskbar chip's label
+        .chain(
+            control::machines::LABELS
+                .iter()
+                .chain(&control::prefs::LABELS)
+                .chain(&control::workspace::LABELS)
+                .chain(&control::dashtab::LABELS)
+                .chain(&taskbar::LABELS)
+                .map(|(k, text)| format!("tag=ui-{k},{text},frame,0,0,0")),
+        ) // the Machines and Preferences windows'
         .collect();
     assets::draw(&assets, &font, &tags);
     let _ = std::fs::write(format!("{assets}/font"), &font);
@@ -826,10 +854,7 @@ fn run() -> Result<(), String> {
     let mut err = 0;
     let mut universe = call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
     let (workspace, new) = config::choose_workspace(universe);
-    eprintln!(
-        "workspace: {workspace}{}",
-        if new { " (made for this room: the Workspace window's Save as workspace keeps it)" } else { "" }
-    );
+    eprintln!("workspace: {workspace}{}", if new { " (made for this room: the Workspace window's Save as workspace keeps it)" } else { "" });
     let mut list = Vec::new();
     for v in viewers {
         let tag = load_tag(&format!("{assets}/tag-{}.rgba", v.name));
@@ -851,7 +876,21 @@ fn run() -> Result<(), String> {
     }
     let first_window = list.len();
     for n in 1..=windows::SLOTS {
-        let v = config::Viewer { name: format!("win-{n}"), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1280, h: 800, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None, no_audio: false };
+        let v = config::Viewer {
+            name: format!("win-{n}"),
+            user: String::new(),
+            host: String::new(),
+            port: 0,
+            screen: 0,
+            w: 1280,
+            h: 800,
+            auto: false,
+            machine: String::new(),
+            label: String::new(),
+            pop: None,
+            vnc: None,
+            no_audio: false,
+        };
         list.push(Panel::new(list.len(), v, Source::Window(Mutex::new(None)), grab::VIOLET, None)?);
     }
     let _ = PANELS.set(list);
@@ -882,10 +921,7 @@ fn run() -> Result<(), String> {
         }
         // one remote a second, not all at once, because their first full screens are the heaviest decode of start-up
         threads.push((p.index, connect(p, Duration::from_secs(p.index as u64))));
-        eprintln!(
-            "{}: {}:{} -> overlay controlcenter.panel.{}, {:.2} m wide{}",
-            p.v.name, p.v.host, p.v.port, p.v.name, pose.width, if saved { "" } else { " (no saved spot)" }
-        );
+        eprintln!("{}: {}:{} -> overlay controlcenter.panel.{}, {:.2} m wide{}", p.v.name, p.v.host, p.v.port, p.v.name, pose.width, if saved { "" } else { " (no saved spot)" });
     }
     let mut windows = windows::Windows::start(first_window);
 
@@ -1066,7 +1102,13 @@ fn run() -> Result<(), String> {
         // above), every panel hides, and the panels are paused (attention.rs), until it ends, or
         // until you take it back on the dashboard tab (control/dashtab.rs). Choosing "Steam / game"
         // there gives the input away without a game too, but leaves the panels showing.
-        let why = if seen.game { "game running" } else if hand.yielded() { "Steam / game chosen on the dashboard tab" } else { "no game" };
+        let why = if seen.game {
+            "game running"
+        } else if hand.yielded() {
+            "Steam / game chosen on the dashboard tab"
+        } else {
+            "no game"
+        };
         KVM.lock().unwrap().set_yielded(hand.yielded(), why);
         match hand.panels(HIDDEN.load(Relaxed)) {
             Some(false) => {
@@ -1169,12 +1211,14 @@ fn run() -> Result<(), String> {
             last_slow = Instant::now();
         }
         // The start-up warm-up (attention::WARM, every panel at 5 frames/s) ends once the ticks calm down.
-        let settled = || panels().iter().all(|p| match &p.src {
-            // or not connected at start (autoconnect), so there's nothing to wait for
-            Source::Rdp => p.connected.load(Relaxed) || !p.live(),
-            // a paused window sends no frames until you look (live: a tray app's never came)
-            Source::Window(w) => w.lock().unwrap().is_none() || p.live() || p.level() == attention::Level::Paused,
-        });
+        let settled = || {
+            panels().iter().all(|p| match &p.src {
+                // or not connected at start (autoconnect), so there's nothing to wait for
+                Source::Rdp => p.connected.load(Relaxed) || !p.live(),
+                // a paused window sends no frames until you look (live: a tray app's never came)
+                Source::Window(w) => w.lock().unwrap().is_none() || p.live() || p.level() == attention::Level::Paused,
+            })
+        };
         if attention::WARM.load(Relaxed) && attention::warm_over(start.elapsed(), last_slow.elapsed(), settled()) {
             attention::WARM.store(false, Relaxed);
             eprintln!("warm-up over after {:.1} s: panels at their own rates", start.elapsed().as_secs_f64());

@@ -57,7 +57,8 @@ impl Run {
         let (log, work) = (self.dir.join("log"), &self.work);
         for t in ["systemctl", "kscreen-doctor", "loginctl", "avahi-publish", "notify-send", "kbuildsycoca6", "ufw", "firewall-cmd", "sudo", "ss", "krdpserver"] {
             // avahi-daemon is running, as on a usual host; the recorded bash never asked, so it isn't logged
-            let body = format!(r#"#!/bin/sh
+            let body = format!(
+                r#"#!/bin/sh
 [ "{t} $*" = "systemctl is-active -q avahi-daemon" ] && {{ [ -e "{work}/avahi-off" ] && exit 3; exit 0; }}
 echo "{t} $*" >> "{log}"
 case "{t} $*" in
@@ -70,7 +71,10 @@ case "{t} $*" in
     echo "control-center-frame@f1-1.service loaded active running Command Center share for paired Frame f1-1" ;;
   *) true ;;
 esac
-"#, log = log.display(), work = work.display());
+"#,
+                log = log.display(),
+                work = work.display()
+            );
             let p = bin.join(t);
             std::fs::write(&p, body).unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -97,11 +101,19 @@ esac
             }
             Step::Ufw(on) => {
                 let f = self.work.join("ufw-on");
-                if *on { std::fs::write(f, "").unwrap() } else { let _ = std::fs::remove_file(f); }
+                if *on {
+                    std::fs::write(f, "").unwrap()
+                } else {
+                    let _ = std::fs::remove_file(f);
+                }
             }
             Step::AvahiOff(on) => {
                 let f = self.work.join("avahi-off");
-                if *on { std::fs::write(f, "").unwrap() } else { let _ = std::fs::remove_file(f); }
+                if *on {
+                    std::fs::write(f, "").unwrap()
+                } else {
+                    let _ = std::fs::remove_file(f);
+                }
             }
             Step::Conf(text) => std::fs::write(self.home().join("avahi-daemon.conf"), text).unwrap(),
             Step::Backup(text) => std::fs::write(self.home().join("avahi-daemon.conf.before-command-center"), text).unwrap(),
@@ -117,9 +129,16 @@ esac
         let o = append(&out);
         let mut c = Command::new(self.home().join(".local/share/control-center/cc-host"));
         c.args(line.split_whitespace())
-            .env_clear().env("HOME", self.home()).env("USER", "tester").env("TZ", "UTC").env("CC_PASSWORD", "sekrit").env("CC_AVAHI_CONF", self.home().join("avahi-daemon.conf"))
+            .env_clear()
+            .env("HOME", self.home())
+            .env("USER", "tester")
+            .env("TZ", "UTC")
+            .env("CC_PASSWORD", "sekrit")
+            .env("CC_AVAHI_CONF", self.home().join("avahi-daemon.conf"))
             .env("PATH", format!("{}:/usr/bin:/bin", self.dir.join("bin").display()))
-            .stdin(Stdio::null()).stdout(o.try_clone().unwrap()).stderr(o);
+            .stdin(Stdio::null())
+            .stdout(o.try_clone().unwrap())
+            .stderr(o);
         // Another test copying its cc-host can have that file open while this one forks, and then
         // exec says "text file busy" (ETXTBSY) for a moment. That's the tests racing, not cc-host.
         let mut tries = 0;
@@ -170,26 +189,34 @@ esac
     fn norm(&self, text: &str) -> String {
         let h = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap().trim().to_owned();
         let (home, bin) = (self.home().display().to_string(), self.dir.join("bin").display().to_string());
-        text.lines().filter(|l| !l.starts_with("ss ") && !l.starts_with("  copy cc-host to ")).map(|l| {
-            let mut l = l.replace(&home, "HOME").replace(&bin, "BIN");
-            for (from, to) in [(format!(" on {h}:"), " on HOSTNAME:".to_owned()), (format!("announcing {h} as"), "announcing HOSTNAME as".into()), (format!("sharing {h}:"), "sharing HOSTNAME:".into()), (format!("Pick {h},"), "Pick HOSTNAME,".into())] {
-                l = l.replace(&from, &to);
-            }
-            if let Some(s) = l.strip_suffix(&format!(" on {h}")) {
-                l = format!("{s} on HOSTNAME");
-            }
-            // "cc-host 0.1.0)" -> "cc-host VERSION)", wherever it is on the line.
-            let mut from = 0;
-            while let Some(k) = l[from..].find("cc-host ") {
-                let i = from + k + 8;
-                let n = l[i..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').count();
-                if n > 0 && l[i + n..].starts_with(')') {
-                    l = format!("{}VERSION{}", &l[..i], &l[i + n..]);
+        text.lines()
+            .filter(|l| !l.starts_with("ss ") && !l.starts_with("  copy cc-host to "))
+            .map(|l| {
+                let mut l = l.replace(&home, "HOME").replace(&bin, "BIN");
+                for (from, to) in [
+                    (format!(" on {h}:"), " on HOSTNAME:".to_owned()),
+                    (format!("announcing {h} as"), "announcing HOSTNAME as".into()),
+                    (format!("sharing {h}:"), "sharing HOSTNAME:".into()),
+                    (format!("Pick {h},"), "Pick HOSTNAME,".into()),
+                ] {
+                    l = l.replace(&from, &to);
                 }
-                from = i;
-            }
-            l + "\n"
-        }).collect()
+                if let Some(s) = l.strip_suffix(&format!(" on {h}")) {
+                    l = format!("{s} on HOSTNAME");
+                }
+                // "cc-host 0.1.0)" -> "cc-host VERSION)", wherever it is on the line.
+                let mut from = 0;
+                while let Some(k) = l[from..].find("cc-host ") {
+                    let i = from + k + 8;
+                    let n = l[i..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').count();
+                    if n > 0 && l[i + n..].starts_with(')') {
+                        l = format!("{}VERSION{}", &l[..i], &l[i + n..]);
+                    }
+                    from = i;
+                }
+                l + "\n"
+            })
+            .collect()
     }
 }
 
@@ -246,9 +273,16 @@ fn announce_run_restarts_a_dying_publisher() {
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let mut c = Command::new(env!("CARGO_BIN_EXE_cc-host")).arg("announce-run").env_clear().env("HOME", &home)
-        .env("PATH", format!("{}:/usr/bin:/bin", bin.display())).stdin(Stdio::null()).stdout(Stdio::null())
-        .stderr(File::create(dir.join("err")).unwrap()).spawn().unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_cc-host"))
+        .arg("announce-run")
+        .env_clear()
+        .env("HOME", &home)
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(File::create(dir.join("err")).unwrap())
+        .spawn()
+        .unwrap();
     std::thread::sleep(std::time::Duration::from_secs(12)); // starts at 0, 4 and 10 s (it checks every 2 s)
     c.kill().unwrap();
     let _ = c.wait();

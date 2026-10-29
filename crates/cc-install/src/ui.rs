@@ -68,7 +68,25 @@ impl App {
         let actions = plan::actions(&f);
         let pick = plan::ticked(&f);
         let announce = f.announcing || f.installed.is_none();
-        App { action: actions[0], actions, pick, announce, f, screen: Screen::Welcome, sel: 0, steps: vec![], state: vec![], log, show_log: false, restart: false, restart_said: false, quit_armed: false, note: String::new(), tick: 0, work }
+        App {
+            action: actions[0],
+            actions,
+            pick,
+            announce,
+            f,
+            screen: Screen::Welcome,
+            sel: 0,
+            steps: vec![],
+            state: vec![],
+            log,
+            show_log: false,
+            restart: false,
+            restart_said: false,
+            quit_armed: false,
+            note: String::new(),
+            tick: 0,
+            work,
+        }
     }
 
     pub fn share(&self) -> Vec<usize> {
@@ -166,11 +184,7 @@ fn bold(s: impl Into<String>) -> Line<'static> {
 }
 
 fn choice(on: bool, text: String) -> Line<'static> {
-    if on {
-        Line::from(vec![Span::styled("> ", Style::new().fg(ACCENT)), Span::styled(text, Style::new().fg(ACCENT).add_modifier(Modifier::BOLD))])
-    } else {
-        Line::from(format!("  {text}"))
-    }
+    if on { Line::from(vec![Span::styled("> ", Style::new().fg(ACCENT)), Span::styled(text, Style::new().fg(ACCENT).add_modifier(Modifier::BOLD))]) } else { Line::from(format!("  {text}")) }
 }
 
 pub fn draw(fr: &mut Frame, app: &App) {

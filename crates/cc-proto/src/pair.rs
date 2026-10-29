@@ -8,8 +8,8 @@
 use crate::agent::canon;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::ChaCha20Poly1305;
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
@@ -162,8 +162,7 @@ impl Seal {
 
 /// The Frame's half. Returns the host's reply, its name and its key. `known_host_pk` is the key we
 /// paired with before at this address; if it changed, I refuse unless `replace` is set.
-pub fn frame_pair<S: Read + Write>(s: S, key: &str, frame: &str, sk: &SigningKey, known_host_pk: Option<[u8; 32]>, replace: bool)
-    -> Result<(Value, String, [u8; 32]), Fail> {
+pub fn frame_pair<S: Read + Write>(s: S, key: &str, frame: &str, sk: &SigningKey, known_host_pk: Option<[u8; 32]>, replace: bool) -> Result<(Value, String, [u8; 32]), Fail> {
     let (ida, idb) = ids(frame);
     let (a, msg) = Spake2::<Ed25519Group>::start_a(&Password::new(key.as_bytes()), &Identity::new(&ida), &Identity::new(&idb));
     let mut ln = Line::new(s);
@@ -203,9 +202,10 @@ pub fn reply_ok(r: &Value) -> bool {
     let hex = |t: &str| t.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c));
     let uuid = |t: &str| t.len() == 36 && t.char_indices().all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == '-' } else { hex(&c.to_string()) });
     let login = |t: &str| t.starts_with(|c: char| c.is_ascii_lowercase() || c == '_') && word(t, 32);
-    let mons = r["monitors"].as_array().is_some_and(|m| (1..=10).contains(&m.len()) && m.iter().all(|m| {
-        m.is_object() && int(&m["index"]) && int(&m["port"]) && int(&m["width"]) && int(&m["height"]) && m["output"].as_str().is_some_and(|o| word(o, 32))
-    }));
+    let mons = r["monitors"].as_array().is_some_and(|m| {
+        (1..=10).contains(&m.len())
+            && m.iter().all(|m| m.is_object() && int(&m["index"]) && int(&m["port"]) && int(&m["width"]) && int(&m["height"]) && m["output"].as_str().is_some_and(|o| word(o, 32)))
+    });
     s("user").is_some_and(|u| crate::server::valid_name(u.strip_prefix("cc-").unwrap_or(u)))
         && s("password").is_some_and(|p| (16..=64).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric()))
         && r["slot"].as_i64().is_some_and(|n| (1..=4).contains(&n))
@@ -229,9 +229,16 @@ pub enum Outcome {
 /// - `reply(frame, frame_pk)`: the sealed answer (the Frame's login and ports), or a refusal ("full").
 /// - `tries_left`: how many tries the key has left after this one, if this one was wrong (0 means
 ///   locked).
-pub fn host_one<S: Read + Write>(s: S, key: &str, host_name: &str, sk: &SigningKey, tries_left: u32,
-                                 trusted: &dyn Fn(&str) -> Option<[u8; 32]>, confirm_replace: &dyn Fn(&str) -> bool,
-                                 reply: &dyn Fn(&str, &[u8; 32]) -> Result<Value, String>) -> Result<Outcome, Fail> {
+pub fn host_one<S: Read + Write>(
+    s: S,
+    key: &str,
+    host_name: &str,
+    sk: &SigningKey,
+    tries_left: u32,
+    trusted: &dyn Fn(&str) -> Option<[u8; 32]>,
+    confirm_replace: &dyn Fn(&str) -> bool,
+    reply: &dyn Fn(&str, &[u8; 32]) -> Result<Value, String>,
+) -> Result<Outcome, Fail> {
     let mut ln = Line::new(s);
     let m1 = ln.recv(&["v", "frame", "frame_pk", "spake"])?;
     if m1["v"] != json!(1) || !["frame", "frame_pk", "spake"].iter().all(|f| m1[f].is_string()) {
@@ -305,8 +312,16 @@ mod tests {
         let ok = json!({"user": "cc-steam-frame", "password": "A".repeat(24), "slot": 1, "cert_sha256": "ab".repeat(32), "id": "0123abcd-0000-4000-8000-00000000beef",
                         "monitors": [{"index": 0, "output": "eDP-1", "width": 1920, "height": 1080, "port": 3410}]});
         assert!(reply_ok(&ok));
-        for (k, v) in [("user", json!("cc-x y")), ("password", json!("short")), ("slot", json!(5)), ("id", json!("../../x")), ("login", json!("Root")),
-                       ("cert_sha256", json!("AB".repeat(32))), ("monitors", json!([])), ("monitors", json!([{"index": 0, "output": "a b", "width": 1, "height": 1, "port": 3410}]))] {
+        for (k, v) in [
+            ("user", json!("cc-x y")),
+            ("password", json!("short")),
+            ("slot", json!(5)),
+            ("id", json!("../../x")),
+            ("login", json!("Root")),
+            ("cert_sha256", json!("AB".repeat(32))),
+            ("monitors", json!([])),
+            ("monitors", json!([{"index": 0, "output": "a b", "width": 1, "height": 1, "port": 3410}])),
+        ] {
             let mut r = ok.clone();
             r[k] = v;
             assert!(!reply_ok(&r), "{k}");

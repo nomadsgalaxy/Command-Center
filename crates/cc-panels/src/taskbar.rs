@@ -47,12 +47,12 @@
 //! draws by depth, not sort order.
 //! ponytail: no file watch; hand edits to settings.json apply on restart.
 use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, direction, dot, from_top, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
-use crate::limits::{BAR_SCALE, CURVE_NOTCH};
-use crate::overlay::{At, Live, Overlays, Place, apply};
 use crate::grab::{self, Look, TagImg, average, line, over, rbox, tint};
-use crate::theme::{self, Accent, Tokens};
 use crate::kvm::KVM;
 use crate::laser::{self, Hand};
+use crate::limits::{BAR_SCALE, CURVE_NOTCH};
+use crate::overlay::{At, Live, Overlays, Place, apply};
+use crate::theme::{self, Accent, Tokens};
 use crate::windows::Windows;
 use crate::{HIDDEN, Source, call, config, panel, panels, vr};
 use openvr_sys as sys;
@@ -308,8 +308,20 @@ fn part_at(f: &Frame, x: f64, y: f64) -> Option<Part> {
         return Some(Part::Chip(c));
     }
     let near = REACH + CORNER;
-    let sx = if x < near { -1.0 } else if x > f.w - near { 1.0 } else { 0.0 };
-    let sy = if y < near { 1.0 } else if y > f.h - near { -1.0 } else { 0.0 };
+    let sx = if x < near {
+        -1.0
+    } else if x > f.w - near {
+        1.0
+    } else {
+        0.0
+    };
+    let sy = if y < near {
+        1.0
+    } else if y > f.h - near {
+        -1.0
+    } else {
+        0.0
+    };
     Some(grab::CORNER_SIGN.iter().position(|&c| c == (sx, sy)).map_or(Part::Edge, Part::Corner))
 }
 
@@ -456,9 +468,9 @@ impl<'a> Scene<'a> {
     }
 
     /// One pixel at (x, y) units from the top left. From the bottom up: Plasma's panel surface,
-/// opaque, inside a 1 u border with RADIUS corners (violet and glowing when lit, 2 u when
-/// carried or resized); the corner under a laser thickened into a grip; a 1 u outline round
-/// Plasma's bar; the chips; the knob.
+    /// opaque, inside a 1 u border with RADIUS corners (violet and glowing when lit, 2 u when
+    /// carried or resized); the corner under a laser thickened into a grip; a 1 u outline round
+    /// Plasma's bar; the chips; the knob.
     fn pixel(&self, x: f64, y: f64) -> ([f64; 3], f64) {
         let (f, t, acc, lk) = (self.f, self.t, &self.acc, self.lk);
         let (cx, cy) = (x - f.w / 2.0, y - f.h / 2.0);
@@ -573,8 +585,8 @@ struct Follow {
 
 impl Follow {
     /// One frame with the head at `at` looking at (yaw, pitch). Returns what the bar is placed
-/// for now. Past SLACK the head becomes the target every frame until it's caught up, and the
-/// spring is the lag. `held` means a laser (or a press) is on it, so it stays put under it.
+    /// for now. Past SLACK the head becomes the target every frame until it's caught up, and the
+    /// spring is the lag. `held` means a laser (or a press) is on it, so it stays put under it.
     fn step(&mut self, yaw: f64, pitch: f64, at: V3, dt: f64, held: bool) -> (f64, f64, V3) {
         let Some((ty, tp, tat)) = self.target else {
             (self.target, self.yaw, self.pitch, self.at) = (Some((yaw, pitch, at)), yaw, pitch, at);
@@ -612,10 +624,7 @@ fn follow_pose(yaw: f64, pitch: f64, at: &V3) -> Pose {
 /// ponytail: uses the flat panel's corners (a curved one's are a little nearer), and the span
 /// can't wrap behind you.
 fn under(panels: &[Placement], eye: &V3) -> Option<Pose> {
-    let corners: Vec<V3> = panels
-        .iter()
-        .flat_map(|p| [-1.0, 1.0].map(|s| [0, 1, 2].map(|k| p.c[k] + s * p.x[k] * p.width / 2.0 - p.y[k] * p.height / 2.0)))
-        .collect();
+    let corners: Vec<V3> = panels.iter().flat_map(|p| [-1.0, 1.0].map(|s| [0, 1, 2].map(|k| p.c[k] + s * p.x[k] * p.width / 2.0 - p.y[k] * p.height / 2.0))).collect();
     let yaw = |c: &V3| angles(&[c[0] - eye[0], c[1] - eye[1], c[2] - eye[2]]).0; // more is further left
     let left = corners.iter().max_by(|a, b| yaw(a).total_cmp(&yaw(b)))?;
     let right = corners.iter().min_by(|a, b| yaw(a).total_cmp(&yaw(b)))?;
@@ -638,11 +647,7 @@ fn off_hand(pointing: Hand) -> Hand {
 /// controller's raw pose, not its grip component (the Frame's tip is angled, vr.rs); the knob
 /// covers the difference.
 fn wrist_local(hand: Hand) -> Mat {
-    let k = config::settings()["taskbar_wrist"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_f64()).collect::<Vec<_>>())
-        .filter(|v| v.len() == 4)
-        .unwrap_or(vec![-0.04, 0.0, 0.15, 0.0]);
+    let k = config::settings()["taskbar_wrist"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect::<Vec<_>>()).filter(|v| v.len() == 4).unwrap_or(vec![-0.04, 0.0, 0.15, 0.0]);
     let sx = if hand == Hand::Left { 1.0 } else { -1.0 };
     let (c, s) = (k[3].to_radians().cos(), k[3].to_radians().sin());
     // columns: x (0,0,-sx), y (0,-1,0) and z (-sx,0,0), turned by tilt about x
@@ -676,19 +681,19 @@ pub struct Taskbar {
     ov: vr::Handle,
     mode: Mode,
     glyphs: Option<TagImg>,
-    pub(crate) names: Vec<Option<Arc<TagImg>>>, // each remote machine's chip label, by panel index
-    machines: Option<Arc<TagImg>>,   // the Workspace chip's label
-    close: Option<Arc<TagImg>>,      // the power chip's label while armed
-    armed: Option<Instant>,          // the power chip was clicked then: a second click within ARM closes
+    pub(crate) names: Vec<Option<Arc<TagImg>>>,                       // each remote machine's chip label, by panel index
+    machines: Option<Arc<TagImg>>,                                    // the Workspace chip's label
+    close: Option<Arc<TagImg>>,                                       // the power chip's label while armed
+    armed: Option<Instant>,                                           // the power chip was clicked then: a second click within ARM closes
     drawn: Option<(Vec<State>, Option<(i32, i32)>, Looks, u32, u32)>, // what was last drawn: the chips, Plasma's bar's size, the looks, the theme (theme::generation), the scale in quarters
-    px: Vec<u8>,       // the texture as uploaded (empty if refused), patched one chip at a time
-    drawn_at: Option<Instant>, // its last full draw
-    pub plasma_time: Duration, // time spent on Plasma's bar this tick (plasmabar in the slow-tick line)
-    frame: Frame,      // as uploaded
-    mpp: f64,          // metres per unit right now
-    pose: Option<Mat>, // fixed: where it is in the room (None until placed)
+    px: Vec<u8>,                                                      // the texture as uploaded (empty if refused), patched one chip at a time
+    drawn_at: Option<Instant>,                                        // its last full draw
+    pub plasma_time: Duration,                                        // time spent on Plasma's bar this tick (plasmabar in the slow-tick line)
+    frame: Frame,                                                     // as uploaded
+    mpp: f64,                                                         // metres per unit right now
+    pose: Option<Mat>,                                                // fixed: where it is in the room (None until placed)
     follow: Follow,
-    wrist: [Mat; 2],                   // on the left hand, then the right (wrist_local)
+    wrist: [Mat; 2],                        // on the left hand, then the right (wrist_local)
     wrist_dev: Option<(Hand, Option<u32>)>, // the controller it's on, as last logged
     hold: Option<Hold>,
     scale: f64,          // the user's size for both rows (settings.json taskbar_scale)
@@ -696,10 +701,10 @@ pub struct Taskbar {
     hover: Option<Part>, // the part under a laser (Plasma's bar included)
     placed: Placed,
     shown: bool,
-    alpha: f32,    // wrist: fading in while you look at it
-    game: bool,    // a VR game is running
-    carried: bool, // a krdp panel was being carried last frame
-    moving: bool,  // held, hovered, moved or fading this frame (main.rs keeps the display's rate)
+    alpha: f32,               // wrist: fading in while you look at it
+    game: bool,               // a VR game is running
+    carried: bool,            // a krdp panel was being carried last frame
+    moving: bool,             // held, hovered, moved or fading this frame (main.rs keeps the display's rate)
     game_at: Option<Instant>, // when we last polled for a VR game
     last: Instant,
 }
@@ -723,10 +728,7 @@ impl Taskbar {
         };
         eprintln!("taskbar: {}", mode.name());
         crate::surface::set_anchor(h, anchor_of(mode));
-        let names = panels()
-            .iter()
-            .map(|p| matches!(p.src, Source::Rdp).then(|| crate::load_tag(&format!("{assets}/tag-chip-{}.rgba", p.v.name)).map(Arc::new)).flatten())
-            .collect();
+        let names = panels().iter().map(|p| matches!(p.src, Source::Rdp).then(|| crate::load_tag(&format!("{assets}/tag-chip-{}.rgba", p.v.name)).map(Arc::new)).flatten()).collect();
         Taskbar {
             ov: h,
             mode,
@@ -912,7 +914,11 @@ impl Taskbar {
         self.plasma_time = t.elapsed();
         if at.is_some() != self.shown {
             self.shown = at.is_some();
-            if self.shown { call!(ov, ShowOverlay, self.ov) } else { call!(ov, HideOverlay, self.ov) };
+            if self.shown {
+                call!(ov, ShowOverlay, self.ov)
+            } else {
+                call!(ov, HideOverlay, self.ov)
+            };
         }
         let (w, h) = (self.frame.w, self.frame.h);
         let mut k = KVM.lock().unwrap();
@@ -1125,7 +1131,7 @@ impl Taskbar {
         let mut chips = Vec::new();
         for p in panels() {
             let slotted = match &p.src {
-                Source::Rdp => p.used() && crate::config::member(&p.v), // (not a spare or removed, machines.rs, and in this workspace)
+                Source::Rdp => p.used() && crate::config::member(&p.v),                      // (not a spare or removed, machines.rs, and in this workspace)
                 Source::Window(w) => w.lock().unwrap().as_ref().is_some_and(|w| !w.popup()), // a menu gets no chip
             };
             if slotted {
@@ -1257,17 +1263,17 @@ impl Taskbar {
                 self.mpp = (WRIST_W / self.frame.w).max(WRIST_MPP); // its own size, not the fixed bar's corner scale
                 // the off hand (laser::dominant, which Preferences changes live)
                 let hand = off_hand(laser::dominant());
-                let role = if hand == Hand::Left {
-                    sys::ETrackedControllerRole_TrackedControllerRole_LeftHand
-                } else {
-                    sys::ETrackedControllerRole_TrackedControllerRole_RightHand
-                };
+                let role = if hand == Hand::Left { sys::ETrackedControllerRole_TrackedControllerRole_LeftHand } else { sys::ETrackedControllerRole_TrackedControllerRole_RightHand };
                 let dev = call!(sys, GetTrackedDeviceIndexForControllerRole, role);
                 // (not our cc_pointer, which takes that hand's role while the mouse borrows it)
                 let real = dev != sys::k_unTrackedDeviceIndexInvalid as u32 && vr::is_real_controller(dev);
                 if self.wrist_dev != Some((hand, real.then_some(dev))) {
                     self.wrist_dev = Some((hand, real.then_some(dev)));
-                    if real { eprintln!("taskbar: wrist on device {dev} ({hand:?} hand)") } else { eprintln!("taskbar: wrist: no {hand:?} controller") };
+                    if real {
+                        eprintln!("taskbar: wrist on device {dev} ({hand:?} hand)")
+                    } else {
+                        eprintln!("taskbar: wrist: no {hand:?} controller")
+                    };
                 }
                 let local = self.wrist[(hand == Hand::Right) as usize];
                 let world = real.then(|| grab::pose_of(dev)).flatten().map(|d| mul(&d, &local));

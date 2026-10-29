@@ -74,8 +74,7 @@ impl Env {
             let p = d.path();
             if std::fs::read_to_string(p.join("comm")).is_ok_and(|c| c.trim() == "plasmashell") {
                 let Ok(raw) = std::fs::read(p.join("environ")) else { continue };
-                let vars: Vec<(&str, &str)> =
-                    raw.split(|&b| b == 0).filter_map(|kv| std::str::from_utf8(kv).ok()?.split_once('=')).collect();
+                let vars: Vec<(&str, &str)> = raw.split(|&b| b == 0).filter_map(|kv| std::str::from_utf8(kv).ok()?.split_once('=')).collect();
                 let get = |k: &str| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string()).unwrap_or_default();
                 if get("XDG_RUNTIME_DIR") == runtime {
                     return Env::from(get);
@@ -349,9 +348,7 @@ pub fn run(find: impl Fn() -> Option<Env>, mut up: impl FnMut(Arc<Session>), qui
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
     fn event(state: &mut Self, reg: &wl_registry::WlRegistry, e: wl_registry::Event, _: &GlobalListContents, _: &Connection, qh: &QueueHandle<Self>) {
         match e {
-            wl_registry::Event::Global { name, interface, version } if interface == "wl_output" => {
-                bind_output(reg, qh, &state.outputs, name, version)
-            }
+            wl_registry::Event::Global { name, interface, version } if interface == "wl_output" => bind_output(reg, qh, &state.outputs, name, version),
             wl_registry::Event::GlobalRemove { name } => state.outputs.lock().unwrap().retain(|o| o.global != name),
             _ => {}
         }
@@ -364,9 +361,7 @@ impl Dispatch<wl_output::WlOutput, u32> for State {
         let Some(o) = outs.iter_mut().find(|o| o.global == *global) else { return };
         match e {
             wl_output::Event::Geometry { x, y, .. } => (o.x, o.y) = (x, y),
-            wl_output::Event::Mode { flags: WEnum::Value(f), width, height, .. } if f.contains(wl_output::Mode::Current) => {
-                (o.w, o.h) = (width, height)
-            }
+            wl_output::Event::Mode { flags: WEnum::Value(f), width, height, .. } if f.contains(wl_output::Mode::Current) => (o.w, o.h) = (width, height),
             wl_output::Event::Scale { factor } => o.scale = factor.max(1),
             wl_output::Event::Name { name } => o.name = name,
             _ => {}

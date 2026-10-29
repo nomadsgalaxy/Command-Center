@@ -30,10 +30,10 @@
 //! in front and keeps every laser inside it; where on the card a laser lands says whether it's
 //! the bar, an edge or a corner.
 use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta, surface_point};
+use crate::kvm::Kvm;
 use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, ZOOM, ZOOM_NOTCH};
 use crate::overlay::{At, Live, Overlays, Place, apply};
 use crate::stage::Stage;
-use crate::kvm::Kvm;
 use crate::theme::{self, Accent, MAGENTA, Rgb, Theme, Tokens};
 use crate::{HIDDEN, Source, call, panels, vr};
 use openvr_sys as sys;
@@ -267,7 +267,7 @@ struct CardSpec {
     w: f64,
     h: f64,
     g: f64,
-    tab: Option<(f64, f64, f64)>, // the folder tab's inner span u0..u1 and top (legend())
+    tab: Option<(f64, f64, f64)>,              // the folder tab's inner span u0..u1 and top (legend())
     tag: Option<(Arc<TagImg>, f64, f64, f64)>, // its image, and where: width, centre u, v
     bar: (f64, Look),                          // the grab bar's width, and its look
     knob: Look,                                // the curve button's look
@@ -596,8 +596,8 @@ pub(crate) fn ctl_pixel(ctl: Ctl, look: Look, p: &Paint, x: f64, y: f64, px: f64
     let s = 5.0 * BP;
     let ink_a = match ctl {
         Ctl::Minimize => seg(-s, s * 0.5, 0.0, -s * 0.5).max(seg(0.0, -s * 0.5, s, s * 0.5)), // v
-        Ctl::Theater => seg(-s, -s * 0.5, 0.0, s * 0.5).max(seg(0.0, s * 0.5, s, -s * 0.5)), // ^
-        Ctl::Close => seg(-s, -s, s, s).max(seg(-s, s, s, -s)),                              // x
+        Ctl::Theater => seg(-s, -s * 0.5, 0.0, s * 0.5).max(seg(0.0, s * 0.5, s, -s * 0.5)),  // ^
+        Ctl::Close => seg(-s, -s, s, s).max(seg(-s, s, s, -s)),                               // x
     };
     let close = ctl == Ctl::Close;
     let a = if close { &p.mag } else { &p.acc };
@@ -789,7 +789,7 @@ enum Mode {
     Move { rel: Mat },                             // device -> panel
     Resize { sx: f64, sy: f64, gx: f64, gy: f64 }, // the corner, and where on it it was grabbed
     Stretch { gx: f64, gy: f64, free: bool },      // the bottom-right corner with the top-left fixed; free means any shape (a window's)
-    Curve { local: [f64; 3], z0: f64, s0: f64 },  // the curve button: the point grabbed rides on the device
+    Curve { local: [f64; 3], z0: f64, s0: f64 },   // the curve button: the point grabbed rides on the device
     Zoom { local: [f64; 3], z0: f64, zoom0: f64 }, // the zoom button: same idea
 }
 
@@ -801,12 +801,12 @@ struct Drag {
 
 /// What a panel's card looks like right now, as uploaded and placed.
 struct Drawn {
-    spec: CardSpec,  // as drawn (patched in place for a grip or the bar's look)
-    dims: [i64; 3],  // the (w, h, g) in mm it was drawn for
+    spec: CardSpec, // as drawn (patched in place for a grip or the bar's look)
+    dims: [i64; 3], // the (w, h, g) in mm it was drawn for
     card_at: Instant,
     placed: Option<(Mat, i64, i64, i64)>, // the panel's matrix, width, height and curve (mm) it was placed for
-    tag: u32,                        // the panel's tag version (its change count) it was drawn with
-    theme: u32,                      // the theme it was drawn with (theme::generation)
+    tag: u32,                             // the panel's tag version (its change count) it was drawn with
+    theme: u32,                           // the theme it was drawn with (theme::generation)
 }
 
 pub struct Grab {
@@ -816,28 +816,28 @@ pub struct Grab {
     fade: Vec<f32>,
     hover: Vec<Option<Part>>, // the part a laser is on
     drawn: Vec<Option<Drawn>>,
-    hidden: bool, // every panel's hidden, so their controls are too
-    shown: Vec<bool>, // each panel's controls are shown (not while hidden, and not for an empty window slot)
-    cards: Vec<Vec<u8>>, // each card's texture as uploaded (patched in place for a grip)
-    turned: Vec<bool>,   // each card's texture went up rotated a quarter turn (its panel curves top to bottom)
-    painter: Painter,    // full card draws, on their own thread
+    hidden: bool,                       // every panel's hidden, so their controls are too
+    shown: Vec<bool>,                   // each panel's controls are shown (not while hidden, and not for an empty window slot)
+    cards: Vec<Vec<u8>>,                // each card's texture as uploaded (patched in place for a grip)
+    turned: Vec<bool>,                  // each card's texture went up rotated a quarter turn (its panel curves top to bottom)
+    painter: Painter,                   // full card draws, on their own thread
     pending: Vec<Option<(u64, Drawn)>>, // the full draw each card is waiting for: its request's number, and what it'll be
     done: Vec<Option<(u64, Vec<u8>)>>,  // each card's latest texture back from the painter, and its request's number
-    order: Vec<usize>, // the panels from farthest to nearest, as last painted
-    pressed: Vec<(usize, Ctl)>, // window controls pressed, for windows.rs to act on
-    dim: vr::Handle,             // theater mode's backdrop: dark, in front of your eyes, painted just under the panel
+    order: Vec<usize>,                  // the panels from farthest to nearest, as last painted
+    pressed: Vec<(usize, Ctl)>,         // window controls pressed, for windows.rs to act on
+    dim: vr::Handle,                    // theater mode's backdrop: dark, in front of your eyes, painted just under the panel
     dim_alpha: f32,
-    dimmed: Vec<bool>,           // faded out because another panel is in theater mode
-    theater: usize,              // the panel in theater mode as last painted (MAX means none)
-    dim_gen: u32,                // the theme the backdrop was painted for
-    painted: Option<Instant>,    // when paint_order last ran (None: run it now)
-    moving: bool,                // something moved or faded this frame, so main.rs keeps the display's rate
-    pub released: Vec<u32>, // devices whose button came up on a panel or card this frame (a hold that started on the taskbar)
-    extra: Option<Extra>,   // the window in the slot after the panels', while it's open
+    dimmed: Vec<bool>,          // faded out because another panel is in theater mode
+    theater: usize,             // the panel in theater mode as last painted (MAX means none)
+    dim_gen: u32,               // the theme the backdrop was painted for
+    painted: Option<Instant>,   // when paint_order last ran (None: run it now)
+    moving: bool,               // something moved or faded this frame, so main.rs keeps the display's rate
+    pub released: Vec<u32>,     // devices whose button came up on a panel or card this frame (a hold that started on the taskbar)
+    extra: Option<Extra>,       // the window in the slot after the panels', while it's open
     scanned: Vec<Option<Pose>>, // each panel's aligned place (home.json "scanned"), reread every second
     scanned_read: Option<Instant>,
-    stale: Vec<Option<Pose>>, // those places as of the last relocalization; if they're still the same, they moved with the room
-    aligns: Vec<usize>,       // align buttons pressed after a relocalization, for machines.rs
+    stale: Vec<Option<Pose>>,  // those places as of the last relocalization; if they're still the same, they moved with the room
+    aligns: Vec<usize>,        // align buttons pressed after a relocalization, for machines.rs
     backs: crate::back::Backs, // panels turned away from you show their backs (back.rs)
     pub game: bool,            // a VR game is running (the taskbar knows), so no backs
 }
@@ -846,7 +846,7 @@ pub struct Grab {
 /// the last slot of Grab's lists. It's not in Kvm, since its place lives here, and not in
 /// paint_order either, since its sort orders are fixed.
 struct Extra {
-    name: &'static str, // its spot: spots.home.<name>
+    name: &'static str,        // its spot: spots.home.<name>
     open: &'static AtomicBool, // its window's open flag; the card's close clears it
     win: vr::Handle,
     card: vr::Handle,
@@ -1000,7 +1000,38 @@ impl Grab {
     /// `new` with the theater backdrop's overlay given, so a test can make one without SteamVR.
     fn with_backdrop(n: usize, dim: vr::Handle) -> Grab {
         let n = n + 1; // plus the Extra's slot
-        Grab { drags: (0..n).map(|_| None).collect(), near: vec![None; n], focus: vec![0; n], fade: vec![0.0; n], hover: vec![None; n], drawn: (0..n).map(|_| None).collect(), hidden: false, shown: vec![true; n], cards: vec![Vec::new(); n], turned: vec![false; n], painter: Painter::new(), pending: (0..n).map(|_| None).collect(), done: vec![None; n], order: Vec::new(), pressed: Vec::new(), dim, dim_alpha: 0.0, dimmed: vec![false; n], theater: usize::MAX, dim_gen: u32::MAX, painted: None, moving: false, released: Vec::new(), extra: None, scanned: Vec::new(), scanned_read: None, stale: Vec::new(), aligns: Vec::new(), backs: Default::default(), game: false }
+        Grab {
+            drags: (0..n).map(|_| None).collect(),
+            near: vec![None; n],
+            focus: vec![0; n],
+            fade: vec![0.0; n],
+            hover: vec![None; n],
+            drawn: (0..n).map(|_| None).collect(),
+            hidden: false,
+            shown: vec![true; n],
+            cards: vec![Vec::new(); n],
+            turned: vec![false; n],
+            painter: Painter::new(),
+            pending: (0..n).map(|_| None).collect(),
+            done: vec![None; n],
+            order: Vec::new(),
+            pressed: Vec::new(),
+            dim,
+            dim_alpha: 0.0,
+            dimmed: vec![false; n],
+            theater: usize::MAX,
+            dim_gen: u32::MAX,
+            painted: None,
+            moving: false,
+            released: Vec::new(),
+            extra: None,
+            scanned: Vec::new(),
+            scanned_read: None,
+            stale: Vec::new(),
+            aligns: Vec::new(),
+            backs: Default::default(),
+            game: false,
+        }
     }
 
     /// The Extra's slot, right after the panels'.
@@ -1012,7 +1043,13 @@ impl Grab {
     fn owner(&self, i: usize) -> Option<Owner> {
         if let Some(p) = panels().get(i) {
             let window = matches!(p.src, Source::Window(_));
-            let ctls = if window { CTLS } else if p.v.pop.is_some() { 1 } else { 0 }; // a pop-out gets just close (popout.rs)
+            let ctls = if window {
+                CTLS
+            } else if p.v.pop.is_some() {
+                1
+            } else {
+                0
+            }; // a pop-out gets just close (popout.rs)
             let bare = window && crate::windows::is_popup(i);
             return Some(Owner { name: &p.v.name, card: p.card, overlay: p.overlay, accent: p.accent, tag: p.tag(), live: p.live(), away: p.away(), window, ctls, bare });
         }
@@ -1117,7 +1154,11 @@ impl Grab {
     /// mouse or a steady hand sends no moves (HOLD at most). After it's off both, it stays near
     /// for LINGER.
     fn touch(&mut self, i: usize, bit: u8, on: bool) {
-        if on { self.focus[i] |= bit } else { self.focus[i] &= !bit }
+        if on {
+            self.focus[i] |= bit
+        } else {
+            self.focus[i] &= !bit
+        }
         let until = Instant::now() + if self.focus[i] != 0 { HOLD } else { LINGER };
         self.near[i] = Some(if on { until } else { self.near[i].map_or(until, |t| t.min(until)) });
     }
@@ -1140,7 +1181,11 @@ impl Grab {
     pub fn poll(&mut self, k: &mut Kvm) {
         let s = &mut Live;
         for (i, dev, down) in self.backs.events() {
-            if down { self.start(i, Part::Bar, dev, k, s) } else { self.end_by(dev, k); }
+            if down {
+                self.start(i, Part::Bar, dev, k, s)
+            } else {
+                self.end_by(dev, k);
+            }
         }
         self.poll_mouse(k, s);
         self.poll_cards(k, s);
@@ -1529,7 +1574,11 @@ impl Grab {
             let show = !hidden && p.live && !p.away && !p.bare;
             if show != self.shown[i] {
                 self.shown[i] = show;
-                if show { call!(ov, ShowOverlay, p.card) } else { call!(ov, HideOverlay, p.card) };
+                if show {
+                    call!(ov, ShowOverlay, p.card)
+                } else {
+                    call!(ov, HideOverlay, p.card)
+                };
                 if !p.live {
                     (self.drags[i], self.drawn[i], self.near[i], self.hover[i], self.fade[i], self.focus[i]) = (None, None, None, None, 0.0, 0);
                     (self.pending[i], self.done[i]) = (None, None);
@@ -1590,7 +1639,11 @@ impl Grab {
             self.moving = true;
             self.dim_alpha = if target > self.dim_alpha { (self.dim_alpha + 0.04).min(target) } else { (self.dim_alpha - 0.06).max(target) };
             call!(ov, SetOverlayAlpha, self.dim, self.dim_alpha);
-            if self.dim_alpha > 0.0 { call!(ov, ShowOverlay, self.dim) } else { call!(ov, HideOverlay, self.dim) };
+            if self.dim_alpha > 0.0 {
+                call!(ov, ShowOverlay, self.dim)
+            } else {
+                call!(ov, HideOverlay, self.dim)
+            };
         }
         if theater != self.theater {
             self.theater = theater;
@@ -1630,8 +1683,7 @@ impl Grab {
         let margin: Vec<f64> = (0..n).map(|i| chrome(&k.place[i]).1).collect();
         let live = |i: usize| panels()[i].live();
         // front[a][b]: a covers b where they overlap
-        let front: Vec<Vec<bool>> =
-            (0..n).map(|a| (0..n).map(|b| a != b && live(a) && live(b) && in_front(&k.place[a], margin[a], &k.place[b], margin[b], &eye)).collect()).collect();
+        let front: Vec<Vec<bool>> = (0..n).map(|a| (0..n).map(|b| a != b && live(a) && live(b) && in_front(&k.place[a], margin[a], &k.place[b], margin[b], &eye)).collect()).collect();
         // Back to front: keep taking a panel that covers none of the rest. Ties and cycles
         // are broken by distance.
         let dist = |i: usize| {
@@ -1673,7 +1725,13 @@ impl Grab {
         let (bar_w, g) = chrome(pl);
         let drag = self.drags[i].as_ref().map(|d| &d.mode);
         // It stays Lit until it's faded out (the glow fades with it), and goes to Rest only once it's invisible.
-        let look = if drag.is_some() { Look::Carry } else if visible { Look::Lit } else { Look::Rest };
+        let look = if drag.is_some() {
+            Look::Carry
+        } else if visible {
+            Look::Lit
+        } else {
+            Look::Rest
+        };
         let held = match drag {
             Some(Mode::Resize { sx, sy, .. }) => CORNER_SIGN.iter().position(|&c| c == (*sx, *sy)),
             Some(Mode::Stretch { .. }) => Some(BOTTOM_RIGHT),
@@ -1704,7 +1762,11 @@ impl Grab {
         let snap = self.snap_glyph(i, pl).map(|g| (if self.hover[i] == Some(Part::Snap) { Look::Lit } else { Look::Rest }, g));
         // shown past FACE_TURN and hidden again only under 2/3 of it, so head sway doesn't make it blink
         let shown = self.drawn[i].as_ref().is_some_and(|d| d.spec.face.is_some());
-        let face = (turn(&pl.pose(), &facing(pl, &vr::head_position())) > if shown { FACE_TURN * 2.0 / 3.0 } else { FACE_TURN }).then_some(if self.hover[i] == Some(Part::Face) { Look::Lit } else { Look::Rest });
+        let face = (turn(&pl.pose(), &facing(pl, &vr::head_position())) > if shown { FACE_TURN * 2.0 / 3.0 } else { FACE_TURN }).then_some(if self.hover[i] == Some(Part::Face) {
+            Look::Lit
+        } else {
+            Look::Rest
+        });
         let mm = |x: f64| (x * 1000.0).round() as i64;
         let dims = [mm(pl.width), mm(pl.height), mm(g)];
         let (tag_n, tag) = p.tag.clone();
@@ -1759,7 +1821,8 @@ impl Grab {
                 None => (None, None),
             };
             let paint = Paint::new(&theme::get(), p.accent);
-            let mut spec = CardSpec { w: pl.width, h: pl.height, g, tab, tag, bar: (bar_w, bar_look), knob: knob_look, zoom: zoom_look, snap, face, ctl: ctl_look, ctls: p.ctls, size: (0, 0), paint, look, grip };
+            let mut spec =
+                CardSpec { w: pl.width, h: pl.height, g, tab, tag, bar: (bar_w, bar_look), knob: knob_look, zoom: zoom_look, snap, face, ctl: ctl_look, ctls: p.ctls, size: (0, 0), paint, look, grip };
             spec.size = card_size(pl.width, pl.height + spec.top() + spec.bottom(), g);
             let card = |spec| Drawn { spec, dims, card_at: now, placed: None, tag: tag_n, theme: drawn_in };
             if self.drawn[i].is_none() || !seen {
@@ -1839,7 +1902,6 @@ impl Grab {
             apply(&mut Live, p.card, &card_place(&pl, &d.spec));
         }
     }
-
 }
 
 /// Where a panel's card goes and how it's shaped, for panel `pl` and the card drawn for it:
@@ -1876,8 +1938,7 @@ fn facing(pl: &Placement, eye: &V3) -> Pose {
 fn moved(now: &Pose, at: &Pose) -> bool {
     let turn = turn(now, at);
     let shift = (0..3).map(|r| (now.centre[r] - at.centre[r]).powi(2)).sum::<f64>().sqrt();
-    shift > SNAP_MOVE || turn > SNAP_TURN || (now.width - at.width).abs() > SNAP_MOVE || now.vert != at.vert
-        || (now.curve - at.curve).abs() > SNAP_MOVE
+    shift > SNAP_MOVE || turn > SNAP_TURN || (now.width - at.width).abs() > SNAP_MOVE || now.vert != at.vert || (now.curve - at.curve).abs() > SNAP_MOVE
 }
 
 /// Does panel `a` (with its card's margin) cover panel `b` as seen from the eye? Sight lines
@@ -2038,7 +2099,24 @@ mod tests {
     /// A card for a w × h panel with frame g and bar bw, with a tag image `img`, in a theme.
     fn spec_for(w: f64, h: f64, g: f64, bw: f64, look: Look, img: &Arc<TagImg>, th: &Theme, accent: Rgb) -> CardSpec {
         let (iw, u, v, tab) = legend(w, h, g, img.0 as f64 / img.1 as f64, CTLS);
-        let mut s = CardSpec { w, h, g, tab: Some(tab), tag: Some((img.clone(), iw, u, v)), bar: (bw, Look::Rest), knob: Look::Rest, zoom: Some(Look::Rest), snap: None, face: None, ctl: Some([Look::Rest; CTLS]), ctls: CTLS, size: (0, 0), paint: Paint::new(th, accent), look, grip: None };
+        let mut s = CardSpec {
+            w,
+            h,
+            g,
+            tab: Some(tab),
+            tag: Some((img.clone(), iw, u, v)),
+            bar: (bw, Look::Rest),
+            knob: Look::Rest,
+            zoom: Some(Look::Rest),
+            snap: None,
+            face: None,
+            ctl: Some([Look::Rest; CTLS]),
+            ctls: CTLS,
+            size: (0, 0),
+            paint: Paint::new(th, accent),
+            look,
+            grip: None,
+        };
         s.size = card_size(w, h + s.top() + s.bottom(), g);
         s
     }
@@ -2087,7 +2165,17 @@ mod tests {
 
     /// Breeze Light's tokens (BreezeLight.colors), for a light card.
     fn light() -> Theme {
-        let t = Tokens { frame: [222.0, 224.0, 226.0], surface: [239.0, 240.0, 241.0], raised: [252.0; 3], text: [35.0, 38.0, 41.0], dim: [112.0, 125.0, 138.0], wtext: [35.0, 38.0, 41.0], wdim: [112.0, 125.0, 138.0], border: mix([222.0, 224.0, 226.0], [35.0, 38.0, 41.0], 0.25), dark: false };
+        let t = Tokens {
+            frame: [222.0, 224.0, 226.0],
+            surface: [239.0, 240.0, 241.0],
+            raised: [252.0; 3],
+            text: [35.0, 38.0, 41.0],
+            dim: [112.0, 125.0, 138.0],
+            wtext: [35.0, 38.0, 41.0],
+            wdim: [112.0, 125.0, 138.0],
+            border: mix([222.0, 224.0, 226.0], [35.0, 38.0, 41.0], 0.25),
+            dark: false,
+        };
         Theme { win: t, shell: t, radius: 5.0 }
     }
 
@@ -2095,7 +2183,9 @@ mod tests {
     fn card_textures_fit_and_stay_crisp() {
         let img = Arc::new((80, 12, [200u8, 220, 255, 255].repeat(80 * 12)));
         // desk-wide, desk-portrait, the laptop and a small one; the last one's bar is wider than its frame holds
-        for ((w, h, g, bw), scheme) in [(3.2, 0.9, 0.05, 0.25), (0.9, 1.6, 0.035, 0.15), (1.2, 0.675, 0.04, 0.17), (0.2, 0.11, 0.02, 0.1)].into_iter().zip([Theme::default(), light(), light(), Theme::default()]) {
+        for ((w, h, g, bw), scheme) in
+            [(3.2, 0.9, 0.05, 0.25), (0.9, 1.6, 0.035, 0.15), (1.2, 0.675, 0.04, 0.17), (0.2, 0.11, 0.02, 0.1)].into_iter().zip([Theme::default(), light(), light(), Theme::default()])
+        {
             let (tw, th) = card_size(w, h, g);
             assert!(tw * th <= 1_500_000, "{tw}x{th}");
             assert!(g * tw as f64 / (w + 2.0 * g) >= 14.0, "frame only {} px", g * tw as f64 / (w + 2.0 * g));
@@ -2496,16 +2586,7 @@ mod tests {
             apply(&mut w, 7, &card_place(&pl, &spec));
             let at = pl.on_surface(0.0, (top - bottom) / 2.0, -0.002);
             let (tw, th) = (spec.size.0 as f64, spec.size.1 as f64);
-            assert_eq!(
-                w.0,
-                vec![
-                    Call::Width(7, fw as f32),
-                    Call::Texel(7, (fw * th / (fh * tw)) as f32),
-                    Call::Curvature(7, 0.0),
-                    Call::MouseScale(7, [fw as f32, fh as f32]),
-                    Call::Room(7, at),
-                ]
-            );
+            assert_eq!(w.0, vec![Call::Width(7, fw as f32), Call::Texel(7, (fw * th / (fh * tw)) as f32), Call::Curvature(7, 0.0), Call::MouseScale(7, [fw as f32, fh as f32]), Call::Room(7, at),]);
         }
 
         #[test]

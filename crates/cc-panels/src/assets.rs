@@ -75,9 +75,7 @@ fn host_name(host: &str) -> String {
     sa.sin_family = libc::AF_INET as _;
     sa.sin_addr.s_addr = u32::from_ne_bytes(ip.octets());
     let mut name = [0 as libc::c_char; 256];
-    let r = unsafe {
-        libc::getnameinfo(&sa as *const _ as *const libc::sockaddr, std::mem::size_of_val(&sa) as _, name.as_mut_ptr(), name.len() as _, std::ptr::null_mut(), 0, libc::NI_NAMEREQD)
-    };
+    let r = unsafe { libc::getnameinfo(&sa as *const _ as *const libc::sockaddr, std::mem::size_of_val(&sa) as _, name.as_mut_ptr(), name.len() as _, std::ptr::null_mut(), 0, libc::NI_NAMEREQD) };
     if r != 0 {
         return host.to_owned();
     }

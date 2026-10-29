@@ -232,19 +232,19 @@ impl Src {
 
 pub struct Plasma {
     ov: vr::Handle,
-    panel: Option<(String, Rect)>, // Plasma's panel, its dock window: uuid, geometry
+    panel: Option<(String, Rect)>,     // Plasma's panel, its dock window: uuid, geometry
     popups: Vec<(String, Rect, bool)>, // plasmashell's other open windows: popups, menus, tooltips (false)
-    out: Src,                      // the panel's output
-    win: Src,                      // the panel's own window
-    on_win: bool,                  // which of them is on the overlay
-    live: bool,                    // a frame is showing
+    out: Src,                          // the panel's output
+    win: Src,                          // the panel's own window
+    on_win: bool,                      // which of them is on the overlay
+    live: bool,                        // a frame is showing
     visible: bool,
-    clickable: bool,            // it takes lasers itself (a popup is open), otherwise the taskbar's frame forwards them
-    hidden_at: Option<Instant>, // when it stopped being wanted
+    clickable: bool,                                      // it takes lasers itself (a popup is open), otherwise the taskbar's frame forwards them
+    hidden_at: Option<Instant>,                           // when it stopped being wanted
     placed: Option<(Mat, u32, Rect, u32, [f32; 4], u32)>, // as last placed: its matrix, the device it's on (MAX: the room), the crop, width in mm, texture bounds, curve in mm
-    held: u32,             // laser buttons down on it, in RDP's flags
-    pub moving: bool,      // a laser on it this frame (events or a held press), which sets the main loop's pace
-    pub released: Vec<u32>, // devices whose button came up on it, ending a hold on the taskbar's frame
+    held: u32,                                            // laser buttons down on it, in RDP's flags
+    pub moving: bool,                                     // a laser on it this frame (events or a held press), which sets the main loop's pace
+    pub released: Vec<u32>,                               // devices whose button came up on it, ending a hold on the taskbar's frame
 }
 
 impl Plasma {

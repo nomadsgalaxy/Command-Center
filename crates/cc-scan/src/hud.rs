@@ -258,10 +258,14 @@ impl Run {
         if board {
             return;
         }
-        let depths: Vec<f64> = self.seen.iter().filter_map(|(i, v)| {
-            let side = ((v.0[1].0 - v.0[0].0).powi(2) + (v.0[1].1 - v.0[0].1).powi(2)).sqrt().max(1.0) as f64;
-            sizes.get(i).map(|s| c[0] * s / side)
-        }).collect();
+        let depths: Vec<f64> = self
+            .seen
+            .iter()
+            .filter_map(|(i, v)| {
+                let side = ((v.0[1].0 - v.0[0].0).powi(2) + (v.0[1].1 - v.0[0].1).powi(2)).sqrt().max(1.0) as f64;
+                sizes.get(i).map(|s| c[0] * s / side)
+            })
+            .collect();
         let d = if depths.is_empty() { 0.9 } else { crate::solve::median(&depths) };
         let (w, h) = SHEET; // The camera's 1920x1080 at half size.
         let mut img = Rgba::new(w, h, [0, 0, 0, 0]);

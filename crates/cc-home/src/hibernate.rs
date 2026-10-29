@@ -41,8 +41,7 @@ fn load(bus: &zbus::blocking::Connection, path: &str, name: &str) -> Result<(), 
     if id < 0 {
         return Err(format!("KWin refused {path}"));
     }
-    bus.call_method(Some("org.kde.KWin"), format!("/Scripting/Script{id}").as_str(), Some("org.kde.kwin.Script"), "run", &())
-        .map_err(|e| format!("run {path}: {e}"))?;
+    bus.call_method(Some("org.kde.KWin"), format!("/Scripting/Script{id}").as_str(), Some("org.kde.kwin.Script"), "run", &()).map_err(|e| format!("run {path}: {e}"))?;
     Ok(())
 }
 
@@ -104,8 +103,16 @@ fn pick(wins: &[Value], cmdline: impl Fn(i64) -> Vec<String>, poses: &Value, aut
         let (cls, app) = (w["cls"].as_str().unwrap_or("").to_lowercase(), w["app"].as_str().unwrap_or(""));
         let al = app.to_lowercase();
         let flag = |k: &str| w[k].as_bool().unwrap_or(false);
-        if !flag("managed") || !flag("normal") || flag("transient") || flag("special") || SHELL.contains(&cls.as_str()) || SHELL.contains(&al.as_str())
-            || cls.starts_with("cc-view-") || cls.starts_with("xfreerdp") || al == "com.freerdp.freerdp" || al.starts_with("xfreerdp")
+        if !flag("managed")
+            || !flag("normal")
+            || flag("transient")
+            || flag("special")
+            || SHELL.contains(&cls.as_str())
+            || SHELL.contains(&al.as_str())
+            || cls.starts_with("cc-view-")
+            || cls.starts_with("xfreerdp")
+            || al == "com.freerdp.freerdp"
+            || al.starts_with("xfreerdp")
         {
             continue;
         }
@@ -141,8 +148,7 @@ fn session_env() -> Option<Vec<(String, String)>> {
             continue;
         }
         let Ok(raw) = std::fs::read(p.join("environ")) else { continue };
-        let vars: Vec<(String, String)> =
-            raw.split(|&b| b == 0).filter_map(|kv| String::from_utf8_lossy(kv).split_once('=').map(|(k, v)| (k.to_owned(), v.to_owned()))).collect();
+        let vars: Vec<(String, String)> = raw.split(|&b| b == 0).filter_map(|kv| String::from_utf8_lossy(kv).split_once('=').map(|(k, v)| (k.to_owned(), v.to_owned()))).collect();
         if vars.iter().any(|(k, v)| k == "XDG_RUNTIME_DIR" && *v == runtime) {
             return Some(vars);
         }
@@ -159,11 +165,16 @@ fn cmdline(pid: i64) -> Vec<String> {
 /// show up here, but it's autostarted anyway.
 fn session_cmdlines() -> Vec<Vec<String>> {
     let want = format!("XDG_RUNTIME_DIR={}", desktop()).into_bytes();
-    std::fs::read_dir("/proc").into_iter().flatten().flatten().filter_map(|d| {
-        let pid: i64 = d.file_name().to_str()?.parse().ok()?;
-        let env = std::fs::read(d.path().join("environ")).ok()?;
-        env.split(|&b| b == 0).any(|kv| kv == want.as_slice()).then(|| cmdline(pid))
-    }).collect()
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|d| {
+            let pid: i64 = d.file_name().to_str()?.parse().ok()?;
+            let env = std::fs::read(d.path().join("environ")).ok()?;
+            env.split(|&b| b == 0).any(|kv| kv == want.as_slice()).then(|| cmdline(pid))
+        })
+        .collect()
 }
 
 struct Sink(mpsc::Sender<String>);
@@ -180,9 +191,7 @@ fn query() -> Result<Vec<Value>, String> {
     let env = session_env().unwrap_or_default();
     let dbus = env.iter().find(|(k, _)| k == "DBUS_SESSION_BUS_ADDRESS").map(|(_, v)| v.clone()).filter(|v| !v.is_empty()).ok_or("no session bus")?;
     let (tx, rx) = mpsc::channel();
-    let bus = zbus::blocking::connection::Builder::address(dbus.as_str())
-        .and_then(|b| b.name(NAME)?.serve_at("/", Sink(tx))?.build())
-        .map_err(|e| format!("session bus: {e}"))?;
+    let bus = zbus::blocking::connection::Builder::address(dbus.as_str()).and_then(|b| b.name(NAME)?.serve_at("/", Sink(tx))?.build()).map_err(|e| format!("session bus: {e}"))?;
     let path = config_cache("hibernate.js");
     std::fs::write(&path, SCRIPT).map_err(|e| e.to_string())?;
     load(&bus, &path, "cc-hibernate")?;
@@ -298,7 +307,12 @@ fn restore() {
         let mut c = std::process::Command::new(&cmd[0]);
         c.args(&cmd[1..]).env_clear().envs(env.iter().cloned()).current_dir(home_dir()).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         use std::os::unix::process::CommandExt;
-        unsafe { c.pre_exec(|| { libc::setsid(); Ok(()) }) }; // its own session, so it outlives us
+        unsafe {
+            c.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            })
+        }; // its own session, so it outlives us
         match c.spawn() {
             Ok(_) => launched.push(app),
             Err(e) => log(&format!("can't launch {app} ({e})")),
@@ -335,9 +349,9 @@ mod tests {
             w("{1}", "org.kde.konsole", "konsole", 10, json!({})),
             w("{2}", "org.kde.plasmashell", "plasmashell", 0, json!({})),
             w("{3}", "1password", "1Password", 11, json!({})),
-            w("{4}", "org.kde.dolphin", "", 12, json!({"transient": true})), // its dialog
+            w("{4}", "org.kde.dolphin", "", 12, json!({"transient": true})),        // its dialog
             w("{5}", "org.kde.konsole", "konsole", 10, json!({"minimized": true})), // 2nd window
-            w("{6}", "", "xterm", 13, json!({})), // no desktop id
+            w("{6}", "", "xterm", 13, json!({})),                                   // no desktop id
             w("{7}", "", "cc-view-laptop", 14, json!({})),
             w("{8}", "org.kde.kate", "", 15, json!({"normal": false})),
             w("{9}", "", "foo", 16, json!({"special": true})),

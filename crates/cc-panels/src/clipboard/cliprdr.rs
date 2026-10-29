@@ -14,8 +14,8 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::{CString, c_void};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering::*;
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering::*;
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -25,10 +25,10 @@ const MOST: u32 = 8 << 20; // the most we hand back to one request
 struct Info {
     panel: usize,
     machine: String,
-    files: bool,               // the server said CB_STREAM_FILECLIP_ENABLED
-    ids: Vec<(Fmt, u32)>,      // its last format list's ids
-    asked: VecDeque<Fmt>,      // our format data requests, oldest first, so we know what an answer is
-    relay: Option<usize>,      // its last file paste's source channel, or None for the Frame's
+    files: bool,          // the server said CB_STREAM_FILECLIP_ENABLED
+    ids: Vec<(Fmt, u32)>, // its last format list's ids
+    asked: VecDeque<Fmt>, // our format data requests, oldest first, so we know what an answer is
+    relay: Option<usize>, // its last file paste's source channel, or None for the Frame's
 }
 
 static CHANS: Mutex<Vec<Info>> = Mutex::new(Vec::new());
@@ -136,9 +136,7 @@ unsafe extern "C" fn on_monitor_ready(c: *mut CliprdrClientContext, _: *const CL
 }
 
 unsafe extern "C" fn on_server_format_list_response(_: *mut CliprdrClientContext, _: *const CLIPRDR_FORMAT_LIST_RESPONSE) -> UINT {
-    crate::ffi::guard("on_server_format_list_response", ERROR_INTERNAL_ERROR, || {
-        0
-    })
+    crate::ffi::guard("on_server_format_list_response", ERROR_INTERNAL_ERROR, || 0)
 }
 
 unsafe extern "C" fn on_server_format_list(c: *mut CliprdrClientContext, list: *const CLIPRDR_FORMAT_LIST) -> UINT {
@@ -152,16 +150,21 @@ unsafe extern "C" fn on_server_format_list(c: *mut CliprdrClientContext, list: *
         }
         let list = unsafe { &*list };
         let raw = if list.formats.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(list.formats, list.numFormats as usize) } };
-        let named: Vec<(u32, Option<String>)> = raw.iter().map(|f| {
-            let name = (!f.formatName.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(f.formatName) }.to_string_lossy().into_owned());
-            (f.formatId, name)
-        }).collect();
+        let named: Vec<(u32, Option<String>)> = raw
+            .iter()
+            .map(|f| {
+                let name = (!f.formatName.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(f.formatName) }.to_string_lossy().into_owned());
+                (f.formatId, name)
+            })
+            .collect();
         let picked = formats::pick(&named);
         let p = index(c);
         let Some(machine) = with(p, |i| {
             i.ids = picked.clone();
             i.machine.clone()
-        }) else { return 0 };
+        }) else {
+            return 0;
+        };
         let fmts: Vec<Fmt> = picked.iter().map(|(f, _)| *f).collect();
         eprintln!("clipboard: {} announces {fmts:?}", panel(p).v.name);
         let all = chans();
@@ -217,10 +220,8 @@ fn from_wire(fmt: Fmt, b: &[u8]) -> Option<Vec<u8>> {
 pub fn offer(p: usize, fmts: &[Fmt]) {
     let Some(c) = ctx(p) else { return };
     let names: Vec<Option<CString>> = fmts.iter().map(|f| formats::to_rdp(*f).1.map(|n| CString::new(n).unwrap())).collect();
-    let mut list: Vec<CLIPRDR_FORMAT> = fmts.iter().zip(&names).map(|(f, n)| CLIPRDR_FORMAT {
-        formatId: formats::to_rdp(*f).0,
-        formatName: n.as_ref().map_or(std::ptr::null_mut(), |n| n.as_ptr() as *mut _),
-    }).collect();
+    let mut list: Vec<CLIPRDR_FORMAT> =
+        fmts.iter().zip(&names).map(|(f, n)| CLIPRDR_FORMAT { formatId: formats::to_rdp(*f).0, formatName: n.as_ref().map_or(std::ptr::null_mut(), |n| n.as_ptr() as *mut _) }).collect();
     let mut l = CLIPRDR_FORMAT_LIST::default();
     l.common.msgType = CliprdrMsgType_CB_FORMAT_LIST as u16;
     l.numFormats = list.len() as u32;

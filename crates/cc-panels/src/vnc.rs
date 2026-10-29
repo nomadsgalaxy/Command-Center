@@ -150,9 +150,7 @@ unsafe extern "C" fn get_password(cl: *mut rfbClient) -> *mut c_char {
 }
 
 unsafe extern "C" fn get_credential(cl: *mut rfbClient, kind: c_int) -> *mut rfbCredential {
-    crate::ffi::guard("get_credential", std::ptr::null_mut(), || {
-        unsafe { with_state(cl, |st| credential(cl, st, kind)) }.unwrap_or(std::ptr::null_mut())
-    })
+    crate::ffi::guard("get_credential", std::ptr::null_mut(), || unsafe { with_state(cl, |st| credential(cl, st, kind)) }.unwrap_or(std::ptr::null_mut()))
 }
 
 unsafe fn credential(cl: *mut rfbClient, st: &mut State, kind: c_int) -> *mut rfbCredential {
@@ -309,7 +307,10 @@ unsafe extern "C" fn lock_area(cl: *mut rfbClient, x: c_int, y: c_int, w: c_int,
     crate::ffi::guard("lock_area", (), || unsafe {
         with_state(cl, |st| {
             if let Some(d) = st.cursor.drawn
-                && x < d[2] && x + w > d[0] && y < d[3] && y + h > d[1]
+                && x < d[2]
+                && x + w > d[0]
+                && y < d[3]
+                && y + h > d[1]
             {
                 restore(cl, st);
             }
@@ -384,9 +385,9 @@ unsafe fn draw(cl: *mut rfbClient, st: &mut State) {
 /// One connection to an RFB server.
 pub struct Session {
     cl: *mut rfbClient,
-    mask: i32,          // the buttons held
-    at: (i32, i32),     // where we last put the pointer
-    notches: [f64; 2],  // wheel turns not yet a whole click (vertical, horizontal)
+    mask: i32,               // the buttons held
+    at: (i32, i32),          // where we last put the pointer
+    notches: [f64; 2],       // wheel turns not yet a whole click (vertical, horizontal)
     keys: HashMap<u16, u32>, // the keysym each held key went down as
 }
 
@@ -520,7 +521,11 @@ impl Session {
                 self.at = (((u * w as f64) as i32).clamp(0, (w - 1).max(0)), ((v * h as f64) as i32).clamp(0, (h - 1).max(0)));
                 // RDP's buttons 1, 2, 3 are left, right, middle; RFB's mask bits 0, 1, 2 are left, middle, right
                 let bit = [(PTR_FLAGS_BUTTON1, 1), (PTR_FLAGS_BUTTON2, 4), (PTR_FLAGS_BUTTON3, 2)].iter().filter(|(f, _)| flags & f != 0).fold(0, |m, (_, b)| m | b);
-                if flags & PTR_FLAGS_DOWN != 0 { self.mask |= bit } else { self.mask &= !bit }
+                if flags & PTR_FLAGS_DOWN != 0 {
+                    self.mask |= bit
+                } else {
+                    self.mask &= !bit
+                }
                 let at = self.at;
                 unsafe { with_state(cl, |st| move_cursor(cl, st, at.0, at.1)) };
                 unsafe { SendPointerEvent(cl, self.at.0, self.at.1, self.mask) != 0 }
@@ -604,43 +609,53 @@ fn keysym(code: u16, shift: bool) -> u32 {
         }
     }
     match code {
-        1 => 0xFF1B,             // Escape
-        14 => 0xFF08,            // BackSpace
-        15 => 0xFF09,            // Tab
-        28 => 0xFF0D,            // Return
-        29 => 0xFFE3,            // Control_L
-        42 => 0xFFE1,            // Shift_L
-        54 => 0xFFE2,            // Shift_R
-        55 => 0xFFAA,            // KP_Multiply
-        56 => 0xFFE9,            // Alt_L
-        58 => 0xFFE5,            // Caps_Lock
+        1 => 0xFF1B,                            // Escape
+        14 => 0xFF08,                           // BackSpace
+        15 => 0xFF09,                           // Tab
+        28 => 0xFF0D,                           // Return
+        29 => 0xFFE3,                           // Control_L
+        42 => 0xFFE1,                           // Shift_L
+        54 => 0xFFE2,                           // Shift_R
+        55 => 0xFFAA,                           // KP_Multiply
+        56 => 0xFFE9,                           // Alt_L
+        58 => 0xFFE5,                           // Caps_Lock
         59..=68 => 0xFFBE + (code - 59) as u32, // F1-F10
-        69 => 0xFF7F,            // Num_Lock
-        70 => 0xFF14,            // Scroll_Lock
-        71 => 0xFFB7, 72 => 0xFFB8, 73 => 0xFFB9, 74 => 0xFFAD, // KP 7 8 9 -
-        75 => 0xFFB4, 76 => 0xFFB5, 77 => 0xFFB6, 78 => 0xFFAB, // KP 4 5 6 +
-        79 => 0xFFB1, 80 => 0xFFB2, 81 => 0xFFB3, 82 => 0xFFB0, 83 => 0xFFAE, // KP 1 2 3 0 .
-        87 => 0xFFC8,            // F11
-        88 => 0xFFC9,            // F12
-        96 => 0xFF8D,            // KP_Enter
-        97 => 0xFFE4,            // Control_R
-        98 => 0xFFAF,            // KP_Divide
-        99 => 0xFF61,            // Print
-        100 => 0xFFEA,           // Alt_R
-        102 => 0xFF50,           // Home
-        103 => 0xFF52,           // Up
-        104 => 0xFF55,           // Prior
-        105 => 0xFF51,           // Left
-        106 => 0xFF53,           // Right
-        107 => 0xFF57,           // End
-        108 => 0xFF54,           // Down
-        109 => 0xFF56,           // Next
-        110 => 0xFF63,           // Insert
-        111 => 0xFFFF,           // Delete
-        119 => 0xFF13,           // Pause
-        125 => 0xFFEB,           // Super_L
-        126 => 0xFFEC,           // Super_R
-        127 => 0xFF67,           // Menu
+        69 => 0xFF7F,                           // Num_Lock
+        70 => 0xFF14,                           // Scroll_Lock
+        71 => 0xFFB7,
+        72 => 0xFFB8,
+        73 => 0xFFB9,
+        74 => 0xFFAD, // KP 7 8 9 -
+        75 => 0xFFB4,
+        76 => 0xFFB5,
+        77 => 0xFFB6,
+        78 => 0xFFAB, // KP 4 5 6 +
+        79 => 0xFFB1,
+        80 => 0xFFB2,
+        81 => 0xFFB3,
+        82 => 0xFFB0,
+        83 => 0xFFAE,  // KP 1 2 3 0 .
+        87 => 0xFFC8,  // F11
+        88 => 0xFFC9,  // F12
+        96 => 0xFF8D,  // KP_Enter
+        97 => 0xFFE4,  // Control_R
+        98 => 0xFFAF,  // KP_Divide
+        99 => 0xFF61,  // Print
+        100 => 0xFFEA, // Alt_R
+        102 => 0xFF50, // Home
+        103 => 0xFF52, // Up
+        104 => 0xFF55, // Prior
+        105 => 0xFF51, // Left
+        106 => 0xFF53, // Right
+        107 => 0xFF57, // End
+        108 => 0xFF54, // Down
+        109 => 0xFF56, // Next
+        110 => 0xFF63, // Insert
+        111 => 0xFFFF, // Delete
+        119 => 0xFF13, // Pause
+        125 => 0xFFEB, // Super_L
+        126 => 0xFFEC, // Super_R
+        127 => 0xFF67, // Menu
         _ => 0,
     }
 }
@@ -720,7 +735,16 @@ pub fn run(p: &'static Panel) {
         // the line's pin (read again each try, since a first connect may have just saved one), else the paired machine's
         let conf = std::path::PathBuf::from(config::config(""));
         let pin = if o.pin.is_empty() { cc_proto::conf::viewer_pin(&conf, &v.name).or_else(|| config::pin(&v.machine)) } else { Some(o.pin.clone()) };
-        let opts = Opts { host: v.host.clone(), port: v.port, user: v.user.clone(), password: config::password(&v.machine), pin: pin.map(|h| pin_bytes(&h)), insecure: o.insecure, name: v.name.clone(), conf };
+        let opts = Opts {
+            host: v.host.clone(),
+            port: v.port,
+            user: v.user.clone(),
+            password: config::password(&v.machine),
+            pin: pin.map(|h| pin_bytes(&h)),
+            insecure: o.insecure,
+            name: v.name.clone(),
+            conf,
+        };
         let mut s = match Session::connect(&opts) {
             Ok(s) => s,
             Err(why) => {

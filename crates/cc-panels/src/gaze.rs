@@ -65,15 +65,7 @@ impl Gaze {
         active.nPriority = 0; // not the global overlay priority: that needs an experimental SteamVR setting and never took the controllers
         call!(input, UpdateActionState, &mut active, size_of::<sys::VRActiveActionSet_t>() as u32, 1);
         let mut e: sys::VREyeTrackingData_t = unsafe { std::mem::zeroed() };
-        let err = call!(
-            input,
-            GetEyeTrackingDataRelativeToNow,
-            self.action,
-            sys::ETrackingUniverseOrigin_TrackingUniverseStanding,
-            0.0,
-            &mut e,
-            size_of::<sys::VREyeTrackingData_t>() as u32
-        );
+        let err = call!(input, GetEyeTrackingDataRelativeToNow, self.action, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0, &mut e, size_of::<sys::VREyeTrackingData_t>() as u32);
         let valid = err == 0 && e.bActive && e.bValid;
         if let Some(line) = self.health.lock().unwrap().note(valid, Instant::now()) {
             eprintln!("{line}");

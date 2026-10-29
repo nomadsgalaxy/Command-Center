@@ -237,27 +237,30 @@ impl Agent {
     fn window_scope(&self) -> Vec<Value> {
         let (wins, desktop, shared) = self.plat.windows();
         let captions = self.conf.join("windows-captions").exists();
-        wins.into_iter().filter_map(|w| {
-            if w["type"] != json!(0) || w["excludeFromCapture"] == json!(true) || w["minimized"] == json!(true) {
-                return None;
-            }
-            if let (Some(ds), Some(d)) = (w["desktops"].as_array(), &desktop)
-                && !ds.is_empty() && !ds.iter().any(|x| x.as_str() == Some(d))
-            {
-                return None;
-            }
-            let g = |k: &str| w[k].as_f64().unwrap_or(0.0);
-            let (x, y, ww, hh) = (g("x"), g("y"), g("width"), g("height"));
-            if !shared.iter().any(|r| x < r[0] + r[2] && r[0] < x + ww && y < r[1] + r[3] && r[1] < y + hh) {
-                return None;
-            }
-            let mut item = json!({"uuid": w["uuid"], "app": w["desktopFile"].as_str().filter(|s| !s.is_empty()).or(w["resourceClass"].as_str()).unwrap_or(""),
+        wins.into_iter()
+            .filter_map(|w| {
+                if w["type"] != json!(0) || w["excludeFromCapture"] == json!(true) || w["minimized"] == json!(true) {
+                    return None;
+                }
+                if let (Some(ds), Some(d)) = (w["desktops"].as_array(), &desktop)
+                    && !ds.is_empty()
+                    && !ds.iter().any(|x| x.as_str() == Some(d))
+                {
+                    return None;
+                }
+                let g = |k: &str| w[k].as_f64().unwrap_or(0.0);
+                let (x, y, ww, hh) = (g("x"), g("y"), g("width"), g("height"));
+                if !shared.iter().any(|r| x < r[0] + r[2] && r[0] < x + ww && y < r[1] + r[3] && r[1] < y + hh) {
+                    return None;
+                }
+                let mut item = json!({"uuid": w["uuid"], "app": w["desktopFile"].as_str().filter(|s| !s.is_empty()).or(w["resourceClass"].as_str()).unwrap_or(""),
                                   "x": x.round() as i64, "y": y.round() as i64, "w": ww.round() as i64, "h": hh.round() as i64});
-            if captions {
-                item["caption"] = w["caption"].clone();
-            }
-            Some(item)
-        }).collect()
+                if captions {
+                    item["caption"] = w["caption"].clone();
+                }
+                Some(item)
+            })
+            .collect()
     }
 
     fn window_allowed(&self, frame: &str) -> Result<(), String> {
@@ -376,32 +379,42 @@ impl Agent {
         let ports: Vec<(u16, bool)> = indexes.iter().map(|i| 3400 + 10 * slot + *i as u16).map(|p| (p, self.plat.listening(p))).collect();
         let now = mono();
         let mut w = self.w();
-        indexes.iter().zip(&units).zip(ports).map(|((i, u), (port, listening))| {
-            // A unit systemd didn't answer for (show failed, or it didn't list it) is unknown, not idle.
-            let (state, n) = seen.get(u).cloned().unwrap_or_else(|| ("unknown".into(), 0));
-            let recent = w.restarts.recent(u, now, n);
-            let quiet = if state == "active" && !listening {
-                now - *w.quiet.entry(u.clone()).or_insert(now)
-            } else {
-                w.quiet.remove(u);
-                0.0
-            };
-            json!({"index": i, "unit": u, "port": port, "state": state, "restarts": n, "recent_restarts": recent,
+        indexes
+            .iter()
+            .zip(&units)
+            .zip(ports)
+            .map(|((i, u), (port, listening))| {
+                // A unit systemd didn't answer for (show failed, or it didn't list it) is unknown, not idle.
+                let (state, n) = seen.get(u).cloned().unwrap_or_else(|| ("unknown".into(), 0));
+                let recent = w.restarts.recent(u, now, n);
+                let quiet = if state == "active" && !listening {
+                    now - *w.quiet.entry(u.clone()).or_insert(now)
+                } else {
+                    w.quiet.remove(u);
+                    0.0
+                };
+                json!({"index": i, "unit": u, "port": port, "state": state, "restarts": n, "recent_restarts": recent,
                    "listening": listening, "health": health(&state, recent, listening, quiet)})
-        }).collect()
+            })
+            .collect()
     }
 
     pub fn sessions_of(&self, frame: &str) -> Vec<Value> {
         let now = mono();
         let w = self.w();
-        let mut out: Vec<(String, Value)> = w.sessions.iter().filter(|(k, _)| k.0 == frame).map(|(k, s)| {
-            let index = k.1.parse::<i64>().map(|i| json!(i)).unwrap_or(json!(k.1));
-            let mut v = json!({"index": index, "port": s.port, "idle_s": s.idle_since.map_or(0, |t| (now - t).round() as i64)});
-            if let Some(u) = &s.uuid {
-                v["uuid"] = json!(u);
-            }
-            (k.1.clone(), v)
-        }).collect();
+        let mut out: Vec<(String, Value)> = w
+            .sessions
+            .iter()
+            .filter(|(k, _)| k.0 == frame)
+            .map(|(k, s)| {
+                let index = k.1.parse::<i64>().map(|i| json!(i)).unwrap_or(json!(k.1));
+                let mut v = json!({"index": index, "port": s.port, "idle_s": s.idle_since.map_or(0, |t| (now - t).round() as i64)});
+                if let Some(u) = &s.uuid {
+                    v["uuid"] = json!(u);
+                }
+                (k.1.clone(), v)
+            })
+            .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out.into_iter().map(|(_, v)| v).collect()
     }

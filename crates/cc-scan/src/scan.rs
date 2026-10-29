@@ -51,8 +51,11 @@ pub fn archive(path: &Path) {
     if std::fs::create_dir_all(&to).is_err() {
         return;
     }
-    let ours = |name: &str| name == format!("{stem}.json") || name == format!("{stem}-head.json")
-        || name.strip_prefix(&format!("{stem}-")).and_then(|r| r.strip_suffix(".jpg")).is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()));
+    let ours = |name: &str| {
+        name == format!("{stem}.json")
+            || name == format!("{stem}-head.json")
+            || name.strip_prefix(&format!("{stem}-")).and_then(|r| r.strip_suffix(".jpg")).is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+    };
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         if ours(&name) {
@@ -62,7 +65,11 @@ pub fn archive(path: &Path) {
 }
 
 fn tags_json(tags: &[Tag]) -> Value {
-    Value::Array(tags.iter().map(|t| json!({"id": t.id, "corners": t.corners.iter().map(|c| [round(c.0 as f64, 2), round(c.1 as f64, 2)]).collect::<Vec<_>>(), "side_px": round(t.side_px as f64, 1)})).collect())
+    Value::Array(
+        tags.iter()
+            .map(|t| json!({"id": t.id, "corners": t.corners.iter().map(|c| [round(c.0 as f64, 2), round(c.1 as f64, 2)]).collect::<Vec<_>>(), "side_px": round(t.side_px as f64, 1)}))
+            .collect(),
+    )
 }
 
 impl Scan {
@@ -129,8 +136,12 @@ impl Scan {
                 // A wrong lag throws off a moving frame's pose (live, a guessed 60 ms gave a 12 mm fit), so until it's measured only nearly still frames count.
                 let still = turn < if self.lag.measured { self.max_turn } else { 5.0 } && mv < MAX_MOVE;
                 let p: Vec<Vec<f64>> = pose.iter().map(|r| r.iter().map(|v| round(*v, 6)).collect()).collect();
-                (json!({"head": p, "head_moved": round(turn, 2), "still": still, "speed": [round(turn, 1), round(mv, 3)],
-                        "taken": round(taken, 4), "lag": round(self.lag.value, 3), "tags": tags_json(&tags)}), still, Some(pose))
+                (
+                    json!({"head": p, "head_moved": round(turn, 2), "still": still, "speed": [round(turn, 1), round(mv, 3)],
+                        "taken": round(taken, 4), "lag": round(self.lag.value, 3), "tags": tags_json(&tags)}),
+                    still,
+                    Some(pose),
+                )
             }
         };
         {
@@ -181,11 +192,18 @@ impl Scan {
     /// The fit uses them to read the pose at any frame's time and find the mirror's lag itself.
     pub fn save(&self) {
         let _ = std::fs::write(&self.path, Value::Array(self.shots.clone()).to_string());
-        let track: Vec<Value> = self.head.poses.lock().unwrap().iter().map(|(t, p)| {
-            let mut row = vec![json!(round(*t, 4))];
-            row.extend(p.iter().flat_map(|r| r.iter().map(|v| json!(round(*v, 6)))));
-            Value::Array(row)
-        }).collect();
+        let track: Vec<Value> = self
+            .head
+            .poses
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(t, p)| {
+                let mut row = vec![json!(round(*t, 4))];
+                row.extend(p.iter().flat_map(|r| r.iter().map(|v| json!(round(*v, 6)))));
+                Value::Array(row)
+            })
+            .collect();
         let head = self.path.with_file_name(format!("{}-head.json", self.path.file_stem().and_then(|s| s.to_str()).unwrap_or("shots")));
         let _ = std::fs::write(head, Value::Array(track).to_string());
     }

@@ -90,7 +90,7 @@ struct Row {
     title: String,  // what you see (Temporary)
     detail: String, // where it belongs, how many panels
     active: bool,
-    load: bool, // bound to another room, so Load for travel instead of Use
+    load: bool,  // bound to another room, so Load for travel instead of Use
     enter: bool, // one of its monitors is connected and has a saved scan there, so it can be entered
 }
 
@@ -176,9 +176,11 @@ fn held(was: Option<Hit>, n: usize, typing: Option<usize>, x: f64, y: f64) -> Op
         Hit::SaveAs => typing != Some(n),
         _ => false, // the field's only count where hit() finds them
     };
-    hit(n, typing, x, y).or(was.filter(|&a| still(a) && {
-        let (x0, y0, x1, y1) = rect(n, a);
-        (x0..=x1).contains(&x) && (y0..=y1).contains(&y)
+    hit(n, typing, x, y).or(was.filter(|&a| {
+        still(a) && {
+            let (x0, y0, x1, y1) = rect(n, a);
+            (x0..=x1).contains(&x) && (y0..=y1).contains(&y)
+        }
     }))
 }
 
@@ -318,8 +320,20 @@ impl Scene<'_> {
         if x <= span.0 - 7.0 || x >= span.1 + 7.0 {
             return ([0.0; 3], 0.0);
         }
-        let look = if armed { Look::Carry } else if self.k.hover == Some(hit) && !off { Look::Lit } else { Look::Rest };
-        let ink = if off { t.wdim } else if armed { self.p.acc.ink } else { t.wtext };
+        let look = if armed {
+            Look::Carry
+        } else if self.k.hover == Some(hit) && !off {
+            Look::Lit
+        } else {
+            Look::Rest
+        };
+        let ink = if off {
+            t.wdim
+        } else if armed {
+            self.p.acc.ink
+        } else {
+            t.wtext
+        };
         let out = over(ui::button(&self.p, look, span, x, y, cy), tint(typed(g, "x", x, y, (span.0 + span.1 - typed_w(g, "x")) / 2.0, cy), ink, ink, ink));
         if off { (out.0, out.1 * 0.6) } else { out }
     }
@@ -364,7 +378,13 @@ impl Scene<'_> {
             let e = self.labelled(right(&BUTTONS, 0), cy, self.ui.enter.as_ref(), Hit::Enter(i), x, y);
             out = over(out, if r.enter { e } else { (e.0, e.1 * 0.6) }); // no monitor of it connected: greyed out
         }
-        let first = if r.active { &self.ui.active } else if r.load { &self.ui.load } else { &self.ui.use_ };
+        let first = if r.active {
+            &self.ui.active
+        } else if r.load {
+            &self.ui.load
+        } else {
+            &self.ui.use_
+        };
         let b0 = right(&BUTTONS, 1);
         if x > b0.0 - 7.0 && x < b0.1 + 7.0 {
             let b = self.labelled(b0, cy, first.as_ref(), Hit::Use(i), x, y);
@@ -525,7 +545,11 @@ impl Workspace {
                 self.hide_keyboard();
             }
             grab.set_extra_shown(show);
-            if show { call!(ov, ShowOverlay, h) } else { call!(ov, HideOverlay, h) };
+            if show {
+                call!(ov, ShowOverlay, h)
+            } else {
+                call!(ov, HideOverlay, h)
+            };
         }
         if show {
             self.paint(h);
@@ -673,8 +697,7 @@ impl Workspace {
                 let old = r.name.clone();
                 config::edit_workspaces(|d| conf::rename_workspace(d, &old, &name)).map(|_| format!("renamed {old} to {name}"))
             }
-            None => config::edit_workspaces(|d| conf::save_workspace_as(d, &name, config::UNIVERSE.load(Relaxed)))
-                .map(|_| format!("saved as {name}, bound to this room")),
+            None => config::edit_workspaces(|d| conf::save_workspace_as(d, &name, config::UNIVERSE.load(Relaxed))).map(|_| format!("saved as {name}, bound to this room")),
         };
         match r {
             Ok(s) => {
@@ -703,7 +726,8 @@ impl Workspace {
                 let done = if r.load {
                     let (head, yaw) = head_pose();
                     let anchors = self.anchors(&r.name);
-                    config::edit_workspaces(|d| conf::load_workspace(d, &r.name, head, yaw, &anchors)).map(|n| format!("loaded {} here: {n} panels, in Temporary ({} stays as it was)", r.title, r.title))
+                    config::edit_workspaces(|d| conf::load_workspace(d, &r.name, head, yaw, &anchors))
+                        .map(|n| format!("loaded {} here: {n} panels, in Temporary ({} stays as it was)", r.title, r.title))
                 } else {
                     config::edit_workspaces(|d| conf::use_workspace(d, &r.name)).map(|_| format!("using {}", r.title))
                 };
@@ -765,8 +789,8 @@ impl Workspace {
         match run {
             Ok(mut child) => {
                 let (tx, rx) = std::sync::mpsc::channel();
-                for (pipe, mark) in [(child.stdout.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), ""),
-                                     (child.stderr.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), "!")] {
+                for (pipe, mark) in [(child.stdout.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), ""), (child.stderr.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), "!")]
+                {
                     let tx = tx.clone();
                     std::thread::spawn(move || {
                         for l in pipe.map(|o| std::io::BufRead::lines(std::io::BufReader::new(o)).map_while(Result::ok)).into_iter().flatten() {
@@ -858,10 +882,13 @@ mod tests {
     use super::*;
 
     fn data() -> Json {
-        Json::parse(r#"{"workspace": "home", "workspaces": {
+        Json::parse(
+            r#"{"workspace": "home", "workspaces": {
             "home": {"spots": {"home": {"desk": {}, "app:konsole": {}, "taskbar": {}}}, "universe": "8000000000000000002"},
             "office": {"spots": {}, "universe": "222", "machines": ["desk"]},
-            "temporary": {"spots": {"home": {"desk": {}}}, "loaded": "home"}}}"#).unwrap()
+            "temporary": {"spots": {"home": {"desk": {}}}, "loaded": "home"}}}"#,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -885,9 +912,12 @@ mod tests {
     /// Enter workspace needs one of its monitors connected, with a saved scan in it.
     #[test]
     fn entering_needs_a_connected_scanned_monitor() {
-        let d = Json::parse(r#"{"workspace": "temporary", "workspaces": {"temporary": {"spots": {}},
+        let d = Json::parse(
+            r#"{"workspace": "temporary", "workspaces": {"temporary": {"spots": {}},
             "home": {"universe": "1", "spots": {"scanned": {"desk": {"centre": [0, 1, -1], "yaw": 0}, "laptop": {"centre": [1, 1, -1], "yaw": 0}}}},
-            "office": {"universe": "2", "machines": ["work"], "spots": {"scanned": {"desk": {"centre": [0, 1, -1], "yaw": 0}}}}}}"#).unwrap();
+            "office": {"universe": "2", "machines": ["work"], "spots": {"scanned": {"desk": {"centre": [0, 1, -1], "yaw": 0}}}}}}"#,
+        )
+        .unwrap();
         let live = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
         assert!(rows_of(&d, 9, &[]).iter().all(|r| !r.enter), "nothing connected");
         let on = live(&[("desk", "pc"), ("tv", "pc")]);
@@ -903,8 +933,7 @@ mod tests {
         assert_eq!(enter_line("@capture desk pct=40 samples=5 baseline_cm=1 coverage=100").as_deref(), Some("look at a monitor of it: desk 40%"));
         assert_eq!(enter_line("@prepare desk step=monitor").as_deref(), Some("getting desk ready"));
         assert_eq!(enter_line("@failed desk why=poor-fit mm=14").as_deref(), Some("desk: poor fit"));
-        assert_eq!(enter_line("@entered Home monitor=desk mm=2412 deg=90.0").as_deref(),
-                   Some("entered Home by desk: everything moved 2412 mm and 90.0 deg, and this room is its own now"));
+        assert_eq!(enter_line("@entered Home monitor=desk mm=2412 deg=90.0").as_deref(), Some("entered Home by desk: everything moved 2412 mm and 90.0 deg, and this room is its own now"));
         assert_eq!(enter_line("@mode quick"), None);
         assert_eq!(enter_line("  desk: placed"), None);
     }

@@ -34,9 +34,11 @@ pub fn guard<R>(name: &'static str, fail: R, body: impl FnOnce() -> R) -> R {
     GUARDED.set(GUARDED.get() - 1);
     r.unwrap_or_else(|e| {
         FAILED.set(true);
-        let first = SAID.with_borrow_mut(|s| !s.contains(&name) && {
-            s.push(name);
-            true
+        let first = SAID.with_borrow_mut(|s| {
+            !s.contains(&name) && {
+                s.push(name);
+                true
+            }
         });
         if first {
             let why = e.downcast_ref::<&str>().copied().or_else(|| e.downcast_ref::<String>().map(String::as_str)).unwrap_or("?");

@@ -14,8 +14,7 @@ fn main() {
         let mut err = 0;
         vr::VR_InitInternal2(&mut err, vr::EVRApplicationType_VRApplication_Overlay, std::ptr::null());
         assert_eq!(err, 0, "VR_InitInternal2 failed: {err}");
-        let overlay: &vr::VR_IVROverlay_FnTable = &*table(std::str::from_utf8_unchecked(
-            std::ffi::CStr::from_ptr(vr::IVROverlay_Version.as_ptr() as *const _).to_bytes()));
+        let overlay: &vr::VR_IVROverlay_FnTable = &*table(std::str::from_utf8_unchecked(std::ffi::CStr::from_ptr(vr::IVROverlay_Version.as_ptr() as *const _).to_bytes()));
         let key = CString::new("controlcenter.hello").unwrap();
         let mut h: vr::VROverlayHandle_t = 0;
         assert_eq!(overlay.CreateOverlay.unwrap()(key.as_ptr() as *mut _, key.as_ptr() as *mut _, &mut h), 0);

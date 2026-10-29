@@ -21,10 +21,10 @@
 //! Not here: handing the mouse and keyboard to Steam by itself when the dashboard merely opens.
 //! `dashboard()` is where that would go, since main.rs calls it when the dashboard opens or closes.
 use super::ui::{self, BTN_H, PAD, Px, ROW, Rect, SCALE, TITLE, text, typed, typed_w};
-use crate::grab::{Paint, TagImg, over, tint};
-use crate::taskbar::tex_scale;
 use crate::geometry::from_top;
+use crate::grab::{Paint, TagImg, over, tint};
 use crate::handoff::Handoff;
+use crate::taskbar::tex_scale;
 use crate::{HIDDEN, call, theme, vr};
 use openvr_sys as sys;
 use std::sync::Arc;
@@ -32,14 +32,8 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 /// Its labels, drawn by assets.rs at start as tag-ui-<key>.rgba. "dash" is both the title and the
 /// first choice of where the mouse and keyboard go.
-pub const LABELS: [(&str, &str); 6] = [
-    ("dash", "Command Center"),
-    ("dashdesktop", "Desktop"),
-    ("dashshow", "Show"),
-    ("dashhide", "Hide"),
-    ("dashinput", "Mouse and keyboard"),
-    ("dashsteam", "Steam / game"),
-];
+pub const LABELS: [(&str, &str); 6] =
+    [("dash", "Command Center"), ("dashdesktop", "Desktop"), ("dashshow", "Show"), ("dashhide", "Hide"), ("dashinput", "Mouse and keyboard"), ("dashsteam", "Steam / game")];
 
 /// SteamVR's dashboard is open (main.rs tells `dashboard`), so the tab is being looked at.
 static OPEN: AtomicBool = AtomicBool::new(false);
@@ -341,15 +335,8 @@ mod tests {
         let s = 1.5;
         let (tw, th) = ((W * s) as usize, (H * s) as usize);
         let h = Some(Hit(0, 0));
-        let mut cases: Vec<(Key, Key)> = [
-            (None, Some(Hit(0, 1))),
-            (Some(Hit(0, 1)), Some(Hit(1, 0))),
-            (Some(Hit(1, 0)), Some(Hit(1, 1))),
-            (Some(Hit(1, 1)), None),
-        ]
-        .into_iter()
-        .map(|(a, b)| (key(a), key(b)))
-        .collect();
+        let mut cases: Vec<(Key, Key)> =
+            [(None, Some(Hit(0, 1))), (Some(Hit(0, 1)), Some(Hit(1, 0))), (Some(Hit(1, 0)), Some(Hit(1, 1))), (Some(Hit(1, 1)), None)].into_iter().map(|(a, b)| (key(a), key(b))).collect();
         cases.extend([Key { shown: false, ..key(h) }, Key { steam: true, ..key(h) }, Key { shown: false, steam: true, ..key(None) }].map(|b| (key(h), b)));
         let draw = |k: &Key| {
             let sc = Scene { k, p, ui: &ui };

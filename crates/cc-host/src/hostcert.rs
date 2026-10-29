@@ -73,8 +73,10 @@ pub fn check(conf: &Path, port: u16) -> Result<(), String> {
     let pk = ed25519_dalek::SigningKey::from_pkcs8_pem(&pem).map_err(|e| format!("host-key: {e}"))?.verifying_key().to_bytes();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let cfg = rustls::ClientConfig::builder_with_provider(provider.clone())
-        .with_protocol_versions(&[&rustls::version::TLS13]).map_err(|e| e.to_string())?
-        .dangerous().with_custom_certificate_verifier(Arc::new(Pin(pk, provider)))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|e| e.to_string())?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(Pin(pk, provider)))
         .with_no_client_auth();
     let conn = rustls::ClientConnection::new(Arc::new(cfg), ServerName::try_from("cc-host").unwrap()).map_err(|e| e.to_string())?;
     let sock = std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_secs(3)).map_err(|e| format!("port {port}: {e}"))?;

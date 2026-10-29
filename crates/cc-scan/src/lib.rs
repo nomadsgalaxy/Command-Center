@@ -37,13 +37,19 @@ pub struct Tag {
 /// for the low contrast, then detects with the passthrough parameters. Each tag gets its mean side.
 pub fn detect(gray: &Gray, dict: &dict::Dict) -> Vec<Tag> {
     let g = image::clahe(&image::gaussian3(gray), 3.0, 8);
-    aruco::detect(&g, dict, &Params::passthrough()).into_iter().map(|Marker { id, corners }| {
-        let side = (0..4).map(|k| {
-            let (a, b) = (corners[k], corners[(k + 1) % 4]);
-            ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
-        }).sum::<f32>() / 4.0;
-        Tag { id, corners, side_px: side }
-    }).collect()
+    aruco::detect(&g, dict, &Params::passthrough())
+        .into_iter()
+        .map(|Marker { id, corners }| {
+            let side = (0..4)
+                .map(|k| {
+                    let (a, b) = (corners[k], corners[(k + 1) % 4]);
+                    ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
+                })
+                .sum::<f32>()
+                / 4.0;
+            Tag { id, corners, side_px: side }
+        })
+        .collect()
 }
 
 pub const KEY_BASE: usize = 900; // Same as pair.py's KEY_TAG_BASE. Ids 900-999 each carry two digits.

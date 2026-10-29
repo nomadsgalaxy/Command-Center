@@ -243,14 +243,7 @@ mod tests {
         apply(&mut w, 3, &p);
         assert_eq!(
             w.0,
-            vec![
-                Call::Bounds(3, [0.1, 0.2, 0.9, 0.8]),
-                Call::Width(3, 0.8),
-                Call::Texel(3, 1.5),
-                Call::Curvature(3, bend(0.8, 1.0)),
-                Call::MouseScale(3, [800.0, 600.0]),
-                Call::Device(3, 0, M),
-            ]
+            vec![Call::Bounds(3, [0.1, 0.2, 0.9, 0.8]), Call::Width(3, 0.8), Call::Texel(3, 1.5), Call::Curvature(3, bend(0.8, 1.0)), Call::MouseScale(3, [800.0, 600.0]), Call::Device(3, 0, M),]
         );
     }
 

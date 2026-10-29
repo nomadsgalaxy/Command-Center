@@ -1,0 +1,4 @@
+# The code is written wide on purpose: a call with its arguments reads better on one line than
+# stacked. 200 columns with "Max" heuristics is what it was already written to.
+max_width = 200
+use_small_heuristics = "Max"

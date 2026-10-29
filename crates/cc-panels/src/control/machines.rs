@@ -51,8 +51,8 @@
 //! ponytail: the mouse's cursor doesn't land on it (SteamVR's laser does), a keystroke redraws the
 //! whole thing, and Align's @progress lines only go to the log.
 use super::ui::{self, BTN_H, Edit, GAP, MPP, PAD, ROW, Rect, SCALE, SORT, TITLE, switch, text, text_w, typed, typed_w};
-use crate::grab::{self, Look, Paint, TagImg, line, over, tint};
 use crate::geometry::{Placement, from_top, panel_matrix};
+use crate::grab::{self, Look, Paint, TagImg, line, over, tint};
 use crate::kvm::KVM;
 use crate::taskbar::{Taskbar, tex_scale};
 use crate::windows::Windows;
@@ -148,14 +148,14 @@ enum Hit {
     Field(usize), // a form field
     Cancel,
     Add,
-    Precise,  // the title bar's Fast/Precise switch
-    Reanchor, // [Move everything with it]
-    Refresh,  // the search row's: search again
-    Host(usize), // a found host's [Pair]
-    Key,      // pairing's key field
-    Pair,     // pairing's [Pair]
-    Replace,  // pairing's [Replace] (the host changed)
-    Look,     // [Pair by looking]: the camera reads the key (and, from the host list, the address) off the host's screen
+    Precise,             // the title bar's Fast/Precise switch
+    Reanchor,            // [Move everything with it]
+    Refresh,             // the search row's: search again
+    Host(usize),         // a found host's [Pair]
+    Key,                 // pairing's key field
+    Pair,                // pairing's [Pair]
+    Replace,             // pairing's [Replace] (the host changed)
+    Look,                // [Pair by looking]: the camera reads the key (and, from the host list, the address) off the host's screen
     Name(usize),         // a row's name: click to rename it
     Label(usize),        // a renamed row's field
     Scope(usize, usize), // its Machine (0) / This monitor (1)
@@ -305,9 +305,11 @@ fn held(was: Option<Hit>, n: usize, s: Shape, offer: bool, x: f64, y: f64) -> Op
         Hit::Add | Hit::Pair | Hit::Replace => s != Shape::Closed && a == submit(s),
         _ => true,
     };
-    hit(n, s, offer, x, y).or(was.filter(|&a| still(a) && {
-        let (x0, y0, x1, y1) = rect(n, s, a);
-        (x0..=x1).contains(&x) && (y0..=y1).contains(&y)
+    hit(n, s, offer, x, y).or(was.filter(|&a| {
+        still(a) && {
+            let (x0, y0, x1, y1) = rect(n, s, a);
+            (x0..=x1).contains(&x) && (y0..=y1).contains(&y)
+        }
     }))
 }
 
@@ -597,9 +599,9 @@ struct Row {
 #[derive(Clone, PartialEq, Debug)]
 struct Form {
     text: [String; FIELDS],
-    editing: Option<usize>, // the field being typed in (FIELDS is the key): the keyboards', and SteamVR's keyboard's if it's open
-    hosts: Vec<Host>,       // the hosts found
-    search: String,         // the search row's text: searching, found, or why not
+    editing: Option<usize>,        // the field being typed in (FIELDS is the key): the keyboards', and SteamVR's keyboard's if it's open
+    hosts: Vec<Host>,              // the hosts found
+    search: String,                // the search row's text: searching, found, or why not
     pairing: Option<(Host, bool)>, // the host the key is typed for, and whether Replace is offered (host-changed)
     key: String,
 }
@@ -641,7 +643,7 @@ struct Rename {
     scope: usize,        // 0 the machine's label, 1 this monitor's
     choice: bool,        // its machine has 2 or more monitors, so Machine / This monitor shows
     text: String,
-    hint: String, // shown when it's empty: its name, which is what an empty label leaves
+    hint: String,  // shown when it's empty: its name, which is what an empty label leaves
     editing: bool, // the keyboards' focus
 }
 
@@ -667,12 +669,12 @@ struct Key {
     rows: Vec<Row>,
     hover: Option<Hit>,
     aligning: Option<usize>, // the row an Align runs for: its button says so, and every other Align is greyed out
-    no_align: bool, // distrobox-host-exec failed: "use cc-home scan"
-    armed: Option<usize>, // the row whose x was clicked once: the next click removes it
+    no_align: bool,          // distrobox-host-exec failed: "use cc-home scan"
+    armed: Option<usize>,    // the row whose x was clicked once: the next click removes it
     form: Option<Form>,
     status: String,
-    precise: bool,         // settings.json's align
-    offer: Option<String>, // an align's @reanchor, as shown
+    precise: bool,                   // settings.json's align
+    offer: Option<String>,           // an align's @reanchor, as shown
     rename: Option<(usize, Rename)>, // the row being renamed
     tags: u32,                       // bumps when the names' tags get redrawn (a rename)
     scope: String,                   // the workspace it's for, as the title says
@@ -744,9 +746,21 @@ impl<'a> Scene<'a> {
         let busy = k == 2 && self.k.aligning == Some(i); // lit from the click to the end, so it doesn't look frozen (I asked for that)
         let armed = k == 3 && self.k.armed == Some(i); // in the accent: the next click removes it
         let off = k == 2 && !busy && (self.k.aligning.is_some() || self.k.no_align);
-        let look = if armed { Look::Carry } else if busy || (self.k.hover == Some(hit) && !off) { Look::Lit } else { Look::Rest };
+        let look = if armed {
+            Look::Carry
+        } else if busy || (self.k.hover == Some(hit) && !off) {
+            Look::Lit
+        } else {
+            Look::Rest
+        };
         let mut out = ui::button(&self.p, look, (x0, x1), x, y, cy);
-        let ink = if off { t.wdim } else if armed { acc.ink } else { t.wtext };
+        let ink = if off {
+            t.wdim
+        } else if armed {
+            acc.ink
+        } else {
+            t.wtext
+        };
         let left = if k == 1 {
             out = switch(&self.p, out, x, y, x0 + 10.0, cy, r.auto);
             x0 + 40.0
@@ -921,11 +935,14 @@ impl<'a> Scene<'a> {
             let r = self.k.rows[i];
             // the dot: solid when connected, a ring while connecting, dim when not
             let dd = (x - PAD - 10.0).hypot(y - cy) - 5.0;
-            out = over(out, match (r.connected, r.live) {
-                (true, _) => (acc.line, (0.5 - dd).clamp(0.0, 1.0)),
-                (false, true) => (acc.line, line(dd + 0.75, 0.75)),
-                _ => (t.wdim, 0.6 * (0.5 - dd).clamp(0.0, 1.0)),
-            });
+            out = over(
+                out,
+                match (r.connected, r.live) {
+                    (true, _) => (acc.line, (0.5 - dd).clamp(0.0, 1.0)),
+                    (false, true) => (acc.line, line(dd + 0.75, 0.75)),
+                    _ => (t.wdim, 0.6 * (0.5 - dd).clamp(0.0, 1.0)),
+                },
+            );
             if let Some((_, r)) = self.k.rename.as_ref().filter(|(r, _)| *r == i) {
                 out = over(out, self.renaming(i, r, x, y, cy));
             } else if x < HOST - GAP {
@@ -934,9 +951,11 @@ impl<'a> Scene<'a> {
                 // a label too long for its column fades out over its last 24 units
                 let fade = if NAME + text_w(self.names[i]) > HOST - GAP { ((HOST - GAP - x) / 24.0).min(1.0) } else { 1.0 };
                 out = over(out, (c, a * fade));
-            } else if x < member_x().0 - GAP && r.untold { // the host still trusts this Frame: 17 cells fit the column
+            } else if x < member_x().0 - GAP && r.untold {
+                // the host still trusts this Frame: 17 cells fit the column
                 out = over(out, tint(typed(self.ui.ascii.as_ref(), "unpair pending", x, y, HOST, cy), acc.line, acc.line, acc.line));
-            } else if x < member_x().0 - GAP && r.broken != crate::rdp::HOST_OK { // its host's server for it is broken, so it isn't just slow
+            } else if x < member_x().0 - GAP && r.broken != crate::rdp::HOST_OK {
+                // its host's server for it is broken, so it isn't just slow
                 let why = if r.broken == crate::rdp::HOST_DOWN { "host server down" } else { "host server failing" };
                 out = over(out, tint(typed(self.ui.ascii.as_ref(), why, x, y, HOST, cy), acc.line, acc.line, acc.line));
             } else if x < member_x().0 - GAP {
@@ -973,16 +992,16 @@ type Work = Box<dyn FnOnce(&dyn Fn(String)) -> Result<(), String> + Send>;
 
 /// A cc-home run on the worker, and what to do when it ends.
 enum Job {
-    Set,           // autoconnect=: a failure shows
-    Add(String),   // the new machine's name: a spare panel takes it
-    Remove(usize), // its panel: gone
-    Reanchor(String), // the monitor every spot moved with: every placement gets recalled
-    Discover,         // its @host lines: the form's found hosts
-    Pair(String),     // the host's name: @pair lines go to the status, @paired's monitors get added
+    Set,                 // autoconnect=: a failure shows
+    Add(String),         // the new machine's name: a spare panel takes it
+    Remove(usize),       // its panel: gone
+    Reanchor(String),    // the monitor every spot moved with: every placement gets recalled
+    Discover,            // its @host lines: the form's found hosts
+    Pair(String),        // the host's name: @pair lines go to the status, @paired's monitors get added
     Paired(Vec<String>), // a pairing's new monitors (once their tags are drawn): spare panels take them
-    Line(String),     // a run's @ line as it comes (not an end)
-    Rename(usize),    // its panel: its machine's tags get redrawn
-    Retag(Vec<usize>), // those panels' tags are drawn: show them
+    Line(String),        // a run's @ line as it comes (not an end)
+    Rename(usize),       // its panel: its machine's tags get redrawn
+    Retag(Vec<usize>),   // those panels' tags are drawn: show them
 }
 
 fn cc_home(args: &[&str]) -> Command {
@@ -1008,15 +1027,15 @@ pub struct Machines {
     ui: Arc<Ui>,
     assets: String,
     names: Vec<Option<Arc<TagImg>>>, // each remote's name (its chip's tag), by panel index, spares included
-    auto: Vec<bool>,            // each remote's autoconnect=, as viewers.conf says (or as just set)
-    rows: Vec<usize>,           // the panels shown as rows: the remotes in use (Panel::used)
-    shape: (usize, Shape),      // the rows and form shape it's sized for (grab.rs reshape_extra)
+    auto: Vec<bool>,                 // each remote's autoconnect=, as viewers.conf says (or as just set)
+    rows: Vec<usize>,                // the panels shown as rows: the remotes in use (Panel::used)
+    shape: (usize, Shape),           // the rows and form shape it's sized for (grab.rs reshape_extra)
     painter: ui::Painter<Key>,
     hover: Option<Hit>,
     jobs: mpsc::Sender<(Job, Vec<Command>, Option<Work>)>, // cc-home runs (after a pairing's work), one at a time since cc-home rewrites all of viewers.conf
     ended: mpsc::Receiver<(Job, Result<(), String>)>,
-    pending: usize, // sent and not ended yet: viewers.conf is read again once none are left
-    busy: bool,     // an add or remove is running
+    pending: usize,                        // sent and not ended yet: viewers.conf is read again once none are left
+    busy: bool,                            // an add or remove is running
     align: Option<(usize, String, Child)>, // the panel, its name, cc-home
     no_align: bool,
     armed: Option<usize>, // the panel whose x was clicked once
@@ -1026,16 +1045,16 @@ pub struct Machines {
     offer: Option<(String, f64, f64)>,        // an align's @reanchor: the monitor, mm, degrees
     offers: mpsc::Sender<(String, f64, f64)>, // the align's stdout reader sends on this
     offered: mpsc::Receiver<(String, f64, f64)>,
-    relocs: usize, // relocalizations seen this run
-    pair_state: String,     // the running pairing's last @pair state
+    relocs: usize,                    // relocalizations seen this run
+    pair_state: String,               // the running pairing's last @pair state
     paired: Option<(String, String)>, // its @paired machine and host
-    untold: Vec<String>,    // machines unpaired without telling the host (pending-unpair/<m>.json): read when it opens and after each run
-    osk: bool,              // SteamVR's keyboard is open for the field being typed in
-    rename: Option<(usize, Rename)>, // the panel being renamed
-    tags: u32,                       // bumps when names' tags get redrawn (Key's)
-    ws: String,                      // the workspace it's for (scope, when it opened)
-    members: Option<Vec<String>>,    // that workspace's machines (None: all of them)
-    reload: bool,                    // the active workspace's machines changed: applied on the tick
+    untold: Vec<String>,              // machines unpaired without telling the host (pending-unpair/<m>.json): read when it opens and after each run
+    osk: bool,                        // SteamVR's keyboard is open for the field being typed in
+    rename: Option<(usize, Rename)>,  // the panel being renamed
+    tags: u32,                        // bumps when names' tags get redrawn (Key's)
+    ws: String,                       // the workspace it's for (scope, when it opened)
+    members: Option<Vec<String>>,     // that workspace's machines (None: all of them)
+    reload: bool,                     // the active workspace's machines changed: applied on the tick
 }
 
 impl Machines {
@@ -1282,7 +1301,11 @@ impl Machines {
                 self.hide_keyboard(); // give the keyboards back: they're a game's now, not a hidden field's
             }
             grab.set_extra_shown(show);
-            if show { call!(ov, ShowOverlay, h) } else { call!(ov, HideOverlay, h) };
+            if show {
+                call!(ov, ShowOverlay, h)
+            } else {
+                call!(ov, HideOverlay, h)
+            };
         }
         if show {
             self.paint(h);
@@ -1823,7 +1846,7 @@ impl Machines {
             self.close_osk(); // it's the physical keyboard's now
             if let Some((_, r)) = self.rename.as_mut().filter(|r| r.1.editing) {
                 match r.typed(e) {
-                    Some(true) => self.act(Hit::Save(0), h), // Enter
+                    Some(true) => self.act(Hit::Save(0), h),                           // Enter
                     Some(false) => (self.rename, self.status) = (None, String::new()), // Escape: cancelled
                     None => {}
                 }
@@ -1845,7 +1868,14 @@ impl Machines {
             .map(|&i| {
                 let p = panel(i);
                 let m = config::machine_of(&p.v);
-                Row { live: p.live(), connected: p.connected.load(Relaxed), auto: self.auto[i], untold: self.untold.iter().any(|x| x == m), broken: p.host_health.load(Relaxed), member: self.members.as_ref().is_none_or(|l| l.iter().any(|x| x == m)) }
+                Row {
+                    live: p.live(),
+                    connected: p.connected.load(Relaxed),
+                    auto: self.auto[i],
+                    untold: self.untold.iter().any(|x| x == m),
+                    broken: p.host_health.load(Relaxed),
+                    member: self.members.as_ref().is_none_or(|l| l.iter().any(|x| x == m)),
+                }
             })
             .collect();
         let row = |i: Option<usize>| i.and_then(|i| self.rows.iter().position(|&r| r == i));
@@ -1912,7 +1942,21 @@ mod tests {
     use super::*;
 
     fn key(rows: &[Row], hover: Option<Hit>, form: Option<Form>) -> Key {
-        Key { rows: rows.to_vec(), hover, aligning: None, no_align: false, armed: None, form, status: "status".into(), precise: false, offer: None, rename: None, tags: 0, scope: "home".into(), theme: 0 }
+        Key {
+            rows: rows.to_vec(),
+            hover,
+            aligning: None,
+            no_align: false,
+            armed: None,
+            form,
+            status: "status".into(),
+            precise: false,
+            offer: None,
+            rename: None,
+            tags: 0,
+            scope: "home".into(),
+            theme: 0,
+        }
     }
 
     fn found() -> Form {
@@ -1927,7 +1971,8 @@ mod tests {
 
     const C: Shape = Shape::Closed;
 
-    const TWO: [Row; 2] = [Row { live: true, connected: true, auto: true, untold: false, broken: 0, member: true }, Row { live: false, connected: false, auto: false, untold: false, broken: 0, member: false }];
+    const TWO: [Row; 2] =
+        [Row { live: true, connected: true, auto: true, untold: false, broken: 0, member: true }, Row { live: false, connected: false, auto: false, untold: false, broken: 0, member: false }];
 
     #[test]
     fn buttons_sit_right_aligned_in_order() {
@@ -2187,7 +2232,12 @@ mod tests {
         // pairing: a key typed, a state; the search's text
         let g = |key: &str, status: &str| Key { form: Some(Form { key: key.into(), ..pairing(false) }), status: status.into(), ..a.clone() };
         let srch = |s: &str| Key { form: Some(Form { search: s.into(), ..found() }), ..a.clone() };
-        for (a, b) in [(g("", ""), g("482 9", "")), (g("482917", "waiting for the host..."), g("482917", "wrong key: 2 tries left")), (g("", "look at laptop's screen"), g("", "timed out: look closer, or type the key")), (srch("searching for hosts..."), srch("found 2"))] {
+        for (a, b) in [
+            (g("", ""), g("482 9", "")),
+            (g("482917", "waiting for the host..."), g("482917", "wrong key: 2 tries left")),
+            (g("", "look at laptop's screen"), g("", "timed out: look closer, or type the key")),
+            (srch("searching for hosts..."), srch("found 2")),
+        ] {
             let h = height(2, shape(b.form.as_ref()));
             let (tw, th) = ((W * s) as usize, (h * s) as usize);
             let full = |k: &Key| {

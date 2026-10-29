@@ -62,14 +62,17 @@ pub fn replaced() -> bool {
 
 /// The installed package's version and the command that removes it, from whichever package manager has it.
 fn package() -> Option<(String, &'static str)> {
-    [(["pacman", "-Q", "command-center-host"].as_slice(), "sudo pacman -R command-center-host"),
-     (&["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", "command-center-host"], "sudo dnf remove command-center-host"),
-     (&["dpkg-query", "-W", "-f", "${Version}", "command-center-host"], "sudo apt remove command-center-host")]
-        .into_iter().find_map(|(q, rm)| {
-            let (ok, out) = run(q[0], &q[1..]);
-            let v = out.trim().trim_start_matches("command-center-host ").to_owned();
-            (ok && !v.is_empty()).then_some((v, rm))
-        })
+    [
+        (["pacman", "-Q", "command-center-host"].as_slice(), "sudo pacman -R command-center-host"),
+        (&["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", "command-center-host"], "sudo dnf remove command-center-host"),
+        (&["dpkg-query", "-W", "-f", "${Version}", "command-center-host"], "sudo apt remove command-center-host"),
+    ]
+    .into_iter()
+    .find_map(|(q, rm)| {
+        let (ok, out) = run(q[0], &q[1..]);
+        let v = out.trim().trim_start_matches("command-center-host ").to_owned();
+        (ok && !v.is_empty()).then_some((v, rm))
+    })
 }
 
 // ---------------------------------------------------------------- the system
@@ -94,10 +97,12 @@ fn sys(args: &[&str]) -> bool {
 }
 
 fn have(cmd: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| {
-        let f = d.join(cmd);
-        std::fs::metadata(&f).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    }))
+    std::env::var_os("PATH").is_some_and(|p| {
+        std::env::split_paths(&p).any(|d| {
+            let f = d.join(cmd);
+            std::fs::metadata(&f).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+    })
 }
 
 pub fn hostname() -> String {
@@ -124,12 +129,22 @@ pub fn sockets() -> Vec<(u16, u8, std::net::IpAddr)> {
             _ => return None,
         })
     };
-    ["/proc/net/tcp", "/proc/net/tcp6"].iter().flat_map(|f| std::fs::read_to_string(f).unwrap_or_default().lines().skip(1).filter_map(|l| {
-        let w: Vec<&str> = l.split_whitespace().collect();
-        let port = u16::from_str_radix(w.get(1)?.rsplit(':').next()?, 16).ok()?;
-        let remote = ip(w.get(2)?.split(':').next()?)?;
-        Some((port, u8::from_str_radix(w.get(3)?, 16).ok()?, remote))
-    }).collect::<Vec<_>>()).collect()
+    ["/proc/net/tcp", "/proc/net/tcp6"]
+        .iter()
+        .flat_map(|f| {
+            std::fs::read_to_string(f)
+                .unwrap_or_default()
+                .lines()
+                .skip(1)
+                .filter_map(|l| {
+                    let w: Vec<&str> = l.split_whitespace().collect();
+                    let port = u16::from_str_radix(w.get(1)?.rsplit(':').next()?, 16).ok()?;
+                    let remote = ip(w.get(2)?.split(':').next()?)?;
+                    Some((port, u8::from_str_radix(w.get(3)?, 16).ok()?, remote))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Counts established connections on any share port: slot 0's (3400+m) and every paired Frame's (3400+10k+m).
@@ -183,7 +198,6 @@ fn put(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::rename(new, dst)
 }
 
-
 impl Env {
     /// Writes a file in ~/.config/control-center, making the folder (0700) if it isn't there.
     fn set(&self, name: &str, content: &str) {
@@ -197,8 +211,7 @@ impl Env {
     }
 
     fn frames(&self) -> Vec<String> {
-        let mut f: Vec<String> = std::fs::read_dir(self.dir.join("frames")).into_iter().flatten().flatten()
-            .filter_map(|e| e.file_name().to_str()?.strip_suffix(".json").map(str::to_owned)).collect();
+        let mut f: Vec<String> = std::fs::read_dir(self.dir.join("frames")).into_iter().flatten().flatten().filter_map(|e| e.file_name().to_str()?.strip_suffix(".json").map(str::to_owned)).collect();
         f.sort();
         f
     }
@@ -208,8 +221,12 @@ impl Env {
         if let Some(s) = read(&self.dir.join("shared")).filter(|s| !s.is_empty()) {
             return s.lines().map(str::to_owned).collect();
         }
-        let mut v: Vec<String> = std::fs::read_dir(self.units.join("graphical-session.target.wants")).into_iter().flatten().flatten()
-            .filter_map(|e| e.file_name().to_str()?.strip_prefix("control-center-share@")?.strip_suffix(".service").filter(|m| m.bytes().all(|b| b.is_ascii_digit())).map(str::to_owned)).collect();
+        let mut v: Vec<String> = std::fs::read_dir(self.units.join("graphical-session.target.wants"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.strip_prefix("control-center-share@")?.strip_suffix(".service").filter(|m| m.bytes().all(|b| b.is_ascii_digit())).map(str::to_owned))
+            .collect();
         v.sort();
         v
     }
@@ -245,12 +262,18 @@ impl Env {
         let d = self.home.join(".local/share/applications");
         let _ = std::fs::create_dir_all(&d);
         let h = self.home.display();
-        let _ = std::fs::write(d.join("command-center-host.desktop"), format!("[Desktop Entry]\nType=Application\nName=Command Center Host\nComment=Share this machine's monitors with the Steam Frame\nExec={h}/.local/bin/cc-share up\nIcon=video-display\nCategories=Network;RemoteAccess;\nActions=stop;\n\n[Desktop Action stop]\nName=Stop Command Center\nExec={h}/.local/bin/cc-share down\n"));
+        let _ = std::fs::write(
+            d.join("command-center-host.desktop"),
+            format!(
+                "[Desktop Entry]\nType=Application\nName=Command Center Host\nComment=Share this machine's monitors with the Steam Frame\nExec={h}/.local/bin/cc-share up\nIcon=video-display\nCategories=Network;RemoteAccess;\nActions=stop;\n\n[Desktop Action stop]\nName=Stop Command Center\nExec={h}/.local/bin/cc-share down\n"
+            ),
+        );
     }
 
     /// The window server's own executable, not /usr/bin/krdpserver, because its grant is its own (W1).
     fn window_server(&self) -> Option<PathBuf> {
-        [self.share.join("krdp-window/bin/krdpserver"), self.home.join("src/krdp-window/build/bin/krdpserver")].into_iter()
+        [self.share.join("krdp-window/bin/krdpserver"), self.home.join("src/krdp-window/build/bin/krdpserver")]
+            .into_iter()
             .find(|b| std::fs::metadata(b).is_ok_and(|m| m.permissions().mode() & 0o111 != 0))
     }
 
@@ -288,10 +311,8 @@ fn fw_cmds(action: &str) -> (Vec<Vec<String>>, Option<Vec<String>>) {
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     if have("firewall-cmd") && run("systemctl", &["is-active", "-q", "firewalld"]).0 {
         let out = Command::new("firewall-cmd").arg("--get-active-zones").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-        let ours = |z: &str| {
-            Command::new("firewall-cmd").args(["--permanent", &format!("--zone={z}"), "--list-rich-rules"]).output()
-                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("3399-3449"))
-        };
+        let ours =
+            |z: &str| Command::new("firewall-cmd").args(["--permanent", &format!("--zone={z}"), "--list-rich-rules"]).output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("3399-3449"));
         return firewalld_cmds(action, &active_zones(&out), ours);
     }
     let mut cmds = vec![];
@@ -314,8 +335,17 @@ fn fw_cmds(action: &str) -> (Vec<Vec<String>>, Option<Vec<String>>) {
 /// out of every zone that has them.
 fn firewalld_cmds(action: &str, zones: &[(String, Vec<String>)], ours: impl Fn(&str) -> bool) -> (Vec<Vec<String>>, Option<Vec<String>>) {
     let rules = |z: &str, act: &str| -> Vec<Vec<String>> {
-        NETS.iter().map(|n| vec!["sudo".into(), "firewall-cmd".into(), "--permanent".into(), format!("--zone={z}"),
-                                  format!("--{act}-rich-rule=rule family=ipv4 source address={n} port port=3399-3449 protocol=tcp accept")]).collect()
+        NETS.iter()
+            .map(|n| {
+                vec![
+                    "sudo".into(),
+                    "firewall-cmd".into(),
+                    "--permanent".into(),
+                    format!("--zone={z}"),
+                    format!("--{act}-rich-rule=rule family=ipv4 source address={n} port port=3399-3449 protocol=tcp accept"),
+                ]
+            })
+            .collect()
     };
     let mut cmds = vec![];
     let mut closed = vec![];
@@ -334,9 +364,13 @@ fn firewalld_cmds(action: &str, zones: &[(String, Vec<String>)], ours: impl Fn(&
     }
     let note = (action == "add" && zones.iter().all(|(z, _)| UNTRUSTED.contains(&z.as_str()))).then(|| {
         let ifaces = if closed.is_empty() { "<interface>".to_owned() } else { closed.join(" ") };
-        let mut l = vec![format!("firewall: firewalld has this network ({ifaces}) in an untrusted zone ({}), and Command Center doesn't open ports there.",
-                                 zones.iter().map(|z| z.0.as_str()).collect::<Vec<_>>().join(", ")),
-                         "  If it's your home network, move it to the home zone, then run cc-share fix again:".to_owned()];
+        let mut l = vec![
+            format!(
+                "firewall: firewalld has this network ({ifaces}) in an untrusted zone ({}), and Command Center doesn't open ports there.",
+                zones.iter().map(|z| z.0.as_str()).collect::<Vec<_>>().join(", ")
+            ),
+            "  If it's your home network, move it to the home zone, then run cc-share fix again:".to_owned(),
+        ];
         l.extend(closed.iter().map(|i| format!("    sudo firewall-cmd --permanent --zone=home --change-interface={i}")));
         l.push("    sudo firewall-cmd --reload".into());
         l
@@ -364,7 +398,22 @@ fn active_zones(out: &str) -> Vec<(String, Vec<String>)> {
 
 /// Shows a command as the shell line it is, quoting any word that has spaces.
 fn shown(c: &[String]) -> String {
-    c.iter().map(|w| if w.contains(' ') { if let Some((a, b)) = w.split_once('=') && a.starts_with("--") { format!("{a}='{b}'") } else { format!("'{w}'") } } else { w.clone() }).collect::<Vec<_>>().join(" ")
+    c.iter()
+        .map(|w| {
+            if w.contains(' ') {
+                if let Some((a, b)) = w.split_once('=')
+                    && a.starts_with("--")
+                {
+                    format!("{a}='{b}'")
+                } else {
+                    format!("'{w}'")
+                }
+            } else {
+                w.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn firewall_said(e: &Env, action: &str) -> (Vec<String>, bool) {
@@ -458,8 +507,17 @@ fn seen(e: &Env, action: &str, announce: bool) -> Seen {
     if fw.0.first().is_some_and(|c| c[1] == "ufw") && e.dir.join("firewall-open").exists() == (action == "add") {
         fw.0.clear();
     }
-    Seen { fw, avahi_installed: have("avahi-publish"), avahi_running: avahi_running(), conf: read(&avahi_conf()), conf_path: avahi_conf(),
-           backup: read(&avahi_backup()), backup_path: avahi_backup(), tmp: e.dir.join("avahi-daemon.conf.new"), announce }
+    Seen {
+        fw,
+        avahi_installed: have("avahi-publish"),
+        avahi_running: avahi_running(),
+        conf: read(&avahi_conf()),
+        conf_path: avahi_conf(),
+        backup: read(&avahi_backup()),
+        backup_path: avahi_backup(),
+        tmp: e.dir.join("avahi-daemon.conf.new"),
+        announce,
+    }
 }
 
 fn sudo(c: &[&str]) -> Vec<String> {
@@ -471,12 +529,24 @@ fn sudo(c: &[&str]) -> Vec<String> {
 fn fixes(s: &Seen) -> (Vec<Fix>, Vec<String>) {
     let mut v = vec![];
     if !s.fw.0.is_empty() {
-        v.push(Fix { kind: "firewall", what: "to open the pairing and paired-Frame ports (3399-3449) for your private networks, so the Frame can reach this machine".into(),
-                     write: None, cmds: s.fw.0.clone(), changed: "firewall: ports 3399-3449 are open for the private ranges (10/8, 172.16/12, 192.168/16) only, and saved for the next boot".into(), mark: Some(true) });
+        v.push(Fix {
+            kind: "firewall",
+            what: "to open the pairing and paired-Frame ports (3399-3449) for your private networks, so the Frame can reach this machine".into(),
+            write: None,
+            cmds: s.fw.0.clone(),
+            changed: "firewall: ports 3399-3449 are open for the private ranges (10/8, 172.16/12, 192.168/16) only, and saved for the next boot".into(),
+            mark: Some(true),
+        });
     }
     if s.announce && s.avahi_installed && !s.avahi_running {
-        v.push(Fix { kind: "avahi", what: "to start avahi-daemon now and at every boot, because the Frame lists this machine through it".into(), write: None,
-                     cmds: vec![sudo(&["systemctl", "enable", "--now", "avahi-daemon"])], changed: "avahi: avahi-daemon is running and starts at boot".into(), mark: None });
+        v.push(Fix {
+            kind: "avahi",
+            what: "to start avahi-daemon now and at every boot, because the Frame lists this machine through it".into(),
+            write: None,
+            cmds: vec![sudo(&["systemctl", "enable", "--now", "avahi-daemon"])],
+            changed: "avahi: avahi-daemon is running and starts at boot".into(),
+            mark: None,
+        });
     }
     if let Some(conf) = s.conf.as_ref().filter(|c| s.announce && s.avahi_installed && avahi_publishing_off(c)) {
         let (conf_path, backup) = (s.conf_path.display().to_string(), s.backup_path.display().to_string());
@@ -486,9 +556,14 @@ fn fixes(s: &Seen) -> (Vec<Fix>, Vec<String>) {
         }
         cmds.push(sudo(&["install", "-m", "644", &s.tmp.display().to_string(), &conf_path]));
         cmds.push(sudo(&["systemctl", "restart", "avahi-daemon"]));
-        v.push(Fix { kind: "avahi", what: format!("to turn publishing on in {conf_path} (only disable-publishing and disable-user-service-publishing in [publish]; the original is kept as {backup})"),
-                     write: Some((s.tmp.clone(), avahi_publishing_on(conf))), cmds,
-                     changed: format!("avahi: publishing is on, and avahi-daemon restarted. The original is in {backup}; cc-install --remove puts it back"), mark: None });
+        v.push(Fix {
+            kind: "avahi",
+            what: format!("to turn publishing on in {conf_path} (only disable-publishing and disable-user-service-publishing in [publish]; the original is kept as {backup})"),
+            write: Some((s.tmp.clone(), avahi_publishing_on(conf))),
+            cmds,
+            changed: format!("avahi: publishing is on, and avahi-daemon restarted. The original is in {backup}; cc-install --remove puts it back"),
+            mark: None,
+        });
     }
     (v, s.fw.1.clone().unwrap_or_default())
 }
@@ -498,19 +573,34 @@ fn fixes(s: &Seen) -> (Vec<Fix>, Vec<String>) {
 fn undo(s: &Seen) -> (Vec<Fix>, Vec<String>) {
     let mut v = vec![];
     if !s.fw.0.is_empty() {
-        v.push(Fix { kind: "firewall", what: "to close the pairing and paired-Frame ports (3399-3449) again".into(), write: None, cmds: s.fw.0.clone(),
-                     changed: "firewall: Command Center's rules are gone".into(), mark: Some(false) });
+        v.push(Fix {
+            kind: "firewall",
+            what: "to close the pairing and paired-Frame ports (3399-3449) again".into(),
+            write: None,
+            cmds: s.fw.0.clone(),
+            changed: "firewall: Command Center's rules are gone".into(),
+            mark: Some(false),
+        });
     }
     let mut notes = vec![];
-    if let (Some(b), Some(c)) = (&s.backup, &s.conf) && c != b {
+    if let (Some(b), Some(c)) = (&s.backup, &s.conf)
+        && c != b
+    {
         let (conf_path, backup) = (s.conf_path.display().to_string(), s.backup_path.display().to_string());
         if *c == avahi_publishing_on(b) {
             let mut cmds = vec![sudo(&["cp", "-p", &backup, &conf_path]), sudo(&["rm", &backup])];
             if s.avahi_running {
                 cmds.push(sudo(&["systemctl", "restart", "avahi-daemon"]));
             }
-            v.push(Fix { kind: "avahi", what: format!("to put {conf_path} back the way it was before Command Center changed it"), write: None, cmds,
-                         changed: "avahi: the config is back as it was. I left avahi-daemon enabled and running, because other things may use it (to turn it off: sudo systemctl disable --now avahi-daemon)".into(), mark: None });
+            v.push(Fix {
+                kind: "avahi",
+                what: format!("to put {conf_path} back the way it was before Command Center changed it"),
+                write: None,
+                cmds,
+                changed: "avahi: the config is back as it was. I left avahi-daemon enabled and running, because other things may use it (to turn it off: sudo systemctl disable --now avahi-daemon)"
+                    .into(),
+                mark: None,
+            });
         } else {
             notes.push(format!("avahi: {conf_path} has changed since Command Center edited it, so I left it alone. The original is in {backup}."));
         }
@@ -543,14 +633,19 @@ fn offer(e: &Env, (fixes, notes): (Vec<Fix>, Vec<String>), yes: bool, fw_yes: bo
             eprintln!("sudo didn't accept that. If this account has no password yet, run passwd first, then run cc-share fix.");
             return false;
         }
-        if let Some((p, text)) = &f.write && let Err(x) = std::fs::write(p, text) {
+        if let Some((p, text)) = &f.write
+            && let Err(x) = std::fs::write(p, text)
+        {
             eprintln!("{}: {x}", p.display());
             all = false;
             continue;
         }
         let ok = f.cmds.iter().all(|c| {
             println!("+ {}", shown(c));
-            Command::new(&c[0]).args(&c[1..]).status().is_ok_and(|s| s.success()) || { eprintln!("that failed, so I stopped there"); false }
+            Command::new(&c[0]).args(&c[1..]).status().is_ok_and(|s| s.success()) || {
+                eprintln!("that failed, so I stopped there");
+                false
+            }
         });
         if let Some((p, _)) = &f.write {
             let _ = std::fs::remove_file(p);
@@ -615,18 +710,23 @@ fn avahi_backup() -> PathBuf {
 /// the comments, the other sections, the spacing or the line endings.
 fn avahi_publishing_on(conf: &str) -> String {
     let mut publish = false;
-    conf.split_inclusive('\n').map(|raw| {
-        let l = raw.trim();
-        if l.starts_with('[') {
-            publish = l == "[publish]";
-        } else if publish && !l.starts_with('#') && !l.starts_with(';') {
-            if let Some((k, v)) = l.split_once('=') && matches!(k.trim(), "disable-publishing" | "disable-user-service-publishing") && v.trim() == "yes" {
-                let end = &raw[raw.trim_end().len()..];
-                return format!("{}{}=no{end}", &raw[..raw.len() - raw.trim_start().len()], k.trim());
+    conf.split_inclusive('\n')
+        .map(|raw| {
+            let l = raw.trim();
+            if l.starts_with('[') {
+                publish = l == "[publish]";
+            } else if publish && !l.starts_with('#') && !l.starts_with(';') {
+                if let Some((k, v)) = l.split_once('=')
+                    && matches!(k.trim(), "disable-publishing" | "disable-user-service-publishing")
+                    && v.trim() == "yes"
+                {
+                    let end = &raw[raw.trim_end().len()..];
+                    return format!("{}{}=no{end}", &raw[..raw.len() - raw.trim_start().len()], k.trim());
+                }
             }
-        }
-        raw.to_owned()
-    }).collect()
+            raw.to_owned()
+        })
+        .collect()
 }
 
 fn avahi_running() -> bool {
@@ -1070,8 +1170,13 @@ fn pick(answer: &str, n: usize) -> Result<Vec<String>, String> {
 }
 
 fn frame_wants(e: &Env) -> Vec<String> {
-    let mut v: Vec<String> = std::fs::read_dir(e.units.join("graphical-session.target.wants")).into_iter().flatten().flatten()
-        .map(|x| x.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("control-center-frame@")).collect();
+    let mut v: Vec<String> = std::fs::read_dir(e.units.join("graphical-session.target.wants"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|x| x.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("control-center-frame@"))
+        .collect();
     v.sort();
     v
 }
@@ -1109,7 +1214,13 @@ pub fn mode_for(o: &Value, max: u64) -> Option<(String, String)> {
         let (x, y) = size(m);
         ((x / y - ar).abs(), -(x * y), -m["refreshRate"].as_f64().unwrap_or(0.0))
     };
-    let best = modes.iter().filter(|m| { let (a, b) = size(m); a * b <= max as f64 }).min_by(|a, b| key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal));
+    let best = modes
+        .iter()
+        .filter(|m| {
+            let (a, b) = size(m);
+            a * b <= max as f64
+        })
+        .min_by(|a, b| key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal));
     Some((cur.clone(), best.and_then(|m| m["id"].as_str()).map_or(cur, str::to_owned)))
 }
 
@@ -1120,7 +1231,8 @@ fn guard(e: &Env) -> i32 {
     };
     let restore = || -> bool {
         let mut changed = false;
-        let mut files: Vec<PathBuf> = std::fs::read_dir(&e.dir).into_iter().flatten().flatten().map(|f| f.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("guard-"))).collect();
+        let mut files: Vec<PathBuf> =
+            std::fs::read_dir(&e.dir).into_iter().flatten().flatten().map(|f| f.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("guard-"))).collect();
         files.sort();
         for f in files {
             let name = f.file_name().unwrap().to_string_lossy().trim_start_matches("guard-").to_owned();
@@ -1290,12 +1402,17 @@ fn announce_run(e: &Env) -> i32 {
             if up >= Duration::from_secs(30) {
                 wait = 2;
             }
-            eprintln!("announce: avahi-publish stopped ({why}) after {} s, so the Frame can't see this machine. Is avahi-daemon running with publishing on? cc-share check says. Starting it again in {wait} s.", up.as_secs());
+            eprintln!(
+                "announce: avahi-publish stopped ({why}) after {} s, so the Frame can't see this machine. Is avahi-daemon running with publishing on? cc-share check says. Starting it again in {wait} s.",
+                up.as_secs()
+            );
             retry_at = Some(Instant::now() + Duration::from_secs(wait));
             wait = (wait * 2).min(60);
         }
         let now = txt(e);
-        if now != last && let Some(mut c) = child.take() {
+        if now != last
+            && let Some(mut c) = child.take()
+        {
             let _ = c.kill(); // The txt changed (a pairing screen, a monitor), so it starts again with the new one at once.
             let _ = c.wait();
             retry_at = None;
@@ -1529,7 +1646,13 @@ fn windows_cmd(e: &Env, what: &str) -> i32 {
             if !packaged() {
                 let d = e.home.join(".local/share/applications");
                 let _ = std::fs::create_dir_all(&d);
-                let _ = std::fs::write(d.join("command-center-krdp-window.desktop"), format!("[Desktop Entry]\nType=Application\nName=Command Center window server\nExec={}\nNoDisplay=true\nX-KDE-Wayland-Interfaces=org_kde_kwin_fake_input,zkde_screencast_unstable_v1,org_kde_plasma_window_management\n", bin.display()));
+                let _ = std::fs::write(
+                    d.join("command-center-krdp-window.desktop"),
+                    format!(
+                        "[Desktop Entry]\nType=Application\nName=Command Center window server\nExec={}\nNoDisplay=true\nX-KDE-Wayland-Interfaces=org_kde_kwin_fake_input,zkde_screencast_unstable_v1,org_kde_plasma_window_management\n",
+                        bin.display()
+                    ),
+                );
                 let _ = run("kbuildsycoca6", &[]);
             }
             e.set("windows-on", "");
@@ -1585,11 +1708,14 @@ fn frames_cmd(e: &Env) -> i32 {
     for f in e.frames() {
         let last = local_time(&e.dir.join("frames").join(format!("{f}.last"))).unwrap_or_else(|| "never".into());
         let out = run("systemctl", &["--user", "list-units", "--no-legend", "--state=running", &format!("control-center-frame@{f}-*")]).1;
-        let running: Vec<String> = out.lines().filter_map(|l| {
-            let unit = l.split_whitespace().find(|w| w.starts_with("control-center-frame@"))?;
-            let m = unit.strip_prefix(&format!("control-center-frame@{f}-"))?.chars().next()?;
-            m.is_ascii_digit().then(|| format!("monitor {m}"))
-        }).collect();
+        let running: Vec<String> = out
+            .lines()
+            .filter_map(|l| {
+                let unit = l.split_whitespace().find(|w| w.starts_with("control-center-frame@"))?;
+                let m = unit.strip_prefix(&format!("control-center-frame@{f}-"))?.chars().next()?;
+                m.is_ascii_digit().then(|| format!("monitor {m}"))
+            })
+            .collect();
         let slot = frame_json(e, &f).ok().map_or("null".into(), |j| j["slot"].to_string());
         println!("{f} slot={slot} last-used={last} sessions={}", if running.is_empty() { "none".into() } else { running.join(",") });
     }
@@ -1602,11 +1728,16 @@ fn frames_cmd(e: &Env) -> i32 {
 /// Finds processes whose command line (argv) matches and returns their pids, never this one's.
 fn procs(matches: impl Fn(&[String]) -> bool) -> Vec<i32> {
     let me = std::process::id() as i32;
-    std::fs::read_dir("/proc").into_iter().flatten().flatten().filter_map(|d| {
-        let pid: i32 = d.file_name().to_str()?.parse().ok()?;
-        let argv: Vec<String> = std::fs::read(d.path().join("cmdline")).ok()?.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-        (pid != me && matches(&argv)).then_some(pid)
-    }).collect()
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|d| {
+            let pid: i32 = d.file_name().to_str()?.parse().ok()?;
+            let argv: Vec<String> = std::fs::read(d.path().join("cmdline")).ok()?.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+            (pid != me && matches(&argv)).then_some(pid)
+        })
+        .collect()
 }
 
 /// The last resort: it closes any tag screen or pairing key still on screen. The Frame counts a closed
@@ -1647,10 +1778,23 @@ fn uninstall(e: &Env, args: &[String]) -> i32 {
             let _ = std::fs::remove_file(f.path());
         }
     }
-    for u in ["control-center-share@.service", "control-center-frame@.service", "control-center-guard.service", "control-center-agent.service", "control-center-window@.service", "control-center-alert@.service"] {
+    for u in [
+        "control-center-share@.service",
+        "control-center-frame@.service",
+        "control-center-guard.service",
+        "control-center-agent.service",
+        "control-center-window@.service",
+        "control-center-alert@.service",
+    ] {
         let _ = std::fs::remove_file(e.units.join(u));
     }
-    for p in [e.home.join(".local/bin/cc-share"), e.home.join(".local/share/applications/command-center-krdp-window.desktop"), e.home.join(".local/share/applications/command-center-host.desktop"), e.dir.join("shared"), e.dir.join("autostart")] {
+    for p in [
+        e.home.join(".local/bin/cc-share"),
+        e.home.join(".local/share/applications/command-center-krdp-window.desktop"),
+        e.home.join(".local/share/applications/command-center-host.desktop"),
+        e.dir.join("shared"),
+        e.dir.join("autostart"),
+    ] {
         let _ = std::fs::remove_file(p);
     }
     for f in ["pair.py", "agent.py", "tagshow.py", "cc-host"] {
@@ -1996,7 +2140,11 @@ mod tests {
         assert_eq!(alerts_for(&e, show(&[("failed", "failed", "exit-code", "no", "120")])), 1, "Restart=no");
         let terminal = ("failed", "failed", "exit-code", "on-failure", "150");
         assert_eq!(alerts_for(&e, show(&[terminal, terminal])), 1, "still failed after the second look: nothing will retry it");
-        assert_eq!(alerts_for(&e, show(&[("failed", "failed", "exit-code", "on-failure", "160"), ("activating", "auto-restart", "exit-code", "on-failure", "160")])), 0, "a restart queued by the second look");
+        assert_eq!(
+            alerts_for(&e, show(&[("failed", "failed", "exit-code", "on-failure", "160"), ("activating", "auto-restart", "exit-code", "on-failure", "160")])),
+            0,
+            "a restart queued by the second look"
+        );
         let lines = std::fs::read_to_string(super::alerts(&e)).unwrap().lines().count();
         let state = std::fs::read_to_string(super::alert_state(&e)).unwrap();
         let _ = std::fs::remove_dir_all(&d);
@@ -2055,9 +2203,15 @@ mod tests {
     fn refuses_empty_or_broken_logins() {
         use serde_json::json;
         assert_eq!(super::frame_login(&json!({"user": "cc-f1", "password": "pw"})), Ok(("cc-f1", "pw")));
-        for bad in [json!({"user": "cc-f1"}), json!({"user": "", "password": "pw"}), json!({"user": "cc-f1", "password": ""}),
-                    json!({"user": "cc-f1", "password": "a\nb"}), json!({"user": "cc-f1", "password": "a\rb"}), json!({"user": "cc-f1", "password": "a\u{0}b"}),
-                    json!({"user": 5, "password": "pw"})] {
+        for bad in [
+            json!({"user": "cc-f1"}),
+            json!({"user": "", "password": "pw"}),
+            json!({"user": "cc-f1", "password": ""}),
+            json!({"user": "cc-f1", "password": "a\nb"}),
+            json!({"user": "cc-f1", "password": "a\rb"}),
+            json!({"user": "cc-f1", "password": "a\u{0}b"}),
+            json!({"user": 5, "password": "pw"}),
+        ] {
             assert!(super::frame_login(&bad).is_err(), "{bad}");
         }
         for pw in ["", "a\nb", "a\0b"] {
@@ -2102,7 +2256,10 @@ mod tests {
         let shim = |name: &str, help: &str| {
             let p = d.join(name);
             // krdp opens the path it's given, so the shim does too, instead of reading an inherited fd.
-            let body = format!("#!/bin/sh\n[ \"$1\" = --help ] && {{ echo '{help}'; exit 0; }}\necho \"$@\" > {dir}/{name}.argv\nf=\nwhile [ $# -gt 0 ]; do [ \"$1\" = --password-file ] && f=$2; shift; done\n[ -n \"$f\" ] && cat \"$f\" > {dir}/{name}.pw\nexit 0\n", dir = d.display());
+            let body = format!(
+                "#!/bin/sh\n[ \"$1\" = --help ] && {{ echo '{help}'; exit 0; }}\necho \"$@\" > {dir}/{name}.argv\nf=\nwhile [ $# -gt 0 ]; do [ \"$1\" = --password-file ] && f=$2; shift; done\n[ -n \"$f\" ] && cat \"$f\" > {dir}/{name}.pw\nexit 0\n",
+                dir = d.display()
+            );
             std::fs::write(&p, body).unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
             p
@@ -2133,7 +2290,13 @@ mod tests {
         let d = std::env::temp_dir().join(format!("cc-host-dropins-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let (user, etc) = (d.join("user"), d.join("etc"));
-        for (dir, unit, file) in [(&user, "control-center-share@.service.d", "old-krdp.conf"), (&etc, "control-center-agent.service.d", "x.conf"), (&user, "control-center-share@0.service.d", "notes.txt"), (&user, "someone-else.service.d", "y.conf"), (&etc, "service.d", "all.conf")] {
+        for (dir, unit, file) in [
+            (&user, "control-center-share@.service.d", "old-krdp.conf"),
+            (&etc, "control-center-agent.service.d", "x.conf"),
+            (&user, "control-center-share@0.service.d", "notes.txt"),
+            (&user, "someone-else.service.d", "y.conf"),
+            (&etc, "service.d", "all.conf"),
+        ] {
             std::fs::create_dir_all(dir.join(unit)).unwrap();
             std::fs::write(dir.join(unit).join(file), "[Service]\n").unwrap();
         }
@@ -2175,7 +2338,10 @@ mod tests {
     #[test]
     fn avahi_edit_changes_only_the_two_publish_keys() {
         let on = avahi_publishing_on(STEAMOS);
-        assert_eq!(on, "# avahi\n[server]\nuse-ipv4=yes\ndisable-publishing=yes\n\n[publish]\n#disable-publishing=yes\ndisable-publishing=no\n disable-user-service-publishing=no\r\npublish-addresses=no\n\n[reflector]\ndisable-publishing=yes\n");
+        assert_eq!(
+            on,
+            "# avahi\n[server]\nuse-ipv4=yes\ndisable-publishing=yes\n\n[publish]\n#disable-publishing=yes\ndisable-publishing=no\n disable-user-service-publishing=no\r\npublish-addresses=no\n\n[reflector]\ndisable-publishing=yes\n"
+        );
         assert!(!avahi_publishing_off(&on));
         assert_eq!(avahi_publishing_on(&on), on, "doing it twice changes nothing");
         assert_eq!(avahi_publishing_on("[publish]\ndisable-publishing=no"), "[publish]\ndisable-publishing=no", "no newline at the end stays so");
@@ -2183,8 +2349,17 @@ mod tests {
     }
 
     fn seen_with(announce: bool, running: bool, conf: Option<&str>) -> Seen {
-        Seen { fw: (vec![], None), avahi_installed: true, avahi_running: running, conf: conf.map(str::to_owned), conf_path: "/etc/avahi/avahi-daemon.conf".into(),
-               backup: None, backup_path: "/etc/avahi/avahi-daemon.conf.before-command-center".into(), tmp: "/h/avahi-daemon.conf.new".into(), announce }
+        Seen {
+            fw: (vec![], None),
+            avahi_installed: true,
+            avahi_running: running,
+            conf: conf.map(str::to_owned),
+            conf_path: "/etc/avahi/avahi-daemon.conf".into(),
+            backup: None,
+            backup_path: "/etc/avahi/avahi-daemon.conf.before-command-center".into(),
+            tmp: "/h/avahi-daemon.conf.new".into(),
+            announce,
+        }
     }
 
     fn lines(f: &Fix) -> Vec<String> {
@@ -2199,8 +2374,14 @@ mod tests {
         assert!(notes.is_empty());
         assert_eq!(f.iter().map(|f| f.kind).collect::<Vec<_>>(), ["firewall", "avahi", "avahi"]);
         assert_eq!(lines(&f[1]), ["sudo systemctl enable --now avahi-daemon"]);
-        assert_eq!(lines(&f[2]), ["sudo cp -p /etc/avahi/avahi-daemon.conf /etc/avahi/avahi-daemon.conf.before-command-center",
-                                  "sudo install -m 644 /h/avahi-daemon.conf.new /etc/avahi/avahi-daemon.conf", "sudo systemctl restart avahi-daemon"]);
+        assert_eq!(
+            lines(&f[2]),
+            [
+                "sudo cp -p /etc/avahi/avahi-daemon.conf /etc/avahi/avahi-daemon.conf.before-command-center",
+                "sudo install -m 644 /h/avahi-daemon.conf.new /etc/avahi/avahi-daemon.conf",
+                "sudo systemctl restart avahi-daemon"
+            ]
+        );
         assert_eq!(f[2].write.as_ref().unwrap().1, avahi_publishing_on(STEAMOS));
         // the backup already there is kept, not copied over
         s.backup = Some("older".into());
@@ -2228,7 +2409,14 @@ mod tests {
         s.backup = Some(STEAMOS.into());
         let (f, notes) = undo(&s);
         assert!(notes.is_empty());
-        assert_eq!(lines(&f[0]), ["sudo cp -p /etc/avahi/avahi-daemon.conf.before-command-center /etc/avahi/avahi-daemon.conf", "sudo rm /etc/avahi/avahi-daemon.conf.before-command-center", "sudo systemctl restart avahi-daemon"]);
+        assert_eq!(
+            lines(&f[0]),
+            [
+                "sudo cp -p /etc/avahi/avahi-daemon.conf.before-command-center /etc/avahi/avahi-daemon.conf",
+                "sudo rm /etc/avahi/avahi-daemon.conf.before-command-center",
+                "sudo systemctl restart avahi-daemon"
+            ]
+        );
         assert!(f[0].changed.contains("left avahi-daemon enabled"));
         s.conf = Some(format!("{}# mine\n", avahi_publishing_on(STEAMOS)));
         let (f, notes) = undo(&s);

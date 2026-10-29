@@ -22,12 +22,12 @@ pub struct Viewer {
     pub screen: i32, // the screen column (1-based): the RDP monitor, and the key older spots were saved under
     pub w: u32,
     pub h: u32,
-    pub auto: bool, // autoconnect=yes (for cc-home, missing means no)
-    pub machine: String, // machine= (a paired host's name, which finds its password and certificate pin), else ""
-    pub label: String,   // label= (D-050), decoded: the user's name for this monitor, else ""
+    pub auto: bool,                    // autoconnect=yes (for cc-home, missing means no)
+    pub machine: String,               // machine= (a paired host's name, which finds its password and certificate pin), else ""
+    pub label: String,                 // label= (D-050), decoded: the user's name for this monitor, else ""
     pub pop: Option<(String, String)>, // for a popped-out window (popout.rs): its source monitor and uuid
-    pub vnc: Option<Vnc>, // proto=vnc (vnc.rs); None is RDP, the default
-    pub no_audio: bool, // audio=no: this machine's sound and microphone stay off (docs/audio.md); on by default
+    pub vnc: Option<Vnc>,              // proto=vnc (vnc.rs); None is RDP, the default
+    pub no_audio: bool,                // audio=no: this machine's sound and microphone stay off (docs/audio.md); on by default
 }
 
 /// A VNC monitor's options (docs/vnc.md): `proto=vnc [pin=<sha256 hex>] [tls=no]`.
@@ -55,10 +55,7 @@ fn parse_viewers(text: &str, wanted: &[String]) -> Vec<Viewer> {
         }
         let Ok(screen) = f[2].parse::<i32>() else { continue };
         let (user, hostport) = f[1].split_once('@').unwrap_or(("", f[1]));
-        let vnc = f[4..].contains(&"proto=vnc").then(|| Vnc {
-            pin: f[4..].iter().find_map(|o| o.strip_prefix("pin=")).unwrap_or("").to_ascii_lowercase(),
-            insecure: f[4..].contains(&"tls=no"),
-        });
+        let vnc = f[4..].contains(&"proto=vnc").then(|| Vnc { pin: f[4..].iter().find_map(|o| o.strip_prefix("pin=")).unwrap_or("").to_ascii_lowercase(), insecure: f[4..].contains(&"tls=no") });
         let default_port = if vnc.is_some() { "5900" } else { "3389" };
         let (host, port) = hostport.rsplit_once(':').unwrap_or((hostport, default_port));
         let (w, h) = f[3].split_once('x').unwrap_or(("1920", "1080"));
@@ -173,8 +170,7 @@ fn display_in(dir: &str, v: &Viewer, all: &[Viewer]) -> String {
 // An older file with only "spots" becomes the workspace "default". cc-home reads it the same way.
 
 fn read_home() -> serde_json::Value {
-    let json: serde_json::Value =
-        std::fs::read_to_string(config("home.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}));
+    let json: serde_json::Value = std::fs::read_to_string(config("home.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}));
     migrate(json)
 }
 
@@ -421,7 +417,8 @@ pub fn save_home_pose(name: &str, screen: Option<i32>, p: &Pose, height: f64, zo
 mod tests {
     #[test]
     fn viewers_read_autoconnect() {
-        let t = "# name  user@host:port\ndesk-wide  a@10.0.0.1:3400  2  3840x1080  curve=h  autoconnect=yes\nlaptop  a@10.0.0.2:3400  3  1920x1080  autoconnect=no\nold  a@10.0.0.3:3401  1  1440x2560\n";
+        let t =
+            "# name  user@host:port\ndesk-wide  a@10.0.0.1:3400  2  3840x1080  curve=h  autoconnect=yes\nlaptop  a@10.0.0.2:3400  3  1920x1080  autoconnect=no\nold  a@10.0.0.3:3401  1  1440x2560\n";
         let v = super::parse_viewers(t, &[]);
         assert_eq!(v.iter().map(|v| (v.name.as_str(), v.auto)).collect::<Vec<_>>(), [("desk-wide", true), ("laptop", false), ("old", false)]);
         assert_eq!((v[0].host.as_str(), v[0].port, v[0].screen, v[0].w), ("10.0.0.1", 3400, 3, 3840));
@@ -439,7 +436,10 @@ mod tests {
 
     #[test]
     fn one_session_per_machine_carries_audio() {
-        let v = super::parse_viewers("wide u@h:3410 1 1920x1080 machine=desk\nport u@h:3411 2 1080x1920 machine=desk\nlap u@l:3410 1 1920x1080 machine=lap\nvnc u@m:5900 1 1920x1080 machine=desk proto=vnc\n", &[]);
+        let v = super::parse_viewers(
+            "wide u@h:3410 1 1920x1080 machine=desk\nport u@h:3411 2 1080x1920 machine=desk\nlap u@l:3410 1 1920x1080 machine=lap\nvnc u@m:5900 1 1920x1080 machine=desk proto=vnc\n",
+            &[],
+        );
         let all = |up: [bool; 4]| v.iter().zip(up).collect::<Vec<_>>();
         let who = |p: &[(&super::Viewer, bool)]| v.iter().map(|m| super::carries_audio(m, p)).collect::<Vec<_>>();
         assert_eq!(who(&all([true; 4])), [true, false, true, false], "the lowest screen of each machine, never VNC");
@@ -569,7 +569,8 @@ mod tests {
         let back = super::pose_json(&p, 0.698);
         assert_eq!((back["curve"].as_f64(), back["vcurve"].as_f64()), (Some(0.0), Some(1.09)));
         let flat = super::pose_from(&serde_json::json!({"centre": [0, 1, -1], "yaw": 0, "pitch": 0, "roll": 0,
-                                                        "width": 1.2, "curve": 1.04})).unwrap();
+                                                        "width": 1.2, "curve": 1.04}))
+        .unwrap();
         assert!(!flat.vert && (flat.curve - 1.04).abs() < 1e-9);
     }
 

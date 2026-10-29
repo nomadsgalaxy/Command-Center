@@ -8,7 +8,7 @@
 //! - pairing by reading the key off the host's screen
 //!
 //! Output, progress lines and files match cc-home.py's.
-use super::{V3, cache, conf_dir, cross, degrees, die, dot, load, make_home, normalize, place, pose_from_axes, room_move, store, store_pose, target, viewers, Panels};
+use super::{Panels, V3, cache, conf_dir, cross, degrees, die, dot, load, make_home, normalize, place, pose_from_axes, room_move, store, store_pose, target, viewers};
 use crate::machine::{self, Fail, args, py_text, truthy};
 use cc_proto::agent::Client;
 use cc_proto::conf::{Json, py_float, py_round};
@@ -51,8 +51,7 @@ fn camera_users() -> Vec<String> {
         if !pid.file_name().to_string_lossy().bytes().all(|c| c.is_ascii_digit()) {
             continue;
         }
-        let holds = std::fs::read_dir(p.join("fd")).into_iter().flatten().flatten()
-            .any(|fd| std::fs::read_link(fd.path()).is_ok_and(|l| l == Path::new(cc_scan::camera::DEVICE)));
+        let holds = std::fs::read_dir(p.join("fd")).into_iter().flatten().flatten().any(|fd| std::fs::read_link(fd.path()).is_ok_and(|l| l == Path::new(cc_scan::camera::DEVICE)));
         if let Some(n) = holds.then(|| std::fs::read_to_string(p.join("comm")).ok()).flatten() {
             names.push(n.trim().to_owned());
         }
@@ -207,10 +206,15 @@ impl Mon {
         let Some(js) = js else { return json!({"bg": "wait", "tags": []}) };
         let (w, h) = self.size();
         let (w, h) = (w as f64, h as f64);
-        let tags: Vec<Value> = js["tags"].as_object().into_iter().flatten().map(|(i, c)| {
-            let f = |a: usize, b: usize| c[a][b].as_f64().unwrap_or(0.0);
-            json!([i.parse::<i64>().unwrap_or(0), iround(f(0, 0) * w), iround(f(0, 1) * h), iround((f(1, 0) - f(0, 0)) * w)])
-        }).collect();
+        let tags: Vec<Value> = js["tags"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(i, c)| {
+                let f = |a: usize, b: usize| c[a][b].as_f64().unwrap_or(0.0);
+                json!([i.parse::<i64>().unwrap_or(0), iround(f(0, 0) * w), iround(f(0, 1) * h), iround((f(1, 0) - f(0, 0)) * w)])
+            })
+            .collect();
         json!({"bg": "white", "tags": tags})
     }
     fn ids(js: &Value) -> Vec<usize> {
@@ -269,8 +273,11 @@ impl AgentView {
     fn put(&self, params: Value) {
         *self.last.lock().unwrap() = Some(params.clone());
         for attempt in 0..2 {
-            let r = self.c.lock().unwrap().call("tags", args(json!({"op": "show", "index": self.index, "params": params})), Duration::from_secs(10),
-                                                  |e| on_event(e, &self.peers, &self.gone))
+            let r = self
+                .c
+                .lock()
+                .unwrap()
+                .call("tags", args(json!({"op": "show", "index": self.index, "params": params})), Duration::from_secs(10), |e| on_event(e, &self.peers, &self.gone))
                 .unwrap_or_else(|e| json!({"ok": false, "error": e.to_string()})); // the agent went
             if truthy(&r["ok"]) {
                 return;
@@ -409,8 +416,7 @@ impl Align<'_> {
             if left.is_empty() {
                 break;
             }
-            let text = format!("calibrating tag sizes, look at each screen for a moment: {}",
-                               left.iter().map(|c| format!("{} {}/6", self.mons[c.k].name, c.n)).collect::<Vec<_>>().join(", "));
+            let text = format!("calibrating tag sizes, look at each screen for a moment: {}", left.iter().map(|c| format!("{} {}/6", self.mons[c.k].name, c.n)).collect::<Vec<_>>().join(", "));
             if text != said {
                 self.say(&text, left.iter().flat_map(|c| Mon::ids(&self.mons[c.k].frame)).collect());
                 said = text;
@@ -441,9 +447,13 @@ impl Align<'_> {
                     i += 1;
                     continue;
                 }
-                let ok: Vec<i64> = m.frame["sides_px"].as_object().into_iter().flatten()
+                let ok: Vec<i64> = m.frame["sides_px"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
                     .filter(|(t, _)| t.parse().ok().and_then(|t: usize| c.counts.get(&t)).copied().unwrap_or(0) as f64 >= 0.6 * c.n as f64)
-                    .filter_map(|(_, s)| s.as_i64()).collect();
+                    .filter_map(|(_, s)| s.as_i64())
+                    .collect();
                 // margin: read straight on, the grid has to read from a lean too
                 let side = ok.iter().min().map(|s| (*s as f64 * 1.35) as i64);
                 let (w, h) = m.size();
@@ -510,15 +520,14 @@ impl Align<'_> {
             cov: f64,
             base: f64,
         }
-        let mut state: Vec<St> = live.iter().map(|&k| St {
-            k, ids: Mon::ids(self.mons[k].dense.as_ref().unwrap_or(&Value::Null)).into_iter().collect(), seen: HashMap::new(), at: vec![],
-            pct: 0, told: None, cov: 0.0, base: 0.0,
-        }).collect();
+        let mut state: Vec<St> = live
+            .iter()
+            .map(|&k| St { k, ids: Mon::ids(self.mons[k].dense.as_ref().unwrap_or(&Value::Null)).into_iter().collect(), seen: HashMap::new(), at: vec![], pct: 0, told: None, cov: 0.0, base: 0.0 })
+            .collect();
         let want = self.want;
         let pct = |s: &mut St| {
             s.cov = s.seen.values().filter(|v| **v >= 2).count() as f64 / s.ids.len().max(1) as f64;
-            s.base = s.at.iter().enumerate().flat_map(|(i, a)| s.at[i + 1..].iter().map(move |b| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()))
-                .fold(0.0, f64::max);
+            s.base = s.at.iter().enumerate().flat_map(|(i, a)| s.at[i + 1..].iter().map(move |b| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt())).fold(0.0, f64::max);
             (100.0 * 1f64.min(s.cov / want.coverage).min(s.base / want.baseline).min(s.at.len() as f64 / want.samples)) as i64
         };
         let (mut said, deadline) = (String::new(), Instant::now() + Duration::from_secs_f64(want.capture_for));
@@ -527,8 +536,11 @@ impl Align<'_> {
             let names: Vec<String> = state.iter().map(|s| self.mons[s.k].name.clone()).collect();
             let out = self.escaped(&names);
             state.retain(|s| !out.contains(&self.mons[s.k].name));
-            let text = format!("{}: {}", if quick { "look at one of these monitors" } else { "move your head a little side to side" },
-                               state.iter().map(|s| format!("{} {}%", self.mons[s.k].name, s.pct)).collect::<Vec<_>>().join(", "));
+            let text = format!(
+                "{}: {}",
+                if quick { "look at one of these monitors" } else { "move your head a little side to side" },
+                state.iter().map(|s| format!("{} {}%", self.mons[s.k].name, s.pct)).collect::<Vec<_>>().join(", ")
+            );
             if text != said {
                 self.say(&text, state.iter().filter(|s| s.pct < 100).flat_map(|s| s.ids.iter().copied()).collect());
                 said = text;
@@ -549,8 +561,11 @@ impl Align<'_> {
                 s.pct = pct(s);
                 if s.told.is_none_or(|t| secs(t) >= 1.0) || s.pct >= 100 {
                     s.told = Some(Instant::now());
-                    progress("capture", &self.mons[s.k].name, &[("pct", s.pct.to_string()), ("samples", s.at.len().to_string()),
-                             ("baseline_cm", iround(s.base * 100.0).to_string()), ("coverage", iround(s.cov * 100.0).to_string())]);
+                    progress(
+                        "capture",
+                        &self.mons[s.k].name,
+                        &[("pct", s.pct.to_string()), ("samples", s.at.len().to_string()), ("baseline_cm", iround(s.base * 100.0).to_string()), ("coverage", iround(s.cov * 100.0).to_string())],
+                    );
                 }
             }
         }
@@ -611,14 +626,19 @@ impl Align<'_> {
 /// order and numbers), and returned the way the solve reads it.
 fn write_job(work: &Path, camera: &Json, placed: &[&Mon]) -> Value {
     let s = |p: PathBuf| Json::Str(p.to_string_lossy().into_owned());
-    let mons = placed.iter().map(|m| Json::Obj(vec![
-        ("name".into(), Json::Str(m.name.clone())),
-        ("screen".into(), Json::Num(m.screen.to_string())),
-        ("tags".into(), Json::Obj(m.order.iter().map(|k| (k.clone(), Json::from_serde(&m.tags[k]))).collect())),
-        ("mm".into(), Json::from_serde(&m.mm)),
-        ("curve".into(), Json::from_serde(&m.curve)),
-        ("radius".into(), Json::from_serde(&m.radius)),
-    ])).collect();
+    let mons = placed
+        .iter()
+        .map(|m| {
+            Json::Obj(vec![
+                ("name".into(), Json::Str(m.name.clone())),
+                ("screen".into(), Json::Num(m.screen.to_string())),
+                ("tags".into(), Json::Obj(m.order.iter().map(|k| (k.clone(), Json::from_serde(&m.tags[k]))).collect())),
+                ("mm".into(), Json::from_serde(&m.mm)),
+                ("curve".into(), Json::from_serde(&m.curve)),
+                ("radius".into(), Json::from_serde(&m.radius)),
+            ])
+        })
+        .collect();
     let job = Json::Obj(vec![
         ("visible".into(), s(work.join("visible.json"))),
         ("hidden".into(), s(work.join("hidden.json"))),
@@ -626,7 +646,8 @@ fn write_job(work: &Path, camera: &Json, placed: &[&Mon]) -> Value {
         ("screens".into(), Json::obj()),
         ("camera".into(), camera.clone()),
         ("monitors".into(), Json::Arr(mons)),
-    ]).dumps();
+    ])
+    .dumps();
     let _ = std::fs::write(work.join("job.json"), &job);
     serde_json::from_str(&job).unwrap_or(Value::Null)
 }
@@ -637,14 +658,42 @@ fn ready(v: &cc_proto::conf::Viewer, agent: &Result<Arc<Mutex<Client>>, machine:
     let name = &v.name;
     let index = (machine::port_of(v) - 3400).rem_euclid(10); // a paired Frame's slot k serves monitor m on 3400 + 10k + m
     progress("prepare", name, &[("step", "monitor".into())]);
-    let radius = v.opt("radius").filter(|r| { let (a, b) = r.split_once('.').unwrap_or((r, "0")); !a.is_empty() && !b.is_empty() && a.bytes().chain(b.bytes()).all(|c| c.is_ascii_digit()) })
-        .and_then(|r| r.parse::<f64>().ok()).map_or(Value::Null, |r| json!(r));
+    let radius = v
+        .opt("radius")
+        .filter(|r| {
+            let (a, b) = r.split_once('.').unwrap_or((r, "0"));
+            !a.is_empty() && !b.is_empty() && a.bytes().chain(b.bytes()).all(|c| c.is_ascii_digit())
+        })
+        .and_then(|r| r.parse::<f64>().ok())
+        .map_or(Value::Null, |r| json!(r));
     let curve = v.opt("curve").map_or(Value::Null, |c| json!(c));
-    let mut mon = Mon { name: name.clone(), screen: v.screen, mm: Value::Null, host: v.machine.clone(), output: String::new(), pixels: v.pixels, draw: None,
-                        tags: Map::new(), order: vec![], curve, radius, index, base: 0, frame: Value::Null, dense: None, dense_order: vec![], agent: None };
+    let mut mon = Mon {
+        name: name.clone(),
+        screen: v.screen,
+        mm: Value::Null,
+        host: v.machine.clone(),
+        output: String::new(),
+        pixels: v.pixels,
+        draw: None,
+        tags: Map::new(),
+        order: vec![],
+        curve,
+        radius,
+        index,
+        base: 0,
+        frame: Value::Null,
+        dense: None,
+        dense_order: vec![],
+        agent: None,
+    };
     match agent {
         Err(e) => {
-            println!("{name}: {}", match &e { Fail::NotPaired(m) | Fail::NoAgent(m) => m });
+            println!(
+                "{name}: {}",
+                match &e {
+                    Fail::NotPaired(m) | Fail::NoAgent(m) => m,
+                }
+            );
             progress("skipped", name, &[("why", e.state().into())]);
             Ok(None)
         }
@@ -697,8 +746,7 @@ fn look(names: &[String], want: Mode, quick: Option<&Json>) -> (Vec<String>, Pan
     let mut cam = open_camera(&work.join("hidden.json"));
     cam.gate(want.gate);
     let todo: Vec<&cc_proto::conf::Viewer> = viewers().iter().filter(|v| names.is_empty() || names.contains(&v.name)).collect();
-    cam.say(&format!("getting {} monitor{} ready: {}", todo.len(), if todo.len() == 1 { "" } else { "s" },
-                     todo.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(", ")));
+    cam.say(&format!("getting {} monitor{} ready: {}", todo.len(), if todo.len() == 1 { "" } else { "s" }, todo.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(", ")));
     cam.want(vec![]);
     // One connection per machine: its agent keeps only a Frame's newest one, so a second
     // connection for another of its monitors would close the first.
@@ -707,10 +755,15 @@ fn look(names: &[String], want: Mode, quick: Option<&Json>) -> (Vec<String>, Pan
     machines.dedup();
     let got: Vec<Result<Option<Mon>, String>> = std::thread::scope(|s| {
         let todo = &todo;
-        let hs: Vec<_> = machines.iter().map(|&m| s.spawn(move || {
-            let agent = machine::agent_for(m).map(|c| Arc::new(Mutex::new(c)));
-            todo.iter().filter(|v| v.machine == m).map(|v| ready(v, &agent)).collect::<Vec<_>>()
-        })).collect();
+        let hs: Vec<_> = machines
+            .iter()
+            .map(|&m| {
+                s.spawn(move || {
+                    let agent = machine::agent_for(m).map(|c| Arc::new(Mutex::new(c)));
+                    todo.iter().filter(|v| v.machine == m).map(|v| ready(v, &agent)).collect::<Vec<_>>()
+                })
+            })
+            .collect();
         hs.into_iter().flat_map(|h| h.join().unwrap_or_else(|_| vec![Err("getting a monitor ready failed".into())])).collect()
     });
     let mut mons = vec![];
@@ -854,8 +907,10 @@ fn fit(lines: &[String], sock: &Panels, cam_file: &Path, t0: Instant, times: &[(
             spots.setdefault("before-align", Json::obj()).set(&name, before.clone());
             let (mm, deg) = room_move(&before, &pose);
             if mm > 20.0 || deg > 1.0 {
-                println!("  {name}: moved {mm:.0} mm and {deg:.1} deg since its last scan; if the room moved (tracking re-anchored), \
-                          cc-home reanchor {name} moves everything else with it");
+                println!(
+                    "  {name}: moved {mm:.0} mm and {deg:.1} deg since its last scan; if the room moved (tracking re-anchored), \
+                          cc-home reanchor {name} moves everything else with it"
+                );
                 progress("reanchor", &name, &[("mm", iround(mm).to_string()), ("deg", py_float(py_round(deg, 1)))]);
             }
         }
@@ -1276,8 +1331,25 @@ mod tests {
 
     fn mon(name: &str, base: usize) -> Mon {
         let frame = cc_scan::pattern::frame(1920, 1080, base).json;
-        Mon { name: name.into(), screen: 1, mm: json!([600, 340]), host: "h".into(), output: "DP-1".into(), pixels: (1920, 1080), draw: None,
-              order: frame["tags"].as_object().unwrap().keys().cloned().collect(), tags: frame["tags"].as_object().cloned().unwrap(), dense_order: vec![], curve: Value::Null, radius: Value::Null, index: 0, base, frame, dense: None, agent: None }
+        Mon {
+            name: name.into(),
+            screen: 1,
+            mm: json!([600, 340]),
+            host: "h".into(),
+            output: "DP-1".into(),
+            pixels: (1920, 1080),
+            draw: None,
+            order: frame["tags"].as_object().unwrap().keys().cloned().collect(),
+            tags: frame["tags"].as_object().cloned().unwrap(),
+            dense_order: vec![],
+            curve: Value::Null,
+            radius: Value::Null,
+            index: 0,
+            base,
+            frame,
+            dense: None,
+            agent: None,
+        }
     }
 
     fn shot(at: Option<V3>, found: Vec<usize>, skip: bool) -> Answer {
@@ -1311,8 +1383,7 @@ mod tests {
         let mut eye = Fake { answers, said: said.clone() };
         let gone = Gone::default();
         gone.add("b", Some("tags-limit".into()));
-        let mut al = Align { eye: &mut eye, mons: vec![a, b], views: vec![View::None, View::None], gone, want: FAST, at: None, skip: false,
-                             calibrate_for: 5.0, times: vec![], quick: false };
+        let mut al = Align { eye: &mut eye, mons: vec![a, b], views: vec![View::None, View::None], gone, want: FAST, at: None, skip: false, calibrate_for: 5.0, times: vec![], quick: false };
         al.calibrate().unwrap();
         assert_eq!(al.mons[0].dense.as_ref().unwrap()["side_px"], dense["side_px"]);
         assert!(al.mons[1].dense.is_none(), "b's screen went");
@@ -1333,8 +1404,8 @@ mod tests {
         let answers: VecDeque<Answer> = (0..30).map(|k| shot(Some([k as f64 * 0.002, 1.6, 0.0]), vec![50, 51, 52, 53, 54], false)).collect();
         let said = Arc::new(Mutex::new(vec![]));
         let mut eye = Fake { answers, said: said.clone() };
-        let mut al = Align { eye: &mut eye, mons: vec![a, b], views: vec![View::None, View::None], gone: Gone::default(), want: QUICK, at: None,
-                             skip: false, calibrate_for: 5.0, times: vec![], quick: true };
+        let mut al =
+            Align { eye: &mut eye, mons: vec![a, b], views: vec![View::None, View::None], gone: Gone::default(), want: QUICK, at: None, skip: false, calibrate_for: 5.0, times: vec![], quick: true };
         al.corners();
         assert_eq!(al.mons[1].tag_params("dense.png")["tags"].as_array().unwrap().len(), 4, "corner tags only");
         al.capture().unwrap();
@@ -1353,13 +1424,13 @@ mod tests {
     #[test]
     fn skip_while_calibrating() {
         let mut eye = Fake { answers: [shot(None, vec![], true)].into_iter().collect(), said: Default::default() };
-        let mut al = Align { eye: &mut eye, mons: vec![mon("a", 0)], views: vec![View::None], gone: Gone::default(), want: FAST, at: None,
-                             skip: false, calibrate_for: 5.0, times: vec![], quick: false };
+        let mut al =
+            Align { eye: &mut eye, mons: vec![mon("a", 0)], views: vec![View::None], gone: Gone::default(), want: FAST, at: None, skip: false, calibrate_for: 5.0, times: vec![], quick: false };
         assert_eq!(al.run(Path::new("/nonexistent"), &Json::Null).unwrap(), None);
         // a camera that stops is an error (the caller cleans up, then says it)
         let mut eye = Fake { answers: VecDeque::new(), said: Default::default() };
-        let mut al = Align { eye: &mut eye, mons: vec![mon("a", 0)], views: vec![View::None], gone: Gone::default(), want: FAST, at: None,
-                             skip: false, calibrate_for: 5.0, times: vec![], quick: false };
+        let mut al =
+            Align { eye: &mut eye, mons: vec![mon("a", 0)], views: vec![View::None], gone: Gone::default(), want: FAST, at: None, skip: false, calibrate_for: 5.0, times: vec![], quick: false };
         assert!(al.run(Path::new("/nonexistent"), &Json::Null).unwrap_err().contains("the camera stopped"));
     }
 
@@ -1384,8 +1455,7 @@ mod tests {
         let cam = "[1078.2911645173851, 1075.2974390465752, 958.7035450492425, 537.0302171748745, 0.00141565644505503, -0.0006644649349442721, 0.00040261202487396676, -0.031907220096217256, 0.0011620463083413279, 0.00034898336601051495]";
         std::fs::write(dir.join("mirror-camera.json"), cam).unwrap();
         // name, pixels, grid side, mm (as an agent sends it), curve, radius
-        let spec = [("desk-wide", (5120i64, 1440i64), 150i64, json!([1193, 336]), json!("h"), json!(1.0)),
-                    ("desk-portrait", (1440, 2560), 97, json!([393.5, 698.0]), Value::Null, Value::Null)];
+        let spec = [("desk-wide", (5120i64, 1440i64), 150i64, json!([1193, 336]), json!("h"), json!(1.0)), ("desk-portrait", (1440, 2560), 97, json!([393.5, 698.0]), Value::Null, Value::Null)];
         let mut mons = vec![];
         for (k, (name, px, side, mm, curve, radius)) in spec.iter().enumerate() {
             let mut m = mon(name, 50 * k);
@@ -1417,8 +1487,12 @@ mod tests {
         let (host, frame) = (dir.join("host"), dir.join("frame"));
         let fk = cc_proto::agent::frame_key_or_new(&frame).unwrap();
         let hk = cc_proto::agent::frame_key_or_new(&dir.join("hk")).unwrap();
-        for (rel, text) in [("host-key", std::fs::read_to_string(dir.join("hk/frame-key")).unwrap()), ("host-id", "test-host".into()),
-                            ("trusted-frames/steam-frame.pub", b64(&fk.verifying_key().to_bytes())), ("frames/steam-frame.json", r#"{"slot": 1}"#.into())] {
+        for (rel, text) in [
+            ("host-key", std::fs::read_to_string(dir.join("hk/frame-key")).unwrap()),
+            ("host-id", "test-host".into()),
+            ("trusted-frames/steam-frame.pub", b64(&fk.verifying_key().to_bytes())),
+            ("frames/steam-frame.json", r#"{"slot": 1}"#.into()),
+        ] {
             std::fs::create_dir_all(host.join(rel).parent().unwrap()).unwrap();
             std::fs::write(host.join(rel), text).unwrap();
         }
@@ -1426,8 +1500,7 @@ mod tests {
         let root = env!("CARGO_MANIFEST_DIR").trim_end_matches("/crates/cc-home");
         let bin = std::env::var("CC_HOST_BIN").unwrap_or_else(|_| format!("{root}/target/aarch64-unknown-linux-musl/release/cc-host"));
         assert!(std::path::Path::new(&bin).exists(), "no {bin}: cargo build --release --target aarch64-unknown-linux-musl -p cc-host (or CC_HOST_BIN=)");
-        let mut fake = std::process::Command::new(&bin).args(["serve", "--fake", "--port", &port.to_string()])
-            .env("CC_CONF", &host).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let mut fake = std::process::Command::new(&bin).args(["serve", "--fake", "--port", &port.to_string()]).env("CC_CONF", &host).stdout(std::process::Stdio::piped()).spawn().unwrap();
         let mut out = std::io::BufReader::new(fake.stdout.take().unwrap());
         let mut line = String::new();
         std::io::BufRead::read_line(&mut out, &mut line).unwrap();
@@ -1456,7 +1529,7 @@ mod tests {
     }
 
     /// cc-home.py's selftest: a known panel's corners give the panel back, and the refit board stands
-/// ahead of the head.
+    /// ahead of the head.
     #[test]
     fn geometry() {
         super::super::selftest();

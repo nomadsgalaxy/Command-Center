@@ -267,12 +267,7 @@ fn run() -> Result<(), String> {
 fn report(s: &Session) {
     let g: Vec<_> = s.globals.iter().map(|g| format!("{} v{}", g.interface, g.version)).collect();
     eprintln!("globals: {}", g.join(", "));
-    eprintln!(
-        "grant: {:?}: screencast {}, fake input {}",
-        s.grant,
-        if s.screencast.is_some() { "bound" } else { "missing" },
-        if s.fake.is_some() { "bound" } else { "missing" }
-    );
+    eprintln!("grant: {:?}: screencast {}, fake input {}", s.grant, if s.screencast.is_some() { "bound" } else { "missing" }, if s.fake.is_some() { "bound" } else { "missing" });
     let o: Vec<_> = s.outputs.lock().unwrap().iter().map(|o| format!("{} {}x{}+{}+{}", o.name, o.w, o.h, o.x, o.y)).collect();
     eprintln!("outputs: {}", o.join(", "));
 }
@@ -345,23 +340,13 @@ const SCRIPT: &str = r#"workspace.windowAdded.connect(function (w) {
 impl Watch {
     fn start(address: &str) -> Result<Watch, String> {
         let e = |e: zbus::Error| format!("--watch: {e}");
-        let bus = zbus::blocking::connection::Builder::address(address)
-            .map_err(e)?
-            .name("org.controlcenter.Spike")
-            .map_err(e)?
-            .serve_at("/", Events)
-            .map_err(e)?
-            .build()
-            .map_err(e)?;
+        let bus = zbus::blocking::connection::Builder::address(address).map_err(e)?.name("org.controlcenter.Spike").map_err(e)?.serve_at("/", Events).map_err(e)?.build().map_err(e)?;
         let path = format!("{}/.cache/control-center/cc-spike-watch.js", std::env::var("HOME").unwrap_or_default());
         std::fs::write(&path, SCRIPT).map_err(|err| format!("--watch: {path}: {err}"))?;
         let w = Watch { bus };
         w.unload();
-        let id: i32 = w
-            .bus
-            .call_method(Some("org.kde.KWin"), "/Scripting", Some("org.kde.kwin.Scripting"), "loadScript", &(path.as_str(), "cc-spike-watch"))
-            .and_then(|m| m.body().deserialize())
-            .map_err(e)?;
+        let id: i32 =
+            w.bus.call_method(Some("org.kde.KWin"), "/Scripting", Some("org.kde.kwin.Scripting"), "loadScript", &(path.as_str(), "cc-spike-watch")).and_then(|m| m.body().deserialize()).map_err(e)?;
         w.bus.call_method(Some("org.kde.KWin"), format!("/Scripting/Script{id}").as_str(), Some("org.kde.kwin.Script"), "run", &()).map_err(e)?;
         eprintln!("watch: script {id} loaded");
         Ok(w)

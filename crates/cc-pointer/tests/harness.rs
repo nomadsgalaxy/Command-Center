@@ -120,8 +120,7 @@ unsafe extern "C" fn host_added(this: This, serial: *const c_char, class: i32, d
 unsafe extern "C" fn host_pose(this: This, id: u32, pose: *const DriverPose, size: u32) {
     push(this, format!("TrackedDevicePoseUpdated {id} size={size} {:?}", unsafe { *pose }));
 }
-static HOST_VTBL: HostVtbl =
-    HostVtbl { tracked_device_added: host_added, tracked_device_pose_updated: host_pose, rest: [trap; 10] };
+static HOST_VTBL: HostVtbl = HostVtbl { tracked_device_added: host_added, tracked_device_pose_updated: host_pose, rest: [trap; 10] };
 
 #[repr(C)]
 struct PropertiesVtbl {
@@ -148,12 +147,8 @@ unsafe extern "C" fn props_container(this: This, id: u32) -> u64 {
     push(this, format!("TrackedDeviceToPropertyContainer {id}"));
     0x100 + id as u64
 }
-static PROPS_VTBL: PropertiesVtbl = PropertiesVtbl {
-    read_property_batch: trap,
-    write_property_batch: props_write,
-    get_prop_error_name_from_enum: trap,
-    tracked_device_to_property_container: props_container,
-};
+static PROPS_VTBL: PropertiesVtbl =
+    PropertiesVtbl { read_property_batch: trap, write_property_batch: props_write, get_prop_error_name_from_enum: trap, tracked_device_to_property_container: props_container };
 
 #[repr(C)]
 struct InputVtbl {

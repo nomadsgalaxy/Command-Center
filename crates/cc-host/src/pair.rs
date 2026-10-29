@@ -5,6 +5,7 @@
 //! pairing connections come through pairing.sock (0600) instead, a socket only this user can open.
 //!   cc-host pair [--test]   --test: cc-home selftest-pair's host (key 123456, one monitor, no screen or units)
 use crate::agent::{host_id, host_key, urandom, write_private};
+use crate::draw;
 use crate::platform::{Platform, mono};
 use crate::screen::{Ev, Key, Screen};
 use base64::Engine;
@@ -13,9 +14,8 @@ use cc_proto::pair::{Outcome, host_one};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
-use std::os::unix::net::UnixListener;
 use std::net::TcpListener;
-use crate::draw;
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, mpsc};
@@ -55,22 +55,36 @@ fn cert_sha256(conf: &Path) -> Result<String, String> {
 /// one), a fresh password, the ports of the shared monitors and the host's id. None means every slot is taken.
 fn reply(conf: &Path, plat: &dyn Platform, test: bool, frame: &str) -> Result<Value, String> {
     let frames = conf.join("frames");
-    let taken: Vec<(i64, String)> = std::fs::read_dir(&frames).into_iter().flatten().flatten().filter_map(|e| {
-        let name = e.file_name().into_string().ok()?;
-        let f = name.strip_suffix(".json")?.to_owned();
-        let v: Value = serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok()?;
-        Some((v["slot"].as_i64()?, f))
-    }).collect();
-    let slot = taken.iter().find(|(_, f)| f == frame).map(|(k, _)| *k)
-        .or_else(|| SLOTS.clone().find(|k| !taken.iter().any(|(t, _)| t == k)))
-        .ok_or("full")?;
-    let mons: Vec<Value> = plat.monitors().iter().map(|m| {
-        let i = m["index"].as_i64().unwrap_or(0);
-        json!({"index": i, "output": m["output"], "width": m["width"], "height": m["height"], "port": 3400 + 10 * slot + i})
-    }).collect();
+    let taken: Vec<(i64, String)> = std::fs::read_dir(&frames)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let f = name.strip_suffix(".json")?.to_owned();
+            let v: Value = serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok()?;
+            Some((v["slot"].as_i64()?, f))
+        })
+        .collect();
+    let slot = taken.iter().find(|(_, f)| f == frame).map(|(k, _)| *k).or_else(|| SLOTS.clone().find(|k| !taken.iter().any(|(t, _)| t == k))).ok_or("full")?;
+    let mons: Vec<Value> = plat
+        .monitors()
+        .iter()
+        .map(|m| {
+            let i = m["index"].as_i64().unwrap_or(0);
+            json!({"index": i, "output": m["output"], "width": m["width"], "height": m["height"], "port": 3400 + 10 * slot + i})
+        })
+        .collect();
     const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
     let password: String = (0..24).map(|_| ALPHABET[below(ALPHABET.len() as u32) as usize] as char).collect();
-    let cert = if test { "ab".repeat(32) } else { cert_sha256(conf).map_err(|e| { eprintln!("cc-host pair: {e}"); "no-cert".to_owned() })? };
+    let cert = if test {
+        "ab".repeat(32)
+    } else {
+        cert_sha256(conf).map_err(|e| {
+            eprintln!("cc-host pair: {e}");
+            "no-cert".to_owned()
+        })?
+    };
     Ok(json!({"user": format!("cc-{frame}"), "password": password, "slot": slot, "cert_sha256": cert, "monitors": mons, "id": host_id(conf)}))
 }
 

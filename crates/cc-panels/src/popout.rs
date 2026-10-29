@@ -8,8 +8,8 @@
 //! The card's x or `viewer disconnect` stops the window's server and frees the slot. The window
 //! closing on the host does the same, after showing "window closed" for a few seconds.
 use crate::geometry::{Placement, Pose, angles, panel_matrix};
-use crate::limits::POPOUT_WIDTH;
 use crate::kvm::{KVM, Kvm};
+use crate::limits::POPOUT_WIDTH;
 use crate::{Panel, QUIT, Source, config, panel, panels};
 use std::sync::Mutex;
 use std::sync::atomic::Ordering::Relaxed;

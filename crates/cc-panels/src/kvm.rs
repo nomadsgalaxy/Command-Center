@@ -163,13 +163,13 @@ pub struct Kvm {
     pub place: Vec<Placement>, // where each panel is (the pointer's geometry)
     pub ppd: Vec<f64>,         // each panel's pixels per degree from where the head is now
     devices: Vec<Device>,
-    pub engaged: bool, // keyboards are ours and type into a remote (click to type, or a Right Ctrl tap)
-    yielded: bool,     // a game is running, so the mice are the Frame's too, not only the keyboards
-    pub awake: bool,   // the cursor shows (mouse motion wakes it, IDLE puts it to sleep)
-    pub active: usize, // the panel the cursor is on, where mouse input goes
-    pub kbd: usize,    // the panel you clicked last, where typing goes
+    pub engaged: bool,   // keyboards are ours and type into a remote (click to type, or a Right Ctrl tap)
+    yielded: bool,       // a game is running, so the mice are the Frame's too, not only the keyboards
+    pub awake: bool,     // the cursor shows (mouse motion wakes it, IDLE puts it to sleep)
+    pub active: usize,   // the panel the cursor is on, where mouse input goes
+    pub kbd: usize,      // the panel you clicked last, where typing goes
     pub kbd_shell: bool, // ...unless that was Plasma's bar, then typing goes to the session (Kickoff's search)
-    pub x: f64, // the cursor in the active panel's pixels (where it last was on a panel)
+    pub x: f64,          // the cursor in the active panel's pixels (where it last was on a panel)
     pub y: f64,
     // The 3D pointer: a ray from where the head was at the last
     // recenter (anchor), turned by the mouse (yaw, pitch). It lands on the panel it meets as
@@ -182,7 +182,7 @@ pub struct Kvm {
     // panel covers it, and the cursor floats on it (free). Its left clicks get counted for the
     // taskbar to pick up, never sent through SteamVR's laser.
     pub bar: Option<Placement>,
-    pub bar_inset: f64, // its clear laser reach around the frame (m), which isn't the cursor's
+    pub bar_inset: f64,             // its clear laser reach around the frame (m), which isn't the cursor's
     pub on_bar: Option<(f64, f64)>, // where the cursor is on it: u right, v up from its middle (m)
     pub bar_clicks: u32,
     // The Machines or Preferences window (grab.rs Extra) while it's shown, and its card's
@@ -199,12 +199,12 @@ pub struct Kvm {
     // next_event: extra_at, extra_mouse).
     pub extra: Option<(Placement, [f64; 3])>,
     pub on_extra: bool,
-    on_card: bool, // the cursor is on the active panel's card (to_card)
-    card_held: bool, // left button pressed on a card or the Extra with no laser, so grab has it
+    on_card: bool,                      // the cursor is on the active panel's card (to_card)
+    card_held: bool,                    // left button pressed on a card or the Extra with no laser, so grab has it
     pub card_mouse: Vec<(usize, bool)>, // ...its presses (slot, or usize::MAX for the Extra) and releases, for grab.rs poll
-    pub card_wheel: f64, // ...and the wheel's notches meanwhile (push, bend, zoom)
-    extra_held: bool, // left button pressed on the Extra's window with no laser
-    pub extra_mouse: Vec<bool>, // ...its presses and releases, for ui.rs next_event
+    pub card_wheel: f64,                // ...and the wheel's notches meanwhile (push, bend, zoom)
+    extra_held: bool,                   // left button pressed on the Extra's window with no laser
+    pub extra_mouse: Vec<bool>,         // ...its presses and releases, for ui.rs next_event
     // Each panel's card margins, same idea (grab.rs): past its picture but on its card, and
     // nearer than the panels behind, the ray takes it (like a pop-out's frame in front of its
     // monitor).
@@ -213,10 +213,10 @@ pub struct Kvm {
     // and wheel go to the session at that point.
     pub plasma: Option<Placement>,
     on_plasma: bool,
-    shell_buttons: u32, // mouse buttons held there
-    plasma_at: (f64, f64), // the cursor's point in the session there, as last sent
+    shell_buttons: u32,              // mouse buttons held there
+    plasma_at: (f64, f64),           // the cursor's point in the session there, as last sent
     sent: Option<(usize, i32, i32)>, // the last move sent (re-landing every frame only sends changes)
-    depth: f64, // how far along the ray the last panel was, so off panels the cursor floats that far out
+    depth: f64,                      // how far along the ray the last panel was, so off panels the cursor floats that far out
     // Eye tracking: the panel you're looking at owns the pointer. Mouse motion can't take it
     // past that panel's edges, and looking at another panel moves it there on the next motion.
     // A quick glance (under GAZE_DWELL) or a look between panels changes nothing.
@@ -224,20 +224,20 @@ pub struct Kvm {
     pub focus: Option<usize>,
     gaze_on: Option<(usize, Instant, f64, f64)>, // the panel under the gaze now, since when, and u, v
     gaze_at: Option<Instant>,                    // the last valid sample
-    pub sensitivity: f64, // degrees per mouse count
-    keys: Vec<u16>,       // keys (evdev codes) held down on the typing panel's machine or window
-    field: Option<&'static str>,       // the window whose text field has the keyboards (focus_field)
-    field_keys: Vec<(u16, i32, bool)>, // ...and keys typed there since it last checked: code, value, Shift
-    field_held: Vec<u16>,              // keys pressed there, so their repeats and release stay out of a remote
-    buttons: u32,         // mouse buttons held there
-    beam_buttons: u32,    // mouse buttons held through the SteamVR laser (off our panels)
-    beam_depth: f64,      // ...and how far out the cursor was then, which it keeps until the release
-    dx: f64,              // motion since the last report
+    pub sensitivity: f64,                        // degrees per mouse count
+    keys: Vec<u16>,                              // keys (evdev codes) held down on the typing panel's machine or window
+    field: Option<&'static str>,                 // the window whose text field has the keyboards (focus_field)
+    field_keys: Vec<(u16, i32, bool)>,           // ...and keys typed there since it last checked: code, value, Shift
+    field_held: Vec<u16>,                        // keys pressed there, so their repeats and release stay out of a remote
+    buttons: u32,                                // mouse buttons held there
+    beam_buttons: u32,                           // mouse buttons held through the SteamVR laser (off our panels)
+    beam_depth: f64,                             // ...and how far out the cursor was then, which it keeps until the release
+    dx: f64,                                     // motion since the last report
     dy: f64,
-    last_used: Option<Instant>,       // the mouse's last use while awake, for the idle sleep
+    last_used: Option<Instant>,      // the mouse's last use while awake, for the idle sleep
     typed: Option<Instant>,          // the last key typed into a panel
     pending: (f64, Option<Instant>), // motion counted toward waking, and since when
-    rctrl: Option<Instant>, // when Right Ctrl went down, to spot the tap
+    rctrl: Option<Instant>,          // when Right Ctrl went down, to spot the tap
     rctrl_clean: bool,
     shift: bool,
     pub moves: u32, // sent since the last status line
@@ -470,8 +470,7 @@ impl Kvm {
     /// keyboard or another panel meanwhile.
     pub fn working(&self, i: usize) -> bool {
         let recent = |t: Option<Instant>| t.is_some_and(|t| t.elapsed() < WORKING);
-        (self.awake && self.free.is_none() && self.active == i && (self.buttons != 0 || recent(self.last_used)))
-            || (self.engaged && !self.kbd_shell && self.kbd == i && recent(self.typed))
+        (self.awake && self.free.is_none() && self.active == i && (self.buttons != 0 || recent(self.last_used))) || (self.engaged && !self.kbd_shell && self.kbd == i && recent(self.typed))
     }
 
     /// Awake means the cursor shows, straight ahead when it wakes. The mice are ours either way.
@@ -727,7 +726,13 @@ impl Kvm {
         if self.shell_buttons != 0 {
             if let Some(pl) = self.plasma
                 && let Some((t, u, v)) = pl.hit(&o, &d)
-                && let Some(at) = { let (fx, fy) = { let (cu, cv) = pl.clamped(u, v); pl.fraction(cu, cv) }; plasmabar::at(fx, fy) }
+                && let Some(at) = {
+                    let (fx, fy) = {
+                        let (cu, cv) = pl.clamped(u, v);
+                        pl.fraction(cu, cv)
+                    };
+                    plasmabar::at(fx, fy)
+                }
             {
                 (self.on_plasma, self.free, self.depth) = (true, Some(point(t)), t);
                 self.to_plasma(at);
@@ -765,7 +770,10 @@ impl Kvm {
         if keep.is_none()
             && let Some(pl) = self.plasma
             && let Some((t, u, v)) = geometry::bar_hit(Some(pl), 0.0, &o, &d, hit)
-            && let Some(at) = { let (fx, fy) = pl.fraction(u, v); plasmabar::at(fx, fy) }
+            && let Some(at) = {
+                let (fx, fy) = pl.fraction(u, v);
+                plasmabar::at(fx, fy)
+            }
         {
             (self.on_plasma, self.free, self.depth) = (true, Some(point(t)), t);
             self.to_plasma(at);
@@ -1149,7 +1157,11 @@ impl Kvm {
                     self.set_engaged(true, &format!("clicked {}", panel(self.active).v.name));
                 }
             }
-            if value != 0 { self.buttons |= b } else { self.buttons &= !b }
+            if value != 0 {
+                self.buttons |= b
+            } else {
+                self.buttons &= !b
+            }
             panel(self.active).mouse(b | if value != 0 { PTR_FLAGS_DOWN } else { 0 }, self.x, self.y);
             if self.buttons == 0 {
                 self.reaim(); // a drag let go between monitors: put the ray back on the cursor
@@ -1438,7 +1450,21 @@ mod tests {
     #[test]
     fn a_held_drag_goes_on_to_another_monitor_of_its_machine() {
         use super::Viewer;
-        let v = |host: &str, user: &str, machine: &str| Viewer { name: String::new(), user: user.into(), host: host.into(), port: 0, screen: 0, w: 1920, h: 1080, auto: false, machine: machine.into(), label: String::new(), pop: None, vnc: None, no_audio: false };
+        let v = |host: &str, user: &str, machine: &str| Viewer {
+            name: String::new(),
+            user: user.into(),
+            host: host.into(),
+            port: 0,
+            screen: 0,
+            w: 1920,
+            h: 1080,
+            auto: false,
+            machine: machine.into(),
+            label: String::new(),
+            pop: None,
+            vnc: None,
+            no_audio: false,
+        };
         let (a, b) = (v("desk", "me", ""), v("desk", "me", ""));
         assert_eq!(super::drag_to((0, (&a, false)), Some((1, (&b, false)))), 1, "same host and user: on to it");
         assert_eq!(super::drag_to((0, (&a, false)), None), 0, "between panels: stays, clamped");
@@ -1456,7 +1482,21 @@ mod tests {
     #[test]
     fn a_held_drag_goes_on_to_another_window_panel() {
         use super::Viewer;
-        let win = |n: u32| Viewer { name: format!("win-{n}"), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1280, h: 800, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None, no_audio: false };
+        let win = |n: u32| Viewer {
+            name: format!("win-{n}"),
+            user: String::new(),
+            host: String::new(),
+            port: 0,
+            screen: 0,
+            w: 1280,
+            h: 800,
+            auto: false,
+            machine: String::new(),
+            label: String::new(),
+            pop: None,
+            vnc: None,
+            no_audio: false,
+        };
         let desk = Viewer { host: "desk".into(), ..win(0) };
         let (a, b) = (win(1), win(2));
         assert_eq!(super::drag_to((0, (&a, true)), Some((1, (&b, true)))), 1, "another window: on to it (a tab into another browser)");

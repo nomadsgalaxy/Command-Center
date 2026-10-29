@@ -307,11 +307,7 @@ mod tests {
 
     fn chans() -> Vec<Chan> {
         // the desktop has two monitors (panels 0 and 1), the laptop one (2) with no file support
-        vec![
-            Chan { panel: 0, machine: "desktop".into(), files: true },
-            Chan { panel: 1, machine: "desktop".into(), files: true },
-            Chan { panel: 2, machine: "laptop".into(), files: false },
-        ]
+        vec![Chan { panel: 0, machine: "desktop".into(), files: true }, Chan { panel: 1, machine: "desktop".into(), files: true }, Chan { panel: 2, machine: "laptop".into(), files: false }]
     }
 
     fn text(s: &str) -> Option<Vec<u8>> {

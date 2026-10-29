@@ -289,7 +289,11 @@ impl Prefs {
         if show != self.shown {
             self.shown = show;
             grab.set_extra_shown(show);
-            if show { call!(ov, ShowOverlay, h) } else { call!(ov, HideOverlay, h) };
+            if show {
+                call!(ov, ShowOverlay, h)
+            } else {
+                call!(ov, HideOverlay, h)
+            };
         }
         if show {
             self.paint(h, windows, bar);
@@ -492,13 +496,16 @@ mod tests {
         ];
         let mut cases: Vec<(Key, Key)> = hovers.into_iter().map(|(a, b)| (key(a), key(b))).collect();
         let h = Some(Hit::Taskbar(0));
-        cases.extend([
-            Key { taskbar: 0, ..key(h) },
-            Key { pct: 150, ..key(h) },
-            Key { left: true, ..key(None) },
-            Key { precise: false, ..key(None) },
-            Key { status: "settings.json: a much longer error than it was".into(), ..key(Some(Hit::Plus)) },
-        ].map(|b| (key(h), b)));
+        cases.extend(
+            [
+                Key { taskbar: 0, ..key(h) },
+                Key { pct: 150, ..key(h) },
+                Key { left: true, ..key(None) },
+                Key { precise: false, ..key(None) },
+                Key { status: "settings.json: a much longer error than it was".into(), ..key(Some(Hit::Plus)) },
+            ]
+            .map(|b| (key(h), b)),
+        );
         let draw = |k: &Key| {
             let sc = Scene { k, p, ui: &ui };
             grab::draw(tw, th, |x, y| sc.pixel(x / s, y / s))

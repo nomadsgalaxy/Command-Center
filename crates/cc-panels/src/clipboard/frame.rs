@@ -41,9 +41,9 @@ struct Frame {
     qh: QueueHandle<St>,
     mgr: ZwlrDataControlManagerV1,
     dev: ZwlrDataControlDeviceV1,
-    offer: Option<Offer>,  // the current selection, when it's someone else's
-    ours: Option<Source>,  // our selection, until KWin cancels it (someone copied)
-    starting: bool,        // the selection KWin sends on connecting was there before us, so it's not a copy
+    offer: Option<Offer>, // the current selection, when it's someone else's
+    ours: Option<Source>, // our selection, until KWin cancels it (someone copied)
+    starting: bool,       // the selection KWin sends on connecting was there before us, so it's not a copy
 }
 
 static FRAME: Mutex<Option<Frame>> = Mutex::new(None);

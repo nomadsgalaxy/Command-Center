@@ -40,13 +40,7 @@ impl Sample {
         let a = v.as_array().filter(|a| a.len() == 12)?;
         let i = |k: usize| a[k].as_i64();
         let s = |k: usize| i(k).and_then(|n| i16::try_from(n).ok());
-        Some(Sample {
-            seq: u32::try_from(i(0)?).ok()?,
-            t_us: u64::try_from(i(1)?).ok()?,
-            accel: [s(2)?, s(3)?, s(4)?],
-            gyro: [s(5)?, s(6)?, s(7)?],
-            quat: [s(8)?, s(9)?, s(10)?, s(11)?],
-        })
+        Some(Sample { seq: u32::try_from(i(0)?).ok()?, t_us: u64::try_from(i(1)?).ok()?, accel: [s(2)?, s(3)?, s(4)?], gyro: [s(5)?, s(6)?, s(7)?], quat: [s(8)?, s(9)?, s(10)?, s(11)?] })
     }
 
     pub fn accel_g(&self) -> [f64; 3] {

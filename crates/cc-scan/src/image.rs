@@ -113,12 +113,14 @@ pub fn clahe(g: &Gray, clip: f64, tiles: usize) -> Gray {
     }
     let mut out = Gray::new(g.w, g.h);
     let (inv_tw, inv_th) = (1.0f32 / tw as f32, 1.0f32 / th as f32);
-    let xs: Vec<(usize, usize, f32)> = (0..g.w).map(|x| {
-        let txf = (x as f32).mul_add(inv_tw, -0.5); // OpenCV's build fuses these multiply-adds on aarch64.
-        let t1 = txf.floor() as isize;
-        let xa = txf - t1 as f32;
-        ((t1.max(0)) as usize, ((t1 + 1) as usize).min(tiles - 1), xa)
-    }).collect();
+    let xs: Vec<(usize, usize, f32)> = (0..g.w)
+        .map(|x| {
+            let txf = (x as f32).mul_add(inv_tw, -0.5); // OpenCV's build fuses these multiply-adds on aarch64.
+            let t1 = txf.floor() as isize;
+            let xa = txf - t1 as f32;
+            ((t1.max(0)) as usize, ((t1 + 1) as usize).min(tiles - 1), xa)
+        })
+        .collect();
     for y in 0..g.h {
         let tyf = (y as f32).mul_add(inv_th, -0.5);
         let t1 = tyf.floor() as isize;

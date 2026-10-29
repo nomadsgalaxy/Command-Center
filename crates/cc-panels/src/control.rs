@@ -179,8 +179,20 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
             for (p, l) in panels().iter().zip(&k.place).filter(|(p, _)| p.live()) {
                 out += &format!(
                     "\n{} {:.4} {:.4} {:.4}  {:.5} {:.5} {:.5}  {:.5} {:.5} {:.5}  {:.4} {:.4} {:.3} {:.3}",
-                    p.spot_key(), l.c[0], l.c[1], l.c[2], l.x[0], l.x[1], l.x[2], l.z[0], l.z[1], l.z[2], l.width, l.height,
-                    if l.vert { 0.0 } else { l.curve }, if l.vert { l.curve } else { 0.0 } // curve, vcurve
+                    p.spot_key(),
+                    l.c[0],
+                    l.c[1],
+                    l.c[2],
+                    l.x[0],
+                    l.x[1],
+                    l.x[2],
+                    l.z[0],
+                    l.z[1],
+                    l.z[2],
+                    l.width,
+                    l.height,
+                    if l.vert { 0.0 } else { l.curve },
+                    if l.vert { l.curve } else { 0.0 } // curve, vcurve
                 );
             }
             out
@@ -191,10 +203,7 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
                 return "error usage: place <name> cx cy cz yaw pitch roll width curve [height [vcurve]]".into();
             }
             let vcurve = n.get(9).copied().filter(|&v| v > 0.0);
-            let pose = Pose {
-                centre: [n[0], n[1], n[2]], yaw: n[3], pitch: n[4], roll: n[5], width: n[6],
-                curve: vcurve.unwrap_or(n[7]), vert: vcurve.is_some(),
-            };
+            let pose = Pose { centre: [n[0], n[1], n[2]], yaw: n[3], pitch: n[4], roll: n[5], width: n[6], curve: vcurve.unwrap_or(n[7]), vert: vcurve.is_some() };
             if words[1] == "taskbar" {
                 bar.place(&pose);
                 return "ok".into();
@@ -274,11 +283,14 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
                 if win == "machines" && w == "show" {
                     machines::scope(None); // back to the active workspace's
                 }
-                show(match win {
-                    "prefs" => &prefs::OPEN,
-                    "workspace" => &workspace::OPEN,
-                    _ => &machines::OPEN,
-                }, w == "show");
+                show(
+                    match win {
+                        "prefs" => &prefs::OPEN,
+                        "workspace" => &workspace::OPEN,
+                        _ => &machines::OPEN,
+                    },
+                    w == "show",
+                );
                 format!("ok {win} {w}")
             }
             _ => format!("error usage: {win} show|hide"),
@@ -347,9 +359,6 @@ mod tests {
     #[test]
     fn head_reply_is_twelve_row_major_numbers_then_milliseconds() {
         let m = [[1.0, 0.0, 0.0, 0.25], [0.0, 1.0, 0.0, 1.7], [0.0, 0.0, 1.0, -0.5]];
-        assert_eq!(
-            head_line(&m, 1234),
-            "ok 1.000000 0.000000 0.000000 0.250000 0.000000 1.000000 0.000000 1.700000 0.000000 0.000000 1.000000 -0.500000 1234"
-        );
+        assert_eq!(head_line(&m, 1234), "ok 1.000000 0.000000 0.000000 0.250000 0.000000 1.000000 0.000000 1.700000 0.000000 0.000000 1.000000 -0.500000 1234");
     }
 }

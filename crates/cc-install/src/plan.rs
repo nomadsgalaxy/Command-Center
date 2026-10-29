@@ -146,7 +146,11 @@ pub fn plan(f: &Facts, action: Action, share: &[usize], announce: bool, work: &P
             let sh = f.repo.join("install.sh");
             vec![
                 step("Get the code", code, "Check the Frame's Wi-Fi, then run the installer again."),
-                step("Set up the build container (the first time takes a while)", run(&sh, &["container"]), "The log says what failed. Run the installer again: a download that broke halfway usually works the second time."),
+                step(
+                    "Set up the build container (the first time takes a while)",
+                    run(&sh, &["container"]),
+                    "The log says what failed. Run the installer again: a download that broke halfway usually works the second time.",
+                ),
                 step("Build cc-home", run(&sh, &["cc-home"]), again),
                 step("Build Command Center: FreeRDP, the Desktop and the pointer", run(&f.repo.join("cc-home"), &["install"]), again),
                 step("Add Command Center to the SteamVR launcher", run(&f.repo.join("cc-home"), &["install", "desktop"]), again),
@@ -161,7 +165,11 @@ pub fn plan(f: &Facts, action: Action, share: &[usize], announce: bool, work: &P
             let mut cmd = vec![host.display().to_string()];
             cmd.extend(args);
             vec![
-                step("Download cc-host", Do::Download(host), "Check that this machine is online, then run the installer again. If the checksum doesn't match twice, the release itself is broken: please open an issue on GitHub."),
+                step(
+                    "Download cc-host",
+                    Do::Download(host),
+                    "Check that this machine is online, then run the installer again. If the checksum doesn't match twice, the release itself is broken: please open an issue on GitHub.",
+                ),
                 step("Install and start cc-host", Do::Run(cmd), "The log says what failed. Fix that and run the installer again."),
             ]
         }
@@ -312,7 +320,20 @@ pub fn look() -> Facts {
     };
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_owned();
     let repo = std::env::var_os("CC_DIR").map(PathBuf::from).unwrap_or_else(|| home.join("control-center"));
-    let mut f = Facts { kind, arch, host, home: home.clone(), installed: None, missing: vec![], repo: repo.clone(), repo_state: Repo::Missing, desktop_open: false, monitors: vec![], shared: vec![], announcing: false };
+    let mut f = Facts {
+        kind,
+        arch,
+        host,
+        home: home.clone(),
+        installed: None,
+        missing: vec![],
+        repo: repo.clone(),
+        repo_state: Repo::Missing,
+        desktop_open: false,
+        monitors: vec![],
+        shared: vec![],
+        announcing: false,
+    };
     let mut miss = |what: &str, fix: String| f.missing.push((what.into(), fix));
     if unsafe { libc::geteuid() } == 0 {
         miss("You're running it as root", "Run it as your own user, without sudo.".into());
@@ -382,7 +403,20 @@ pub mod tests {
     use super::*;
 
     pub fn frame() -> Facts {
-        Facts { kind: Kind::Frame, arch: "aarch64".into(), host: "frame".into(), home: "/home/u".into(), installed: None, missing: vec![], repo: "/home/u/control-center".into(), repo_state: Repo::Missing, desktop_open: false, monitors: vec![], shared: vec![], announcing: false }
+        Facts {
+            kind: Kind::Frame,
+            arch: "aarch64".into(),
+            host: "frame".into(),
+            home: "/home/u".into(),
+            installed: None,
+            missing: vec![],
+            repo: "/home/u/control-center".into(),
+            repo_state: Repo::Missing,
+            desktop_open: false,
+            monitors: vec![],
+            shared: vec![],
+            announcing: false,
+        }
     }
 
     pub fn host() -> Facts {
@@ -439,7 +473,10 @@ pub mod tests {
         assert_eq!(p[3].what, Do::Run(vec!["/home/u/control-center/cc-home".into(), "install".into()]));
         let mut f = frame();
         f.repo_state = Repo::Pull;
-        assert_eq!(plan(&f, Action::Update, &[], false, Path::new("/w"))[0].what, Do::Run(vec!["git".into(), "-C".into(), "/home/u/control-center".into(), "pull".into(), "--ff-only".into(), "-q".into()]));
+        assert_eq!(
+            plan(&f, Action::Update, &[], false, Path::new("/w"))[0].what,
+            Do::Run(vec!["git".into(), "-C".into(), "/home/u/control-center".into(), "pull".into(), "--ff-only".into(), "-q".into()])
+        );
         f.repo_state = Repo::Keep("on a branch".into());
         assert_eq!(plan(&f, Action::Update, &[], false, Path::new("/w"))[0].what, Do::Skip("on a branch".into()));
         assert_eq!(plan(&f, Action::Remove, &[], false, Path::new("/w")).len(), 1);
@@ -457,8 +494,21 @@ pub mod tests {
 
     #[test]
     fn picks_out_what_needs_the_user() {
-        let log: Vec<String> = ["sharing as user u on desk: ports 3400", "firewall: to add the pairing and paired-Frame ports, run (or pass --firewall):", "  sudo ufw allow 3399:3449/tcp", "checklist:", "  ok   krdpserver", "  need avahi-publish: sudo pacman -S --needed avahi", "  note linger off"].map(String::from).to_vec();
-        assert_eq!(needs_you(&log), vec!["firewall: to add the pairing and paired-Frame ports, run (or pass --firewall):", "  sudo ufw allow 3399:3449/tcp", "  avahi-publish: sudo pacman -S --needed avahi"]);
+        let log: Vec<String> = [
+            "sharing as user u on desk: ports 3400",
+            "firewall: to add the pairing and paired-Frame ports, run (or pass --firewall):",
+            "  sudo ufw allow 3399:3449/tcp",
+            "checklist:",
+            "  ok   krdpserver",
+            "  need avahi-publish: sudo pacman -S --needed avahi",
+            "  note linger off",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            needs_you(&log),
+            vec!["firewall: to add the pairing and paired-Frame ports, run (or pass --firewall):", "  sudo ufw allow 3399:3449/tcp", "  avahi-publish: sudo pacman -S --needed avahi"]
+        );
     }
 
     #[test]

@@ -63,8 +63,7 @@ pub fn find_in(class: &Path) -> Option<PathBuf> {
         let id = uevent.lines().find_map(|l| l.strip_prefix("HID_ID="))?.to_ascii_lowercase();
         let mut p = id.split(':');
         let (bus, vid, pid) = (p.next()?, u32::from_str_radix(p.next()?, 16).ok()?, u32::from_str_radix(p.next()?, 16).ok()?);
-        (bus == "0003" && vid == 0x28de && pid == 0x1205 && is_controller(&std::fs::read(dev.join("report_descriptor")).ok()?))
-            .then(|| PathBuf::from("/dev").join(e.file_name()))
+        (bus == "0003" && vid == 0x28de && pid == 0x1205 && is_controller(&std::fs::read(dev.join("report_descriptor")).ok()?)).then(|| PathBuf::from("/dev").join(e.file_name()))
     })
 }
 
@@ -79,13 +78,7 @@ pub fn decode(r: &[u8]) -> Option<Sample> {
         return None;
     }
     let s = |o: usize| i16::from_le_bytes([r[o], r[o + 1]]);
-    Some(Sample {
-        seq: u32::from_le_bytes([r[4], r[5], r[6], r[7]]),
-        t_us: 0,
-        accel: [s(24), s(26), s(28)],
-        gyro: [s(30), s(32), s(34)],
-        quat: [s(36), s(38), s(40), s(42)],
-    })
+    Some(Sample { seq: u32::from_le_bytes([r[4], r[5], r[6], r[7]]), t_us: 0, accel: [s(24), s(26), s(28)], gyro: [s(30), s(32), s(34)], quat: [s(36), s(38), s(40), s(42)] })
 }
 
 /// HIDIOCSFEATURE and HIDIOCGFEATURE for a 65-byte buffer (report id 0, then 64 bytes): _IOC(read|write, 'H', 6 or 7, 65).
@@ -219,7 +212,12 @@ pub fn probe(secs: f64) -> i32 {
         start.elapsed().as_secs_f64() < secs
     });
     let first = first.unwrap_or_default();
-    println!("{total} reports in {:.1}s, {:.0}/s, counter advanced {} (a gap means lost reports)", start.elapsed().as_secs_f64(), total as f64 / start.elapsed().as_secs_f64(), last.seq.wrapping_sub(first.seq) + 1);
+    println!(
+        "{total} reports in {:.1}s, {:.0}/s, counter advanced {} (a gap means lost reports)",
+        start.elapsed().as_secs_f64(),
+        total as f64 / start.elapsed().as_secs_f64(),
+        last.seq.wrapping_sub(first.seq) + 1
+    );
     let before = imu.before;
     drop(imu);
     if let Ok(f) = File::open(&path).and_then(|_| OpenOptions::new().read(true).write(true).open(&path)) {
@@ -254,8 +252,12 @@ mod tests {
     fn finds_the_node_by_id_not_by_number() {
         let d = std::env::temp_dir().join(format!("cc-imu-find-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        for (n, id, desc) in [("hidraw0", "0003:000028DE:00001205", MOUSE), ("hidraw1", "0003:0000046D:0000C52B", CONTROLLER),
-                              ("hidraw2", "0003:000028DE:00001205", KEYBOARD), ("hidraw7", "0003:000028DE:00001205", CONTROLLER)] {
+        for (n, id, desc) in [
+            ("hidraw0", "0003:000028DE:00001205", MOUSE),
+            ("hidraw1", "0003:0000046D:0000C52B", CONTROLLER),
+            ("hidraw2", "0003:000028DE:00001205", KEYBOARD),
+            ("hidraw7", "0003:000028DE:00001205", CONTROLLER),
+        ] {
             let dev = d.join(n).join("device");
             std::fs::create_dir_all(&dev).unwrap();
             std::fs::write(dev.join("uevent"), format!("DRIVER=hid-generic\nHID_ID={id}\nHID_NAME=x\n")).unwrap();

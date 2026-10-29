@@ -80,10 +80,7 @@ pub fn host_key(conf: &Path) -> SigningKey {
 /// Writes PKCS#8 v1 (just the private key), the way pair.py does. Python's cryptography rejects
 /// ed25519-dalek's default v2 form, which embeds the public key, and both agents read these files.
 fn pkcs8_v1(k: &SigningKey) -> String {
-    ed25519_dalek::pkcs8::KeypairBytes { secret_key: k.to_bytes(), public_key: None }
-        .to_pkcs8_pem(Default::default())
-        .expect("PKCS#8")
-        .to_string()
+    ed25519_dalek::pkcs8::KeypairBytes { secret_key: k.to_bytes(), public_key: None }.to_pkcs8_pem(Default::default()).expect("PKCS#8").to_string()
 }
 
 /// Returns the host's id from host-id. It's a random UUID made once, never derived from the host's name or MAC (D-050).
@@ -160,8 +157,7 @@ impl Agent {
             .with_single_cert(certs, PrivateKeyDer::Pkcs8(der.as_bytes().to_vec().into()))
             .expect("the host's certificate and key");
         tls.send_tls13_tickets = 0; // No resumption and no early data (review M-A).
-        let agent = Arc::new(Agent { conf, plat, tls: Arc::new(tls), host_pk: key.verifying_key().to_bytes(), state: Mutex::default(),
-                                     stopping: AtomicBool::new(false), work: Mutex::default() });
+        let agent = Arc::new(Agent { conf, plat, tls: Arc::new(tls), host_pk: key.verifying_key().to_bytes(), state: Mutex::default(), stopping: AtomicBool::new(false), work: Mutex::default() });
         agent.adopt();
         agent
     }

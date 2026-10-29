@@ -257,12 +257,17 @@ fn index_of(l: &str) -> Option<i64> {
 
 /// The trusted hosts: machine -> its JSON.
 pub fn trusted_hosts(conf: &Path) -> Vec<(String, Value)> {
-    let mut out: Vec<(String, Value)> = std::fs::read_dir(conf.join("trusted-hosts")).into_iter().flatten().flatten().filter_map(|e| {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let m = name.strip_suffix(".json")?.to_owned();
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
-        v.is_object().then_some((m, v))
-    }).collect();
+    let mut out: Vec<(String, Value)> = std::fs::read_dir(conf.join("trusted-hosts"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let m = name.strip_suffix(".json")?.to_owned();
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
+            v.is_object().then_some((m, v))
+        })
+        .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
@@ -293,11 +298,19 @@ pub fn write_pairing(conf: &Path, addr: &str, frame: &str, result: &Value, repla
         return Err("host-changed".into());
     }
     let olds: BTreeSet<String> = same.iter().filter(|(k, t)| *k != mid && (t["id"].as_str().is_none() || replace)).map(|(k, _)| k.clone()).collect();
-    let label = known.iter().find(|(k, _)| *k == mid).and_then(|(_, t)| t["label"].as_str().filter(|s| !s.is_empty()))
-        .or_else(|| same.iter().find_map(|(_, t)| t["label"].as_str().filter(|s| !s.is_empty())));
+    let label =
+        known.iter().find(|(k, _)| *k == mid).and_then(|(_, t)| t["label"].as_str().filter(|s| !s.is_empty())).or_else(|| same.iter().find_map(|(_, t)| t["label"].as_str().filter(|s| !s.is_empty())));
     let mons_json = monitors.iter().map(|m| format!("{}: {}", py_str(&m["index"].as_i64().unwrap_or(0).to_string()), py_str(m["output"].as_str().unwrap_or("")))).collect::<Vec<_>>().join(", ");
-    let th = format!("{{\"id\": {}, \"host\": {}, \"addr\": {}, \"host_pk\": {}, \"frame\": {}, \"cert_sha256\": {}, \"label\": {}, \"monitors\": {{{mons_json}}}}}",
-                     py_opt(id), py_str(host), py_str(addr), py_str(host_pk), py_str(frame), py_str(r["cert_sha256"].as_str().unwrap_or("")), py_opt(label));
+    let th = format!(
+        "{{\"id\": {}, \"host\": {}, \"addr\": {}, \"host_pk\": {}, \"frame\": {}, \"cert_sha256\": {}, \"label\": {}, \"monitors\": {{{mons_json}}}}}",
+        py_opt(id),
+        py_str(host),
+        py_str(addr),
+        py_str(host_pk),
+        py_str(frame),
+        py_str(r["cert_sha256"].as_str().unwrap_or("")),
+        py_opt(label)
+    );
     write_secret(&conf.join("trusted-hosts").join(format!("{mid}.json")), &th).map_err(|e| e.to_string())?;
     write_secret(&conf.join("passwords").join(&mid), r["password"].as_str().unwrap_or("")).map_err(|e| e.to_string())?;
     if !olds.is_empty() {
@@ -333,18 +346,29 @@ pub fn write_pairing(conf: &Path, addr: &str, frame: &str, result: &Value, repla
         let name = format!("{host}-{output}").to_lowercase();
         let target = format!("{user}@{addr}:{}", m["port"].as_i64().unwrap_or(0));
         let size = format!("{}x{}", m["width"].as_i64().unwrap_or(0), m["height"].as_i64().unwrap_or(0));
-        let mut i = lines.iter().position(|l| words(l).len() >= 4 && !l.starts_with('#') && opt(&line_opts(l), "machine") == Some(mid.as_str())
-                                                 && words(l)[1].rsplit_once(':').is_some_and(|(_, p)| p.parse::<i64>().is_ok()) && index_of(l) == Some(index));
+        let mut i = lines.iter().position(|l| {
+            words(l).len() >= 4
+                && !l.starts_with('#')
+                && opt(&line_opts(l), "machine") == Some(mid.as_str())
+                && words(l)[1].rsplit_once(':').is_some_and(|(_, p)| p.parse::<i64>().is_ok())
+                && index_of(l) == Some(index)
+        });
         if i.is_none() {
             i = entry(&lines, &name);
         }
         let shared_target = format!("@{addr}:{}", 3400 + index);
-        let same_l = |l: &str| words(l).len() >= 4 && !l.starts_with('#') && words(l)[1].ends_with(&shared_target)
-                             && words(l)[1].len() > shared_target.len() && !words(l)[1][..words(l)[1].len() - shared_target.len()].chars().any(|c| c.is_whitespace() || c == '@');
+        let same_l = |l: &str| {
+            words(l).len() >= 4
+                && !l.starts_with('#')
+                && words(l)[1].ends_with(&shared_target)
+                && words(l)[1].len() > shared_target.len()
+                && !words(l)[1][..words(l)[1].len() - shared_target.len()].chars().any(|c| c.is_whitespace() || c == '@')
+        };
         let mut old = if i.is_some() { None } else { lines.iter().position(|l| same_l(l)) };
         if i.is_none() && old.is_none() {
-            let ours = |l: &str| opt(&line_opts(l), "machine").is_some_and(|x| x == mid || olds.contains(x))
-                                && words(l)[1].rsplit_once(':').is_some_and(|(_, p)| p.parse::<i64>().is_ok()) && index_of(l) == Some(index);
+            let ours = |l: &str| {
+                opt(&line_opts(l), "machine").is_some_and(|x| x == mid || olds.contains(x)) && words(l)[1].rsplit_once(':').is_some_and(|(_, p)| p.parse::<i64>().is_ok()) && index_of(l) == Some(index)
+            };
             let gone: Vec<&String> = removed.iter().filter(|l| (same_l(l) || ours(l)) && entry(&lines, words(l)[0]).is_none()).collect();
             if let Some(last) = gone.last() {
                 let mut back = split_keep(last);
@@ -644,8 +668,14 @@ impl Parser<'_> {
             b'{' => (b'{', "}"),
             b'[' => (b'[', "]"),
             _ => {
-                for (t, v) in [("null", Json::Null), ("true", Json::Bool(true)), ("false", Json::Bool(false)), ("NaN", Json::Num("NaN".into())),
-                               ("Infinity", Json::Num("Infinity".into())), ("-Infinity", Json::Num("-Infinity".into()))] {
+                for (t, v) in [
+                    ("null", Json::Null),
+                    ("true", Json::Bool(true)),
+                    ("false", Json::Bool(false)),
+                    ("NaN", Json::Num("NaN".into())),
+                    ("Infinity", Json::Num("Infinity".into())),
+                    ("-Infinity", Json::Num("-Infinity".into())),
+                ] {
                     if self.eat(t) {
                         return Some(v);
                     }
@@ -687,11 +717,7 @@ impl Parser<'_> {
             self.i += 1;
         }
         let t = std::str::from_utf8(&self.s[start..self.i]).ok()?;
-        if t.contains(['.', 'e', 'E']) {
-            t.parse::<f64>().ok().map(Json::float)
-        } else {
-            t.parse::<i128>().ok().map(|n| Json::Num(n.to_string()))
-        }
+        if t.contains(['.', 'e', 'E']) { t.parse::<f64>().ok().map(Json::float) } else { t.parse::<i128>().ok().map(|n| Json::Num(n.to_string())) }
     }
     fn hex4(&mut self) -> Option<u32> {
         let h = std::str::from_utf8(self.s.get(self.i..self.i + 4)?).ok()?;
@@ -776,8 +802,8 @@ pub fn write_home(path: &Path, data: &Json) -> std::io::Result<()> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Viewer {
     pub name: String,
-    pub target: String,              // user@host:port
-    pub screen: i64,                 // 1-based (the file's column + 1)
+    pub target: String, // user@host:port
+    pub screen: i64,    // 1-based (the file's column + 1)
     pub pixels: (i64, i64),
     pub opts: Vec<(String, String)>, // key=value after the size; a repeated key: the last
     pub machine: String,             // machine=, else the host
@@ -823,7 +849,10 @@ pub fn viewers(conf: &Path) -> Vec<Viewer> {
         let (Ok(screen), [Some(w), Some(h)]) = (p[2].parse::<i64>(), size.as_slice()) else { continue };
         let opts: Vec<(String, String)> = p[4..].iter().filter_map(|o| o.split_once('=')).map(|(k, v)| (k.into(), v.into())).collect();
         let mut v = Viewer { name: p[0].into(), target: p[1].into(), screen: screen + 1, pixels: (*w, *h), opts, machine: String::new(), label: None };
-        v.machine = v.opt("machine").filter(|m| !m.is_empty()).map(str::to_owned)
+        v.machine = v
+            .opt("machine")
+            .filter(|m| !m.is_empty())
+            .map(str::to_owned)
             .unwrap_or_else(|| p[1].rsplit('@').next().unwrap_or("").rsplit_once(':').map_or(p[1].rsplit('@').next().unwrap_or(""), |x| x.0).to_owned());
         v.label = Some(unquote(v.opt("label").unwrap_or(""))).filter(|s| !s.is_empty());
         match out.iter_mut().find(|x| x.name == v.name) {
@@ -1273,10 +1302,12 @@ mod tests {
         let conf: String = (0..8).map(|i| format!("m{i}  me@10.0.0.{i}:5900  {i}  1920x1080  proto=vnc\n")).collect();
         std::fs::write(d.join("viewers.conf"), format!("# eight macs\n{conf}")).unwrap();
         std::fs::set_permissions(d.join("viewers.conf"), std::fs::Permissions::from_mode(0o640)).unwrap();
-        let threads: Vec<_> = (0..8).map(|i| {
-            let d = d.clone();
-            std::thread::spawn(move || pin_first_use(&d, &format!("m{i}"), &format!("{i:02x}").repeat(32)))
-        }).collect();
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let d = d.clone();
+                std::thread::spawn(move || pin_first_use(&d, &format!("m{i}"), &format!("{i:02x}").repeat(32)))
+            })
+            .collect();
         for t in threads {
             assert_eq!(t.join().unwrap(), Ok(FirstPin::Saved));
         }
@@ -1350,14 +1381,20 @@ mod tests {
         let o = |kv: &[&str]| kv.iter().map(|a| a.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())).unwrap()).collect::<Vec<_>>();
         let l = "a   u@h:3410   1   1920x1080  curve=h";
         assert_eq!(set_options(l, &o(&["label=Desk é/1", "curve="])).unwrap(), "a   u@h:3410   1   1920x1080  label=Desk%20%C3%A9%2F1");
-        assert_eq!(set_options(l, &o(&["radius=1.5", "machine=m.1"])).unwrap(),
-                   "a   u@h:3410   1   1920x1080  curve=h  radius=1.5  machine=m.1");
+        assert_eq!(set_options(l, &o(&["radius=1.5", "machine=m.1"])).unwrap(), "a   u@h:3410   1   1920x1080  curve=h  radius=1.5  machine=m.1");
         // an option nothing reads any more stays on its line
         assert_eq!(set_options("a u@h:3410 1 1920x1080 old=x", &o(&["radius=2.0"])).unwrap(), "a u@h:3410 1 1920x1080 old=x  radius=2.0");
-        for (kv, e) in [("curve=x", "curve is one of h, v, flat"), ("autoconnect=1", "autoconnect is one of yes, no"), ("radius=0.1", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"),
-                        ("radius=1.", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"), ("machine=a b", "bad machine name"),
-                        ("label=a\tb", "label: at most 64 characters, no control characters"), ("proto=x", "proto is one of rdp, vnc"), ("tls=off", "tls is one of yes, no"),
-                        ("pin=abc", "pin is a certificate's SHA-256, 64 hex digits")] {
+        for (kv, e) in [
+            ("curve=x", "curve is one of h, v, flat"),
+            ("autoconnect=1", "autoconnect is one of yes, no"),
+            ("radius=0.1", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"),
+            ("radius=1.", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"),
+            ("machine=a b", "bad machine name"),
+            ("label=a\tb", "label: at most 64 characters, no control characters"),
+            ("proto=x", "proto is one of rdp, vnc"),
+            ("tls=off", "tls is one of yes, no"),
+            ("pin=abc", "pin is a certificate's SHA-256, 64 hex digits"),
+        ] {
             assert_eq!(set_options(l, &o(&[kv])).unwrap_err(), e);
         }
         assert_eq!(set_options(l, &o(&[&format!("label={}", "x".repeat(65))])).unwrap_err(), "label: at most 64 characters, no control characters");
@@ -1374,7 +1411,11 @@ mod tests {
     fn viewers_as_cc_home_reads_them() {
         let d = std::env::temp_dir().join(format!("cc-conf-viewers-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("viewers.conf"), "# name user@host:port screen size\na  u@10.0.0.2:3411  1  1920x1080  label=Desk%20%C3%A9  curve=v\nb u@10.0.0.2:3410 2 bad\nc  u@h:3400 0 800x600 machine=  autoconnect=yes  old=x\n").unwrap();
+        std::fs::write(
+            d.join("viewers.conf"),
+            "# name user@host:port screen size\na  u@10.0.0.2:3411  1  1920x1080  label=Desk%20%C3%A9  curve=v\nb u@10.0.0.2:3410 2 bad\nc  u@h:3400 0 800x600 machine=  autoconnect=yes  old=x\n",
+        )
+        .unwrap();
         let v = viewers(&d);
         assert_eq!(v.iter().map(|x| (x.name.as_str(), x.screen, x.machine.as_str())).collect::<Vec<_>>(), [("a", 2, "10.0.0.2"), ("c", 1, "h")]);
         assert_eq!(v[0].label.as_deref(), Some("Desk é"));
@@ -1526,9 +1567,11 @@ mod tests {
         assert_eq!(choose_workspace(&mut data, 111, None), ("home".into(), false));
         assert_eq!(data.at("workspaces").at("home").dumps(), home_before);
         // the primary's monitor is the anchor when there is one; scanned stays behind
-        let mut data = home(r#"{"workspace": "w", "workspaces": {"w": {"spots": {
+        let mut data = home(
+            r#"{"workspace": "w", "workspaces": {"w": {"spots": {
             "home": {"a": {"centre": [0.0, 1.0, -1.0], "yaw": 0.0}, "b": {"centre": [1.0, 1.5, -1.0], "yaw": 20.0}},
-            "scanned": {"a": {"centre": [0.0, 1.0, -1.0], "yaw": 0.0}}}}}}"#);
+            "scanned": {"a": {"centre": [0.0, 1.0, -1.0], "yaw": 0.0}}}}}}"#,
+        );
         load_workspace(&mut data, "w", [0.0, 1.6, 0.0], 0.0, &["b".into()]).unwrap();
         let s = data.at("workspaces").at(TEMPORARY).at("spots");
         assert!(centre_of(s.at("home").at("b")).unwrap().iter().zip([0.0, 1.5, -1.0]).all(|(a, b)| (a - b).abs() < 1e-4));

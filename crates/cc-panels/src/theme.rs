@@ -41,10 +41,10 @@ pub struct Tokens {
 /// A brand colour fitted to a token set.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Accent {
-    pub line: Rgb,         // lines and solid fills: the brand colour, darkened (light schemes) or lightened just enough to reach 3:1
-    pub fill: (Rgb, f64),  // hover and selected tints
-    pub glow: f64,         // the brand's soft glow: its peak alpha, in `line`
-    pub ink: Rgb,          // glyphs on a solid `line` fill: Breeze's dark or light text (or black or white), whichever reads
+    pub line: Rgb,        // lines and solid fills: the brand colour, darkened (light schemes) or lightened just enough to reach 3:1
+    pub fill: (Rgb, f64), // hover and selected tints
+    pub glow: f64,        // the brand's soft glow: its peak alpha, in `line`
+    pub ink: Rgb,         // glyphs on a solid `line` fill: Breeze's dark or light text (or black or white), whichever reads
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -101,11 +101,7 @@ impl Tokens {
         // Breeze's text colours, or black or white where neither reaches 4.5:1. That happens
         // with an accent fitted to just 3:1 on a light scheme.
         let ink = Some(best(DARK_TEXT, LIGHT_TEXT)).filter(|&c| contrast(c, line) >= 4.5).unwrap_or_else(|| best([0.0; 3], [255.0; 3]));
-        if self.dark {
-            Accent { line, fill: (rgb, 0.22), glow: 0.35, ink }
-        } else {
-            Accent { line, fill: (line, 0.16), glow: 0.2, ink }
-        }
+        if self.dark { Accent { line, fill: (rgb, 0.22), glow: 0.35, ink } } else { Accent { line, fill: (line, 0.16), glow: 0.2, ink } }
     }
 }
 
@@ -304,9 +300,7 @@ impl Watch {
     }
 
     fn stamps(&self) -> Vec<Option<SystemTime>> {
-        ["kdeglobals", "kdedefaults/kdeglobals", "plasmarc", "kdedefaults/plasmarc"]
-            .map(|f| std::fs::metadata(self.dir.join(f)).and_then(|m| m.modified()).ok())
-            .to_vec()
+        ["kdeglobals", "kdedefaults/kdeglobals", "plasmarc", "kdedefaults/plasmarc"].map(|f| std::fs::metadata(self.dir.join(f)).and_then(|m| m.modified()).ok()).to_vec()
     }
 
     /// Called a few times a second. A change only loads once it has held still for one more
@@ -385,7 +379,10 @@ mod tests {
         // Each foreground goes with its background: a dark header on a light window.
         let (dir, data) = scratch(
             "split",
-            &[("config/kdeglobals", "[Colors:Header]\nBackgroundNormal=30,30,30\nForegroundNormal=250,250,250\nForegroundInactive=200,200,200\n[Colors:Window]\nBackgroundNormal=240,240,240\nForegroundNormal=20,20,20\nForegroundInactive=90,90,90\n")],
+            &[(
+                "config/kdeglobals",
+                "[Colors:Header]\nBackgroundNormal=30,30,30\nForegroundNormal=250,250,250\nForegroundInactive=200,200,200\n[Colors:Window]\nBackgroundNormal=240,240,240\nForegroundNormal=20,20,20\nForegroundInactive=90,90,90\n",
+            )],
         );
         let (t, ..) = load(&dir, &data);
         let w = t.win;

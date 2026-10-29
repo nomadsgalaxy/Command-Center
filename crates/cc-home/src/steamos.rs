@@ -30,7 +30,10 @@ pub fn stamp_version(text: &str) -> Option<String> {
 pub enum Built {
     /// Built on this SteamOS.
     Same,
-    Differs { built: String, running: String },
+    Differs {
+        built: String,
+        running: String,
+    },
     /// Not known (no stamp, or no os-release), so nothing can be said.
     Unknown,
 }
@@ -68,7 +71,9 @@ pub fn unresolved(ldd_output: &str) -> Vec<String> {
 /// What to tell the user. `missing` is empty when everything still loads.
 pub fn abi_message(built: &str, running: &str, missing: &[String]) -> String {
     if missing.is_empty() {
-        format!("SteamOS is {running} now, and this Command Center was built on {built}. Everything it needs still loads, so it starts. Update Command Center when you can, since a later SteamOS may change a library it uses.")
+        format!(
+            "SteamOS is {running} now, and this Command Center was built on {built}. Everything it needs still loads, so it starts. Update Command Center when you can, since a later SteamOS may change a library it uses."
+        )
     } else {
         format!(
             "SteamOS is {running} now, and this Command Center was built on {built}. It can't start because SteamOS no longer has what it was built against: {}. Update Command Center for this SteamOS (run its installer again), and it will start.",
@@ -169,10 +174,12 @@ pub fn driver_plan(runtime: Option<&str>, os: &str, external: &[String], present
 /// What gets logged for each outcome, plainly.
 pub fn driver_note(d: &Driver, registered_ok: Option<bool>) -> Option<String> {
     match d {
-        Driver::Register { runtime } if registered_ok == Some(true) => {
-            Some(format!("SteamVR runs from {runtime}, not {OS_STEAMVR}, so it doesn't see the pointer driver in the image. I registered {IMAGE_DRIVER} with vrpathreg. Restart SteamVR once to load it."))
-        }
-        Driver::Register { runtime } => Some(format!("SteamVR runs from {runtime}, not {OS_STEAMVR}, so it doesn't see the pointer driver in the image, and registering {IMAGE_DRIVER} with vrpathreg failed. The mouse's laser won't work until it's registered.")),
+        Driver::Register { runtime } if registered_ok == Some(true) => Some(format!(
+            "SteamVR runs from {runtime}, not {OS_STEAMVR}, so it doesn't see the pointer driver in the image. I registered {IMAGE_DRIVER} with vrpathreg. Restart SteamVR once to load it."
+        )),
+        Driver::Register { runtime } => Some(format!(
+            "SteamVR runs from {runtime}, not {OS_STEAMVR}, so it doesn't see the pointer driver in the image, and registering {IMAGE_DRIVER} with vrpathreg failed. The mouse's laser won't work until it's registered."
+        )),
         _ => None,
     }
 }

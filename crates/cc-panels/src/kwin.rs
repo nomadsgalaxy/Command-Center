@@ -123,8 +123,7 @@ fn load(bus: &zbus::blocking::Connection, path: &str, name: &str) -> Result<(), 
     if id < 0 {
         return Err(format!("KWin refused {path}"));
     }
-    bus.call_method(Some("org.kde.KWin"), format!("/Scripting/Script{id}").as_str(), Some("org.kde.kwin.Script"), "run", &())
-        .map_err(|e| format!("run {path}: {e}"))?;
+    bus.call_method(Some("org.kde.KWin"), format!("/Scripting/Script{id}").as_str(), Some("org.kde.kwin.Script"), "run", &()).map_err(|e| format!("run {path}: {e}"))?;
     Ok(())
 }
 

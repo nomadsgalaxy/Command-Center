@@ -97,11 +97,11 @@ pub fn device() -> Option<*mut GbmDevice> {
 /// main thread.
 pub struct Shared {
     bo: [*mut GbmBo; 2],
-    have: (i32, i32, bool), // the buffers' size, and whether they're turned (a vertically curved panel)
-    want: (i32, i32, bool), // what the picture needs, as the RDP thread last saw it
-    shown: usize,           // the buffer SteamVR shows; the other is the spare
-    ready: bool,            // the spare holds a newer picture
-    held: bool,             // the spare was on screen until this tick's flip; SteamVR may still read it until its next frame, so we don't write it before the next tick
+    have: (i32, i32, bool),           // the buffers' size, and whether they're turned (a vertically curved panel)
+    want: (i32, i32, bool),           // what the picture needs, as the RDP thread last saw it
+    shown: usize,                     // the buffer SteamVR shows; the other is the spare
+    ready: bool,                      // the spare holds a newer picture
+    held: bool,                       // the spare was on screen until this tick's flip; SteamVR may still read it until its next frame, so we don't write it before the next tick
     last: Option<std::time::Instant>, // the last write; a peripheral panel only gets a few a second
 }
 
@@ -150,7 +150,7 @@ impl Shared {
 #[derive(Default)]
 pub struct Buffers {
     handle: [sys::SharedTextureHandle_t; 2],
-    pub uploads: u32, // since the last status line
+    pub uploads: u32,                  // since the last status line
     tried: Option<std::time::Instant>, // the last failed make, so we retry once a second instead of every tick
 }
 
@@ -230,11 +230,7 @@ impl Buffers {
         let Some(k) = s.flip() else { return };
         // Still under the lock. SteamVR may read the old buffer until its next frame, so the RDP
         // thread leaves it alone until the next tick (held).
-        let mut t = sys::Texture_t {
-            handle: &mut self.handle[k] as *mut _ as *mut c_void,
-            eType: sys::ETextureType_TextureType_SharedTextureHandle,
-            eColorSpace: sys::EColorSpace_ColorSpace_Gamma,
-        };
+        let mut t = sys::Texture_t { handle: &mut self.handle[k] as *mut _ as *mut c_void, eType: sys::ETextureType_TextureType_SharedTextureHandle, eColorSpace: sys::EColorSpace_ColorSpace_Gamma };
         match call!(ov, SetOverlayTexture, p.overlay, &mut t) {
             0 => {
                 self.uploads += 1;
@@ -307,11 +303,7 @@ pub fn show_raw(h: vr::Handle, px: &[u8], w: usize, ht: usize) -> bool {
     }
     unsafe { copy_rect(px.as_ptr(), w * 4, dst as *mut u8, stride as usize, w, ht, false) };
     gbm(|| unsafe { gbm_bo_unmap(r.s.bo[k], data) });
-    let mut t = sys::Texture_t {
-        handle: &mut r.b.handle[k] as *mut _ as *mut c_void,
-        eType: sys::ETextureType_TextureType_SharedTextureHandle,
-        eColorSpace: sys::EColorSpace_ColorSpace_Gamma,
-    };
+    let mut t = sys::Texture_t { handle: &mut r.b.handle[k] as *mut _ as *mut c_void, eType: sys::ETextureType_TextureType_SharedTextureHandle, eColorSpace: sys::EColorSpace_ColorSpace_Gamma };
     match call!(ov, SetOverlayTexture, h, &mut t) {
         0 => {
             (r.s.shown, r.s.held) = (k, true); // SteamVR may read the old one until its next frame

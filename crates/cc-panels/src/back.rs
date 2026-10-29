@@ -64,11 +64,7 @@ fn entry(t: &mut Vec<(vr::Handle, u64, vr::Handle)>, front: vr::Handle) -> &mut 
 }
 
 fn texture(h: vr::Handle, mut tex: u64) -> bool {
-    let mut t = sys::Texture_t {
-        handle: &mut tex as *mut _ as *mut std::ffi::c_void,
-        eType: sys::ETextureType_TextureType_SharedTextureHandle,
-        eColorSpace: sys::EColorSpace_ColorSpace_Gamma,
-    };
+    let mut t = sys::Texture_t { handle: &mut tex as *mut _ as *mut std::ffi::c_void, eType: sys::ETextureType_TextureType_SharedTextureHandle, eColorSpace: sys::EColorSpace_ColorSpace_Gamma };
     call!(ov, SetOverlayTexture, h, &mut t) == 0
 }
 
@@ -124,8 +120,8 @@ struct Back {
     i: usize,
     h: vr::Handle,
     front: vr::Handle,
-    tex: bool,                              // showing the panel's texture, otherwise FILL
-    tried: u64,                             // the texture last tried, so one that failed isn't tried again
+    tex: bool,                                  // showing the panel's texture, otherwise FILL
+    tried: u64,                                 // the texture last tried, so one that failed isn't tried again
     placed: Option<(Mat, i64, i64, i64, bool)>, // the picture's matrix, width, height, curve (mm) and tex it was placed for
 }
 
@@ -150,7 +146,16 @@ impl Backs {
             if a {
                 let d = norm(&[f.pl.c[0] - eye[0], f.pl.c[1] - eye[1], f.pl.c[2] - eye[2]]);
                 let has = self.pool.iter().any(|b| b.i == f.i);
-                want.push((f.i, if f.held { 0.0 } else if has { d - SWAP } else { d }));
+                want.push((
+                    f.i,
+                    if f.held {
+                        0.0
+                    } else if has {
+                        d - SWAP
+                    } else {
+                        d
+                    },
+                ));
             }
         }
         let keep = nearest(want, BACKS);
@@ -228,9 +233,7 @@ impl Backs {
         for b in &self.pool {
             while call!(ov, PollNextOverlayEvent, b.h, &mut e, size_of::<vr::VREvent_t>() as u32) {
                 match e.eventType {
-                    sys::EVREventType_VREvent_MouseButtonDown if unsafe { e.data.mouse.button } == sys::EVRMouseButton_VRMouseButton_Left => {
-                        out.push((b.i, e.trackedDeviceIndex, true))
-                    }
+                    sys::EVREventType_VREvent_MouseButtonDown if unsafe { e.data.mouse.button } == sys::EVRMouseButton_VRMouseButton_Left => out.push((b.i, e.trackedDeviceIndex, true)),
                     sys::EVREventType_VREvent_MouseButtonUp => out.push((b.i, e.trackedDeviceIndex, false)),
                     _ => {}
                 }
