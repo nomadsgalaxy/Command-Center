@@ -1,0 +1,12 @@
+[Unit]
+Description=Command Center: announce this machine on the network (mDNS _controlcenter._tcp)
+After=graphical-session.target network-online.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=@HOST@ announce-run
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target

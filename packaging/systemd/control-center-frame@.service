@@ -1,0 +1,12 @@
+[Unit]
+Description=Command Center share for paired Frame %i
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=@HOST@ frame-run %i
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,8 @@
+[Unit]
+Description=Command Center window stream for paired Frame %i
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=@HOST@ window-run %i
+Restart=no

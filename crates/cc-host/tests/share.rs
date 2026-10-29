@@ -241,6 +241,32 @@ fn announce_run_restarts_a_dying_publisher() {
     assert!(err.contains("avahi-publish stopped") && err.contains("again in 4 s"), "{err}");
 }
 
+/// Install stops, with the file and the error, when it can't write the units, instead of running
+/// daemon-reload on stale ones and starting them (Phase 1, item 3).
+#[test]
+fn install_fails_when_the_units_cant_be_written() {
+    let work = std::env::temp_dir().join(format!("cc-host-share-unwritable-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("desk.json"), DESK).unwrap();
+    let run = Run { dir: work.join("run"), work: work.clone() };
+    let share = run.home().join(".local/share/control-center");
+    std::fs::create_dir_all(&share).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_cc-host"), share.join("cc-host")).unwrap();
+    run.shims();
+    let units = run.home().join(".config/systemd/user");
+    std::fs::create_dir_all(&units).unwrap();
+    std::fs::set_permissions(&units, std::fs::Permissions::from_mode(0o500)).unwrap();
+    run.cmd("install 0 --no-announce --no-autostart");
+    std::fs::set_permissions(&units, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let out = std::fs::read_to_string(run.dir.join("out")).unwrap();
+    let log = std::fs::read_to_string(run.dir.join("log")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(out.contains("[exit 1]"), "{out}");
+    assert!(out.contains("control-center-share@.service: Permission denied"), "{out}");
+    assert!(!log.contains("daemon-reload") && !log.contains(" start "), "nothing reloaded or started: {log}");
+}
+
 #[test]
 fn share_commands_match_the_recorded_bash() {
     use Step::*;
