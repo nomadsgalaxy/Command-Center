@@ -67,7 +67,7 @@ case "{t} $*" in
   "systemctl is-active -q "*) [ -e "{work}/$3-on" ] ;;
   "systemctl --user is-active "*) false ;;
   "systemctl --user is-enabled "*) false ;;
-  "systemctl --user list-units --no-legend --state=running control-center-frame@f1-*")
+  "systemctl --user list-units --no-legend --state=running control-center-frame@f1-[0-9].service")
     echo "control-center-frame@f1-1.service loaded active running Command Center share for paired Frame f1-1" ;;
   *) true ;;
 esac

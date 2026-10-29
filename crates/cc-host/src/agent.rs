@@ -40,6 +40,19 @@ pub fn frame_files(frame: &str) -> [String; 3] {
     [format!("frames/{frame}.json"), format!("trusted-frames/{frame}.pub"), format!("frames/{frame}.last")]
 }
 
+/// systemd patterns for every server of one Frame and no other: its monitors' (`<frame>-<digit>`)
+/// and its windows' (`<frame>-<digit>-<uuid>`). A plain `<frame>-*` also matched another Frame whose
+/// name starts with this one and a dash ("steam" took "steam-frame"'s units; STRCMP-001/002).
+pub fn frame_units(frame: &str) -> [String; 2] {
+    let hex = |n: usize| "[0-9a-f]".repeat(n);
+    [format!("control-center-frame@{frame}-[0-9].service"), format!("control-center-window@{frame}-[0-9]-{}-{}-{}-{}-{}.service", hex(8), hex(4), hex(4), hex(4), hex(12))]
+}
+
+/// Whether a unit name is one of this Frame's monitor servers (the exact form frame_units stops).
+pub fn is_frame_unit(unit: &str, frame: &str) -> bool {
+    unit.strip_prefix(&format!("control-center-frame@{frame}-")).and_then(|r| r.strip_suffix(".service")).is_some_and(|m| m.len() == 1 && m.as_bytes()[0].is_ascii_digit())
+}
+
 /// Removes a Frame's files (frame_files). One that's already gone is fine.
 pub fn forget_frame_files(conf: &Path, frame: &str) {
     for f in frame_files(frame) {
@@ -372,7 +385,8 @@ impl Agent {
             "imu" => self.imu(frame, req),
             "unpair" => {
                 forget_frame_files(&self.conf, frame);
-                self.plat.systemctl(&["stop", &format!("control-center-frame@{frame}-*"), &format!("control-center-window@{frame}-*")]);
+                let [mons, wins] = frame_units(frame);
+                self.plat.systemctl(&["stop", &mons, &wins]);
                 self.forget_frame(frame);
                 Ok(json!({"ok": true}))
             }
@@ -477,6 +491,27 @@ fn io_loop(mut tls: StreamOwned<ServerConnection, TcpStream>, mut buf: Vec<u8>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unpairing `steam` stops steam's servers and leaves `steam-frame`'s and `steam-1`'s alone,
+    /// matched the way systemd matches unit patterns (fnmatch).
+    #[test]
+    fn unpair_matches_only_that_frames_units() {
+        let matches = |pat: &str, unit: &str| {
+            let (p, u) = (std::ffi::CString::new(pat).unwrap(), std::ffi::CString::new(unit).unwrap());
+            unsafe { libc::fnmatch(p.as_ptr(), u.as_ptr(), 0) == 0 }
+        };
+        let uuid = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+        let [mons, wins] = frame_units("steam");
+        assert!(matches(&mons, "control-center-frame@steam-0.service") && matches(&wins, &format!("control-center-window@steam-1-{uuid}.service")));
+        for other in ["control-center-frame@steam-frame-0.service", "control-center-frame@steam-1-0.service", "control-center-frame@steam-10.service"] {
+            assert!(!matches(&mons, other), "{other}");
+        }
+        for other in [format!("control-center-window@steam-frame-0-{uuid}.service"), format!("control-center-window@steam-1-0-{uuid}.service")] {
+            assert!(!matches(&wins, &other), "{other}");
+        }
+        assert!(is_frame_unit("control-center-frame@steam-3.service", "steam"));
+        assert!(!is_frame_unit("control-center-frame@steam-frame-3.service", "steam"));
+    }
 
     /// Every file a Frame pair leaves, as the files cc-share's tests make for one.
     fn paired(conf: &Path, frame: &str) {

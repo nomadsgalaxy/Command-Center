@@ -1,5 +1,5 @@
 -- cc-share unpair f1
-systemctl --user stop control-center-frame@f1-* control-center-window@f1-*
+systemctl --user stop control-center-frame@f1-[0-9].service control-center-window@f1-[0-9]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].service
 systemctl --user kill -s HUP control-center-agent
 systemctl is-active -q firewalld
 systemctl is-active -q ufw

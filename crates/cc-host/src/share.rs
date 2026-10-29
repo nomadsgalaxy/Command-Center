@@ -1684,10 +1684,11 @@ fn unpair(e: &Env, f: &str, flag: &str) -> i32 {
         return 1;
     }
     // Its servers, whether enabled or only started, for both monitors and windows.
-    for u in frame_wants(e).into_iter().filter(|u| u.starts_with(&format!("control-center-frame@{f}-"))) {
+    for u in frame_wants(e).into_iter().filter(|u| crate::agent::is_frame_unit(u, f)) {
         sysq(&["disable", &u]); // Older installs enabled them.
     }
-    sysq(&["stop", &format!("control-center-frame@{f}-*"), &format!("control-center-window@{f}-*")]);
+    let [mons, wins] = crate::agent::frame_units(f);
+    sysq(&["stop", &mons, &wins]);
     crate::agent::forget_frame_files(&e.dir, f);
     sysq(&["kill", "-s", "HUP", "control-center-agent"]); // Its live connections end now.
     println!("unpaired {f}: its login no longer works");
@@ -1708,13 +1709,13 @@ fn local_time(p: &Path) -> Option<String> {
 fn frames_cmd(e: &Env) -> i32 {
     for f in e.frames() {
         let last = local_time(&e.dir.join("frames").join(format!("{f}.last"))).unwrap_or_else(|| "never".into());
-        let out = run("systemctl", &["--user", "list-units", "--no-legend", "--state=running", &format!("control-center-frame@{f}-*")]).1;
+        let [mons, _] = crate::agent::frame_units(&f);
+        let out = run("systemctl", &["--user", "list-units", "--no-legend", "--state=running", &mons]).1;
         let running: Vec<String> = out
             .lines()
             .filter_map(|l| {
-                let unit = l.split_whitespace().find(|w| w.starts_with("control-center-frame@"))?;
-                let m = unit.strip_prefix(&format!("control-center-frame@{f}-"))?.chars().next()?;
-                m.is_ascii_digit().then(|| format!("monitor {m}"))
+                let unit = l.split_whitespace().find(|w| crate::agent::is_frame_unit(w, &f))?;
+                Some(format!("monitor {}", &unit[unit.len() - ".service".len() - 1..][..1]))
             })
             .collect();
         let slot = frame_json(e, &f).ok().map_or("null".into(), |j| j["slot"].to_string());
