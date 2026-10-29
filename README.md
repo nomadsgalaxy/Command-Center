@@ -74,7 +74,7 @@ lists the Frames paired with it.
   zone.
 
 ## AI Usage
-I leaned on AI to help me write a decent amount of this, being unfamiliar with coding in a 3D space. I made the decisions on what it did and what systems this app is using, but I'm going to be spending time reevaluating my workflow as I'm not particularly proud of how much I leaned on AI for this project.
+I leaned on AI to help me write a decent amount of this, being unfamiliar with coding in a 3D space. I make sure that it isn't making decisions for me, and that I am understanding the systems it makes to the best of my ability.
 
 ## Not yet
 
