@@ -283,13 +283,26 @@ unsafe extern "C" fn finished_update(cl: *mut rfbClient) {
     })
 }
 
+/// libvncclient's own check stops at 1024 px; this is ours, so the size can't come from it alone.
+const CURSOR_MAX: c_int = 1024;
+
+/// How many pixels a server's cursor shape has, if it's one we draw: 4 bytes a pixel, a side under
+/// CURSOR_MAX and no bigger than the framebuffer. Anything else hides the cursor. The size is
+/// multiplied in usize with a check, since w*h in i32 wraps for 16-bit sides (ARITHOFL-002).
+fn cursor_len(w: c_int, h: c_int, bpp: c_int, (fw, fh): (c_int, c_int)) -> Option<usize> {
+    if bpp != 4 || w <= 0 || h <= 0 || w >= CURSOR_MAX || h >= CURSOR_MAX || w > fw || h > fh {
+        return None;
+    }
+    (w as usize).checked_mul(h as usize)
+}
+
 unsafe extern "C" fn cursor_shape(cl: *mut rfbClient, xhot: c_int, yhot: c_int, w: c_int, h: c_int, bpp: c_int) {
     crate::ffi::guard("cursor_shape", (), || unsafe {
         with_state(cl, |st| {
             restore(cl, st);
-            let n = (w.max(0) * h.max(0)) as usize;
+            let n = cursor_len(w, h, bpp, ((*cl).width, (*cl).height)).unwrap_or(0);
             let (src, mask) = ((*cl).rcSource, (*cl).rcMask);
-            if bpp != 4 || n == 0 || src.is_null() || mask.is_null() {
+            if n == 0 || src.is_null() || mask.is_null() {
                 st.cursor.w = 0; // an empty shape hides it
                 return;
             }
@@ -813,6 +826,18 @@ pub fn run(p: &'static Panel) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hostile 65535x65535 cursor (or any too big, or not 4 bytes a pixel) hides the cursor.
+    #[test]
+    fn huge_cursors_are_hidden() {
+        let fb = (2560, 1440);
+        assert_eq!(cursor_len(65535, 65535, 4, (65535, 65535)), None);
+        assert_eq!(cursor_len(1024, 32, 4, fb), None, "libvncclient's limit, ours too");
+        assert_eq!(cursor_len(32, 32, 4, (16, 16)), None, "bigger than the framebuffer");
+        assert_eq!(cursor_len(32, 32, 2, fb), None, "not 4 bytes a pixel");
+        assert_eq!(cursor_len(-1, 32, 4, fb), None);
+        assert_eq!(cursor_len(32, 24, 4, fb), Some(768));
+    }
 
     /// The first certificate is pinned only once the server proved it checks a password over TLS.
     /// A server that asked for no password, or did it without TLS, gets nothing saved. After that,
