@@ -128,7 +128,11 @@ fn is_cliprdr(name: *const std::os::raw::c_char) -> bool {
 
 // ------------------------------------------------------------------ which codec it got (docs/rdp-text.md)
 
-/// The GDI's own graphics pipeline callbacks, the same for every session, which ours log then call.
+/// The GDI's own graphics pipeline callbacks, which ours log then call. They're only installed on
+/// the GDI's path (watch_gfx, right after the GDI's own handler in on_channel_connected), so a
+/// context's `custom` is always an rdpGdi. They're kept from the first session and never reset, on
+/// purpose: every session's GDI hands out the same functions, and a later session's slot already
+/// holds our wrapper, so taking it per session would make the wrapper call itself.
 static GFX_CAPS: std::sync::OnceLock<pcRdpgfxCapsConfirm> = std::sync::OnceLock::new();
 static GFX_SURFACE: std::sync::OnceLock<pcRdpgfxSurfaceCommand> = std::sync::OnceLock::new();
 
@@ -137,20 +141,72 @@ unsafe fn gfx_context(g: *mut RdpgfxClientContext) -> *mut rdpContext {
     unsafe { if g.is_null() || (*g).custom.is_null() { std::ptr::null_mut() } else { (*((*g).custom as *mut rdpGdi)).context } }
 }
 
-/// A codec's name for the log.
+/// A codec's name for the log: every one in FreeRDP's RDPGFX_CODECID, and the raw id for any other.
 #[allow(non_upper_case_globals)] // FreeRDP's own name, AVC444v2
 fn codec_name(id: u32) -> String {
     match id {
         RDPGFX_CODECID_RDPGFX_CODECID_AVC420 => "H.264 4:2:0 (AVC420)".into(),
         RDPGFX_CODECID_RDPGFX_CODECID_AVC444 => "H.264 4:4:4 (AVC444)".into(),
         RDPGFX_CODECID_RDPGFX_CODECID_AVC444v2 => "H.264 4:4:4 (AVC444v2)".into(),
-        RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE | RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE_V2 => "RemoteFX Progressive".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE => "RemoteFX Progressive".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE_V2 => "RemoteFX Progressive v2".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_CAVIDEO => "RemoteFX".into(),
         RDPGFX_CODECID_RDPGFX_CODECID_UNCOMPRESSED => "uncompressed".into(),
         RDPGFX_CODECID_RDPGFX_CODECID_PLANAR => "planar".into(),
         RDPGFX_CODECID_RDPGFX_CODECID_CLEARCODEC => "ClearCodec".into(),
         RDPGFX_CODECID_RDPGFX_CODECID_ALPHA => "alpha".into(),
-        id => format!("codec {id:#x}"),
+        id => format!("unknown ({id:#x})"),
     }
+}
+
+/// How often a panel getting more than one codec says how many frames each got.
+const SUMMARY: Duration = Duration::from_secs(60);
+
+/// Frames by codec, for one panel's log. The first frame of each codec says so. A minute in which
+/// more than one codec sent frames ends with a count of each, so a server mixing them doesn't put
+/// a line in the log per switch.
+#[derive(Default)]
+pub struct Codecs {
+    seen: Vec<u32>,          // every codec it's had, in order
+    window: Vec<(u32, u64)>, // frames by codec since `since`
+    since: Option<std::time::Instant>,
+}
+
+impl Codecs {
+    /// One frame of codec `id` at `now`: what to log about it, if anything.
+    fn frame(&mut self, id: u32, now: std::time::Instant) -> Vec<String> {
+        let mut say = Vec::new();
+        if !self.seen.contains(&id) {
+            self.seen.push(id);
+            say.push(format!("the server sends {}", codec_name(id)));
+        }
+        let since = *self.since.get_or_insert(now);
+        if now.duration_since(since) >= SUMMARY {
+            if self.window.len() > 1 {
+                let each: Vec<String> = self.window.iter().map(|(c, n)| format!("{} {n}", codec_name(*c))).collect();
+                say.push(format!("frames in the last {} s: {}", now.duration_since(since).as_secs(), each.join(", ")));
+            }
+            (self.window, self.since) = (Vec::new(), Some(now));
+        }
+        match self.window.iter_mut().find(|w| w.0 == id) {
+            Some(w) => w.1 += 1,
+            None => self.window.push((id, 1)),
+        }
+        say
+    }
+}
+
+/// What a session asks for, from settings.json: H.264 (with 4:4:4 offered too only where
+/// "rdp_avc444" turns it on, true for every machine or a list of machine names), or RemoteFX
+/// Progressive with "rdp_codec": "progressive". A missing key is null, which isn't
+/// "progressive", so a fresh settings.json keeps H.264. Returns (H.264, AVC444, Progressive).
+fn codecs_asked(settings: &serde_json::Value, machine: &str) -> (bool, bool, bool) {
+    if settings["rdp_codec"] == "progressive" {
+        return (false, false, true);
+    }
+    let a = &settings["rdp_avc444"];
+    let avc444 = *a == true || a.as_array().is_some_and(|l| l.iter().any(|m| m == machine));
+    (true, avc444, false)
 }
 
 /// The server's choice of capability set, which says whether it can send H.264 at all.
@@ -160,19 +216,18 @@ unsafe extern "C" fn on_caps_confirm(g: *mut RdpgfxClientContext, pdu: *const RD
             let set = *(*pdu).capsSet;
             with_panel(gfx_context(g), |p| eprintln!("{}: graphics caps {:#x}, flags {:#x}", p.v.name, set.version, set.flags));
         }
-        GFX_CAPS.get().copied().flatten().map_or(CHANNEL_RC_OK, |f| f(g, pdu))
+        GFX_CAPS.get().copied().flatten().map_or(CHANNEL_RC_OK, |f| f(g, pdu)) // the GDI's, exactly once
     })
 }
 
-/// Each frame's codec; the log says it once, then again whenever it changes (krdp picks per
-/// session, another server could mix them).
+/// Each frame's codec, counted on its own panel (Codecs).
 unsafe extern "C" fn on_surface_command(g: *mut RdpgfxClientContext, cmd: *const RDPGFX_SURFACE_COMMAND) -> UINT {
     crate::ffi::guard("on_surface_command", CHANNEL_RC_OK, || unsafe {
         if !cmd.is_null() {
             let id = (*cmd).codecId;
             with_panel(gfx_context(g), |p| {
-                if p.codec.swap(id, Relaxed) != id {
-                    eprintln!("{}: the server sends {}", p.v.name, codec_name(id));
+                for line in p.codecs.lock().unwrap().frame(id, std::time::Instant::now()) {
+                    eprintln!("{}: {line}", p.v.name);
                 }
             });
         }
@@ -186,8 +241,16 @@ unsafe fn watch_gfx(g: *mut RdpgfxClientContext) {
         if g.is_null() {
             return;
         }
-        GFX_CAPS.get_or_init(|| (*g).CapsConfirm);
-        GFX_SURFACE.get_or_init(|| (*g).SurfaceCommand);
+        GFX_CAPS.get_or_init(|| {
+            let f = (*g).CapsConfirm;
+            debug_assert!(f.map(|f| f as usize) != Some(on_caps_confirm as *const () as usize), "the GDI's CapsConfirm, not ours");
+            f
+        });
+        GFX_SURFACE.get_or_init(|| {
+            let f = (*g).SurfaceCommand;
+            debug_assert!(f.map(|f| f as usize) != Some(on_surface_command as *const () as usize), "the GDI's SurfaceCommand, not ours");
+            f
+        });
         (*g).CapsConfirm = Some(on_caps_confirm);
         (*g).SurfaceCommand = Some(on_surface_command);
     }
@@ -535,14 +598,16 @@ pub fn run(p: &'static Panel) {
                 b(FreeRDP_Settings_Keys_Bool_FreeRDP_AutoAcceptCertificate, true); // trust on first use, then insist
             }
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_SupportGraphicsPipeline, true);
-            // H.264, offering 4:4:4 (AVC444, v2) as well, so a server that has it can send text with
-            // full colour detail; krdp only encodes 4:2:0 and picks that. Its other mode is RemoteFX
-            // Progressive, full colour too, which it sends when we don't ask for H.264: settings.json
-            // "rdp_codec": "progressive" does that, for text that has to stay sharp (docs/rdp-text.md).
-            let h264 = crate::config::settings()["rdp_codec"] != "progressive";
+            // H.264 by default. 4:4:4 (AVC444, v2) is only offered where settings.json's "rdp_avc444"
+            // says so, until the Frame's decoding of a real 4:4:4 source has been measured; krdp only
+            // sends 4:2:0 anyway. "rdp_codec": "progressive" asks for RemoteFX Progressive instead,
+            // krdp's full-colour mode, for text that has to stay sharp (docs/rdp-text.md).
+            let (h264, avc444, progressive) = codecs_asked(&crate::config::settings(), if p.v.machine.is_empty() { &p.v.name } else { &p.v.machine });
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxH264, h264);
-            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxAVC444, h264);
-            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxAVC444v2, h264);
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxAVC444, avc444);
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxAVC444v2, avc444);
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxProgressive, progressive);
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxProgressiveV2, progressive);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_RemoteFxCodec, false);
             // Decode the graphics pipeline (H.264) inside check_event_handles, on this thread and
             // under p.lock, instead of on drdynvc's own thread, so gpu::write right after it sees the finished frame
@@ -734,6 +799,94 @@ pub fn wheel(p: &Panel, horizontal: bool, rotation: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(non_upper_case_globals)]
+    fn every_codec_freerdp_names_has_a_name_and_any_other_says_its_id() {
+        for (id, name) in [
+            (RDPGFX_CODECID_RDPGFX_CODECID_AVC420, "H.264 4:2:0 (AVC420)"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_AVC444, "H.264 4:4:4 (AVC444)"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_AVC444v2, "H.264 4:4:4 (AVC444v2)"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE, "RemoteFX Progressive"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE_V2, "RemoteFX Progressive v2"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_CAVIDEO, "RemoteFX"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_UNCOMPRESSED, "uncompressed"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_PLANAR, "planar"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_CLEARCODEC, "ClearCodec"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_ALPHA, "alpha"),
+        ] {
+            assert_eq!(codec_name(id), name);
+        }
+        assert_eq!(codec_name(0x1), "unknown (0x1)", "AV1, which our FreeRDP isn't built with");
+        assert_eq!(codec_name(0x42), "unknown (0x42)");
+    }
+
+    #[test]
+    fn h264_unless_progressive_is_asked_for_and_444_only_where_its_turned_on() {
+        let s = |v: serde_json::Value| codecs_asked(&v, "home_desktop");
+        assert_eq!(s(serde_json::json!({})), (true, false, false), "a fresh settings.json: H.264, 4:2:0 only, as before");
+        assert_eq!(s(serde_json::json!({"rdp_codec": "h264"})), (true, false, false));
+        assert_eq!(s(serde_json::json!({"rdp_codec": 7})), (true, false, false), "anything else isn't progressive");
+        assert_eq!(s(serde_json::json!({"rdp_codec": "progressive"})), (false, false, true));
+        assert_eq!(s(serde_json::json!({"rdp_codec": "progressive", "rdp_avc444": true})), (false, false, true), "progressive wins");
+        assert_eq!(s(serde_json::json!({"rdp_avc444": true})), (true, true, false), "every machine");
+        assert_eq!(s(serde_json::json!({"rdp_avc444": ["home_desktop"]})), (true, true, false), "this one");
+        assert_eq!(s(serde_json::json!({"rdp_avc444": ["work-laptop"]})), (true, false, false), "another one");
+        assert_eq!(s(serde_json::json!({"rdp_avc444": "yes"})), (true, false, false), "only true or a list");
+    }
+
+    #[test]
+    fn a_codec_is_logged_once_and_a_mix_only_as_a_count_each_minute() {
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut c = Codecs::default();
+        let (avc, prog) = (RDPGFX_CODECID_RDPGFX_CODECID_AVC420, RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE);
+        assert_eq!(c.frame(avc, at(0)), ["the server sends H.264 4:2:0 (AVC420)"]);
+        assert!((1..30).all(|s| c.frame(avc, at(s)).is_empty()), "the same codec again: nothing");
+        assert_eq!(c.frame(prog, at(30)), ["the server sends RemoteFX Progressive"]);
+        assert!(c.frame(avc, at(31)).is_empty(), "back to one it's had: no line per switch");
+        assert_eq!(c.frame(avc, at(61)), ["frames in the last 61 s: H.264 4:2:0 (AVC420) 31, RemoteFX Progressive 1"]);
+        assert!((62..130).all(|s| c.frame(avc, at(s)).is_empty()), "a minute of one codec: no count");
+        assert_eq!(c.frame(0x42, at(130)), ["the server sends unknown (0x42)"]);
+    }
+
+    static GDI_CAPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    unsafe extern "C" fn gdi_caps(_g: *mut RdpgfxClientContext, _p: *const RDPGFX_CAPS_CONFIRM_PDU) -> UINT {
+        GDI_CAPS.fetch_add(1, Relaxed);
+        CHANNEL_RC_OK
+    }
+    unsafe extern "C" fn gdi_surface(_g: *mut RdpgfxClientContext, _c: *const RDPGFX_SURFACE_COMMAND) -> UINT {
+        CHANNEL_RC_OK
+    }
+
+    /// A session's graphics pipeline as the GDI sets it up: its context (panel `i`), the GDI, and
+    /// the GDI's own callbacks in the slots.
+    fn session(i: usize) -> (Box<PanelContext>, Box<rdpGdi>, Box<RdpgfxClientContext>) {
+        let mut ctx = Box::new(PanelContext { common: Default::default(), panel: i });
+        let mut gdi = Box::new(rdpGdi { context: &mut *ctx as *mut PanelContext as *mut rdpContext, ..Default::default() });
+        let g = Box::new(RdpgfxClientContext { custom: &mut *gdi as *mut rdpGdi as *mut c_void, CapsConfirm: Some(gdi_caps), SurfaceCommand: Some(gdi_surface), ..Default::default() });
+        (ctx, gdi, g)
+    }
+
+    #[test]
+    fn the_wrapper_calls_the_gdis_own_once_and_each_session_finds_its_own_panel() {
+        let (_c1, _d1, mut g1) = session(usize::MAX - 1); // not panels, so nothing's logged
+        let (_c2, _d2, mut g2) = session(usize::MAX);
+        unsafe {
+            assert_eq!((*(gfx_context(&mut *g1) as *mut PanelContext)).panel, usize::MAX - 1, "each session's frames count on its own panel");
+            assert_eq!((*(gfx_context(&mut *g2) as *mut PanelContext)).panel, usize::MAX);
+            assert!(gfx_context(std::ptr::null_mut()).is_null());
+            let mut set = RDPGFX_CAPSET::default();
+            let pdu = RDPGFX_CAPS_CONFIRM_PDU { capsSet: &mut set };
+            watch_gfx(&mut *g1);
+            watch_gfx(&mut *g1); // installed again on the same session
+            (g1.CapsConfirm.unwrap())(&mut *g1, &pdu);
+            assert_eq!(GDI_CAPS.load(Relaxed), 1, "the GDI's own, once, not ours calling ours");
+            watch_gfx(&mut *g2); // a reconnect: a new session's GDI with its own callbacks again
+            (g2.CapsConfirm.unwrap())(&mut *g2, &pdu);
+            assert_eq!(GDI_CAPS.load(Relaxed), 2);
+        }
+    }
 
     #[test]
     fn a_failed_unit_is_still_let_go_and_the_rest_of_its_pair_isnt_pressed() {

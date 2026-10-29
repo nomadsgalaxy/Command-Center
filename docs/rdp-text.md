@@ -44,15 +44,24 @@ I read krdp's source for 6.7.5 (what we patch) and 6.8.0 (what the desktop host 
 
 ## What I changed
 
-- **AVC444 and AVC444v2 are on** (`rdp.rs`) with H.264, so a server that can send 4:4:4 does. FreeRDP
-  3.31 decodes both, and our `h264.c` patch only changes the YUV converter's threading, which the
-  4:4:4 path shares. With krdp nothing changes but the capability set it confirms: offering AVC444
-  makes our client send the version 10 sets too, so krdp confirms the highest of those (10.7, unless FreeRDP filters it) instead of 8.1. That needs a live check.
-- **Each panel logs what it got:** "graphics caps 0x…, flags 0x…" when the server confirms, and
-  "the server sends H.264 4:2:0 (AVC420)" (or whichever) on the first frame and on any change.
-- **`"rdp_codec": "progressive"`** in `~/.config/control-center/settings.json` asks for RemoteFX
-  Progressive instead of H.264, for every computer, from the next connect. It's there to try
-  side by side; it isn't the default.
+- **H.264 4:4:4 is offered only where you turn it on:** `"rdp_avc444": true` in
+  `~/.config/control-center/settings.json` for every computer, or a list of machine names
+  (`["home_desktop"]`) for some. It's off by default, so a fresh settings.json asks for exactly
+  what it did before: H.264 at 4:2:0. Two reasons. First, krdp doesn't send 4:4:4 anyway. Second,
+  offering it changes the handshake: our FreeRDP only sends the version 10 capability sets when
+  4:4:4 is offered, so krdp then confirms the highest of those (10.7, unless FreeRDP filters it)
+  instead of 8.1. Turning it on by default should wait until the Frame's CPU and latency decoding
+  a real 4:4:4 source have been measured. FreeRDP 3.31 decodes both AVC444 and AVC444v2, and our
+  `h264.c` patch only changes the YUV converter's threading, which the 4:4:4 path shares.
+- **`"rdp_codec": "progressive"`** asks for RemoteFX Progressive instead, for every computer, from
+  the next connect. It turns H.264 off and sets FreeRDP's `GfxProgressive` and `GfxProgressiveV2`
+  on, so it doesn't depend on FreeRDP's defaults. It's there to try side by side; it isn't the
+  default. Any other value, or none, keeps H.264.
+- **Each panel logs what it got:** "graphics caps 0x…, flags 0x…" when the server confirms, then
+  "the server sends H.264 4:2:0 (AVC420)" (or whichever) on the first frame of each codec. If it
+  gets more than one, each minute ends with a count of each ("frames in the last 60 s: …"), so a
+  server that mixes them doesn't log a line per switch. A codec FreeRDP doesn't name shows as
+  "unknown (0x…)".
 
 ## What Progressive costs
 
@@ -80,7 +89,15 @@ of it, once it's been seen live.
 
 ## Still to do
 
-- On the desktop host (Crab): check the log says AVC420 with krdp 6.8, that nothing else changes
-  with the version 10 capability sets, then the same small-text pattern on screen with
-  `"rdp_codec": "progressive"` and without, side by side in the headset.
+The live check runs on the Frame, against the desktop host's `frame@` server. On the host, krdp's
+`share@0` takes a second client but never sends its finalization replies (it sticks in
+FINALIZATION_CLIENT_SYNC), so a test client there can't get as far as the capabilities (Crab, #115).
+For each run, H.264 4:2:0 (the default), `"rdp_avc444": ["home_desktop"]`, and
+`"rdp_codec": "progressive"`:
+
+- the confirmed caps and the codec in `cc-panels.log`, and that 4:4:4 offered still gets AVC420
+  from krdp with nothing else changed;
+- how long the first frame takes after the connect (`session up … in N ms`, then the codec line);
+- any surface glitch: a black or stale panel, wrong colours, tearing at the tiles;
+- the small-text pattern on the computer's screen, side by side in the headset.
 - Decide whether Progressive becomes a per-panel choice.

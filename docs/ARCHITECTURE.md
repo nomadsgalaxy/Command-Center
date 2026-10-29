@@ -426,7 +426,7 @@ panic there is a bug that ends that connection's thread, which is the rule it fo
 | --- | --- |
 | `viewers.conf` | One remote monitor a line: `<name> <user>@<host>:<port> <screen> <w>x<h> [key=value ...]` (curve, radius, autoconnect, machine, label, proto, pin, tls). Parsed in `cc-panels config.rs:parse_viewers` and `cc_proto::conf::viewers`, edited by `conf::set_options`, and written only through `conf::edit_viewers` (pairing, `cc-home machine`, a VNC panel's first pin), which locks `.viewers.conf.lock` so two writers at once both keep their change, and keeps the file's mode (0600 for a new one). `viewers.removed` keeps removed lines. |
 | `home.json` | `{"workspace", "workspaces": {name: {spots, universe, primary, known_networks, machines}}}`. Spots map a spot name to `{panel key: pose}`. See `cc_proto::conf::read_home` and docs/workspaces.md. |
-| `settings.json` | User settings (taskbar, window_px_per_m, align, rest_nice, session_links, rdp_codec (docs/rdp-text.md), ...): `config::settings`, `control/prefs.rs`. |
+| `settings.json` | User settings (taskbar, window_px_per_m, align, rest_nice, session_links, rdp_codec and rdp_avc444 (docs/rdp-text.md), ...): `config::settings`, `control/prefs.rs`. |
 | `trusted-hosts/<id>.json`, `passwords/<id>`, `password`, `frame-key` | Pairing results and this Frame's Ed25519 key (`cc_proto::conf`, `agent::frame_key`). `pair-tries.json` limits retries. |
 | `mirror-camera.json` | The mirror camera fit (`cc-home refit`). |
 | `hibernate-allow` | Apps hibernate may reopen. |
