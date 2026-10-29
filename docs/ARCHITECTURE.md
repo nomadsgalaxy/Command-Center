@@ -352,6 +352,9 @@ spot may be under its screen number, which saving removes.
   On a Frame, `cc-install` clones/pulls `~/control-center` and runs `install.sh container`,
   `install.sh cc-home`, `cc-home install` and `cc-home install desktop`
   (`crates/cc-install/src/plan.rs`). On a host it downloads `cc-host` and runs `cc-host install`.
+  The download goes into a fresh work folder only this user can open (0700, in `$XDG_RUNTIME_DIR`
+  or `~/.cache/control-center`), never a shared `/tmp` path, so nobody can swap cc-host between
+  its checksum check and the step that runs it.
 - Frame build from source: `install.sh` (container, cc-home with the cc-rust toolchain) then
   `install.rs:build` (FreeRDP 3.31.1 into `panels/third_party/prefix`, `tools/build-libvncclient.sh`
   into `vnc-prefix`, `cargo build --release` in the container, the pointer driver).

@@ -129,23 +129,63 @@ fn run(cmd: &[String], frame: bool, log: &Arc<Log>) -> Result<(), String> {
     }
 }
 
+/// The installer's work folder: a new one only this user can open (0700), made fresh for this run
+/// in $XDG_RUNTIME_DIR, or ~/.cache/control-center without one. It's never a shared /tmp path:
+/// there another user could make the folder first, or plant a symlink where cc-host gets written,
+/// and swap cc-host between the checksum check and running it.
+fn private_work_dir(home: &Path) -> std::io::Result<PathBuf> {
+    let parent = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(|| home.join(".cache/control-center"));
+    std::fs::create_dir_all(&parent)?;
+    for n in 0..100 {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+        match make_private(&parent.join(format!("cc-install-{}-{nanos}-{n}", std::process::id()))) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            r => return r,
+        }
+    }
+    Err(std::io::Error::other("couldn't make a work folder"))
+}
+
+/// Makes `dir`, and only if nothing is there yet (not a folder, not a symlink), with mode 0700.
+fn make_private(dir: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    std::fs::DirBuilder::new().mode(0o700).create(dir)?; // not recursive: an existing path is an error
+    let m = std::fs::symlink_metadata(dir)?;
+    if !m.is_dir() || m.uid() != unsafe { libc::getuid() } || m.mode() & 0o077 != 0 {
+        return Err(std::io::Error::other(format!("{} isn't a private folder of ours", dir.display())));
+    }
+    Ok(dir.to_owned())
+}
+
+/// Makes `p` as a new, empty file of ours (0600) for curl to write into. It fails if anything is
+/// there already, a symlink included, so nothing gets written through one.
+fn fresh_file(p: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(p).map(drop)
+}
+
 /// Downloads cc-host for this arch from the release to `dest` and checks it against SHA256SUMS.
+/// `dest` is in the private work folder, so nobody else can change it between the check and the
+/// step that runs it.
 fn download(dest: &Path, arch: &str, log: &Arc<Log>) -> Result<(), String> {
     use sha2::Digest;
     let dl = std::env::var("CC_DL").unwrap_or_else(|_| DL.into());
-    let dir = dest.parent().unwrap_or(Path::new("/tmp"));
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = dest.parent().ok_or("no work folder")?;
+    let curl = |to: &Path, what: &str| -> Result<(), String> {
+        fresh_file(to).map_err(|e| format!("{}: {e}", to.display()))?;
+        run(&["curl".into(), "-fsSL".into(), "-o".into(), to.display().to_string(), format!("{dl}/{what}")], false, log)
+    };
     let sums = match std::env::var("CC_SUMS") {
         Ok(p) => std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))?,
         Err(_) => {
             let p = dir.join("SHA256SUMS");
-            run(&["curl".into(), "-fsSL".into(), "-o".into(), p.display().to_string(), format!("{dl}/SHA256SUMS")], false, log)?;
+            curl(&p, "SHA256SUMS")?;
             std::fs::read_to_string(&p).map_err(|e| e.to_string())?
         }
     };
     let name = format!("cc-host-{arch}");
     let want = plan::sum_for(&sums, &name).ok_or(format!("The release has no checksum for {name}, so I won't use it."))?;
-    run(&["curl".into(), "-fsSL".into(), "-o".into(), dest.display().to_string(), format!("{dl}/{name}")], false, log)?;
+    curl(dest, &name)?;
     let got: String = sha2::Sha256::digest(std::fs::read(dest).map_err(|e| e.to_string())?).iter().map(|b| format!("{b:02x}")).collect();
     if got != want {
         let _ = std::fs::remove_file(dest);
@@ -153,7 +193,7 @@ fn download(dest: &Path, arch: &str, log: &Arc<Log>) -> Result<(), String> {
     }
     log.push(format!("{name}: checksum {got} matches"));
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())
+    std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())
 }
 
 /// Runs the steps in order and stops at the first one that fails. On the Frame it then checks
@@ -212,7 +252,18 @@ fn main() {
         }
     }
     let f = plan::look();
-    let work_dir = std::env::temp_dir().join(format!("cc-install-{}", std::process::id()));
+    // A dry run only names the folder; a real one makes it now, private, or doesn't go on.
+    let work_dir = if dry {
+        std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| f.home.join(".cache/control-center")).join("cc-install-<new>")
+    } else {
+        match private_work_dir(&f.home) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("I couldn't make a private work folder: {e}");
+                std::process::exit(1);
+            }
+        }
+    };
     let log_path = f.home.join(".cache/control-center/install.log");
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin()) && std::io::IsTerminal::is_terminal(&std::io::stdout());
     let code = if yes || dry || remove || !tty {
@@ -388,5 +439,63 @@ fn tui(f: Facts, log: Arc<Log>, work_dir: PathBuf) -> i32 {
             1
         }
         ui::Out::Start => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("cc-install-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Another user's folder or symlink where the work folder would go is refused, not used.
+    #[test]
+    fn the_work_folder_is_never_a_planted_one() {
+        let d = scratch("dir");
+        let theirs = d.join("theirs");
+        std::fs::create_dir_all(&theirs).unwrap();
+        symlink(&theirs, d.join("planted")).unwrap();
+        assert!(make_private(&d.join("planted")).is_err(), "a symlink");
+        assert!(make_private(&theirs).is_err(), "a folder that's already there");
+        let mine = make_private(&d.join("mine")).unwrap();
+        assert_eq!(std::fs::metadata(&mine).unwrap().permissions().mode() & 0o777, 0o700);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A symlink planted where cc-host is downloaded makes the download fail, and nothing is
+    /// written through it. Without one, the checked file is ours alone (0700).
+    #[test]
+    fn download_wont_write_through_a_symlink() {
+        use sha2::Digest;
+        let d = scratch("dl");
+        let release = d.join("release");
+        std::fs::create_dir_all(&release).unwrap();
+        let body = b"#!/bin/sh\necho cc-host\n";
+        let sum: String = sha2::Sha256::digest(body).iter().map(|b| format!("{b:02x}")).collect();
+        std::fs::write(release.join("cc-host-x86_64"), body).unwrap();
+        std::fs::write(release.join("SHA256SUMS"), format!("{sum}  cc-host-x86_64\n")).unwrap();
+        unsafe { std::env::set_var("CC_DL", format!("file://{}", release.display())) };
+        let log = Arc::new(Log::memory());
+
+        let work = make_private(&d.join("work")).unwrap();
+        let victim = d.join("victim");
+        std::fs::write(&victim, "untouched").unwrap();
+        symlink(&victim, work.join("cc-host")).unwrap();
+        assert!(download(&work.join("cc-host"), "x86_64", &log).is_err(), "a planted symlink");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+
+        let clean = make_private(&d.join("clean")).unwrap();
+        let r = download(&clean.join("cc-host"), "x86_64", &log);
+        let mode = std::fs::metadata(clean.join("cc-host")).map(|m| m.permissions().mode() & 0o777);
+        unsafe { std::env::remove_var("CC_DL") };
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(r, Ok(()));
+        assert_eq!(mode.unwrap(), 0o700);
     }
 }
