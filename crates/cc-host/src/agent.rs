@@ -5,15 +5,13 @@
 //! which was the reference until the conformance suite passed against both (docs/rust-host.md R1).
 //! agent.py is gone now, and tests/conformance.rs is the spec.
 use crate::platform::Platform;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as B64;
 use cc_proto::agent::{VERSION, canon};
 use cc_proto::server::authenticate;
 use ed25519_dalek::SigningKey;
 use ed25519_dalek::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Shutdown, TcpListener, TcpStream};
@@ -465,12 +463,4 @@ fn io_loop(mut tls: StreamOwned<ServerConnection, TcpStream>, mut buf: Vec<u8>, 
     tls.conn.send_close_notify();
     let _ = tls.flush();
     let _ = tls.sock.shutdown(Shutdown::Both);
-}
-
-#[allow(dead_code)]
-fn _map(_: Map<String, Value>) {}
-
-#[allow(dead_code)]
-fn _b64(b: &[u8]) -> String {
-    B64.encode(b)
 }
