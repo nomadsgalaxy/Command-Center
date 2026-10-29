@@ -10,8 +10,8 @@
 //!    (/usr/lib/command-center/release-key.gpg, from packaging/command-center.asc). No shared
 //!    keyring is used or touched. Nothing in SHA256SUMS is trusted before this passes.
 //! 4. The one `command-center_<version>.raw` SHA256SUMS lists (a strict name, no paths). Already
-//!    in .raw.v and loaded: it stops, up to date. In .raw.v but not loaded (the Desktop was open
-//!    last time): straight to 6. Otherwise fetched the same way, and its SHA-256 checked against
+//!    in .raw.v and loaded: it stops, up to date. In .raw.v but not loaded (the Desktop or its tab
+//!    was open last time): straight to 6. Otherwise fetched the same way, and its SHA-256 checked against
 //!    the signed list.
 //! 5. Only then `systemd-sysupdate --component=command-center --verify=no update`, which copies it
 //!    from the work directory into /var/lib/extensions/command-center.raw.v/ (the transfer file in
@@ -167,7 +167,7 @@ fn run(o: &mut impl Ops, dir: &Path) -> Result<String, String> {
     } else if o.loaded().as_deref() == Some(version) {
         return Ok(format!("{name} is already installed and loaded: Command Center is up to date"));
     } // else an earlier run installed it but couldn't load it then, so this only loads it
-    let later = format!("{name} is installed; it's loaded at the next boot, or run cc-home update again with the Desktop closed");
+    let later = format!("{name} is installed; it's loaded at the next boot, or run cc-home update again with the Desktop and its dashboard tab closed");
     if !o.claim() {
         return Ok(later);
     }
@@ -595,7 +595,7 @@ mod tests {
         (f.installed, f.loaded) = (true, Some("0.9.1".into()));
         assert!(run(&mut f, &d).unwrap().contains("up to date"));
         assert_eq!(f.steps, ["fetch SHA256SUMS", "fetch SHA256SUMS.sig", "verify"], "no image, no claim, no refresh");
-        // installed by an earlier run with the Desktop open, so not loaded yet: only the loading's left
+        // installed by an earlier run with the Desktop or its tab open, so not loaded yet: only the loading's left
         let mut f = fake(&d);
         (f.installed, f.loaded) = (true, Some("0.9.0".into()));
         assert!(run(&mut f, &d).unwrap().contains("installed and loaded"));

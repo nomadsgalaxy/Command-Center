@@ -362,7 +362,7 @@ root under pkexec cc-home refuses to be anything else), and as root it does one 
 4. The one `command-center_<version>.raw` the signed list names (letters, digits and `._+~-`
    only, so never a path). If that version's already a file in `command-center.raw.v/` and it's
    the one loaded, the helper stops there: "Command Center is up to date". If it's there but not
-   loaded (an earlier run found the Desktop open), it skips to step 6. Otherwise it's downloaded
+   loaded (an earlier run found the Desktop or its dashboard tab open), it skips to step 6. Otherwise it's downloaded
    the same way and checked against its SHA-256.
 5. Then `systemd-sysupdate --component=command-center --verify=no update` copies it into
    `/var/lib/extensions/command-center.raw.v/`, with the transfer file in
@@ -376,7 +376,7 @@ root under pkexec cc-home refuses to be anything else), and as root it does one 
    `/usr/lib/command-center` or a `/usr/bin/cc-*` (the dashboard tab's runs with the Desktop
    closed), apart from the helper, its pkexec and the `cc-home update` that ran pkexec. Nothing
    further up is skipped, so a cc-box from the image above the terminal counts. Otherwise the new image
-   is loaded at the next boot, or by running `cc-home update` again once those have closed. It never
+   is loaded at the next boot, or by running `cc-home update` again with the Desktop and its dashboard tab closed. It never
    stops anything. One gap is left: SteamVR starting the dashboard tab's process in the few
    milliseconds between the check and the refresh, since the tab doesn't take that lock.
    sysupdate never installs an older version than the newest one installed unless it's asked for
