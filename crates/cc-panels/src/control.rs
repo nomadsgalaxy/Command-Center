@@ -1,4 +1,5 @@
-//! The control socket: datagrams on @controlcenter, with replies going back to the sender.
+//! The control socket: datagrams on @controlcenter, with replies going back to the sender. Only
+//! datagrams from our own user are taken (recv_ours), since an abstract socket has no permissions.
 //!   panels    -> "ok", then one line per shown panel:
 //!                <name> cx cy cz  xx xy xz  zx zy zz  width height curve
 //!                (a window's name is its spot key, app:<desktop file name>)
@@ -124,7 +125,7 @@ fn wake_on_request(s: &UnixDatagram) {
 pub fn open() -> Option<UnixDatagram> {
     START.get_or_init(Instant::now);
     let s = SocketAddr::from_abstract_name(b"controlcenter").and_then(|a| UnixDatagram::bind_addr(&a));
-    match s.and_then(|s| s.set_nonblocking(true).map(|_| s)) {
+    match s.and_then(|s| s.set_nonblocking(true).and_then(|_| passcred(&s)).map(|_| s)) {
         Ok(s) => {
             wake_on_request(&s);
             Some(s)
@@ -139,10 +140,82 @@ pub fn open() -> Option<UnixDatagram> {
 pub fn handle(s: &UnixDatagram, grab: &mut crate::grab::Grab, windows: &mut crate::windows::Windows, bar: &mut taskbar::Taskbar) {
     hud::tick(); // once a frame, so a HUD whose scan died goes away
     let mut buf = [0u8; 1024];
-    while let Ok((n, from)) = s.recv_from(&mut buf) {
-        let reply = command(&String::from_utf8_lossy(&buf[..n]), grab, windows, bar);
-        let _ = s.send_to_addr(reply.as_bytes(), &from);
+    loop {
+        match recv_ours(s, &mut buf) {
+            Ok(Some((n, from))) => {
+                let reply = command(&String::from_utf8_lossy(&buf[..n]), grab, windows, bar);
+                from.reply(s, reply.as_bytes());
+            }
+            Ok(None) => {
+                static SAID: AtomicBool = AtomicBool::new(false);
+                if !SAID.swap(true, Relaxed) {
+                    eprintln!("control socket: ignored a command from another user (once)");
+                }
+            }
+            Err(_) => break, // drained (WouldBlock) or broken
+        }
     }
+}
+
+// ------------------------------------------------------------------ who's asking
+
+/// The socket is abstract (@controlcenter), so it has no file permissions: any process on the
+/// machine can reach it. The kernel's credentials on each datagram (SO_PASSCRED) are the gate, and
+/// only our own user's commands are taken.
+fn passcred(s: &UnixDatagram) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let on: libc::c_int = 1;
+    let r = unsafe { libc::setsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PASSCRED, (&on as *const libc::c_int).cast(), size_of::<libc::c_int>() as libc::socklen_t) };
+    if r == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
+/// Where a datagram came from, to answer it.
+struct Sender {
+    addr: libc::sockaddr_un,
+    len: libc::socklen_t,
+}
+
+impl Sender {
+    fn reply(&self, s: &UnixDatagram, data: &[u8]) {
+        use std::os::fd::AsRawFd;
+        // If it's busy or gone, it asks again; nothing here waits on it.
+        unsafe { libc::sendto(s.as_raw_fd(), data.as_ptr().cast(), data.len(), libc::MSG_DONTWAIT, (&self.addr as *const libc::sockaddr_un).cast(), self.len) };
+    }
+}
+
+/// Whether a datagram's sender is us: the credentials the kernel attached say so. None (no
+/// credentials) isn't.
+fn ours(uid: Option<u32>) -> bool {
+    uid == Some(unsafe { libc::getuid() })
+}
+
+/// The next datagram, if it's from our own user: its length and who sent it. Ok(None) is one from
+/// someone else, dropped. Err ends the drain (WouldBlock when there's nothing left).
+fn recv_ours(s: &UnixDatagram, buf: &mut [u8]) -> std::io::Result<Option<(usize, Sender)>> {
+    use std::os::fd::AsRawFd;
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let mut ctrl = [0u64; 8]; // room for one cmsghdr with a ucred, aligned
+    let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_name = (&mut addr as *mut libc::sockaddr_un).cast();
+    msg.msg_namelen = size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = ctrl.as_mut_ptr().cast();
+    msg.msg_controllen = size_of_val(&ctrl) as _; // usize on glibc, u32 on musl
+    let n = unsafe { libc::recvmsg(s.as_raw_fd(), &mut msg, libc::MSG_DONTWAIT) };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut uid = None;
+    let mut c = unsafe { libc::CMSG_FIRSTHDR(&msg) };
+    while !c.is_null() {
+        if unsafe { (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_CREDENTIALS } {
+            uid = Some(unsafe { std::ptr::read_unaligned(libc::CMSG_DATA(c) as *const libc::ucred) }.uid);
+        }
+        c = unsafe { libc::CMSG_NXTHDR(&msg, c) };
+    }
+    Ok(ours(uid).then_some((n as usize, Sender { addr, len: msg.msg_namelen })))
 }
 
 /// A panel slot as the surface registry describes it (surface.rs).
@@ -341,8 +414,29 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
 
 #[cfg(test)]
 mod tests {
-    use super::{head_line, machines, prefs, show};
+    use super::{SocketAddr, SocketAddrExt, UnixDatagram, head_line, machines, ours, passcred, prefs, recv_ours, show};
     use std::sync::atomic::Ordering::Relaxed;
+
+    /// Our own datagram comes through with its credentials and gets its answer back; a sender
+    /// with no credentials, or another user's, isn't taken.
+    #[test]
+    fn only_our_user_drives_it() {
+        let name = format!("cc-panels-test-peer-{}", std::process::id());
+        let srv = UnixDatagram::bind_addr(&SocketAddr::from_abstract_name(name.as_bytes()).unwrap()).unwrap();
+        passcred(&srv).unwrap();
+        let cli = UnixDatagram::bind_addr(&SocketAddr::from_abstract_name(format!("{name}-c").as_bytes()).unwrap()).unwrap();
+        cli.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+        cli.send_to_addr(b"ping", &SocketAddr::from_abstract_name(name.as_bytes()).unwrap()).unwrap();
+        let mut buf = [0u8; 64];
+        let (n, from) = recv_ours(&srv, &mut buf).unwrap().expect("our own uid");
+        assert_eq!(&buf[..n], b"ping");
+        from.reply(&srv, b"ok pong");
+        let got = cli.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..got], b"ok pong");
+        assert!(recv_ours(&srv, &mut buf).is_err(), "drained");
+        let me = unsafe { libc::getuid() };
+        assert!(ours(Some(me)) && !ours(Some(me + 1)) && !ours(None));
+    }
 
     #[test]
     fn showing_one_window_closes_the_other() {

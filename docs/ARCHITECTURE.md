@@ -392,6 +392,9 @@ spot may be under its screen number, which saving removes.
 `/usr/lib/command-center` when packaged).
 
 **The control socket**: `@controlcenter`, an abstract datagram socket, replies to the sender.
+An abstract socket has no file permissions, so cc-panels asks the kernel for each datagram's
+sender (`SO_PASSCRED`) and only takes commands from its own user; another user's are dropped, and
+the log says so once. cc-pointer's driver socket checks the same way.
 The command list is the `//!` header of `crates/cc-panels/src/control.rs`. Clients (cc-home,
 cc-scan) honour `CC_PANELS_SOCKET=<name>`. cc-panels itself always binds `@controlcenter`.
 
