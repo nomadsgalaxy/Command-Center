@@ -62,6 +62,8 @@ fn create(dir: &std::path::Path) -> std::io::Result<(std::fs::File, std::path::P
     Err(std::io::Error::other("no free name for it"))
 }
 
+/// The trace, if one's being written. Every lock of it takes it even if a panic poisoned it
+/// (ffi::lock, or flush's try_lock), so a bug in tracing can't turn into a panic every frame.
 static OUT: Mutex<Option<Out>> = Mutex::new(None);
 
 fn out() -> &'static Mutex<Option<Out>> {
@@ -72,7 +74,7 @@ fn out() -> &'static Mutex<Option<Out>> {
             match create(std::path::Path::new(&dir)) {
                 Ok((file, path)) => {
                     eprintln!("vr-trace: writing {}", path.display());
-                    *OUT.lock().unwrap() = Some(Out::new(file));
+                    *crate::ffi::lock(&OUT) = Some(Out::new(file));
                 }
                 Err(e) => eprintln!("vr-trace: can't make a trace in {dir}: {e}"),
             }
@@ -83,11 +85,11 @@ fn out() -> &'static Mutex<Option<Out>> {
 
 /// Whether a trace is being written. Cheap, so callers can skip building a line.
 pub fn on() -> bool {
-    out().lock().unwrap().as_ref().is_some_and(|o| o.written < MAX)
+    crate::ffi::lock(out()).as_ref().is_some_and(|o| o.written < MAX)
 }
 
 fn write(v: Value) {
-    let mut o = out().lock().unwrap();
+    let mut o = crate::ffi::lock(out());
     let Some(o) = o.as_mut().filter(|o| o.written < MAX) else { return };
     let line = format!("{v}\n");
     let r = o.file.write_all(line.as_bytes());
@@ -200,7 +202,7 @@ pub fn laser_pose(dev: u32) -> Option<Mat> {
 /// most once a second, so the main loop writes about one block a second, not one a pass.
 pub fn tick(who: &str) {
     let t = {
-        let mut o = out().lock().unwrap();
+        let mut o = crate::ffi::lock(out());
         let Some(o) = o.as_mut().filter(|o| o.written < MAX) else { return };
         if o.flushed.elapsed() >= std::time::Duration::from_secs(1) {
             let r = o.file.flush();
@@ -286,13 +288,13 @@ mod tests {
         let _vr = fake_vr(); // the replays write through OUT too, so not while one runs
         let path = std::env::temp_dir().join(format!("cc-trace-flush-{}.jsonl", std::process::id()));
         let file = std::fs::File::create(&path).unwrap();
-        *OUT.lock().unwrap() = Some(Out::new(file));
+        *crate::ffi::lock(&OUT) = Some(Out::new(file));
         state("plasma", json!({"crop": [1, 2, 3, 4]}));
         pose(3, None);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "", "still in the buffer");
         flush();
         let text = std::fs::read_to_string(&path).unwrap();
-        *OUT.lock().unwrap() = None;
+        *crate::ffi::lock(&OUT) = None;
         let _ = std::fs::remove_file(&path);
         assert_eq!(text.lines().count(), 2, "{text}");
         assert!(text.starts_with(r#"{"plasma":{"crop":[1,2,3,4]}}"#), "{text}");
@@ -332,6 +334,31 @@ mod tests {
         assert!(!std::thread::spawn(crate::vr::fake::here).join().unwrap(), "another test's thread takes the real path");
         drop(g);
         assert!(!crate::vr::fake::here(), "and so does this one once the guard's gone");
+    }
+
+    #[test]
+    fn a_trace_poisoned_by_a_panic_still_writes() {
+        let _vr = fake_vr();
+        let path = std::env::temp_dir().join(format!("cc-trace-poison-{}.jsonl", std::process::id()));
+        *crate::ffi::lock(&OUT) = Some(Out::new(std::fs::File::create(&path).unwrap()));
+        let quiet = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let _ = std::thread::spawn(|| {
+            let _held = OUT.lock();
+            panic!("a tracing bug, with the lock held");
+        })
+        .join();
+        std::panic::set_hook(quiet);
+        assert!(OUT.is_poisoned());
+        assert!(on(), "still on");
+        state("plasma", json!({"crop": [1, 2, 3, 4]}));
+        tick("plasma");
+        flush();
+        let text = std::fs::read_to_string(&path).unwrap();
+        *crate::ffi::lock(&OUT) = None;
+        OUT.clear_poison();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(text.lines().count(), 2, "{text}");
     }
 
     #[test]
