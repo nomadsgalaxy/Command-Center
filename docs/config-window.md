@@ -16,6 +16,11 @@ Each row has the connected dot, name and host, plus:
 - **[Align]**, which runs `cc-home machine align <name> --progress` on the host through
   distrobox-host-exec, since the scan needs podman and the container doesn't have it.
 
+When a monitor's session can't start, the panel asks the host's agent why (`status`, at most every
+30 s). If the host's server for that monitor keeps restarting, the host column says **host server
+failing**, and once it gave up, **host server down**, instead of the panel retrying quietly. It goes
+back to the host's name when the session starts again.
+
 **2026-10-03.** The taskbar chip is now **Workspace**. The Workspace window lists the saved
 workspaces (Use / Load for travel, Machines, Rename, delete, Save as workspace) and opens the
 Machines window per workspace ([workspaces.md](workspaces.md)).

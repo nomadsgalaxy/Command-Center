@@ -293,7 +293,12 @@ Frame's servers start when it connects and stop after it leaves, because always-
 - **Idle stop:** every 30 s the agent checks each running session's port for established
   connections, and stops any session that has had none for `session_idle_min` (host
   settings.json, default 10). An agent restart finds running slot units and adopts them.
-- `status` lists this Frame's sessions: index, port, running, viewers, idle seconds.
+- `status` lists this Frame's sessions: index, port, running, viewers, idle seconds. Its `health`
+  has one entry per shared monitor for this Frame's server on it (`control-center-frame@<frame>-<i>`):
+  `state` (systemd's ActiveState), `restarts` (NRestarts), `recent_restarts` (in the last 10
+  minutes, counted from what status saw before), `listening` (its port), and `health`. That's `down`
+  once the unit is failed (it gave up), `degraded` after more than 2 restarts in 10 minutes, `ok`
+  when it's active and listening, `starting` while it comes up, and `idle` with no session.
 - The scope is the same as every command's: only this Frame's slot, the index checked against the
   shared monitors, and unit names built from the validated Frame name and an integer.
 

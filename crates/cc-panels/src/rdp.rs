@@ -215,6 +215,37 @@ pub fn agent(machine: &str, cmd: &str, args: serde_json::Value) -> Result<serde_
 /// Err says why not, as a state: "unknown-command" from an older agent, "no-agent" when it's
 /// unreachable, "host-changed". A monitor then falls back to its own port, like before we had
 /// sessions (run).
+/// Panel::host_health: the host's agent says its server for this monitor is fine (or hasn't said),
+/// keeps restarting, or gave up (docs/agent.md, status's health).
+pub const HOST_OK: u8 = 0;
+pub const HOST_DEGRADED: u8 = 1;
+pub const HOST_DOWN: u8 = 2;
+
+/// What status's health says for this monitor's server, as a HOST_* value.
+pub fn host_health(status: &serde_json::Value, index: u32) -> u8 {
+    let mine = status["health"].as_array().into_iter().flatten().find(|h| h["index"].as_u64() == Some(index as u64));
+    match mine.and_then(|h| h["health"].as_str()) {
+        Some("down") => HOST_DOWN,
+        Some("degraded") => HOST_DEGRADED,
+        _ => HOST_OK,
+    }
+}
+
+/// After a failed start, asks the agent why, at most every 30 s, so the machines window can say the
+/// host's server is broken instead of the panel retrying quietly.
+fn ask_health(p: &Panel, last: &mut Option<std::time::Instant>) {
+    if last.is_some_and(|t| t.elapsed() < Duration::from_secs(30)) {
+        return;
+    }
+    *last = Some(std::time::Instant::now());
+    if let Ok(st) = agent(crate::config::machine_of(&p.v), "status", serde_json::json!({})) {
+        let h = host_health(&st, (p.v.port - 3400) % 10);
+        if p.host_health.swap(h, Relaxed) != h && h != HOST_OK {
+            eprintln!("{}: its host says its server is {}", p.v.name, if h == HOST_DOWN { "down (it gave up restarting)" } else { "restarting again and again" });
+        }
+    }
+}
+
 fn session(p: &Panel, start: bool) -> Result<u32, String> {
     let v: &crate::config::Viewer = &p.v;
     let verb = if start { "start" } else { "stop" };
@@ -301,11 +332,13 @@ pub fn run(p: &'static Panel) {
         }
     };
     let (mut said, mut changed) = (false, false); // log each failure once, not on every retry
+    let mut asked = None; // when it last asked the host about its server's health
     let mut moved = false; // the last session ended because audio moved, so no pause before the next
     while !QUIT.load(Relaxed) && p.live() {
         let port = match session(p, true) {
             Ok(n) => {
                 (said, changed) = (false, false);
+                p.host_health.store(HOST_OK, Relaxed);
                 n
             }
             // another key at its address: we never connect unpinned, so not until it's paired again
@@ -329,6 +362,7 @@ pub fn run(p: &'static Panel) {
                 if !std::mem::replace(&mut said, true) {
                     eprintln!("{}: session start: {why}; its own port {}", p.v.name, p.v.port);
                 }
+                ask_health(p, &mut asked);
                 p.v.port
             }
         };
@@ -517,4 +551,19 @@ pub fn wheel(p: &Panel, horizontal: bool, rotation: i32) {
     let rot = rotation.clamp(-255, 255) as u16 & 0x1FF;
     let f = if horizontal { PTR_FLAGS_HWHEEL } else { PTR_FLAGS_WHEEL };
     mouse(p, f | rot as u32, 0.0, 0.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The agent's status says which monitor's server is broken, and only that panel shows it.
+    #[test]
+    fn reads_its_own_monitors_health() {
+        let st = serde_json::json!({"ok": true, "health": [
+            {"index": 0, "health": "ok"}, {"index": 1, "health": "down", "restarts": 5}, {"index": 2, "health": "degraded"}]});
+        assert_eq!((host_health(&st, 0), host_health(&st, 1), host_health(&st, 2)), (HOST_OK, HOST_DOWN, HOST_DEGRADED));
+        assert_eq!(host_health(&st, 3), HOST_OK, "a monitor it doesn't list");
+        assert_eq!(host_health(&serde_json::json!({"ok": true}), 0), HOST_OK, "an older agent says nothing");
+    }
 }
