@@ -9,7 +9,7 @@ license-file.workspace = true
 links = "vncclient"
 
 [build-dependencies]
-bindgen = "0.72"
+bindgen.workspace = true
 
 [lints]
 workspace = true

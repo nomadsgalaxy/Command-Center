@@ -11,6 +11,19 @@ rust-version = "1.89"
 # Nothing here goes to crates.io; cargo-deny then leaves our own (non-SPDX) license alone.
 publish = false
 
+[workspace.dependencies]
+# The ones more than one crate uses, so they can't drift apart: each crate says `x.workspace = true`.
+base64 = "0.22"
+bindgen = "0.72"
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+fontdue = "0.9"
+libc = "0.2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde_json = "1"
+sha2 = "0.10"
+wayland-client = "0.31"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
 [workspace.lints.rust]
 # An unsafe fn's body isn't one big unsafe block: each unsafe step is marked where it happens.
 unsafe_op_in_unsafe_fn = "deny"

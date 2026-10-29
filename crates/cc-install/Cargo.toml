@@ -10,9 +10,9 @@ description = "Command Center's installer: a terminal app that installs, updates
 
 [dependencies]
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm_0_29"] }
-serde_json = "1"
-sha2 = "0.10"
-libc = "0.2"
+serde_json.workspace = true
+sha2.workspace = true
+libc.workspace = true
 
 [lints]
 workspace = true

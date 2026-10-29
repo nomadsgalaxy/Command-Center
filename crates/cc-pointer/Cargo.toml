@@ -14,7 +14,7 @@ name = "driver_cc_pointer"
 crate-type = ["cdylib"]
 
 [dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [lints]
 workspace = true
