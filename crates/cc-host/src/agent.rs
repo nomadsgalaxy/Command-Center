@@ -33,6 +33,20 @@ extern "C" fn on_hup(_: libc::c_int) {
     HUP.store(true, Relaxed);
 }
 
+/// Every file a paired Frame has on this host, relative to the config dir: its login and slot,
+/// its trusted key, and the address it last came from. Unpairing removes each of them, through the
+/// agent's unpair and cc-share unpair alike, so a file added here can't outlive either.
+pub fn frame_files(frame: &str) -> [String; 3] {
+    [format!("frames/{frame}.json"), format!("trusted-frames/{frame}.pub"), format!("frames/{frame}.last")]
+}
+
+/// Removes a Frame's files (frame_files). One that's already gone is fine.
+pub fn forget_frame_files(conf: &Path, frame: &str) {
+    for f in frame_files(frame) {
+        let _ = std::fs::remove_file(conf.join(f));
+    }
+}
+
 pub fn urandom<const N: usize>() -> [u8; N] {
     let mut b = [0u8; N];
     std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).expect("/dev/urandom");
@@ -360,9 +374,7 @@ impl Agent {
             "tags" => self.tags(frame, req),
             "imu" => self.imu(frame, req),
             "unpair" => {
-                for f in [format!("frames/{frame}.json"), format!("trusted-frames/{frame}.pub"), format!("frames/{frame}.last")] {
-                    let _ = std::fs::remove_file(self.path(&f));
-                }
+                forget_frame_files(&self.conf, frame);
                 self.plat.systemctl(&["stop", &format!("control-center-frame@{frame}-*"), &format!("control-center-window@{frame}-*")]);
                 self.forget_frame(frame);
                 Ok(json!({"ok": true}))
@@ -463,4 +475,35 @@ fn io_loop(mut tls: StreamOwned<ServerConnection, TcpStream>, mut buf: Vec<u8>, 
     tls.conn.send_close_notify();
     let _ = tls.flush();
     let _ = tls.sock.shutdown(Shutdown::Both);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every file a Frame pair leaves, as the files cc-share's tests make for one.
+    fn paired(conf: &Path, frame: &str) {
+        for f in frame_files(frame) {
+            let p = conf.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "x").unwrap();
+        }
+    }
+
+    /// The agent's unpair removes every file in frame_files, and leaves nothing of that Frame's.
+    #[test]
+    fn unpair_removes_every_frame_file() {
+        let conf = std::env::temp_dir().join(format!("cc-host-unpair-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&conf);
+        std::fs::create_dir_all(&conf).unwrap();
+        paired(&conf, "f1");
+        paired(&conf, "f2");
+        let agent = Agent::new(conf.clone(), Box::new(crate::platform::Fake::default()));
+        assert_eq!(agent.command("f1", "10.0.0.2", "unpair", &json!({})), Ok(json!({"ok": true})));
+        let left: Vec<String> = frame_files("f1").into_iter().filter(|f| conf.join(f).exists()).collect();
+        let others = frame_files("f2").iter().all(|f| conf.join(f).exists());
+        let _ = std::fs::remove_dir_all(&conf);
+        assert!(left.is_empty(), "left behind: {left:?}");
+        assert!(others, "another Frame's files stay");
+    }
 }

@@ -1480,9 +1480,7 @@ fn unpair(e: &Env, f: &str, flag: &str) -> i32 {
         sysq(&["disable", &u]); // Older installs enabled them.
     }
     sysq(&["stop", &format!("control-center-frame@{f}-*"), &format!("control-center-window@{f}-*")]);
-    for p in [format!("frames/{f}.json"), format!("trusted-frames/{f}.pub"), format!("frames/{f}.last")] {
-        let _ = std::fs::remove_file(e.dir.join(p));
-    }
+    crate::agent::forget_frame_files(&e.dir, f);
     sysq(&["kill", "-s", "HUP", "control-center-agent"]); // Its live connections end now.
     println!("unpaired {f}: its login no longer works");
     if e.frames().is_empty() {
