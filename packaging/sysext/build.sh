@@ -7,6 +7,9 @@
 # Environment:
 #   CC_ROOT     the checkout whose builds go in (default: this one)
 #   CC_VERSION  the image's version (default: git describe of CC_ROOT)
+#   CC_RELEASE  1 for a release build: CC_VERSION is then required, has to be a tag's (v<version>
+#               on CC_ROOT's HEAD), and can't be -dirty or a bare commit, since sysupdate orders
+#               the images by version
 # Exits non-zero (3 on the host) when the image is built, but something in it can't load on this SteamOS (the check lists it).
 set -euo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
@@ -17,11 +20,22 @@ out=$(realpath -m "${1:-$here/out/command-center.raw}")
 # distrobox-host-exec drops the environment, so it goes on the command line.
 if ! grep -qx ID=steamos /etc/os-release 2>/dev/null; then
   command -v distrobox-host-exec >/dev/null || { echo "run this on the SteamOS host" >&2; exit 1; }
-  exec distrobox-host-exec env CC_ROOT="$root" CC_VERSION="${CC_VERSION:-}" bash "$here/build.sh" "$out"
+  exec distrobox-host-exec env CC_ROOT="$root" CC_VERSION="${CC_VERSION:-}" CC_RELEASE="${CC_RELEASE:-}" bash "$here/build.sh" "$out"
 fi
 
-name=$(basename "$out" .raw)
+# The release file is always named after the bare image name, whatever the output file's called
+# (command-center_0.9.1.raw too): that's the name sysext matches, and the one cc-install and
+# cc-launch look for. Tried on the Frame 2026-10-29 with vpick's <name>.raw.v/<name>_<N>.raw.
+name=command-center
 version=${CC_VERSION:-$(git -C "$root" describe --always --dirty 2>/dev/null || echo dev)}
+if [ "${CC_RELEASE:-}" = 1 ]; then
+  [ -n "${CC_VERSION:-}" ] || { echo "a release build needs CC_VERSION, from its tag" >&2; exit 1; }
+  case $version in
+    *-dirty* | *[!0-9A-Za-z._+~-]* | [!0-9]*) echo "CC_VERSION=$version isn't a release version (digits first, no -dirty)" >&2; exit 1 ;;
+  esac
+  git -C "$root" tag --points-at HEAD | grep -qx "v$version" || { echo "v$version isn't a tag on $root's HEAD" >&2; exit 1; }
+  git -C "$root" diff --quiet HEAD || { echo "$root has changes that aren't committed" >&2; exit 1; }
+fi
 lib=usr/lib/command-center
 s=$(mktemp -d)
 trap 'rm -rf "$s"' EXIT

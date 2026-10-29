@@ -292,7 +292,10 @@ something doesn't load (an FFmpeg or glibc bump), it stops and names what's miss
 the VR launcher doesn't show cc-launch's output. The code is `crates/cc-home/src/steamos.rs`.
 
 The file name has to match the image's name: `command-center.raw` (or `command-center.raw.v/`, see
-section 4) needs `extension-release.command-center`.
+section 4) needs `extension-release.command-center`. build.sh always names it that, whatever the
+output file is called, so `command-center_0.9.1.raw` carries `extension-release.command-center` too.
+The vpick test on 2026-10-29 used the same rule (`extension-release.cc-n9-test` inside each
+`cc-n9-test_<N>.raw`).
 
 ### Per-user state
 
@@ -473,6 +476,12 @@ packaging/sysext/steamos-buildenv.sh   # once per SteamOS version: the build con
 packaging/sysext/build-native.sh       # cc-home, FreeRDP, libvncclient, cc-panels, the driver
 packaging/sysext/build.sh              # → packaging/sysext/out/command-center.raw
 ```
+
+For a release, `CC_RELEASE=1 CC_VERSION=0.9.1 packaging/sysext/build.sh out/command-center_0.9.1.raw`.
+In release mode build.sh refuses a version that isn't from a tag (`v0.9.1` on the checkout's
+HEAD), a `-dirty` one, one that doesn't start with a digit, and a checkout with uncommitted
+changes, because sysupdate orders the images by version. Without `CC_RELEASE` the version is
+`git describe`, which is fine for testing.
 
 `build-native.sh` builds in place, into the checkout's usual paths, so don't run it in the checkout
 the Desktop is running from: it replaces that checkout's FreeRDP. I use a worktree. It reads FreeRDP's
