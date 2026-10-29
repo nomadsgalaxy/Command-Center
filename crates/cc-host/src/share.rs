@@ -1643,16 +1643,85 @@ pub fn alerts(e: &Env) -> PathBuf {
     e.home.join(".cache/control-center/host-alerts")
 }
 
-/// control-center-alert@<unit>: a unit gave up (OnFailure=). It says so once, as a desktop
-/// notification and a line in the alerts file, instead of failing quietly.
+/// The alert state next to the alerts file: one "<unit> <when it last went inactive>" line per unit
+/// alerted, so one failure is said once (docs/packaging.md).
+fn alert_state(e: &Env) -> PathBuf {
+    e.home.join(".cache/control-center/host-alerts.state")
+}
+
+/// What `systemctl show` says about a unit, as alert needs it.
+#[derive(Debug, Default, PartialEq)]
+struct UnitNow {
+    active: String,
+    sub: String,
+    result: String,
+    restart: String,
+    since: String, // InactiveEnterTimestampMonotonic: when it last went inactive or failed
+}
+
+const UNIT_PROPS: &[&str] = &["-p", "ActiveState", "-p", "SubState", "-p", "Result", "-p", "Restart", "-p", "InactiveEnterTimestampMonotonic"];
+
+fn unit_now(show: &str) -> UnitNow {
+    let v = |k: &str| show.lines().find_map(|l| l.strip_prefix(k).and_then(|r| r.strip_prefix('='))).unwrap_or("").to_owned();
+    UnitNow { active: v("ActiveState"), sub: v("SubState"), result: v("Result"), restart: v("Restart"), since: v("InactiveEnterTimestampMonotonic") }
+}
+
+/// Whether the unit gave up: Some(true) when it's failed with no restart coming, Some(false) when a
+/// restart is coming or it's not failed at all, and None when it can't tell yet.
+///
+/// systemd 254 and later (RestartMode=normal, the default) send a unit through "failed" before
+/// each auto-restart, and OnFailure= fires every time (Crab saw five alerts for one broken krdp).
+/// While a restart is pending the SubState says so: failed-before-auto-restart, then auto-restart
+/// (or auto-restart-queued) with ActiveState activating. A unit that gave up is ActiveState and
+/// SubState failed: Result=start-limit-hit once the start limit trips, or any Result with
+/// Restart=no. A plain "failed" with a Restart= policy and another Result could still be one
+/// whose restart isn't queued yet on an older systemd, so that's None and alert looks again.
+fn gave_up(u: &UnitNow) -> Option<bool> {
+    if u.active != "failed" || u.sub.contains("auto-restart") {
+        return Some(false);
+    }
+    if u.result == "start-limit-hit" || u.restart == "no" {
+        return Some(true);
+    }
+    None
+}
+
+/// control-center-alert@<unit> (OnFailure=): says once, as a desktop notification and a line in the
+/// alerts file, that a unit stopped for good. A failure with a restart coming, or one already
+/// alerted (the same time it went failed), is left quiet.
 fn alert(e: &Env, unit: &str) -> i32 {
-    notify(&format!("{unit} stopped after failing again and again: systemctl --user status {unit}"));
+    let mut show = || run("systemctl", &[&["--user", "show"][..], UNIT_PROPS, &[unit]].concat()).1;
+    alert_with(e, unit, &mut show, &|| std::thread::sleep(std::time::Duration::from_millis(1500)), &mut |t| notify(t))
+}
+
+fn alert_with(e: &Env, unit: &str, show: &mut dyn FnMut() -> String, pause: &dyn Fn(), say: &mut dyn FnMut(&str)) -> i32 {
+    let mut now = unit_now(&show());
+    let given_up = match gave_up(&now) {
+        Some(g) => g,
+        None => {
+            pause(); // a restart that's coming is queued by now
+            now = unit_now(&show());
+            gave_up(&now).unwrap_or(true) // still failed, with nothing coming: a terminal failure
+        }
+    };
+    if !given_up {
+        return 0;
+    }
+    let state = alert_state(e);
+    let key = format!("{unit} {}", now.since);
+    let seen = std::fs::read_to_string(&state).unwrap_or_default();
+    if seen.lines().any(|l| l == key) {
+        return 0; // this failure was already said
+    }
+    say(&format!("{unit} stopped after failing ({}): systemctl --user status {unit}", now.result));
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let f = alerts(e);
-    let line = format!("{secs} {unit}\n");
+    let mut kept: Vec<&str> = seen.lines().filter(|l| l.split(' ').next() != Some(unit)).collect();
+    kept.push(&key);
     let written = f.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| {
         use std::io::Write;
-        std::fs::OpenOptions::new().create(true).append(true).open(&f)?.write_all(line.as_bytes())
+        std::fs::OpenOptions::new().create(true).append(true).open(&f)?.write_all(format!("{secs} {unit}\n").as_bytes())?;
+        std::fs::write(&state, kept.join("\n") + "\n")
     });
     if let Err(x) = written {
         eprintln!("{}: {x}", f.display());
@@ -1785,6 +1854,52 @@ pub fn main(cmd: &str, args: &[String]) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    /// A fake systemd for alert: what `systemctl show` says, one answer per call.
+    fn show(states: &[(&str, &str, &str, &str, &str)]) -> Vec<String> {
+        states.iter().map(|(a, s, r, re, t)| format!("ActiveState={a}\nSubState={s}\nResult={r}\nRestart={re}\nInactiveEnterTimestampMonotonic={t}\n")).collect()
+    }
+
+    fn alerts_for(e: &super::Env, answers: Vec<String>) -> usize {
+        let mut it = answers.into_iter();
+        let mut said = 0;
+        super::alert_with(e, "control-center-share@1.service", &mut || it.next().unwrap_or_default(), &|| {}, &mut |_| said += 1);
+        said
+    }
+
+    /// Crab's run on home_desktop: a broken krdp fails four times with a restart coming each time,
+    /// then the start limit trips. Only that last one alerts, once, and not again while it stays
+    /// failed. After it recovers, a new failure alerts again. A failure nothing will retry
+    /// (Restart=no, or a Result other than start-limit-hit with no restart pending) alerts too.
+    #[test]
+    fn alerts_once_when_a_unit_gives_up() {
+        let d = std::env::temp_dir().join(format!("cc-host-alert-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let e = super::Env { home: d.clone(), dir: d.join(".config/control-center"), units: d.join("units"), share: d.join("share"), max: 0 };
+        let mut said = 0;
+        for t in ["10", "20", "30", "40"] {
+            // the moment OnFailure runs: failed-before-auto-restart, or already auto-restart
+            said += alerts_for(&e, show(&[("failed", "failed-before-auto-restart", "exit-code", "on-failure", t)]));
+            said += alerts_for(&e, show(&[("activating", "auto-restart", "exit-code", "on-failure", t)]));
+        }
+        assert_eq!(said, 0, "restarts pending: no alert");
+        let limit = ("failed", "failed", "start-limit-hit", "on-failure", "50");
+        assert_eq!(alerts_for(&e, show(&[limit])), 1, "the start limit tripped");
+        assert_eq!(alerts_for(&e, show(&[limit])), 0, "(a) not again while it stays failed");
+        // (b) reset-failed, active again, then a new failure
+        assert_eq!(alerts_for(&e, show(&[("active", "running", "success", "on-failure", "50")])), 0);
+        assert_eq!(alerts_for(&e, show(&[("failed", "failed", "start-limit-hit", "on-failure", "90")])), 1, "a fresh failure alerts");
+        // (c) a terminal failure that isn't start-limit-hit
+        assert_eq!(alerts_for(&e, show(&[("failed", "failed", "exit-code", "no", "120")])), 1, "Restart=no");
+        let terminal = ("failed", "failed", "exit-code", "on-failure", "150");
+        assert_eq!(alerts_for(&e, show(&[terminal, terminal])), 1, "still failed after the second look: nothing will retry it");
+        assert_eq!(alerts_for(&e, show(&[("failed", "failed", "exit-code", "on-failure", "160"), ("activating", "auto-restart", "exit-code", "on-failure", "160")])), 0, "a restart queued by the second look");
+        let lines = std::fs::read_to_string(super::alerts(&e)).unwrap().lines().count();
+        let state = std::fs::read_to_string(super::alert_state(&e)).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(lines, 4, "one line per alert");
+        assert_eq!(state.trim(), "control-center-share@1.service 150", "one state line per unit");
+    }
+
     /// The share unit hands krdp the password file with our krdp, and -p only without it.
     #[test]
     fn share_unit_keeps_the_password_off_argv() {

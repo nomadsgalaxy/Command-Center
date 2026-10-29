@@ -84,7 +84,13 @@ from 2 s to a minute (`RestartSteps=5`, `RestartMaxDelaySec=60s`; systemd 254 an
 versions ignore those two keys with a warning). Once a unit gives up it's `failed`, so
 `systemctl --user --failed` lists it, and `OnFailure=` starts `control-center-alert@<unit>`. That
 runs `cc-host alert`, which shows a desktop notification and adds a line to
-`~/.cache/control-center/host-alerts`.
+`~/.cache/control-center/host-alerts`. systemd triggers `OnFailure=` on every failed start, not only
+the last one, so `cc-host alert` first asks systemd about the unit and stays quiet while a restart is
+coming (SubState `failed-before-auto-restart` or `auto-restart`). It alerts when the unit has given
+up: `Result=start-limit-hit`, or failed with `Restart=no`, or still failed with nothing queued a
+moment later. Each failure is said once: `~/.cache/control-center/host-alerts.state` keeps the time
+each unit last went failed, so a repeat for the same failure is dropped, and a new failure after the
+unit recovered alerts again.
 
 Before krdp starts, its unit runs the same krdp with `--version` (`cc-host krdp-check` for a paired
 Frame's servers). A krdp that can't load its libraries then fails once, with the loader's error in
