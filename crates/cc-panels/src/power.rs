@@ -19,6 +19,14 @@ use std::time::Duration;
 
 const LOW: &str = "Powersave";
 const POLL: Duration = Duration::from_secs(2);
+/// After a set steamos-manager refused: wait this long before the next try, then the next, then
+/// the last one for good.
+const BACKOFF: [Duration; 3] = [Duration::from_secs(5), Duration::from_secs(30), Duration::from_secs(300)];
+
+/// How long to wait after `fails` refused sets in a row (0: not at all).
+fn backoff(fails: usize) -> Duration {
+    fails.checked_sub(1).map_or(Duration::ZERO, |i| BACKOFF[i.min(BACKOFF.len() - 1)])
+}
 const IFACE: &str = "com.steampowered.SteamOSManager1.PerformanceProfile1";
 
 static WANT: AtomicBool = AtomicBool::new(false);
@@ -158,13 +166,17 @@ fn run() {
         eprintln!("power: a profile we set earlier wasn't put back; it will be now");
     }
     let mut refused = false; // said once that a set failed
+    let (mut fails, mut last_fail) = (0usize, std::time::Instant::now());
     while !STOP.load(Relaxed) {
         if let Some(now) = m.get() {
             let low = WANT.load(Relaxed) && !GAME.load(Relaxed);
             let had = s.found.clone();
             let act = s.step(low, &now);
-            if let Act::Set(p) = &act {
+            if let Act::Set(p) = &act
+                && last_fail.elapsed() >= backoff(fails)
+            {
                 let ok = m.set(p);
+                (fails, last_fail) = if ok { (0, last_fail) } else { (fails + 1, std::time::Instant::now()) };
                 s.commit(&act, &now, ok);
                 match ok {
                     true => eprintln!("power: {now} -> {p} ({})", if p == LOW { "nobody's using the Desktop" } else { "back to what it was" }),
@@ -184,6 +196,7 @@ fn run() {
                 }
             }
         }
+        // wait_timeout_while loops over spurious wake-ups itself; the next pass reads want and game afresh
         let woken = WAKE.0.lock().unwrap();
         let (mut woken, _) = WAKE.1.wait_timeout_while(woken, POLL, |w| !*w).unwrap();
         *woken = false;
@@ -253,6 +266,12 @@ mod tests {
         s.commit(&back, LOW, false);
         assert_eq!(s.found.as_deref(), Some("Performance"), "a failed put-back keeps what to put back");
         assert_eq!(s.step(false, LOW), Act::Set("Performance".into()), "and tries again");
+    }
+
+    #[test]
+    fn a_refused_set_waits_longer_each_time() {
+        assert_eq!(backoff(0), Duration::ZERO);
+        assert_eq!((backoff(1), backoff(2), backoff(3), backoff(9)), (BACKOFF[0], BACKOFF[1], BACKOFF[2], BACKOFF[2]), "5 s, 30 s, then every 5 minutes");
     }
 
     #[test]
