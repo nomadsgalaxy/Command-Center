@@ -162,6 +162,8 @@ unsafe fn credential(cl: *mut rfbClient, st: &mut State, kind: c_int) -> *mut rf
         // No CA file. libvncclient takes a certificate that's valid for the system CAs without
         // looking at the pin, so connect checks the pin itself afterwards (settle_pin).
         if let Some(pin) = st.opts.pin {
+            // libvncclient frees this with the rest of the credential once TLS is set up
+            // (FreeX509Credential in tls_openssl.c), so it's malloc'd, not ours to free.
             let fp = unsafe { libc::malloc(32) as *mut u8 };
             if !fp.is_null() {
                 unsafe { std::ptr::copy_nonoverlapping(pin.as_ptr(), fp, 32) };
