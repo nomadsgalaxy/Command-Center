@@ -129,6 +129,19 @@ everything else.
 Docking doesn't change any of this: a docked panel's place in the room stays where you last put
 it down, so after a restart it's there (in the same room) or in front of you (somewhere new).
 
+## Saving power
+
+While nobody's using the Desktop, the Frame drops to SteamOS's Powersave profile, and goes back to
+the one it was on as soon as you are again. "Nobody's using it" means the Desktop is closed, or
+you've taken the headset off. It never happens while a game is playing, VR or flat, since that
+costs frame rate and Steam picks its own profile for each game.
+
+If anything else changes the profile meanwhile (Steam, a game, or you in the Quick Access menu),
+Command Center leaves your choice alone and doesn't put anything back. If it's stopped before it
+can put the profile back (a crash), the next start does. On a SteamOS without steamos-manager's
+profiles it does nothing. To turn it off, add `"power_saving": false` to
+`~/.config/control-center/settings.json`.
+
 ## SteamVR's keyboard
 
 Every live panel (a computer's screen, a window, a pop-out) has a keyboard button on its bar,

@@ -49,7 +49,7 @@ pub fn hold(path: &Path) -> Result<std::fs::File, String> {
 }
 
 /// Whether a Desktop holds its lock: try it shared without waiting, and let go at once.
-fn desktop_running(path: &Path) -> bool {
+pub fn desktop_running(path: &Path) -> bool {
     let Ok(f) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path) else { return false };
     let fd = std::os::fd::AsRawFd::as_raw_fd(&f);
     if unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) } != 0 {
@@ -74,6 +74,8 @@ pub fn run() -> Result<(), String> {
     crate::assets::draw(&assets, &crate::theme::font(), &tags); // the Desktop may never have run to draw them
     let mut tab = Dashtab::new(&assets);
     tab.closed = true;
+    crate::handoff::start(); // a 2D game, so no Powersave during it
+    crate::power::start("tab");
     let mut hand = crate::handoff::Handoff::default();
     let (mut desktop, mut looked, lock) = (false, None::<Instant>, desktop_lock());
     eprintln!("tab: up");
@@ -83,6 +85,7 @@ pub fn run() -> Result<(), String> {
             match e.eventType {
                 sys::EVREventType_VREvent_Quit => {
                     tab.destroy();
+                    crate::power::stop();
                     vr::shutdown();
                     eprintln!("tab: SteamVR is quitting");
                     return Ok(());
@@ -100,8 +103,13 @@ pub fn run() -> Result<(), String> {
         } else {
             tab.tick(&mut hand);
         }
+        // While the Desktop is closed and no game plays, the Frame can save power (power.rs); a
+        // running Desktop decides that itself.
+        crate::power::want(!desktop);
+        crate::power::game(call!(apps, GetCurrentSceneProcessId) != 0 || crate::handoff::flat_game());
         if tab.quit {
             tab.destroy();
+            crate::power::stop();
             vr::shutdown();
             eprintln!("tab: closed from SteamVR's bar; SteamVR starts it again with itself next time");
             return Ok(());
