@@ -54,14 +54,21 @@ I read krdp's source for 6.7.5 (what we patch) and 6.8.0 (what the desktop host 
   a real 4:4:4 source have been measured. FreeRDP 3.31 decodes both AVC444 and AVC444v2, and our
   `h264.c` patch only changes the YUV converter's threading, which the 4:4:4 path shares.
 - **`"rdp_codec": "progressive"`** asks for RemoteFX Progressive instead, for every computer, from
-  the next connect. It turns H.264 off and sets FreeRDP's `GfxProgressive` and `GfxProgressiveV2`
-  on, so it doesn't depend on FreeRDP's defaults. It's there to try side by side; it isn't the
-  default. Any other value, or none, keeps H.264.
-- **Each panel logs what it got:** "graphics caps 0x…, flags 0x…" when the server confirms, then
+  the next connect, by turning H.264 off. That also changes the capability sets: with H.264 off,
+  our FreeRDP sends the version 10 sets too, with AVC disabled, so krdp confirms 10.x instead of
+  8.1. The "graphics caps" line in the log says which. In FreeRDP 3.31's client only `GfxH264` and
+  `GfxAVC444` change what's offered (`rdpgfx_main.c`). `GfxAVC444v2`, `GfxProgressive` and
+  `GfxProgressiveV2` are only read by FreeRDP's own server, so we don't set them, and the client
+  decodes AVC444v2 and Progressive whenever a server sends them. It's there to try side by side;
+  it isn't the default. `"h264"` or none keeps H.264. Anything else is said once in the log and
+  counts as H.264, and so does an `rdp_avc444` that isn't true, false or a list of names.
+- **Each panel logs what it got:** "asked for h264" (or `h264+avc444`, `progressive`) at each
+  connect, "graphics caps 0x…, flags 0x…" when the server confirms, then
   "the server sends H.264 4:2:0 (AVC420)" (or whichever) on the first frame of each codec. If it
   gets more than one, each minute ends with a count of each ("frames in the last 60 s: …"), so a
   server that mixes them doesn't log a line per switch. A codec FreeRDP doesn't name shows as
-  "unknown (0x…)".
+  "unknown (0x…)". A new connection starts the count over, so it says its codec again. The
+  logging runs on its own, so a bug in it can't keep a frame from the GDI or end the session.
 
 ## What Progressive costs
 

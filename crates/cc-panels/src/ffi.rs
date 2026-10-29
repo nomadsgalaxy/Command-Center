@@ -49,6 +49,14 @@ pub fn guard<R>(name: &'static str, fail: R, body: impl FnOnce() -> R) -> R {
     })
 }
 
+/// guard() for work beside a callback's job, like its logging: a panic in it is logged once the
+/// same way, but the session carries on, so the job itself still runs after it.
+pub fn aside(name: &'static str, body: impl FnOnce()) {
+    let failed = FAILED.get();
+    guard(name, (), body);
+    FAILED.set(failed);
+}
+
 /// Whether a callback on this thread panicked since new_session(). Its session should end.
 pub fn session_failed() -> bool {
     FAILED.get()

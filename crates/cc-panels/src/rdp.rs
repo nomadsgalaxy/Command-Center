@@ -201,6 +201,14 @@ impl Codecs {
 /// Progressive with "rdp_codec": "progressive". A missing key is null, which isn't
 /// "progressive", so a fresh settings.json keeps H.264. Returns (H.264, AVC444, Progressive).
 fn codecs_asked(settings: &serde_json::Value, machine: &str) -> (bool, bool, bool) {
+    for w in codec_settings_wrong(settings) {
+        static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let mut said = crate::ffi::lock(&SAID);
+        if !said.contains(&w) {
+            eprintln!("settings.json: {w}");
+            said.push(w);
+        }
+    }
     if settings["rdp_codec"] == "progressive" {
         return (false, false, true);
     }
@@ -209,30 +217,63 @@ fn codecs_asked(settings: &serde_json::Value, machine: &str) -> (bool, bool, boo
     (true, avc444, false)
 }
 
-/// The server's choice of capability set, which says whether it can send H.264 at all.
+/// What's wrong with settings.json's codec keys, if anything: a value they don't take. Each is
+/// said once a run (codecs_asked), and the setting then counts as missing.
+fn codec_settings_wrong(settings: &serde_json::Value) -> Vec<String> {
+    let mut wrong = Vec::new();
+    let c = &settings["rdp_codec"];
+    if !(c.is_null() || *c == "h264" || *c == "progressive") {
+        wrong.push(format!("rdp_codec {c} isn't \"h264\" or \"progressive\", so it's H.264"));
+    }
+    let a = &settings["rdp_avc444"];
+    if !(a.is_null() || a.is_boolean() || a.as_array().is_some_and(|l| l.iter().all(|m| m.is_string()))) {
+        wrong.push(format!("rdp_avc444 {a} isn't true, false or a list of machine names, so it's off"));
+    }
+    wrong
+}
+
+/// What a session asked for, for the log line at its connect.
+fn asked_name((h264, avc444, _): (bool, bool, bool)) -> &'static str {
+    match (h264, avc444) {
+        (true, true) => "h264+avc444",
+        (true, false) => "h264",
+        (false, _) => "progressive",
+    }
+}
+
+#[cfg(test)]
+static PANIC_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The server's choice of capability set, which says whether it can send H.264 at all. The
+/// logging runs on its own (ffi::aside), so a bug in it can't keep the GDI's own from running.
 unsafe extern "C" fn on_caps_confirm(g: *mut RdpgfxClientContext, pdu: *const RDPGFX_CAPS_CONFIRM_PDU) -> UINT {
-    crate::ffi::guard("on_caps_confirm", CHANNEL_RC_OK, || unsafe {
+    crate::ffi::aside("on_caps_confirm's log", || unsafe {
+        #[cfg(test)]
+        assert!(!PANIC_LOG.load(Relaxed), "a logging bug");
         if !pdu.is_null() && !(*pdu).capsSet.is_null() {
             let set = *(*pdu).capsSet;
             with_panel(gfx_context(g), |p| eprintln!("{}: graphics caps {:#x}, flags {:#x}", p.v.name, set.version, set.flags));
         }
-        GFX_CAPS.get().copied().flatten().map_or(CHANNEL_RC_OK, |f| f(g, pdu)) // the GDI's, exactly once
-    })
+    });
+    crate::ffi::guard("on_caps_confirm", CHANNEL_RC_OK, || unsafe { GFX_CAPS.get().copied().flatten().map_or(CHANNEL_RC_OK, |f| f(g, pdu)) }) // the GDI's, exactly once
 }
 
-/// Each frame's codec, counted on its own panel (Codecs).
+/// Each frame's codec, counted on its own panel (Codecs), then the GDI's own, whatever the
+/// counting did.
 unsafe extern "C" fn on_surface_command(g: *mut RdpgfxClientContext, cmd: *const RDPGFX_SURFACE_COMMAND) -> UINT {
-    crate::ffi::guard("on_surface_command", CHANNEL_RC_OK, || unsafe {
+    crate::ffi::aside("on_surface_command's log", || unsafe {
+        #[cfg(test)]
+        assert!(!PANIC_LOG.load(Relaxed), "a logging bug");
         if !cmd.is_null() {
             let id = (*cmd).codecId;
             with_panel(gfx_context(g), |p| {
-                for line in p.codecs.lock().unwrap().frame(id, std::time::Instant::now()) {
+                for line in crate::ffi::lock(&p.codecs).frame(id, std::time::Instant::now()) {
                     eprintln!("{}: {line}", p.v.name);
                 }
             });
         }
-        GFX_SURFACE.get().copied().flatten().map_or(CHANNEL_RC_OK, |f| f(g, cmd))
-    })
+    });
+    crate::ffi::guard("on_surface_command", CHANNEL_RC_OK, || unsafe { GFX_SURFACE.get().copied().flatten().map_or(CHANNEL_RC_OK, |f| f(g, cmd)) })
 }
 
 /// Wraps the GDI's graphics pipeline callbacks with the logging ones above.
@@ -598,16 +639,17 @@ pub fn run(p: &'static Panel) {
                 b(FreeRDP_Settings_Keys_Bool_FreeRDP_AutoAcceptCertificate, true); // trust on first use, then insist
             }
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_SupportGraphicsPipeline, true);
-            // H.264 by default. 4:4:4 (AVC444, v2) is only offered where settings.json's "rdp_avc444"
-            // says so, until the Frame's decoding of a real 4:4:4 source has been measured; krdp only
-            // sends 4:2:0 anyway. "rdp_codec": "progressive" asks for RemoteFX Progressive instead,
-            // krdp's full-colour mode, for text that has to stay sharp (docs/rdp-text.md).
-            let (h264, avc444, progressive) = codecs_asked(&crate::config::settings(), if p.v.machine.is_empty() { &p.v.name } else { &p.v.machine });
-            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxH264, h264);
-            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxAVC444, avc444);
-            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxAVC444v2, avc444);
-            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxProgressive, progressive);
-            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxProgressiveV2, progressive);
+            // H.264 by default. 4:4:4 is only offered where settings.json's "rdp_avc444" says so,
+            // until the Frame's decoding of a real 4:4:4 source has been measured; krdp only sends
+            // 4:2:0 anyway. "rdp_codec": "progressive" turns H.264 off, so krdp sends RemoteFX
+            // Progressive, its full-colour mode, for text that has to stay sharp (docs/rdp-text.md).
+            // Only these two keys change what FreeRDP 3.31's client offers (rdpgfx_main.c); its
+            // GfxAVC444v2 and GfxProgressive* are server settings, so they're left alone. The
+            // client decodes AVC444v2 and Progressive whenever a server sends them.
+            let asked = codecs_asked(&crate::config::settings(), if p.v.machine.is_empty() { &p.v.name } else { &p.v.machine });
+            eprintln!("{}: asked for {}", p.v.name, asked_name(asked));
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxH264, asked.0);
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxAVC444, asked.1);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_RemoteFxCodec, false);
             // Decode the graphics pipeline (H.264) inside check_event_handles, on this thread and
             // under p.lock, instead of on drdynvc's own thread, so gpu::write right after it sees the finished frame
@@ -636,6 +678,7 @@ pub fn run(p: &'static Panel) {
             n(FreeRDP_Settings_Keys_UInt32_FreeRDP_ThreadingFlags, THREADING_FLAGS_DISABLE_THREADS);
             p.rdp.store(c, Release);
             crate::ffi::new_session();
+            *crate::ffi::lock(&p.codecs) = Codecs::default(); // a new connection says its codec again
             if freerdp_client_start(c) == 0 && freerdp_connect((*c).instance) != 0 {
                 p.connected.store(true, Release);
                 p.down.store(false, Relaxed);
@@ -855,8 +898,54 @@ mod tests {
         GDI_CAPS.fetch_add(1, Relaxed);
         CHANNEL_RC_OK
     }
+    static GDI_SURFACE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     unsafe extern "C" fn gdi_surface(_g: *mut RdpgfxClientContext, _c: *const RDPGFX_SURFACE_COMMAND) -> UINT {
+        GDI_SURFACE.fetch_add(1, Relaxed);
         CHANNEL_RC_OK
+    }
+
+    #[test]
+    fn a_logging_panic_still_runs_the_gdis_own_and_the_session_carries_on() {
+        let (_c, _d, mut g) = session(usize::MAX);
+        unsafe { watch_gfx(&mut *g) };
+        crate::ffi::new_session();
+        let cmd = RDPGFX_SURFACE_COMMAND { codecId: RDPGFX_CODECID_RDPGFX_CODECID_AVC420, ..Default::default() };
+        let quiet = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        PANIC_LOG.store(true, Relaxed);
+        let before = GDI_SURFACE.load(Relaxed);
+        let r = unsafe { (g.SurfaceCommand.unwrap())(&mut *g, &cmd) };
+        PANIC_LOG.store(false, Relaxed);
+        std::panic::set_hook(quiet);
+        assert_eq!((r, GDI_SURFACE.load(Relaxed) - before), (CHANNEL_RC_OK, 1), "the frame still went to the GDI");
+        assert!(!crate::ffi::session_failed(), "and the session wasn't failed over a log line");
+    }
+
+    #[test]
+    fn a_new_connection_says_its_codec_again_and_each_panel_counts_its_own() {
+        let t0 = std::time::Instant::now();
+        let avc = RDPGFX_CODECID_RDPGFX_CODECID_AVC420;
+        let (mut a, mut b) = (Codecs::default(), Codecs::default()); // two monitors of one machine
+        assert_eq!(a.frame(avc, t0).len(), 1);
+        assert_eq!(b.frame(avc, t0).len(), 1, "the same codec on another panel is that panel's first");
+        assert!(a.frame(avc, t0).is_empty());
+        a = Codecs::default(); // what a reconnect does (run)
+        assert_eq!(a.frame(avc, t0), ["the server sends H.264 4:2:0 (AVC420)"], "said again after the reconnect");
+        assert!(b.frame(avc, t0).is_empty(), "the other panel's untouched");
+    }
+
+    #[test]
+    fn a_codec_setting_it_doesnt_take_is_said_and_counts_as_missing() {
+        assert!(codec_settings_wrong(&serde_json::json!({})).is_empty());
+        assert!(codec_settings_wrong(&serde_json::json!({"rdp_codec": "h264", "rdp_avc444": ["a", "b"]})).is_empty());
+        assert!(codec_settings_wrong(&serde_json::json!({"rdp_avc444": false})).is_empty());
+        let w = codec_settings_wrong(&serde_json::json!({"rdp_codec": "prog", "rdp_avc444": "yes"}));
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[0].contains("\"prog\"") && w[1].contains("\"yes\""), "{w:?}");
+        assert_eq!(codec_settings_wrong(&serde_json::json!({"rdp_avc444": [1]})).len(), 1, "a list of names, not numbers");
+        assert_eq!(asked_name(codecs_asked(&serde_json::json!({"rdp_codec": "prog"}), "x")), "h264", "and it's H.264");
+        assert_eq!(asked_name((true, true, false)), "h264+avc444");
+        assert_eq!(asked_name((false, false, true)), "progressive");
     }
 
     /// A session's graphics pipeline as the GDI sets it up: its context (panel `i`), the GDI, and
