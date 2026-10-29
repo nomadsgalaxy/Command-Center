@@ -31,7 +31,7 @@
 "out": {
 "viewers.conf": [
 "example-cm-edp-1 cc-steam-frame@203.0.113.85:3410 1       1920x1080  machine=5f0e1c2a-1b2c-4d5e-8f90-a1b2c3d4e5f6\n",
-"0o644"
+"0o600"
 ],
 "passwords/5f0e1c2a-1b2c-4d5e-8f90-a1b2c3d4e5f6": [
 "PPPPPPPPPPPPPPPPPPPPPPPP",
@@ -227,7 +227,7 @@
 "out": {
 "viewers.conf": [
 "work-laptop     cc-steam-frame@203.0.113.85:3410   3       1920x1080     curve=flat  autoconnect=yes  machine=5f0e1c2a-1b2c-4d5e-8f90-a1b2c3d4e5f6\n",
-"0o644"
+"0o600"
 ],
 "viewers.removed": [
 "",
@@ -359,7 +359,7 @@
 "out": {
 "viewers.conf": [
 "example-cm-edp-1 cc-steam-frame@203.0.113.85:3410 1       1920x1080  machine=5f0e1c2a-1b2c-4d5e-8f90-a1b2c3d4e5f6\n",
-"0o644"
+"0o600"
 ],
 "passwords/5f0e1c2a-1b2c-4d5e-8f90-a1b2c3d4e5f6": [
 "PPPPPPPPPPPPPPPPPPPPPPPP",
@@ -4528,7 +4528,7 @@
 "out": {
 ".config/control-center/viewers.conf": [
 "first           u@10.0.0.9:3401             1       800x600\n",
-"0o644"
+"0o600"
 ]
 },
 "asked": []
@@ -7228,7 +7228,7 @@
 "out": {
 ".config/control-center/viewers.conf": [
 "fakehost-edp-1  cc-frame@127.0.0.1:3410     1       1920x1080  machine=0fa1c2d3-1111-4222-8333-444455556666\n",
-"0o644"
+"0o600"
 ],
 ".config/control-center/pair-tries.json": [
 {},

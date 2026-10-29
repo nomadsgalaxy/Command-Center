@@ -110,41 +110,13 @@ pub(crate) fn port_of(v: &Viewer) -> i64 {
     port(v).unwrap_or_else(|| die(format!("{}: {} has no port", v.name, v.target)))
 }
 
-/// Same as Python's str.splitlines.
-fn splitlines(t: &str) -> Vec<String> {
-    let (mut out, mut cur, mut it) = (Vec::new(), String::new(), t.chars().peekable());
-    while let Some(c) = it.next() {
-        if matches!(c, '\n' | '\r' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}') {
-            if c == '\r' && it.peek() == Some(&'\n') {
-                it.next();
-            }
-            out.push(std::mem::take(&mut cur));
-        } else {
-            cur.push(c);
-        }
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out
-}
-
-/// Rewrites viewers.conf with change(lines), written to a temporary file and renamed into place.
-/// If change returns Err, its message is printed and nothing's written. (Python read an unreadable
-/// file as empty; here that stops instead, and the file is left alone.)
+/// Rewrites viewers.conf with change(lines), through cc_proto's edit_viewers, the one writer: under
+/// its lock (so a VNC pin or a pairing at the same moment isn't lost), into a temporary file that's
+/// renamed into place. If change returns Err, its message is printed and nothing's written. (Python
+/// read an unreadable file as empty; here that stops instead, and the file is left alone.)
 fn edit_conf(change: impl FnOnce(Vec<String>) -> Result<Vec<String>, String>) {
-    use std::os::unix::fs::DirBuilderExt;
-    let path = conf_dir().join("viewers.conf");
-    let lines = match std::fs::read_to_string(&path) {
-        Ok(t) => splitlines(&t),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
-        Err(e) => die(format!("can't read {}: {e}", path.display())),
-    };
-    let lines = change(lines).unwrap_or_else(|e| die(e));
-    let tmp = conf_dir().join("viewers.conf.tmp");
-    let r = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(conf_dir()).and_then(|_| std::fs::write(&tmp, lines.join("\n") + "\n")).and_then(|_| std::fs::rename(&tmp, &path));
-    if let Err(e) = r {
-        die(format!("can't write {}: {e}", path.display()));
+    if let Err(e) = conf::edit_viewers(&conf_dir(), |lines| change(lines).map(|l| (Some(l), ()))) {
+        die(e);
     }
 }
 
@@ -906,7 +878,7 @@ mod tests {
         assert_eq!(py_repr("a'b\"c\\\u{7f}é\u{a0}"), "'a\\'b\"c\\\\\\x7fé\\xa0'");
         assert_eq!(py_text(&json!([1.0, "x", null, {"a": true}])), "[1.0, 'x', None, {'a': True}]");
         assert_eq!(py_io("Connection refused (os error 111)"), "[Errno 111] Connection refused");
-        assert_eq!(splitlines("a\r\nb\n\nc"), ["a", "b", "", "c"]);
+        assert_eq!(conf::splitlines("a\r\nb\n\nc"), ["a", "b", "", "c"]);
         assert_eq!(shlex(r#""host=a b" 'm0=x' pair=1 "q=\"\\x""#).unwrap(), ["host=a b", "m0=x", "pair=1", "q=\"\\x"]);
         assert_eq!(shlex("\"open"), None);
         // A broken announcement on the network is skipped; the good one next to it is still found.

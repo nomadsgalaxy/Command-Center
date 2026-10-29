@@ -181,7 +181,12 @@ pub fn set_options(line: &str, opts: &[(String, String)]) -> Result<String, Stri
 
 /// The pin= on the line for the monitor `name` in viewers.conf, if it has one.
 pub fn viewer_pin(conf: &Path, name: &str) -> Option<String> {
-    let lines: Vec<String> = std::fs::read_to_string(conf.join("viewers.conf")).ok()?.lines().map(str::to_owned).collect();
+    viewer_pin_in(&std::fs::read_to_string(conf.join("viewers.conf")).ok()?, name)
+}
+
+/// viewer_pin, on viewers.conf's text.
+pub fn viewer_pin_in(text: &str, name: &str) -> Option<String> {
+    let lines = splitlines(text);
     let l = &lines[entry(&lines, name)?];
     opt(&line_opts(l), "pin").map(str::to_owned)
 }
@@ -197,38 +202,50 @@ pub enum FirstPin {
     Other(String),
 }
 
-/// Trust on first use for a VNC server (docs/vnc.md): the first certificate it shows becomes the
-/// line's pin=, and after that only that one is taken. It never replaces a pin. Only that line
-/// changes, so comments and every other line stay as they were.
+/// Same as Python's str.splitlines.
+pub fn splitlines(t: &str) -> Vec<String> {
+    let (mut out, mut cur, mut it) = (Vec::new(), String::new(), t.chars().peekable());
+    while let Some(c) = it.next() {
+        if matches!(c, '\n' | '\r' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}') {
+            if c == '\r' && it.peek() == Some(&'\n') {
+                it.next();
+            }
+            out.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Rewrites viewers.conf through `change`, the one way anything writes it (pairing, cc-home
+/// machine, a VNC pin). change gets the lines (none if there's no file yet) and returns new lines
+/// to write, or None to leave the file alone, plus what to hand back. An Err writes nothing.
 ///
-/// Two first connects at once (two VNC monitors) mustn't lose either pin, so it holds a lock for
-/// this process and flock on viewers.conf, reads the file through the locked fd, writes a temporary
-/// file of its own with the file's mode, fsyncs it, and renames it into place.
-pub fn pin_first_use(conf: &Path, name: &str, hex: &str) -> Result<FirstPin, String> {
-    use std::io::Read;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+/// Two writers at once mustn't lose either's change (a `machine set` while a VNC panel pins its
+/// first certificate), so it holds a lock for this process and flock on .viewers.conf.lock beside
+/// it (a file that's never renamed, so every writer locks the same one), reads the file after
+/// taking it, writes a temporary file of its own with the file's mode (0600 for a new one), fsyncs
+/// it, renames it into place and fsyncs the folder.
+pub fn edit_viewers<T>(conf: &Path, change: impl FnOnce(Vec<String>) -> Result<(Option<Vec<String>>, T), String>) -> Result<T, String> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
     static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let path = conf.join("viewers.conf");
     let err = |e: std::io::Error| format!("{}: {e}", path.display());
-    // The lock is on the file as it was opened. If another writer renamed a new one into place
-    // meanwhile, lock that one instead.
-    let mut f = loop {
-        let f = std::fs::File::open(&path).map_err(err)?;
-        f.lock().map_err(err)?;
-        if f.metadata().map_err(err)?.ino() == std::fs::metadata(&path).map_err(err)?.ino() {
-            break f;
-        }
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(conf).map_err(err)?;
+    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(conf.join(".viewers.conf.lock")).map_err(err)?;
+    lock.lock().map_err(err)?;
+    let (text, mode) = match std::fs::read_to_string(&path) {
+        Ok(t) => (t, std::fs::metadata(&path).map_err(err)?.permissions().mode() & 0o7777),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), 0o600),
+        Err(e) => return Err(err(e)),
     };
-    let mut text = String::new();
-    f.read_to_string(&mut text).map_err(err)?;
-    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    let i = entry(&lines, name).ok_or_else(|| format!("no {name} in {}", path.display()))?;
-    if let Some(pin) = opt(&line_opts(&lines[i]), "pin") {
-        return Ok(if pin.eq_ignore_ascii_case(hex) { FirstPin::Same } else { FirstPin::Other(pin.to_owned()) });
-    }
-    lines[i] = set_options(&lines[i], &[("pin".into(), hex.to_ascii_lowercase())])?;
-    let mode = f.metadata().map_err(err)?.permissions().mode() & 0o7777;
+    let (lines, out) = change(splitlines(&text))?;
+    let Some(lines) = lines else { return Ok(out) };
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
     let tmp = conf.join(format!(".viewers.conf.{}.{nanos}", std::process::id()));
     let written = (|| {
@@ -243,7 +260,24 @@ pub fn pin_first_use(conf: &Path, name: &str, hex: &str) -> Result<FirstPin, Str
         let _ = std::fs::remove_file(&tmp);
         return Err(err(e));
     }
-    Ok(FirstPin::Saved)
+    Ok(out)
+}
+
+/// Trust on first use for a VNC server (docs/vnc.md): the first certificate it shows becomes the
+/// line's pin=, and after that only that one is taken. It never replaces a pin. Only that line
+/// changes, so comments and every other line stay as they were.
+pub fn pin_first_use(conf: &Path, name: &str, hex: &str) -> Result<FirstPin, String> {
+    if !conf.join("viewers.conf").exists() {
+        return Err(format!("{}: no viewers.conf", conf.display()));
+    }
+    edit_viewers(conf, |mut lines| {
+        let i = entry(&lines, name).ok_or_else(|| format!("no {name} in {}", conf.join("viewers.conf").display()))?;
+        if let Some(pin) = opt(&line_opts(&lines[i]), "pin") {
+            return Ok((None, if pin.eq_ignore_ascii_case(hex) { FirstPin::Same } else { FirstPin::Other(pin.to_owned()) }));
+        }
+        lines[i] = set_options(&lines[i], &[("pin".into(), hex.to_ascii_lowercase())])?;
+        Ok((Some(lines), FirstPin::Saved))
+    })
 }
 
 /// The line for the monitor `name` (cc-home's entry).
@@ -333,84 +367,83 @@ pub fn write_pairing(conf: &Path, addr: &str, frame: &str, result: &Value, repla
     let removed_path = conf.join("viewers.removed");
     let removed: Vec<String> = std::fs::read_to_string(&removed_path).unwrap_or_default().lines().filter(|l| words(l).len() >= 4).map(str::to_owned).collect();
     let mut restored: Vec<String> = Vec::new();
-    let conf_path = conf.join("viewers.conf");
-    let mut lines: Vec<String> = std::fs::read_to_string(&conf_path).unwrap_or_default().lines().map(str::to_owned).collect();
-    let mut screens: Vec<i64> = lines.iter().filter(|l| words(l).len() >= 4 && !l.starts_with('#')).filter_map(|l| words(l)[2].parse().ok()).collect();
-    for l in lines.iter_mut() {
-        if opt(&line_opts(l), "machine").is_some_and(|m| olds.contains(m)) {
-            *l = set_option(l, "machine", &mid);
-        }
-    }
-    let user = r["user"].as_str().unwrap_or("");
-    for m in &monitors {
-        let (index, output) = (m["index"].as_i64().unwrap_or(0), m["output"].as_str().unwrap_or(""));
-        let name = format!("{host}-{output}").to_lowercase();
-        let target = format!("{user}@{addr}:{}", m["port"].as_i64().unwrap_or(0));
-        let size = format!("{}x{}", m["width"].as_i64().unwrap_or(0), m["height"].as_i64().unwrap_or(0));
-        let mut i = lines.iter().position(|l| {
-            words(l).len() >= 4
-                && !l.starts_with('#')
-                && opt(&line_opts(l), "machine") == Some(mid.as_str())
-                && words(l)[1].rsplit_once(':').is_some_and(|(_, p)| p.parse::<i64>().is_ok())
-                && index_of(l) == Some(index)
-        });
-        if i.is_none() {
-            i = entry(&lines, &name);
-        }
-        let shared_target = format!("@{addr}:{}", 3400 + index);
-        let same_l = |l: &str| {
-            words(l).len() >= 4
-                && !l.starts_with('#')
-                && words(l)[1].ends_with(&shared_target)
-                && words(l)[1].len() > shared_target.len()
-                && !words(l)[1][..words(l)[1].len() - shared_target.len()].chars().any(|c| c.is_whitespace() || c == '@')
-        };
-        let mut old = if i.is_some() { None } else { lines.iter().position(|l| same_l(l)) };
-        if i.is_none() && old.is_none() {
-            let ours = |l: &str| {
-                opt(&line_opts(l), "machine").is_some_and(|x| x == mid || olds.contains(x)) && words(l)[1].rsplit_once(':').is_some_and(|(_, p)| p.parse::<i64>().is_ok()) && index_of(l) == Some(index)
-            };
-            let gone: Vec<&String> = removed.iter().filter(|l| (same_l(l) || ours(l)) && entry(&lines, words(l)[0]).is_none()).collect();
-            if let Some(last) = gone.last() {
-                let mut back = split_keep(last);
-                if let Ok(n) = back[4].parse::<i64>() {
-                    if screens.contains(&n) {
-                        let next = screens.iter().max().copied().unwrap_or(0) + 1;
-                        screens.push(next);
-                        back[4] = next.to_string();
-                    } else {
-                        screens.push(n);
-                    }
-                }
-                lines.push(back.concat());
-                old = Some(lines.len() - 1);
-                restored.push((*last).clone());
+    // Read and written under edit_viewers' lock, so a `machine set` or a VNC pin at the same time
+    // isn't lost (and a viewers.conf that can't be read stops here, instead of being rewritten
+    // from nothing).
+    edit_viewers(conf, |mut lines| {
+        let mut screens: Vec<i64> = lines.iter().filter(|l| words(l).len() >= 4 && !l.starts_with('#')).filter_map(|l| words(l)[2].parse().ok()).collect();
+        for l in lines.iter_mut() {
+            if opt(&line_opts(l), "machine").is_some_and(|m| olds.contains(m)) {
+                *l = set_option(l, "machine", &mid);
             }
         }
-        if let Some(o) = old {
-            let mut p = split_keep(&lines[o]);
-            let was = p[2].rsplit_once(':').map_or(p[2].clone(), |x| x.0.to_owned());
-            p[2] = target.clone();
-            lines[o] = set_option(&p.concat(), "machine", &mid);
-            said.push(format!("@pair {addr} kept={} (was {was}:{})", p[0], 3400 + index));
-        } else if let Some(i) = i {
-            let mut p = split_keep(&lines[i]);
-            p[2] = target.clone();
-            p[6] = size.clone();
-            lines[i] = set_option(&p.concat(), "machine", &mid);
-        } else {
-            let next = screens.iter().max().copied().unwrap_or(0) + 1;
-            screens.push(next);
-            lines.push(set_option(&format!("{name:<15} {target:<27} {next:<7} {size}"), "machine", &mid));
+        let user = r["user"].as_str().unwrap_or("");
+        for m in &monitors {
+            let (index, output) = (m["index"].as_i64().unwrap_or(0), m["output"].as_str().unwrap_or(""));
+            let name = format!("{host}-{output}").to_lowercase();
+            let target = format!("{user}@{addr}:{}", m["port"].as_i64().unwrap_or(0));
+            let size = format!("{}x{}", m["width"].as_i64().unwrap_or(0), m["height"].as_i64().unwrap_or(0));
+            let mut i = lines.iter().position(|l| {
+                words(l).len() >= 4
+                    && !l.starts_with('#')
+                    && opt(&line_opts(l), "machine") == Some(mid.as_str())
+                    && words(l)[1].rsplit_once(':').is_some_and(|(_, p)| p.parse::<i64>().is_ok())
+                    && index_of(l) == Some(index)
+            });
+            if i.is_none() {
+                i = entry(&lines, &name);
+            }
+            let shared_target = format!("@{addr}:{}", 3400 + index);
+            let same_l = |l: &str| {
+                words(l).len() >= 4
+                    && !l.starts_with('#')
+                    && words(l)[1].ends_with(&shared_target)
+                    && words(l)[1].len() > shared_target.len()
+                    && !words(l)[1][..words(l)[1].len() - shared_target.len()].chars().any(|c| c.is_whitespace() || c == '@')
+            };
+            let mut old = if i.is_some() { None } else { lines.iter().position(|l| same_l(l)) };
+            if i.is_none() && old.is_none() {
+                let ours = |l: &str| {
+                    opt(&line_opts(l), "machine").is_some_and(|x| x == mid || olds.contains(x))
+                        && words(l)[1].rsplit_once(':').is_some_and(|(_, p)| p.parse::<i64>().is_ok())
+                        && index_of(l) == Some(index)
+                };
+                let gone: Vec<&String> = removed.iter().filter(|l| (same_l(l) || ours(l)) && entry(&lines, words(l)[0]).is_none()).collect();
+                if let Some(last) = gone.last() {
+                    let mut back = split_keep(last);
+                    if let Ok(n) = back[4].parse::<i64>() {
+                        if screens.contains(&n) {
+                            let next = screens.iter().max().copied().unwrap_or(0) + 1;
+                            screens.push(next);
+                            back[4] = next.to_string();
+                        } else {
+                            screens.push(n);
+                        }
+                    }
+                    lines.push(back.concat());
+                    old = Some(lines.len() - 1);
+                    restored.push((*last).clone());
+                }
+            }
+            if let Some(o) = old {
+                let mut p = split_keep(&lines[o]);
+                let was = p[2].rsplit_once(':').map_or(p[2].clone(), |x| x.0.to_owned());
+                p[2] = target.clone();
+                lines[o] = set_option(&p.concat(), "machine", &mid);
+                said.push(format!("@pair {addr} kept={} (was {was}:{})", p[0], 3400 + index));
+            } else if let Some(i) = i {
+                let mut p = split_keep(&lines[i]);
+                p[2] = target.clone();
+                p[6] = size.clone();
+                lines[i] = set_option(&p.concat(), "machine", &mid);
+            } else {
+                let next = screens.iter().max().copied().unwrap_or(0) + 1;
+                screens.push(next);
+                lines.push(set_option(&format!("{name:<15} {target:<27} {next:<7} {size}"), "machine", &mid));
+            }
         }
-    }
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(conf);
-    }
-    let tmp = conf.join("viewers.conf.tmp");
-    std::fs::write(&tmp, lines.join("\n") + "\n").map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &conf_path).map_err(|e| e.to_string())?;
+        Ok((Some(lines), ()))
+    })?;
     if !restored.is_empty() {
         let left: String = removed.iter().filter(|l| !restored.contains(l)).map(|l| format!("{l}\n")).collect();
         let _ = std::fs::write(&removed_path, left);
@@ -1340,7 +1373,7 @@ mod tests {
         }
         let pins: Vec<Option<String>> = (0..8).map(|i| viewer_pin(&d, &format!("m{i}"))).collect();
         let mode = std::fs::metadata(d.join("viewers.conf")).unwrap().permissions().mode() & 0o777;
-        let left = std::fs::read_dir(&d).unwrap().count();
+        let left = std::fs::read_dir(&d).unwrap().flatten().filter(|e| e.file_name() != ".viewers.conf.lock").count();
         let _ = std::fs::remove_dir_all(&d);
         for (i, p) in pins.iter().enumerate() {
             assert_eq!(p.as_deref(), Some(format!("{i:02x}").repeat(32).as_str()), "m{i}");

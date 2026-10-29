@@ -55,6 +55,8 @@ fn walk(d: &Path) -> Vec<(String, Vec<u8>, u32)> {
             let p = e.path();
             if e.file_type().unwrap().is_dir() {
                 todo.push(p);
+            } else if e.file_name() == ".viewers.conf.lock" {
+                // edit_viewers' lock file: how writers take turns, not anything a write left behind
             } else {
                 let rel = p.strip_prefix(d).unwrap().to_string_lossy().into_owned();
                 out.push((rel, std::fs::read(&p).unwrap(), std::fs::metadata(&p).unwrap().permissions().mode() & 0o777));
