@@ -570,7 +570,13 @@ impl Session {
                 let bit = 1 << (button - 1);
                 (0..n.abs() as i32).all(|_| unsafe { SendPointerEvent(cl, self.at.0, self.at.1, self.mask | bit) != 0 && SendPointerEvent(cl, self.at.0, self.at.1, self.mask) != 0 })
             }
-            Ev::Sym(sym) => unsafe { SendKeyEvent(cl, sym, 1) != 0 && SendKeyEvent(cl, sym, 0) != 0 },
+            Ev::Sym(sym) => {
+                let sent = unsafe { SendKeyEvent(cl, sym, 1) != 0 && SendKeyEvent(cl, sym, 0) != 0 };
+                if !sent {
+                    crate::osk::missed(1); // queued as typed (vnc::text), but the connection went: the strip counts it
+                }
+                sent
+            }
             Ev::Key(code, value) => {
                 let down = value != 0;
                 let shift = [42u16, 54].iter().any(|k| self.keys.contains_key(k));

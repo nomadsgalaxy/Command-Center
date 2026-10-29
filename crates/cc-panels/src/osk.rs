@@ -33,6 +33,13 @@ static OPEN: Mutex<Option<(usize, Instant)>> = Mutex::new(None);
 static MISSED: Mutex<(usize, Option<Instant>)> = Mutex::new((0, None));
 const MISSED_FOR: Duration = Duration::from_secs(5); // how long the strip says so
 
+/// n characters couldn't be typed: the strip says so for MISSED_FOR. Any thread (a VNC session's
+/// send that failed counts too).
+pub fn missed(n: usize) {
+    let mut m = MISSED.lock().unwrap();
+    *m = (if m.1.is_some_and(|t| t.elapsed() < MISSED_FOR) { m.0 } else { 0 } + n, Some(Instant::now()));
+}
+
 /// Whether the panel keyboard is open for panel i.
 pub fn open_for(i: usize) -> bool {
     OPEN.lock().unwrap().is_some_and(|(j, _)| j == i)
@@ -88,11 +95,10 @@ pub fn event(p: &Panel, e: &vr::VREvent_t) -> bool {
     match e.eventType {
         sys::EVREventType_VREvent_KeyboardCharInput if ours => {
             if let Some(text) = typed(&k.cNewInput) {
-                let missed = KVM.lock().unwrap().type_text(p.index, &text);
-                if missed > 0 {
-                    let mut m = MISSED.lock().unwrap();
-                    *m = (if m.1.is_some_and(|t| t.elapsed() < MISSED_FOR) { m.0 } else { 0 } + missed, Some(Instant::now()));
-                    eprintln!("{}: {missed} character(s) from SteamVR's keyboard aren't on a US keyboard, so they weren't sent", p.v.name);
+                let n = KVM.lock().unwrap().type_text(p.index, &text);
+                if n > 0 {
+                    missed(n);
+                    eprintln!("{}: {n} character(s) from SteamVR's keyboard couldn't be typed", p.v.name);
                 }
             }
         }

@@ -60,7 +60,12 @@ What it can't do:
   keyboard's hint and the strip say "as a US keyboard" before you type. On those, a character a US
   keyboard doesn't have isn't sent, and the strip says "Couldn't type 1 character" for a few
   seconds. It never says which character, and neither does the log, since you might be typing a
-  password. A character the computer refuses isn't sent again some other way.
+  password. A character our side couldn't send (the connection dropped, or the RDP server
+  refused it) counts the same way, and it isn't sent again some other way.
+- That promise is only Command Center's side. Once a character reaches the computer, its own
+  remote desktop server types it: krdp and KRFB on Wayland go through the desktop portal, and
+  KRFB on X11 looks the character up on the host's keyboard layout (XTest). Any of them can drop
+  a character the host's layout has no key for, and we can't see that from here.
 - Backspace, Enter and Tab, the strip's keys, and anything you type with a sticky Ctrl, Alt or
   Super are keys, not characters, because a shortcut means a key. They go by the US layout's key
   positions, the same as a real keyboard's keys do.
@@ -118,3 +123,14 @@ desktop. For each of krdp and a VNC server, and for each host layout (US and Ger
       types, nothing stuck, and an RDP server that doesn't take Unicode still says "as a US
       keyboard".
 - [ ] A window panel says "as a US keyboard" and types ASCII.
+- [ ] On a US host: `€` and `ł` come out, or are counted as not typed. Nothing else appears.
+- [ ] An emoji (a surrogate pair over RDP) comes out as one character.
+- [ ] On a German host: `ß ä ö ü é`, and a dead-key character (`^` or `´` followed by a letter),
+      come out as typed.
+- [ ] Sticky Ctrl plus a non-US character counts as not typed, and Ctrl isn't stuck afterwards
+      (the next letter is plain).
+- [ ] Paste 500 characters through SteamVR's keyboard: all arrive, in order, none dropped.
+- [ ] With Caps Lock on at the host, typed characters come out as typed (not swapped case) on
+      Unicode panels.
+- [ ] After a reconnect, an RDP panel's "as a US keyboard" note (or its absence) is the same as
+      before (`rdp::unicode()` read again from the new connection).
