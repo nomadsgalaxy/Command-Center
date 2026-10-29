@@ -2426,7 +2426,9 @@ mod tests {
         let t0 = Instant::now();
         let ms = |n: u64| t0 + Duration::from_millis(n);
         let (mut s, held, rate) = streak(None, t0, true, 1.0);
+        assert_eq!((held, rate), (0.0, 0.0), "the first notch has no time behind it");
         assert_eq!(accel(held, rate), 1.0, "the first notch: the plain step");
+        assert_eq!(accel(0.0, PUSH_RATE * 10.0), 1.0, "however quick, no time held is no speed-up");
         let (mut held, mut rate) = (0.0, 0.0);
         for n in 1..=8 {
             (s, held, rate) = streak(Some(s), ms(n * 200), true, 1.0); // five notches a second

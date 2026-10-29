@@ -151,21 +151,21 @@ pub fn to_photons() -> f32 {
     if !call!(sys, GetTimeSinceLastVsync, &mut since, &mut frame) {
         return 0.0;
     }
-    // the display's rate and delay don't change while it runs, so they're read until the headset
-    // reports a rate, then kept
-    static DISPLAY: OnceLock<(f32, f32)> = OnceLock::new();
-    let (hz, v2p) = match DISPLAY.get() {
-        Some(&d) => d,
-        None => {
+    // the display's rate and delay, read again about once a second (a refresh-rate change in
+    // SteamVR's settings shows up within that), not on every pose read
+    static DISPLAY: std::sync::Mutex<Option<(std::time::Instant, f32, f32)>> = std::sync::Mutex::new(None);
+    let mut d = DISPLAY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (hz, v2p) = match *d {
+        Some((at, hz, v2p)) if at.elapsed() < std::time::Duration::from_secs(1) => (hz, v2p),
+        _ => {
             let mut err = 0;
             let hz = call!(sys, GetFloatTrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &mut err);
             let v2p = call!(sys, GetFloatTrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_SecondsFromVsyncToPhotons_Float, &mut err);
-            if hz > 0.0 {
-                let _ = DISPLAY.set((hz, v2p));
-            }
+            *d = Some((std::time::Instant::now(), hz, v2p));
             (hz, v2p)
         }
     };
+    drop(d);
     if hz <= 0.0 { 0.0 } else { (1.0 / hz - since).max(0.0) + v2p.max(0.0) }
 }
 
