@@ -3,7 +3,7 @@
 //! pixel (the taskbar's). It also decides where a window opens and uploads its texture.
 //!
 //! It's free functions, not a framework. Each window keeps its own hits, key and rows.
-use crate::geometry::{Pose, STAND_IN_HEAD, ahead_of, angles, level_ahead};
+use crate::geometry::{Pose, STAND_IN_HEAD};
 use crate::grab::{self, Look, Paint, TagImg, average, line, over, rbox, tint};
 use crate::taskbar::{self, LABEL, TAG_ROOM, TAG_TEXT, text_pixel};
 use crate::{call, config, vr};
@@ -21,10 +21,6 @@ pub const GAP: f64 = 8.0;
 const RADIUS: f64 = 8.0;
 pub const SCALE: f64 = 1.5; // texture pixels per unit
 pub const MPP: f64 = 0.0006; // calibration knob: metres per unit (matches the taskbar's text size at 0.6 m)
-/// With no spot for it in this room, a window opens this far ahead of the eyes, level and facing
-/// you, like every new surface (Anthony's rule). n5's limits::NEW_AHEAD and geometry::new_pose are
-/// the same thing; this one goes when they're on main.
-const NEW_AHEAD: f64 = 1.4;
 pub const SORT: u32 = 193; // over the taskbar (190, Plasma's 191) and its card (192), under the scan's HUD (195/196)
 
 pub type Px = ([f64; 3], f64);
@@ -217,11 +213,9 @@ pub fn spot(name: &str, w: f64) -> Pose {
     config::home_pose(name, None).unwrap_or_else(|| fresh(&vr::head().unwrap_or(STAND_IN_HEAD), w))
 }
 
-/// NEW_AHEAD ahead of the eyes of `head`, level, facing you, w metres wide.
+/// Where every new surface opens (geometry.rs `new_pose`: 1.4 m ahead, level, facing you), w metres wide.
 fn fresh(head: &crate::geometry::Mat, w: f64) -> Pose {
-    let (eye, f) = ([0, 1, 2].map(|i| head[i][3] as f64), level_ahead(head));
-    let (yaw, pitch) = angles(&f);
-    Pose { centre: ahead_of(&eye, &f, NEW_AHEAD, 0.0, 0.0), yaw, pitch, width: w, ..Default::default() }
+    crate::geometry::new_pose(head, w, 0.0, 0.0)
 }
 
 /// A window's texture: px (tw x th) for a w x ht window (`size`). `full` means it was drawn whole.
@@ -355,8 +349,8 @@ mod tests {
         let p = fresh(&head, 0.36);
         let eye = [0, 1, 2].map(|i| head[i][3] as f64);
         let to = [p.centre[0] - eye[0], p.centre[1] - eye[1], p.centre[2] - eye[2]];
-        assert!((crate::geometry::norm(&to) - NEW_AHEAD).abs() < 1e-6 && to[1].abs() < 1e-6 && p.pitch.abs() < 1e-6, "{to:?}");
-        assert!((p.yaw - angles(&to).0).abs() < 1e-6 && p.width == 0.36);
+        assert!((crate::geometry::norm(&to) - crate::limits::NEW_AHEAD).abs() < 1e-6 && to[1].abs() < 1e-6 && p.pitch.abs() < 1e-6, "{to:?}");
+        assert!((p.yaw - crate::geometry::angles(&to).0).abs() < 1e-6 && p.width == 0.36);
     }
 
     #[test]
