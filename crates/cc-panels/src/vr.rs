@@ -187,6 +187,20 @@ pub fn surface_event(e: &VREvent_t) -> crate::events::SurfaceEvent {
     S::Pointer(PointerEvent { kind, x: m.x, y: m.y, from: dev(e.trackedDeviceIndex), age: e.eventAgeSeconds })
 }
 
+/// SteamVR's own number for a pointer event's kind, for the logs that have always printed it.
+pub fn openvr_type(k: crate::events::PointerKind) -> u32 {
+    use crate::events::PointerKind as P;
+    match k {
+        P::Enter => sys::EVREventType_VREvent_FocusEnter,
+        P::Move => sys::EVREventType_VREvent_MouseMove,
+        P::Down(_) => sys::EVREventType_VREvent_MouseButtonDown,
+        P::Up(_) => sys::EVREventType_VREvent_MouseButtonUp,
+        P::Scroll { smooth: false, .. } => sys::EVREventType_VREvent_ScrollDiscrete,
+        P::Scroll { smooth: true, .. } => sys::EVREventType_VREvent_ScrollSmooth,
+        P::Leave => sys::EVREventType_VREvent_FocusLeave,
+    }
+}
+
 /// SteamVR's keyboard's new characters: the bytes up to a NUL (all 8 without one), if they're
 /// UTF-8 and not empty.
 pub fn typed(input: &[std::ffi::c_char; 8]) -> Option<String> {

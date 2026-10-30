@@ -25,6 +25,7 @@
 //!
 //! ponytail: an idle panel keeps the output's stream going until it next repaints (its clock,
 //! a hover), since KWin sends a window's stream nothing until it changes.
+use crate::events::{Button, PointerEvent, PointerKind, SurfaceEvent};
 use crate::geometry::{Mat, Placement, V3, norm};
 use crate::overlay::{At, Live, Place, apply};
 use crate::session::{Output, Session, StreamEvent};
@@ -164,15 +165,15 @@ pub(crate) fn ray_at(pl: &Placement, crop: Rect, o: &V3, d: &V3) -> Option<(f64,
 ///   - a move stays at that device's `last` point,
 ///   - a press is dropped, so it never clicks whatever was last under the laser,
 ///   - a release goes where the pointer is (None), and laser() always sends it for a held press.
-fn laser_point(t: u32, pl: Option<Placement>, crop: Option<Rect>, ray: Option<(V3, V3)>, last: Option<(f64, f64)>, (b, x, y): ([f32; 4], f64, f64)) -> Option<(Option<(f64, f64)>, bool)> {
+fn laser_point(kind: Option<PointerKind>, pl: Option<Placement>, crop: Option<Rect>, ray: Option<(V3, V3)>, last: Option<(f64, f64)>, (b, x, y): ([f32; 4], f64, f64)) -> Option<(Option<(f64, f64)>, bool)> {
     let Some((o, d)) = ray else {
         let (fx, fy) = in_bounds(b, x, y);
         return Some((crop.map(|c| global(c, fx, fy)), true));
     };
     match pl.zip(crop).and_then(|(pl, c)| ray_at(&pl, c, &o, &d)) {
         Some(p) => Some((Some(p), false)),
-        None if t == sys::EVREventType_VREvent_MouseButtonDown => None,
-        None if t == sys::EVREventType_VREvent_MouseButtonUp => Some((None, false)),
+        None if matches!(kind, Some(PointerKind::Down(_))) => None,
+        None if matches!(kind, Some(PointerKind::Up(_))) => Some((None, false)),
         None => Some((last, false)),
     }
 }
@@ -529,7 +530,17 @@ impl Plasma {
         let mut lasers: Vec<(u32, Option<crate::geometry::Mat>)> = Vec::new(); // each device's laser, once a batch
         crate::trace::tick("plasma");
         while crate::trace::poll("plasma", self.ov, &mut e) {
-            let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
+            let dev = e.trackedDeviceIndex;
+            // a pointer's kind and its point; anything else still goes through below as it always
+            // has (it counts as a laser this frame and can move its device's last point), with what
+            // its mouse data holds. Phase 1 drops that.
+            let (kind, x, y, from) = match vr::surface_event(&e) {
+                SurfaceEvent::Pointer(pe) => (Some(pe.kind), pe.x, pe.y, pe.from),
+                _ => {
+                    let m = unsafe { e.data.mouse };
+                    (None, m.x, m.y, vr::dev(dev))
+                }
+            };
             let laser = match lasers.iter().find(|r| r.0 == dev) {
                 Some(r) => r.1,
                 None => {
@@ -540,12 +551,12 @@ impl Plasma {
             };
             // while a trace runs, the laser this event was mapped by, after the event's own line
             // (trace::poll wrote it), so a replay or a check of SteamVR's point has the same ray
-            if crate::trace::on() && matches!(e.eventType, sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp) {
+            if crate::trace::on() && matches!(kind, Some(PointerKind::Move | PointerKind::Down(_) | PointerKind::Up(_))) {
                 crate::trace::pose(dev, laser.as_ref());
             }
             let ray: Option<(V3, V3)> = laser.map(|l| ([l[0][3], l[1][3], l[2][3]].map(f64::from), [-l[0][2], -l[1][2], -l[2][2]].map(f64::from)));
             let last = self.last.get(dev, crop);
-            let Some((spot, fell_back)) = laser_point(e.eventType, pl, crop, ray, last, (b, m.x as f64, m.y as f64)) else {
+            let Some((spot, fell_back)) = laser_point(kind, pl, crop, ray, last, (b, x as f64, y as f64)) else {
                 if debug() {
                     eprintln!("plasma-debug: a press with the laser's ray off the overlay, dropped");
                 }
@@ -561,44 +572,43 @@ impl Plasma {
                 let n = EVENTS.fetch_add(1, Relaxed) + 1;
                 let f = FALLBACKS.fetch_add(u32::from(fell_back), Relaxed) + u32::from(fell_back);
                 if e.eventType != sys::EVREventType_VREvent_MouseMove {
-                    let (fx, fy) = in_bounds(b, m.x as f64, m.y as f64);
+                    let (fx, fy) = in_bounds(b, x as f64, y as f64);
                     eprintln!(
                         "plasma-debug: overlay event {} at {:.3},{:.3} (crop {fx:.3},{fy:.3}) -> {spot:?}{}, crop {crop:?}; fallback {f} of {n} events this run (poses and placement both standing)",
                         e.eventType,
-                        m.x,
-                        m.y,
+                        x,
+                        y,
                         if fell_back { " (fallback, no pose)" } else { " by its ray" }
                     );
                 }
             }
-            self.laser(&e, spot);
+            self.laser(kind, from, spot);
         }
     }
 
     /// A laser event on the taskbar's frame over the bar, at fractions right and up from the
     /// bar's bottom left (taskbar.rs). Handled as if it hit this overlay at that point of the panel.
-    pub fn on_bar(&mut self, e: &vr::VREvent_t, fx: f64, fy: f64) {
+    pub fn on_bar(&mut self, e: &PointerEvent, fx: f64, fy: f64) {
         let at = self.panel.as_ref().map(|p| global(p.1, fx, fy));
-        if debug() && e.eventType != sys::EVREventType_VREvent_MouseMove {
-            eprintln!("plasma-debug: frame event {} at panel {fx:.3},{fy:.3} -> {at:?} clickable {}", e.eventType, self.clickable);
+        if debug() && e.kind != PointerKind::Move {
+            eprintln!("plasma-debug: frame event {} at panel {fx:.3},{fy:.3} -> {at:?} clickable {}", vr::openvr_type(e.kind), self.clickable);
         }
-        self.laser(e, at);
+        self.laser(Some(e.kind), e.from, at);
     }
 
     /// One laser event, at `at` in the session.
-    fn laser(&mut self, e: &vr::VREvent_t, at: Option<(f64, f64)>) {
+    fn laser(&mut self, kind: Option<PointerKind>, from: crate::ids::Dev, at: Option<(f64, f64)>) {
         self.moving = true;
-        let (m, t) = (unsafe { e.data.mouse }, e.eventType);
-        if t == sys::EVREventType_VREvent_MouseButtonUp {
-            self.released.push(vr::dev(e.trackedDeviceIndex));
+        if matches!(kind, Some(PointerKind::Up(_))) {
+            self.released.push(from);
         }
-        let b = match m.button {
-            sys::EVRMouseButton_VRMouseButton_Right => PTR_FLAGS_BUTTON2,
-            sys::EVRMouseButton_VRMouseButton_Middle => PTR_FLAGS_BUTTON3,
+        let b = match kind {
+            Some(PointerKind::Down(Button::Right) | PointerKind::Up(Button::Right)) => PTR_FLAGS_BUTTON2,
+            Some(PointerKind::Down(Button::Middle) | PointerKind::Up(Button::Middle)) => PTR_FLAGS_BUTTON3,
             _ => PTR_FLAGS_BUTTON1,
         };
         // always send the release for a press that went in, hidden or not, or it stays held
-        if t == sys::EVREventType_VREvent_MouseButtonUp && self.held & b != 0 {
+        if matches!(kind, Some(PointerKind::Up(_))) && self.held & b != 0 {
             self.held &= !b;
             windows::shell_mouse(b, at);
             return;
@@ -607,25 +617,24 @@ impl Plasma {
             return;
         }
         let mut k = crate::kvm::lock();
-        if t == sys::EVREventType_VREvent_MouseButtonDown && vr::is_real_controller(e.trackedDeviceIndex) && k.awake {
+        if matches!(kind, Some(PointerKind::Down(_))) && vr::is_real_controller(vr::index(from)) && k.awake {
             k.set_awake(false); // the last device pressed is primary (R-2)
         }
         if k.awake {
             return; // the mouse has the pointer, and a laser can't take it out from under it (main.rs laser)
         }
-        match t {
-            sys::EVREventType_VREvent_MouseMove => windows::shell_mouse(PTR_FLAGS_MOVE, at),
-            sys::EVREventType_VREvent_MouseButtonDown => {
+        match kind {
+            Some(PointerKind::Move) => windows::shell_mouse(PTR_FLAGS_MOVE, at),
+            Some(PointerKind::Down(_)) => {
                 k.type_to_shell(); // typing follows the click, for Kickoff's search
                 self.held |= b;
                 windows::shell_mouse(b | PTR_FLAGS_DOWN, at);
             }
-            sys::EVREventType_VREvent_FocusLeave => {
+            Some(PointerKind::Leave) => {
                 TIP.store(false, Relaxed);
                 windows::leave();
             }
-            sys::EVREventType_VREvent_ScrollDiscrete | sys::EVREventType_VREvent_ScrollSmooth => {
-                let dy = unsafe { e.data.scroll.ydelta };
+            Some(PointerKind::Scroll { dy, .. }) => {
                 if dy != 0.0 {
                     windows::wheel(false, dy as f64);
                 }
@@ -1028,9 +1037,9 @@ mod tests {
         assert_eq!(laser_point(MOVE, Some(pl), Some(grown), Some(away), None, (b, tex.0, tex.1)), Some((None, false)), "no last point: nowhere, not SteamVR's");
     }
 
-    const MOVE: u32 = sys::EVREventType_VREvent_MouseMove;
-    const DOWN: u32 = sys::EVREventType_VREvent_MouseButtonDown;
-    const UP: u32 = sys::EVREventType_VREvent_MouseButtonUp;
+    const MOVE: Option<PointerKind> = Some(PointerKind::Move);
+    const DOWN: Option<PointerKind> = Some(PointerKind::Down(Button::Left));
+    const UP: Option<PointerKind> = Some(PointerKind::Up(Button::Left));
 
     #[test]
     fn a_press_with_the_ray_off_the_overlay_clicks_nothing_and_a_release_still_goes() {

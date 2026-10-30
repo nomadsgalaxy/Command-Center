@@ -47,6 +47,7 @@
 //! draws by depth, not sort order.
 //! ponytail: no file watch; hand edits to settings.json apply on restart.
 use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, direction, dot, from_top, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
+use crate::events::{Button, PointerKind, SurfaceEvent};
 use crate::grab::{self, Look, TagImg, average, line, over, rbox, tint};
 use crate::ids::Dev;
 use crate::laser::{self, Hand};
@@ -955,17 +956,19 @@ impl Taskbar {
         let mut e: vr::VREvent_t = Default::default();
         crate::trace::tick("taskbar");
         while crate::trace::poll("taskbar", self.ov, &mut e) {
-            let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
-            let y = from_top(self.frame.h, m.y as f64); // its units, from the top
-            let mut part = part_at(&self.frame, m.x as f64, y);
+            // only a pointer does anything on the frame: anything else went through and matched nothing
+            let SurfaceEvent::Pointer(pe) = vr::surface_event(&e) else { continue };
+            let dev = vr::index(pe.from); // SteamVR's number, for its own lookups
+            let y = from_top(self.frame.h, pe.y as f64); // its units, from the top
+            let mut part = part_at(&self.frame, pe.x as f64, y);
             // Plasma's bar is 2 mm in front of us (FRONT), so a slanted laser goes through it a
             // few pixels from where it hits our well, or over its edge while it hits our padding.
             // On it and where goes by that, the way the mouse's ray sees it (plasmabar.rs).
-            let pointer = [sys::EVREventType_VREvent_MouseMove, sys::EVREventType_VREvent_MouseButtonDown, sys::EVREventType_VREvent_MouseButtonUp].contains(&e.eventType);
+            let pointer = matches!(pe.kind, PointerKind::Move | PointerKind::Down(_) | PointerKind::Up(_));
             let bar = if pointer && self.frame.well.is_some() { crate::kvm::lock().bar } else { None }; // (unlocked again: laser_on_panel takes it)
             if let Some(bar) = bar
                 && let Some(l) = crate::trace::laser_pose(dev)
-                && let Some(on) = crate::plasmabar::laser_on_panel(&[l[0][3] as f64, l[1][3] as f64, l[2][3] as f64], &frame_point(&bar, &self.frame, m.x as f64, m.y as f64))
+                && let Some(on) = crate::plasmabar::laser_on_panel(&[l[0][3] as f64, l[1][3] as f64, l[2][3] as f64], &frame_point(&bar, &self.frame, pe.x as f64, pe.y as f64))
             {
                 part = match (on, part) {
                     (Some((fx, fy)), _) => Some(Part::Plasma(fx, fy)),
@@ -975,18 +978,17 @@ impl Taskbar {
             }
             let was = matches!(self.hover, Some(Part::Plasma(..)));
             // on Plasma's bar, pass its events on (a scroll goes by where the laser last was)
-            match (e.eventType, part, self.hover) {
-                (sys::EVREventType_VREvent_ScrollDiscrete, _, Some(Part::Plasma(fx, fy)))
-                | (sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp, Some(Part::Plasma(fx, fy)), _) => {
-                    windows.plasma_laser(&e, fx, fy)
+            match (pe.kind, part, self.hover) {
+                (PointerKind::Scroll { smooth: false, .. }, _, Some(Part::Plasma(fx, fy))) | (PointerKind::Move | PointerKind::Down(_) | PointerKind::Up(_), Some(Part::Plasma(fx, fy)), _) => {
+                    windows.plasma_laser(&pe, fx, fy)
                 }
                 _ => {}
             }
-            match e.eventType {
-                sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_FocusLeave => {
-                    self.hover = part.filter(|_| e.eventType == sys::EVREventType_VREvent_MouseMove);
+            match pe.kind {
+                PointerKind::Move | PointerKind::Leave => {
+                    self.hover = part.filter(|_| pe.kind == PointerKind::Move);
                     if was && !matches!(self.hover, Some(Part::Plasma(..))) {
-                        let up = e.eventType == sys::EVREventType_VREvent_MouseMove && self.frame.well.is_some_and(|r| y < r[1]);
+                        let up = pe.kind == PointerKind::Move && self.frame.well.is_some_and(|r| y < r[1]);
                         if up && crate::plasmabar::OPEN.load(Relaxed) {
                             crate::plasmabar::TIP.store(true, Relaxed); // moved up into its tooltip (a preview), which Plasma's overlay takes
                         } else {
@@ -994,7 +996,7 @@ impl Taskbar {
                         }
                     }
                 }
-                sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
+                PointerKind::Down(Button::Left) => {
                     if vr::is_real_controller(dev) {
                         let mut k = crate::kvm::lock();
                         if k.awake {
@@ -1008,7 +1010,7 @@ impl Taskbar {
                         Some(Part::Chip(c)) => self.click(c, grab, windows),
                         Some(p) if self.hold.is_none() => {
                             if let Some(t) = hold_for(p, self.mode) {
-                                self.take(t, vr::dev(dev));
+                                self.take(t, pe.from);
                             }
                         }
                         _ => {}
@@ -1016,16 +1018,16 @@ impl Taskbar {
                 }
                 // SteamVR sends a release to the overlay under the laser, not the one pressed, so a
                 // press on Plasma's bar or a panel that's let go over the frame ends here too
-                sys::EVREventType_VREvent_MouseButtonUp => {
+                PointerKind::Up(_) => {
                     windows.plasma_release();
-                    grab.end_by(vr::dev(dev), &crate::kvm::lock());
-                    if self.hold.as_ref().is_some_and(|h| h.dev == vr::dev(dev)) {
+                    grab.end_by(pe.from, &crate::kvm::lock());
+                    if self.hold.as_ref().is_some_and(|h| h.dev == pe.from) {
                         self.let_go();
                     }
                 }
                 // the wheel or joystick while bending: 3 cm more (or less) curve per notch
-                sys::EVREventType_VREvent_ScrollDiscrete => {
-                    let n = unsafe { e.data.scroll.ydelta } as f64;
+                PointerKind::Scroll { dy, smooth: false, .. } => {
+                    let n = dy as f64;
                     if let Some(Hold { kind: Kind::Curve { from, .. }, .. }) = self.hold.as_mut() {
                         *from = (*from + CURVE_NOTCH * n).max(0.0);
                     }

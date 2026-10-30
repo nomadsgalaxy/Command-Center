@@ -958,7 +958,7 @@ impl Windows {
     }
 
     /// A laser event on the taskbar's frame over Plasma's bar, at fractions of it (plasmabar.rs `on_bar`).
-    pub fn plasma_laser(&mut self, e: &vr::VREvent_t, fx: f64, fy: f64) {
+    pub fn plasma_laser(&mut self, e: &crate::events::PointerEvent, fx: f64, fy: f64) {
         self.plasma.on_bar(e, fx, fy);
     }
 
