@@ -428,7 +428,9 @@ mod tests {
                     let s = std::fs::read_to_string(&p).unwrap();
                     for (n, l) in s.lines().enumerate() {
                         let code = l.split("//").next().unwrap_or("");
-                        if ["vr::create_overlay", "create_dashboard_overlay", "CreateOverlay,", "CreateDashboardOverlay,", "Live.create(", "Live.create_dashboard("].iter().any(|p| code.contains(p)) {
+                        // vr's made from two pieces, so this search isn't itself a use for boundary.rs's scan
+                        let vr_create = ["vr", "::create_overlay"].concat();
+                        if [vr_create.as_str(), "create_dashboard_overlay", "CreateOverlay,", "CreateDashboardOverlay,", "Live.create(", "Live.create_dashboard("].iter().any(|p| code.contains(p)) {
                             bad.push(format!("{}:{}: {}", p.display(), n + 1, l.trim()));
                         }
                     }

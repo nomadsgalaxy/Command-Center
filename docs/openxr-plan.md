@@ -569,6 +569,11 @@ cc-panels.
    back of what was set, `texel_aspect_of` (a back matches its front's stretch; SteamVR's default
    is 1.0) and `mouse_scale_of` (an Extra's mouse ray; openvr.h names no default, so an unset one
    reads [0, 0]), which the fakes answer from what was written. That took the last 3 of 6b's off.
+   surface.rs's registry scan, which keeps every overlay made and destroyed through
+   `surface::create` and `destroy`, reads text too: it looks for `Live.create(`, `Live.destroy(`
+   and OpenVR's own calls, so a generic caller (`impl Surfaces`, `Surfaces::create(&mut Live, ..)`)
+   gets past it. That's fine while the core calls `overlay::Live` by name; revisit it when the
+   core goes generic over a backend.
 7. (1 d) Tests and a pass in the headset.
 
 Each step is its own small branch, and has to pass the same checks before and after:

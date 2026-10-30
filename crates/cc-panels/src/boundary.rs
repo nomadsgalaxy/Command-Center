@@ -129,7 +129,6 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
         ],
     ),
     ("popout.rs", STAGE, &["vr::head_position"]),
-    ("surface.rs", "its own test's search for overlays made outside the registry (a string)", &["vr::create_overlay"]),
     (
         "taskbar.rs",
         STAGE,
