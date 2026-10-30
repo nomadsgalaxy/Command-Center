@@ -348,7 +348,7 @@ pub mod fake {
     pub static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
     fn script<R>(f: impl FnOnce(&mut Script) -> R) -> R {
-        f(SCRIPT.lock().unwrap().get_or_insert_with(Script::default))
+        f(SCRIPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(Script::default))
     }
 
     /// A number as the call log (and golden.rs) writes it: 5 decimals and no -0, so the last bits
@@ -553,7 +553,9 @@ pub mod fake {
             apps: leak(Default::default()),
             notes: None,
         });
-        *SCRIPT.lock().unwrap() = Some(s);
+        // a test that panicked holding it mustn't fail the ones after it
+        SCRIPT.clear_poison();
+        *SCRIPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(s);
         *DISPLAY.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None; // the last test's display rate
         guard
     }
