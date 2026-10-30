@@ -1,7 +1,8 @@
 # Command Center on OpenVR and OpenXR: one core, two backends
 
 Status: plan, 2026-10-29. Phase 0's first step, the runtime probe, has run on the Frame (section
-1). Nothing else here is built yet. Paths are relative to `crates/cc-panels/src/` unless they
+1), and the boundary's design is in `crates/cc-panels/src/backend.rs`, for review before any code
+moves. Nothing else here is built yet. Paths are relative to `crates/cc-panels/src/` unless they
 start with `crates/`, `docs/` or `tools/`. Anything I haven't checked against the code, a runtime
 or its source is marked **unverified**.
 
@@ -86,8 +87,8 @@ version needs an instance, so it comes from vrclient's log. Under `strace` the p
 | `XR_KHR_composition_layer_cylinder` | no |
 | `XR_KHR_composition_layer_color_scale_bias` | no |
 | `XR_KHR_vulkan_enable2` | yes, v4 |
-| `XR_EXT_eye_gaze_interaction` | yes, v2 |
-| `XR_EXT_user_presence` | yes, v1 |
+| `XR_EXT_eye_gaze_interaction` | yes, v2: advertised, support not checked |
+| `XR_EXT_user_presence` | yes, v1: advertised, support not checked |
 | `XR_VALVE_frame_controller_interaction` | yes, v1 |
 
 The rest: `XR_KHR_vulkan_enable`, `XR_KHR_opengl_enable`, `XR_KHR_opengl_es_enable`,
@@ -116,6 +117,12 @@ What it means:
   below). On Monado and WiVRn, curved panels and fades depend on what the probe finds there.
 - The Frame controller's interaction profile, eye gaze and user presence are all there, so phase
   2's bindings, gaze and worn state have something to use when a runtime has them too.
+
+Advertised isn't supported: whether the Frame's eye tracking and presence sensor are really behind
+those two needs an instance, to read `XrSystemEyeGazeInteractionPropertiesEXT` and
+`XrSystemUserPresencePropertiesEXT`. The probe also doesn't look in Flatpak Steam's paths
+(`~/.var/app/com.valvesoftware.Steam/`), so a SteamVR installed that way needs its manifest passed
+by hand.
 
 Still to probe, on a PC with Monado and with WiVRn: the same list, then levels 2 to 4 with an
 overlay session next to `hello_xr`, and whether those runtimes expose
@@ -189,13 +196,32 @@ fetched in `vr.rs:41-63` (`ov`, `sys`, `ipc`, `input`, `rm`, `apps`, `notes`).
 | `UnrefResource` (4) | gpu.rs, capture.rs | Destroy the VkImage and its memory, after the GPU work that uses them has finished |
 | `SetOverlayRaw` (5) and `ClearOverlayTexture` | UI cards drawn on the CPU (`grab.rs:791`, `back.rs:200`, `capture.rs:461`, `laser.rs:387`, 4x4 pixels) | Write the pixels into a staging buffer and copy them to the swapchain image. SetOverlayRaw's blink (it blanks the overlay until SteamVR takes the new picture) doesn't happen on OpenXR, since swapchains are double-buffered anyway |
 
-Before estimating the Vulkan slice, I'll write down its contract:
+How textures are owned today, on OpenVR (gpu.rs, capture.rs, back.rs). This is what the
+`Textures` trait has to keep in phase 0; it isn't a design for the Vulkan side:
 
-- **Buffer lifetime:** who owns each dmabuf and VkImage, and when each is freed.
-- **Sync:** how the producer (PipeWire, FreeRDP, our GBM buffers) and the copy into the swapchain
-  wait for each other.
-- **A failed import:** falls back to the staging upload, and says so once.
-- **Release:** only after the GPU work that uses the buffer has finished.
+- **Import doesn't take the caller's fd.** `ImportDmabuf` gives back a handle, and SteamVR holds
+  its own reference to the buffer behind it. gpu.rs closes the GBM buffer's fd straight after the
+  import. capture.rs imports with its own dup of PipeWire's fd (PipeWire closes its copy when it
+  removes the buffer), and drops that dup with the frame. The handle lives until `UnrefResource`.
+- **When the core may write a buffer again:** a tick after `SetOverlayTexture` replaced it on
+  screen. SteamVR never says when it's done reading; the core assumes it's done by its next frame.
+  gpu.rs keeps two buffers per panel and holds the replaced one for a tick (`held`), and the RDP
+  thread doesn't write it until then. capture.rs holds the buffer on screen and the one before it
+  back from PipeWire, and gives older ones back. A refused `SetOverlayTexture` leaves the old one
+  showing (`unflip`).
+- **Who says the producer is ready:** for a PipeWire dmabuf, the core polls the fd for its
+  implicit fence (POLLIN) and doesn't present until it's readable; it keeps the frame for the next
+  tick otherwise. Our own GBM buffers are written on the CPU between map and unmap, so they're
+  ready when the copy returns. There's no explicit fence anywhere.
+- **How the core learns a release is complete:** it doesn't. `UnrefResource` returns at once, and
+  the core destroys the GBM buffer right after. A UI overlay's resize keeps the old pair one tick
+  longer (`raw_tick`). A panel's resize frees both buffers at once, the one on screen included.
+  That's how it is today, and if it ever shows as a blank frame, the fix is its own branch.
+- **A handle can be on two overlays:** a panel's back shows the panel's handle (`back::shown`).
+
+The Vulkan side gets its own contract after this one is pinned, covering the same five points
+(lifetime, reuse, readiness, release, sharing), plus a failed import falling back to a staging
+upload and saying so once.
 
 The spike's exit test is repeated acquire, present and release, then a resize, a reconnect and a
 teardown, on each target GPU and runtime. The slice is estimated after that spike, not up front.
@@ -267,60 +293,155 @@ Neutral types, which replace the OpenVR ones the core sees today:
 
 - `SurfaceId` replaces `vr::Handle = VROverlayHandle_t`, used as `overlay::Handle` in about 24
   files.
-- `Dev`: today `u32` device indices are everywhere: `At::Device(u32, Mat)` (`overlay.rs:26`),
-  `Stage::device(u32)`, the `grab::MOUSE` sentinel, and the taskbar's `u32::MAX` for the room
-  (`overlay.rs:35`). Before narrowing them to `Head | Hand(Left|Right) | Mouse`, phase 0 lists
-  every tracked-device case the code has today, including a controller that disconnects and comes
-  back, a second controller of the same role, and the virtual pointer. `Dev` has to cover all of
-  them. The OpenVR backend maps `Dev` to indices.
+- `Dev = Head | Controller(Ctl) | Mouse`. `Ctl` is the backend's own id for a controller: the
+  tracked-device index on OpenVR, one per hand path on OpenXR. `Stage::hand(ctl)` says which hand
+  it is right now. The device inventory below is why it isn't `Hand(Left|Right)`: today's code
+  tells controllers apart by index, a controller can have no hand role or share one, and narrowing
+  would change behaviour in phase 0. The room isn't a `Dev`, so the taskbar's `u32::MAX` becomes
+  `Option<Dev>`.
 - `Place`, `At` and `apply` stay as they are; they're already API-free (`overlay.rs:48-130`).
-- `PointerEvent { surface, kind: Move | Down(btn) | Up(btn) | Scroll(dx,dy) | FocusLeave, x, y,
-  from: Dev }`, with x and y overlay-local from the bottom left, as `m.x, m.y` are today, so
-  `geometry::surface_point/from_top` (used in `main.rs:468-470`) stay in the core.
-- `SessionEvent` keeps what the runtime says about the session apart from whether the headset is
-  worn. Running, visible, focused and should-render are four separate states, and worn is a fifth
-  that comes from somewhere else (OpenVR's interaction events, or `XR_EXT_user_presence`).
+  `At::Device` takes a `Dev`.
+- `PointerEvent { kind: Enter | Move | Down(btn) | Up(btn) | Scroll{dx, dy, smooth} | Leave, x, y,
+  from: Dev, age }`, with x and y in the surface's pointer units from the bottom left, as `m.x,
+  m.y` are today, so `geometry::surface_point/from_top` (used in `main.rs:468-470`) stay in the
+  core. Enter is there because grab.rs treats FocusEnter like a move, and `smooth` because the
+  cards take only discrete scrolls. A surface's queue gives `SurfaceEvent::{Pointer, Keyboard,
+  Closed}`, since SteamVR's keyboard events and the tab's close come through the same queue.
+- `SessionState` is what the runtime's events say about the session: running, visible and
+  focused, three separate states. Worn is a fourth thing from somewhere else (OpenVR's interaction
+  events, or `XR_EXT_user_presence`), and never folded in. Whether to draw isn't a session state:
+  `begin_frame` returns a `Frame` with `should_render` and `predicted`, the time poses are read for
+  (`vr::to_photons` on OpenVR today), and `Stage::device` and `laser` are at that time.
 - `scene_app_running()` returns `Option<bool>`, where `None` means the backend can't tell.
 
-The traits compose into one `trait Backend`, and `Stage` keeps extending `Overlays`:
+The traits, in `crates/cc-panels/src/backend.rs` (the design: nothing uses it yet), compose into
+one `trait Backend`, and `Stage` keeps extending `Overlays`:
 
-1. `Surfaces`: `create(key, name)`, `destroy`, `show`/`hide`, `order`, `alpha`, `color`, `flags` (a
-   small neutral set: `cursor`, `scroll_events`, `no_input`), `input(mode)`. It takes in
-   `surface::create/destroy`, the 22 `SetOverlayFlag` sites, the 20 and 19 show and hide sites and
-   the 12 input-method sites.
-2. `Overlays` (exists): width, curvature, texel, bounds, place_room, place_device. `mouse_scale`
-   leaves it; the OpenVR backend sets that itself from the surface size.
-3. `Textures`: `present_dmabuf(surface, DmabufRef)`, `present_pixels(surface, &[u8], w, h)`,
-   `import(dmabuf) -> TexHandle`, `release(TexHandle)`. `gpu.rs` keeps the GBM buffers and the
+1. `Surfaces`: `create`, `create_dashboard` (`None` without a dashboard), `destroy`, `show`,
+   `hide`, `visible`, `order`, `order_of`, `alpha`, `color`, `flag`, `input`, `rename`,
+   `picture_file`. The flags are the five SteamVR ones the code sets today: interactive, discrete
+   scroll, ignore alpha, and the control bar and its close. It takes in `surface::create/destroy`,
+   the 22 `SetOverlayFlag` sites, the 20 and 19 show and hide sites and the 12 input-method sites.
+2. `Overlays` (exists): width, curvature, texel, bounds, mouse_scale, place_room, place_device.
+   `mouse_scale` stays for now: SteamVR's mouse coordinates depend on it, and phase 0 doesn't
+   change them. OpenXR's ray casting scales its hits to the same units.
+3. `Textures`: `import(&Dmabuf) -> TexHandle`, `present(surface, TexHandle)`, `release(TexHandle)`,
+   `present_pixels(surface, &[u8], w, h)` and `clear`. `gpu.rs` keeps the GBM buffers and the
    stale tracking (core); only the `Texture_t`, `ImportDmabuf` and `SetOverlayTexture` parts move.
-4. `Pointing`: `poll(surface) -> impl Iterator<PointerEvent>`. The rules live in the trait, not in
-   each backend, so grab.rs gets the same behaviour from both:
-   - **Capture:** a button down on a surface captures the pointer for that button. Moves keep
-     going to that surface, clamped to its edge, until the button comes up, even when the ray has
-     left it (that's how a drag goes past a panel's edge).
-   - **Hover:** a surface gets moves only while it's hit and nothing has captured the pointer.
-     When the hit moves to another surface, the old one gets FocusLeave first.
-   - **Scroll:** goes to the hovered surface, or the captured one during a capture.
-   - **Endings:** losing focus with a button held, losing the device mid-drag and destroying a
-     surface that holds a capture all release the capture. The surface that holds it, if it still
-     exists, gets an Up and then a FocusLeave, so nothing stays held.
+4. `Pointing`: `next(surface) -> Option<SurfaceEvent>`. It has two contracts, kept apart:
+   - **Phase 0, the OpenVR adapter, preserves today's events and the core's recovery.** SteamVR
+     does the hit testing, and the adapter translates each `VREvent_t` into one `SurfaceEvent`, in
+     order, with the same coordinates (so `main.rs:444`'s logic matches the neutral kind instead
+     of `sys::EVREventType_*`). It never makes one up: no Up SteamVR didn't send, no Leave, no
+     clamping. Where SteamVR sends no Up (a controller switched off), grab.rs's `LOST` recovery
+     stays as it is, and the golden tests pin it. Any behaviour fix is its own branch.
+   - **Phase 1, the target both backends meet:**
+     - **Capture:** a Down on a surface captures that pointer for that button. Its moves keep
+       going to that surface, clamped to its edge, until the Up, even once the ray has left it.
+       That's how a drag goes past a panel's edge.
+     - **Hover:** a surface gets Enter, then moves while it's hit and nothing has captured that
+       pointer. When the hit goes to another surface, the old one gets Leave first.
+     - **Scroll:** goes to the hovered surface, or the captured one during a capture.
+     - **Endings:** focus lost with a button held, the device lost mid-drag and a surface
+       destroyed while it holds a capture all end the capture. The holder, if it still exists,
+       gets Up and then Leave, so nothing stays held.
 
-   OpenVR translates `VREvent_t` (so `main.rs:444`'s logic matches `ev.kind` instead of
-   `sys::EVREventType_*`). OpenXR ray-casts the hands' `aim` poses (and the mouse ray) against the
-   visible surfaces in `vr/pointing.rs`, takes clicks from action state, and emits the same events.
-5. `Stage` (exists): `device/laser/head/head_pose/controllers/connected/pulse/panel/move_pointer`.
-   `controllers()` returns `Vec<Dev>`, and `pulse` takes a `Dev` or a surface, as now.
-6. `Session`: `poll_events() -> SessionEvent::{Quit, State{running, visible, focused,
-   should_render}, Worn(bool), Relocalized, DashboardShown(bool), RoomChanged(id)}`,
-   `display_period()`, `to_photons()`, `begin_frame()`/`end_frame()` (no-ops on OpenVR),
-   `universe_id() -> Option<u64>`, `scene_app_running() -> Option<bool>`.
-7. `Keyboard`: `open(surface, mode, hint, initial)`, `close()`, `poll() -> KeyboardEvent::{Char(u32),
-   Text(String), Done, Closed}`. OpenVR wraps `ShowKeyboardForOverlay`. OpenXR returns "none", and
-   the core opens its own (5.2).
-8. `Shell`: `dashboard_tab()` (yes on OpenVR, `None` on OpenXR), `register_autostart()`,
-   `toast(text)`.
-9. `Input`: `gaze() -> Option<(V3,V3)>`, `haptic(Dev, amp, ms)`, and `buttons(Dev)` for the
-   "a controller was used" signal.
+     OpenXR ray-casts the hands' `aim` poses (and the mouse ray) against the visible surfaces,
+     takes clicks from action state, and has to meet these itself. Whether the OpenVR adapter
+     grows them too is decided once the golden tests show where SteamVR's events differ.
+5. `Stage` (exists): `device/laser/head/head_pose/controllers/hand/in_hand/connected/pulse`.
+   `controllers()` returns `Vec<Ctl>`, and `pulse` takes a surface, as now (SteamVR buzzes the hand
+   whose laser last worked it). `panel` and `move_pointer` aren't the runtime's, so they stay on the
+   core's side of today's `Stage`.
+6. `Session`: `next_event() -> SessionEvent::{Quit, State(SessionState), Worn(bool), Relocalized,
+   RoomChanged(id), DashboardShown(bool), ControllerUsed(ctl)}`, `display_period()`,
+   `universe_id() -> Option<u64>`, `scene_app_running() -> Option<bool>`, and
+   `begin_frame() -> Frame`/`end_frame()` (no wait on OpenVR). OpenVR compares universes itself and sends
+   Relocalized or RoomChanged, as main.rs does now.
+7. `Keyboard`: `open(surface, mode, multiline, hint, initial, user) -> bool`, `text()`, `close()`.
+   OpenVR wraps `ShowKeyboardForOverlay`, and its events come through `Pointing` as
+   `SurfaceEvent::Keyboard`, as SteamVR sends them now. OpenXR returns false, and the core opens
+   its own (5.2).
+8. `Shell`: `has_dashboard()`, `dashboard_visible()`, `our_tab_active(main)`, `toast(text)`.
+   Autostart stays in tab.rs, which runs before any backend.
+9. `Input`: `gaze() -> Option<(V3,V3)>`. Haptics stay `Stage::pulse` and "a controller was used"
+   is `SessionEvent::ControllerUsed`, since that's how they reach the code today.
+
+### Where the design differs from the first sketch
+
+The reviewed design (`backend.rs`) changed these from the sketch above it, on purpose:
+
+- **`Dev` is `Head | Controller(Ctl) | Mouse`** for phase 0, not `Hand(Left|Right)`, for the
+  reasons in the device inventory below.
+- **`Overlays` keeps `mouse_scale`** in phase 0. Taking it out is a phase 1 item, when OpenXR's ray
+  casting can give pixels directly.
+- **`Pointing::next(surface) -> Option<SurfaceEvent>`**, with SteamVR's keyboard events folded
+  into the same queue as `SurfaceEvent::Keyboard`, because that's where SteamVR sends them. Our own
+  keyboard (phase 2) is a surface of ours, not a runtime's, so it needs its own seam when it comes.
+- **Haptics are `Stage::pulse(surface)`, not `Input::haptic(dev, amp, ms)`.** The one haptic call
+  today (`stage.rs`, `TriggerLaserMouseHapticVibration`) always uses the same strength and length,
+  and no caller varies them. If one ever does, it gets a pulse by device.
+- **"A controller was used" is `SessionEvent::ControllerUsed(ctl)`, not `Input::buttons(dev)`,**
+  since it comes in as an event today (`VREvent_ButtonPress`).
+- **`Shell` is `has_dashboard`, `dashboard_visible`, `our_tab_active` and `toast`**, which are the
+  questions control/dashtab.rs and notify.rs ask. Autostart stays in tab.rs.
+- **`Surfaces` has `visible`, `order_of`, `rename`, `picture_file` and `create_dashboard`** as
+  well, because today's code reads visibility and sort order back (`IsOverlayVisible`,
+  `GetOverlaySortOrder`), names overlays, loads icons from files, and makes the dashboard tab.
+- **`Stage`'s `panel` and `move_pointer` stay in the core.** `Live` answers them from the panel list
+  (`crate::panel(i)`: its overlay, picture size and curve) and sends a move to the panel's session,
+  with no SteamVR call in either, so they aren't the runtime's.
+- **`SessionState` has no `should_render`,** and `to_photons` is `Frame::predicted` (above).
+
+Some of today's behaviour the golden tests show isn't in any trait, and phase 1 mustn't change it
+without saying so:
+
+- **The bottom-right corner stretches about the centre.** A drag on it is `Mode::Stretch` (the
+  fixture logs "stretching"), and only the width changes: the panel's matrix stays where it was,
+  so the panel grows and shrinks around its middle (`golden_resize`). OpenXR's own ray casting
+  has to keep that, not anchor the opposite corner.
+
+### Device inventory (what `Dev` has to cover)
+
+From reading the code on 2026-10-29. Nothing in cc-panels handles a device turning on or off, or
+a role changing, as an event: there's no TrackedDeviceActivated, Deactivated or RoleChanged
+handler. Everything copes by reading poses and roles each frame.
+
+- **The head** is index 0 everywhere: `vr::head`, `head_predicted`, `head_raw`, `head_worn`, the
+  universe id, the worn events (only index 0 counts), and `At::Device(Hmd, ..)` for the HUD and
+  grab's head docking.
+- **Controllers by index:** laser events carry `trackedDeviceIndex`. grab.rs presses and releases
+  by it (`press`, `end_by`), keeps it in `Drag.dev`, and snapshots `Drag.others` for docking when a
+  drag starts, without refreshing it. The taskbar, prefs, workspace, machines and plasmabar cards
+  make the last controller pressed the primary device (`is_real_controller`, then
+  `set_awake(false)`). `plasmabar` and grab keep `released: Vec<u32>`.
+- **Controllers by role:** the wrist taskbar asks `GetTrackedDeviceIndexForControllerRole` every
+  frame, so it follows a swapped or renumbered controller, and shows "no controller" when the role
+  is Invalid. laser.rs asks it to find a free hand for the mouse.
+- **Controllers by render-model name:** `vr::tip(hand)` decides the hand from "left" in the model
+  name, which is a third way and could disagree with the role.
+- **All controllers:** `Stage::controllers()` scans 1 to 63 for connected real controllers, in
+  index order, as a set.
+- **Not real controllers:** our cc-pointer and other apps' virtual pointers (`*_pointer`
+  controller types), trackers and base stations are filtered out by `is_real_controller`, which
+  only takes class Controller. cc-pointer can hold a hand role for a moment while the mouse leases
+  a hand, so a role lookup can return it. laser.rs finds it by type and rechecks every 2 s.
+- **The mouse** is the sentinel index 64 (`grab::MOUSE`), with `MOUSE_RAY` as its pose, and
+  control/ui.rs's synthesized events use it too.
+- **The room** is `u32::MAX` in the taskbar and plasmabar placements.
+- **Tracking lost:** only `bPoseIsValid` and `bDeviceIsConnected` are read, never
+  `eTrackingResult`. A drag or a docked panel whose device loses its pose ends after `LOST`; a
+  shorter blink survives (tested in grab.rs).
+- **Switched off mid-drag:** no Up arrives, so the pose goes invalid and `LOST` ends the drag.
+  Back on with a new index, the old drag has already ended, and a new press starts a new one.
+- **Renumbered or swapped mid-session:** the role lookups follow it. `Drag.dev`, `Drag.others`
+  and a device-relative overlay keep the old index until they're next set.
+- **Two controllers with one role:** the role lookup returns one of them. The index paths work
+  with both.
+- **Traces:** trace.rs records and replays raw indices.
+
+So `Ctl` keeps the index, and every one of these keeps working unchanged in phase 0. Making a hand
+the identity is OpenXR's business, where the hand path is all there is.
 
 The modules that move, with the lines that matter:
 
@@ -375,7 +496,8 @@ cc-panels.
 2. (1 d) The design, reviewed before any code moves: the trait definitions and neutral types from
    section 3, the device inventory, and the golden-test list below.
 3. (2 d) The `SurfaceId` and `Dev` newtypes, and the mechanical replacement of `u32` device indices
-   and `vr::Handle`. `At::on` stays as the room or device switch.
+   and `vr::Handle`, with `Dev::Controller(Ctl)` keeping the index. `At::on` stays as the room or
+   device switch.
 4. (2 d) The neutral `PointerEvent` and `SessionEvent`, which the OpenVR backend translates to.
    The ten `PollNextOverlayEvent` loops (listed in 2.4) match the neutral enum.
 5. (2 d) The `Textures`, `Keyboard`, `Shell` and `Input` traits with OpenVR implementations. Code
@@ -388,18 +510,76 @@ Each step is its own small branch, and has to pass the same checks before and af
 
 - The existing unit tests (`overlay::fake::Writes`, `stage::fake::Fake`, the kvm and grab tests),
   untouched.
-- The golden tests: each one records the sequence of fake writes for a script, and must replay
-  identically. The scripts are a carry, a resize and a dock; focus lost with a button held; the
-  device lost mid-drag; and a surface destroyed while it holds a capture.
+- The golden tests (below), replaying identically.
 - The headset-free harness's replays (docs/vr-harness.md), including recorded traces from the
   headset.
 - At the end of the phase, docs/final-test-frame.md in the headset, and the control socket's
   `surfaces` dump compared before and after.
 
+The golden tests come first, before any code moves. Each one writes down, step by step, what
+today's code did: the OpenVR calls it made (the headset-free harness's stand-in, `vr::fake`, keeps
+a log of them, docs/vr-harness.md), what it sent to the computer (the session's pointer, wheel and
+leave, and the keys), and what it was holding (a press, a drag and whether its device is lost). The
+transcript has to match a fixture in `crates/cc-panels/golden/`, line for line. The fixtures were
+written by the code before the move, and an ordinary run never writes them, a missing one
+included: only `CC_GOLDEN_WRITE=1` does, for a change in behaviour that's meant, and the fixture's
+diff goes in with that change (`golden.rs`).
+
+Plasma's bar's scripts go through its real event loop and `vr::fake`. grab.rs's go through
+`stage::fake::OverFake`: today's `overlay::Live` and `stage::Live` over `vr::fake`, with only the
+panel list (`panel`, `move_pointer`, the core's) answered by the test. So the code phase 0 moves is
+inside what the fixtures pin, not stood in for. The scripts, with the ones that are in marked:
+
+1. **Carry** (in, `golden_carry`): the bar taken with a controller, carried through three poses,
+   pushed away a notch and pulled back two, then let go.
+   `golden_carry_reads_poses_at_the_predicted_time` is a carry with SteamVR's vsync running, which
+   pins the time poses are asked for (`vr::to_photons`, `Frame::predicted` in the boundary).
+2. **Resize** (in, `golden_resize`): the bottom-right corner dragged out, back in past where it
+   started, and let go.
+3. **Dock** (in, `golden_dock`): a carry held at the other hand through the dwell until it arms
+   (the buzz, at its one fixed strength), let go there so it docks, then that hand moves 30 cm and
+   the panel goes with it.
+4. **Focus lost with a button held** (in, on Plasma's bar): press, then FocusLeave with no Up,
+   an empty pass, Enter and a move, then the Up. Today the session gets a leave and the press
+   stays held until the Up. Recorded isn't blessed: the fixture flags it (a `FLAG:` line), since if
+   SteamVR never sends that Up, the computer keeps the button down. A trace recorded in the headset
+   (press, look away, release) will show whether it does, and a fix, if it needs one, is its own
+   branch. A panel's version is still to write.
+5. **Device lost mid-drag** (in, grab.rs): a carry whose controller goes untracked for 400 ms and
+   comes back, then goes for longer than `LOST` and the panel's put down. Then a controller under
+   another index picks it up, the old index's late Up ends nothing, and the new one's ends it.
+6. **Surface gone with a capture outstanding** (in, on Plasma's bar): press, then the bar hides as
+   it does when its window closes, which lets go of the press where the pointer is. The late Up
+   and a stray move then send nothing. A window panel's version is still to write.
+7. **Roles swap mid-drag** (in, grab.rs with the wrist taskbar): the right hand picks a panel up,
+   then the left and right roles swap. The wrist taskbar asks for the off hand's controller every
+   frame, so it moves to the other controller, while the drag keeps the index it started with
+   and only that index's Up ends it.
+8. **The mouse and a controller** (in, on Plasma's bar,
+   `golden_the_mouse_then_a_controller`): the mouse has the pointer, so a laser's move is dropped.
+   A press from our virtual pointer (cc_pointer) doesn't take over; a real controller's does, and
+   goes through. A panel's version (main.rs `laser`, `controller_pressed`) needs a panel in a
+   test, which there's no way to make yet.
+9. **Session:** Quit, the dashboard opening and closing, a relocalization in the same universe
+   and a change of universe, the headset off and on. Not in yet: the handling is inline in
+   main.rs's main loop, so a test can't drive it without pulling it out into a function first.
+   That's a code move, so it waits for the design to clear, and goes in as phase 0's first step
+   with this golden written against the code before the move.
+10. **Recorded traces:** each trace from the headset (docs/vr-harness.md), replayed, including the
+   session recorded with Plasma's debug log on, once it's in.
+
 ### Phase 1: OpenXR MVP on Monado and WiVRn (about 18 days)
 
-Before it starts, two things get written down: the Vulkan texture contract (2.3) and the interim
-room rule. The room rule: OpenXR has no universe id, so on OpenXR every saved spot belongs to one
+Before it starts, three things get decided and written down: the Vulkan texture contract (2.3),
+the layer budget, and the interim room rule.
+
+The layer budget: OpenXR only promises 16 composition layers per frame (`maxLayerCount` can be
+more), and a busy desktop can have more overlays than that once the cards, backs, bars, cursor and
+HUD are counted. So phase 1 decides which surfaces get a layer each and which share one (drawn
+together into one swapchain), what happens past the runtime's limit, and how `Surfaces::order`
+becomes the order of the layer array, since OpenXR draws later layers over earlier ones.
+
+The room rule. The room rule: OpenXR has no universe id, so on OpenXR every saved spot belongs to one
 default room until there's something better. Candidates for later are a runtime's own map id
 (Monado's SLAM, unverified), a persisted spatial anchor (`XR_MSFT_spatial_anchor`,
 `XR_FB_spatial_entity`, unverified support), or workspaces the user names. Relocalization on those
@@ -408,8 +588,9 @@ runtimes might move the room without telling us.
 The frame loop: while a session is running, call `xrWaitFrame`, `xrBeginFrame` and `xrEndFrame`
 every frame, and use `shouldRender` to skip the drawing, not the frame. The loop doesn't sleep while
 the session runs. Focus is the runtime's input state, and submitting empty frames doesn't guarantee
-it. The session state machine (running, visible, focused, should-render, kept apart from worn) is
-part of the MVP, not phase 2. What an idle session costs in power, submitting empty frames, gets
+it. The session state machine (running, visible and focused from the events, should-render with each
+frame, all kept apart from worn) is part of the MVP, not phase 2. Taking `mouse_scale` out of
+`Overlays` belongs here too, once the ray casting gives pixels directly. What an idle session costs in power, submitting empty frames, gets
 measured, not assumed.
 
 What counts as "works":

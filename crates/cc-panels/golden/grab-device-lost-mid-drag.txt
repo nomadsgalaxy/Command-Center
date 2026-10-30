@@ -1,0 +1,42 @@
+== the bar picked up and carried
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [0.99905 -0.01347 0.04150 0.00194; 0.01169 0.99901 0.04285 1.39917; -0.04204 -0.04232 0.99822 -1.49389]
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.99905 -0.01347 0.04150 0.00194; 0.01169 0.99901 0.04285 1.39917; -0.04204 -0.04232 0.99822 -1.49389]
+== the controller goes untracked (still on), 400 ms
+  drag by 1, carrying, lost true
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.99905 -0.01347 0.04150 0.00194; 0.01169 0.99901 0.04285 1.39917; -0.04204 -0.04232 0.99822 -1.49389]
+== it blinks back, moved
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [0.99650 -0.01578 0.08207 0.00761; 0.01215 0.99893 0.04454 1.39715; -0.08269 -0.04339 0.99563 -1.47906]
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.99650 -0.01578 0.08207 0.00761; 0.01215 0.99893 0.04454 1.39715; -0.08269 -0.04339 0.99563 -1.47906]
+== it goes again, for longer than LOST
+  drag none
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.99650 -0.01578 0.08207 0.00761; 0.01215 0.99893 0.04454 1.39715; -0.08269 -0.04339 0.99563 -1.47906]
+== switched off; back under another index, it picks the bar up again
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [0.99244 -0.01820 0.12134 0.01515; 0.01265 0.99884 0.04639 1.39495; -0.12205 -0.04450 0.99153 -1.46297]
+  drag by 5, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.99244 -0.01820 0.12134 0.01515; 0.01265 0.99884 0.04639 1.39495; -0.12205 -0.04450 0.99153 -1.46297]
+== the old index's Up arrives late
+  ended any: false
+  drag by 5, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.99244 -0.01820 0.12134 0.01515; 0.01265 0.99884 0.04639 1.39495; -0.12205 -0.04450 0.99153 -1.46297]
+== the new one lets go
+  ended any: true
+  drag none
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.99244 -0.01820 0.12134 0.01515; 0.01265 0.99884 0.04639 1.39495; -0.12205 -0.04450 0.99153 -1.46297]

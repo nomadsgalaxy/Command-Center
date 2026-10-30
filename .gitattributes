@@ -1,0 +1,2 @@
+# The golden tests compare these byte for byte (crates/cc-panels/src/golden.rs), so no line-ending conversion.
+crates/cc-panels/golden/*.txt -text

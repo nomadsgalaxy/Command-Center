@@ -1,0 +1,23 @@
+== the bar placed, then the mouse used
+  vr CreateOverlay -> 1
+  vr SetOverlayFlag 1 65536 true
+  vr SetOverlayFlag 1 64 true
+  vr SetOverlayFlag 1 4194304 true
+  vr SetOverlaySortOrder 1 191
+  vr SetOverlayMouseScale 1 1.00000 1.00000
+  held 0x0, visible true
+  mouse has the pointer: true
+== a laser moves on the bar
+  held 0x0, visible true
+  mouse has the pointer: true
+== our virtual pointer presses
+  held 0x0, visible true
+  mouse has the pointer: true
+== a real controller presses
+  session pointer 0x9000 at 599.90348 1199.86109
+  held 0x1000, visible true
+  mouse has the pointer: false
+== and lets go
+  session pointer 0x1000 at 599.90348 1199.86109
+  held 0x0, visible true
+  mouse has the pointer: false

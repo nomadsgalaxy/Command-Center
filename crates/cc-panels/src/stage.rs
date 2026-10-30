@@ -203,4 +203,103 @@ pub mod fake {
             self.moves.push((i, x, y));
         }
     }
+
+    /// Today's SteamVR stage, `overlay::Live` and `Live`, over the fake SteamVR (vr::fake), with
+    /// the panels a test sets. It's the golden tests' stage (golden.rs): the writes and reads that
+    /// phase 0 moves are the ones the fixtures pin. Only `panel` and `move_pointer` are answered
+    /// here, since they're the core's (the panel list), not SteamVR's. Devices are set in the
+    /// fake's script (`put`).
+    pub struct OverFake {
+        pub panels: Vec<PanelFacts>,
+        pub moves: Vec<(usize, f64, f64)>,
+    }
+
+    impl OverFake {
+        /// `n` panels, each 1920x1080 with overlay 100 + its slot, as `Fake::with_panels` has them.
+        pub fn with_panels(n: usize) -> OverFake {
+            OverFake { panels: (0..n).map(|i| PanelFacts { overlay: 100 + i as u64, size: (1920, 1080), vert: false }).collect(), moves: Vec::new() }
+        }
+    }
+
+    /// Device `dev` in the fake's script: tracked at `m`, on but untracked (`None`), or switched
+    /// off (`off`).
+    pub fn put(dev: u32, m: Option<Mat>, off: bool) {
+        let mut s = crate::vr::fake::SCRIPT.lock().unwrap();
+        let s = s.get_or_insert_with(Default::default);
+        s.poses.retain(|p| p.0 != dev);
+        s.connected.retain(|&d| d != dev);
+        match m {
+            Some(m) if !off => s.poses.push((dev, m)),
+            None if !off => s.connected.push(dev),
+            _ => {}
+        }
+    }
+
+    impl Overlays for OverFake {
+        fn width(&mut self, h: Handle, metres: f32) {
+            Live.width(h, metres)
+        }
+
+        fn curvature(&mut self, h: Handle, fraction: f32) {
+            Live.curvature(h, fraction)
+        }
+
+        fn texel_aspect(&mut self, h: Handle, aspect: f32) {
+            Live.texel_aspect(h, aspect)
+        }
+
+        fn bounds(&mut self, h: Handle, b: [f32; 4]) {
+            Live.bounds(h, b)
+        }
+
+        fn mouse_scale(&mut self, h: Handle, s: [f32; 2]) {
+            Live.mouse_scale(h, s)
+        }
+
+        fn place_room(&mut self, h: Handle, m: &Mat) {
+            Live.place_room(h, m)
+        }
+
+        fn place_device(&mut self, h: Handle, dev: u32, m: &Mat) {
+            Live.place_device(h, dev, m)
+        }
+    }
+
+    impl Stage for OverFake {
+        fn device(&self, dev: u32) -> Option<Mat> {
+            Live.device(dev)
+        }
+
+        fn laser(&self, dev: u32) -> Option<Mat> {
+            Live.laser(dev)
+        }
+
+        fn head(&self) -> V3 {
+            Live.head()
+        }
+
+        fn head_pose(&self) -> Option<Mat> {
+            Live.head_pose()
+        }
+
+        fn pulse(&mut self, h: Handle) {
+            Live.pulse(h)
+        }
+
+        fn connected(&self, dev: u32) -> bool {
+            Live.connected(dev)
+        }
+
+        fn controllers(&self) -> Vec<u32> {
+            Live.controllers()
+        }
+
+        fn panel(&self, i: usize) -> PanelFacts {
+            self.panels[i]
+        }
+
+        fn move_pointer(&mut self, i: usize, x: f64, y: f64) {
+            self.moves.push((i, x, y));
+        }
+    }
 }

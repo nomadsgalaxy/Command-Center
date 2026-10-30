@@ -1816,6 +1816,7 @@ mod tests {
     #[test]
     fn a_nearer_panel_covers_the_bar() {
         use crate::geometry::{Placement, Pose, panel_matrix};
+        let _vr = crate::trace::fake_vr(); // the global Kvm, which the fake-SteamVR replays use too: one at a time
         let mut k = super::lock();
         let pose = Pose { centre: [0.0, 1.0, -1.0], width: 0.5, ..Default::default() };
         k.bar = Some(Placement::from_matrix(&panel_matrix(&pose), 0.5, 0.1, 0.0));
@@ -1835,6 +1836,7 @@ mod tests {
     #[test]
     fn the_extra_window_and_its_card_take_the_ray() {
         use crate::geometry::{Placement, Pose, panel_matrix};
+        let _vr = crate::trace::fake_vr(); // the global Kvm, which the fake-SteamVR replays use too: one at a time
         let mut k = super::lock();
         let pose = Pose { centre: [0.0, 1.0, -0.6], width: 0.5, ..Default::default() };
         let pl = Placement::from_matrix(&panel_matrix(&pose), 0.5, 0.6, 0.0); // 0.3 high
@@ -1886,6 +1888,7 @@ mod tests {
     #[test]
     fn a_panels_card_in_front_of_another_takes_the_ray() {
         use crate::geometry::{Placement, Pose, panel_matrix};
+        let _vr = crate::trace::fake_vr(); // the global Kvm, which the fake-SteamVR replays use too: one at a time
         let mut k = super::lock();
         let place = |z: f64, w: f64, aspect: f64| Placement::from_matrix(&panel_matrix(&Pose { centre: [0.0, 1.0, z], width: w, ..Default::default() }), w, aspect, 0.0);
         // a pop-out (0.4 by 0.2) in front of its monitor (1 by 0.6), both with 2 cm card sides
@@ -1954,6 +1957,7 @@ mod tests {
 
     #[test]
     fn a_window_field_takes_the_keyboards_until_typing_goes_to_a_remote() {
+        let _vr = crate::trace::fake_vr(); // the global Kvm, which the fake-SteamVR replays use too: one at a time
         let mut k = super::lock();
         let (engaged, kbd) = (k.engaged, k.kbd);
         k.engaged = false;
@@ -1988,6 +1992,7 @@ mod tests {
     #[test]
     fn click_to_type() {
         use super::*;
+        let _vr = crate::trace::fake_vr(); // the global Kvm, which the fake-SteamVR replays use too: one at a time
         let mut k = crate::kvm::lock();
         let saved = (k.engaged, k.kbd, k.kbd_shell, k.awake, k.free, k.on_plasma, k.on_card, k.on_extra, k.gaze_lock);
         // kbd_shell sends keys to the session (none in tests), since a panel's need a live panel

@@ -117,6 +117,37 @@ Its `plasma` lines set Plasma's bar up through `windows`. It needs a `Windows`, 
 `a_laser_on_plasmas_bar_through_the_frame_replays_onto_the_panel` is its first test: a laser with
 no pose on the frame over Plasma's bar moves, presses and releases on the bar's point.
 
+## Golden tests
+
+A golden test (`golden.rs`) runs a script through the same stand-ins and writes down what came out
+at each step: the OpenVR calls `vr::fake` logged (`take_calls`), what went to the session
+(`SHELL_SENT`, `SHELL_OTHER`), and what the code is holding. The transcript is compared with a
+committed file in `crates/cc-panels/golden/`, and any difference fails the test. They're there so
+phase 0 of the OpenXR plan (docs/openxr-plan.md) can move code without changing behaviour.
+
+grab.rs's golden tests use `stage::fake::OverFake`, which is today's `overlay::Live` and
+`stage::Live` over the fake, with only the panel list answered by the test. Devices go in the
+fake's script with `stage::fake::put(dev, pose, off)`: a pose is tracked, none is on but untracked,
+and `off` is switched off. A controller type (`types`, for cc_pointer) and hand roles (`roles`) go
+in the script too.
+
+An ordinary run never writes a fixture, not even a missing one. When a change in behaviour is
+meant, rewrite them on purpose and commit the diff with the change:
+
+```
+CC_GOLDEN_WRITE=1 cargo test -p cc-panels golden
+```
+
+Numbers are written to 5 decimals with no `-0`, so the last bits of a float, which can differ
+between x86_64 and aarch64, don't count, and anything from an unordered collection is sorted
+before it's written. The stand-in has no vsync unless a script gives it one (`vsync`: seconds since vsync, the display's
+Hz and vsync to photons), so `to_photons` is usually 0 and poses are read at now. The fake's poses
+don't move with the time asked for, but it records each time (`pose_times`), and
+`golden_carry_reads_poses_at_the_predicted_time` pins it.
+
+Recorded isn't blessed. A fixture pins what the code does today, and where that may be a bug, the
+test writes a `FLAG:` line into it, so the fixture says so and a fix shows as that line going.
+
 ## Not done yet
 
 - **Chips.** The trace doesn't carry the taskbar's chips, so a replayed frame has Plasma's bar and

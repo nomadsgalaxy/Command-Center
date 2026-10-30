@@ -143,6 +143,11 @@ pub fn head() -> Option<Mat> {
     pose.bPoseIsValid.then_some(pose.mDeviceToAbsoluteTracking.m)
 }
 
+/// The display's rate and delay, as `to_photons` last read them and when. They're read again about
+/// once a second (a refresh-rate change in SteamVR's settings shows up within that), not on every
+/// pose read. The fake clears it, so a test sees its own script's rate.
+static DISPLAY: std::sync::Mutex<Option<(std::time::Instant, f32, f32)>> = std::sync::Mutex::new(None);
+
 /// How far ahead of now this frame's picture reaches your eyes: the rest of this frame, plus the
 /// display's vsync-to-photons delay. Poses read at that time line up with what's shown, so a
 /// carried or docked panel doesn't trail behind the hand (the scan wants poses at now, `head`).
@@ -151,9 +156,6 @@ pub fn to_photons() -> f32 {
     if !call!(sys, GetTimeSinceLastVsync, &mut since, &mut frame) {
         return 0.0;
     }
-    // the display's rate and delay, read again about once a second (a refresh-rate change in
-    // SteamVR's settings shows up within that), not on every pose read
-    static DISPLAY: std::sync::Mutex<Option<(std::time::Instant, f32, f32)>> = std::sync::Mutex::new(None);
     let mut d = DISPLAY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (hz, v2p) = match *d {
         Some((at, hz, v2p)) if at.elapsed() < std::time::Duration::from_secs(1) => (hz, v2p),
@@ -303,8 +305,14 @@ pub mod fake {
     #[derive(Default)]
     pub struct Script {
         pub events: VecDeque<sys::VREvent_t>,
-        pub poses: Vec<(u32, Mat)>, // each device's pose; a device not here isn't tracked
-        pub next: u64,              // the last overlay handle handed out
+        pub poses: Vec<(u32, Mat)>,                         // each device's pose; a device not here isn't tracked
+        pub next: u64,                                      // the last overlay handle handed out
+        pub calls: Vec<String>,                             // every write made to it, in order (golden.rs)
+        pub roles: Vec<(sys::ETrackedControllerRole, u32)>, // which device has which hand role; none is Invalid
+        pub connected: Vec<u32>,                            // on but untracked (a device in poses is on and tracked)
+        pub types: Vec<(u32, String)>,                      // a device's controller type (cc_pointer's ends in _pointer); none is ""
+        pub vsync: Option<(f32, f32, f32)>,                 // seconds since vsync, display Hz, vsync to photons; none is no vsync, so to_photons is 0
+        pub pose_times: Vec<f32>,                           // the predicted times poses were asked for, in order
     }
 
     pub static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -343,50 +351,153 @@ pub mod fake {
         f(SCRIPT.lock().unwrap().get_or_insert_with(Script::default))
     }
 
+    /// A number as the call log (and golden.rs) writes it: 5 decimals and no -0, so the last bits
+    /// of a float, which can differ between x86_64 and aarch64, don't count.
+    pub fn num(x: f64) -> String {
+        let s = format!("{x:.5}");
+        if s.trim_start_matches('-').chars().all(|c| c == '0' || c == '.') { s.trim_start_matches('-').to_string() } else { s }
+    }
+
+    pub fn mat(m: &Mat) -> String {
+        let rows: Vec<String> = m.iter().map(|row| row.iter().map(|&v| num(v as f64)).collect::<Vec<_>>().join(" ")).collect();
+        format!("[{}]", rows.join("; "))
+    }
+
+    fn log(c: String) {
+        script(|s| s.calls.push(c));
+    }
+
+    /// The writes made since the last time, in order.
+    pub fn take_calls() -> Vec<String> {
+        script(|s| std::mem::take(&mut s.calls))
+    }
+
     unsafe extern "C" fn poll(_h: Handle, e: *mut sys::VREvent_t, _size: u32) -> bool {
         script(|s| s.events.pop_front()).map(|ev| unsafe { *e = ev }).is_some()
     }
     unsafe extern "C" fn create(_k: *mut std::os::raw::c_char, _n: *mut std::os::raw::c_char, h: *mut Handle) -> sys::EVROverlayError {
-        unsafe {
-            *h = script(|s| {
-                s.next += 1;
-                s.next
-            })
-        };
+        let n = script(|s| {
+            s.next += 1;
+            s.next
+        });
+        unsafe { *h = n };
+        log(format!("CreateOverlay -> {n}"));
         0
     }
-    unsafe extern "C" fn flag(_h: Handle, _f: sys::VROverlayFlags, _on: bool) -> sys::EVROverlayError {
+    unsafe extern "C" fn flag(h: Handle, f: sys::VROverlayFlags, on: bool) -> sys::EVROverlayError {
+        log(format!("SetOverlayFlag {h} {f} {on}"));
         0
     }
-    unsafe extern "C" fn sort(_h: Handle, _o: u32) -> sys::EVROverlayError {
+    unsafe extern "C" fn sort(h: Handle, o: u32) -> sys::EVROverlayError {
+        log(format!("SetOverlaySortOrder {h} {o}"));
         0
     }
-    unsafe extern "C" fn mouse_scale(_h: Handle, _s: *mut sys::HmdVector2_t) -> sys::EVROverlayError {
+    unsafe extern "C" fn mouse_scale(h: Handle, s: *mut sys::HmdVector2_t) -> sys::EVROverlayError {
+        let v = unsafe { (*s).v };
+        log(format!("SetOverlayMouseScale {h} {} {}", num(v[0] as f64), num(v[1] as f64)));
         0
     }
-    unsafe extern "C" fn input_method(_h: Handle, _m: sys::VROverlayInputMethod) -> sys::EVROverlayError {
+    unsafe extern "C" fn input_method(h: Handle, m: sys::VROverlayInputMethod) -> sys::EVROverlayError {
+        log(format!("SetOverlayInputMethod {h} {m}"));
         0
     }
-    unsafe extern "C" fn show(_h: Handle) -> sys::EVROverlayError {
+    unsafe extern "C" fn show(h: Handle) -> sys::EVROverlayError {
+        log(format!("ShowOverlay {h}"));
         0
     }
-    unsafe extern "C" fn poses(_o: sys::ETrackingUniverseOrigin, _t: f32, out: *mut sys::TrackedDevicePose_t, n: u32) {
+    unsafe extern "C" fn alpha(h: Handle, a: f32) -> sys::EVROverlayError {
+        log(format!("SetOverlayAlpha {h} {}", num(a as f64)));
+        0
+    }
+    unsafe extern "C" fn role_index(r: sys::ETrackedControllerRole) -> u32 {
+        script(|s| s.roles.iter().find(|x| x.0 == r).map_or(sys::k_unTrackedDeviceIndexInvalid as u32, |x| x.1))
+    }
+    // no vsync unless the script has one: to_photons is then 0, so poses are read at now
+    unsafe extern "C" fn vsync(since: *mut f32, _frame: *mut u64) -> bool {
+        script(|s| s.vsync).map(|v| unsafe { *since = v.0 }).is_some()
+    }
+    unsafe extern "C" fn float_prop(_d: u32, p: sys::ETrackedDeviceProperty, _e: *mut sys::ETrackedPropertyError) -> f32 {
+        let (_, hz, v2p) = script(|s| s.vsync).unwrap_or_default();
+        if p == sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float {
+            hz
+        } else if p == sys::ETrackedDeviceProperty_Prop_SecondsFromVsyncToPhotons_Float {
+            v2p
+        } else {
+            0.0
+        }
+    }
+    unsafe extern "C" fn width(h: Handle, w: f32) -> sys::EVROverlayError {
+        log(format!("SetOverlayWidthInMeters {h} {}", num(w as f64)));
+        0
+    }
+    unsafe extern "C" fn curvature(h: Handle, c: f32) -> sys::EVROverlayError {
+        log(format!("SetOverlayCurvature {h} {}", num(c as f64)));
+        0
+    }
+    unsafe extern "C" fn texel(h: Handle, a: f32) -> sys::EVROverlayError {
+        log(format!("SetOverlayTexelAspect {h} {}", num(a as f64)));
+        0
+    }
+    unsafe extern "C" fn bounds(h: Handle, b: *mut sys::VRTextureBounds_t) -> sys::EVROverlayError {
+        let b = unsafe { *b };
+        log(format!("SetOverlayTextureBounds {h} {} {} {} {}", num(b.uMin as f64), num(b.vMin as f64), num(b.uMax as f64), num(b.vMax as f64)));
+        0
+    }
+    unsafe extern "C" fn absolute(h: Handle, o: sys::ETrackingUniverseOrigin, m: *mut sys::HmdMatrix34_t) -> sys::EVROverlayError {
+        log(format!("SetOverlayTransformAbsolute {h} {o} {}", mat(unsafe { &(*m).m })));
+        0
+    }
+    unsafe extern "C" fn relative(h: Handle, dev: u32, m: *mut sys::HmdMatrix34_t) -> sys::EVROverlayError {
+        log(format!("SetOverlayTransformTrackedDeviceRelative {h} {dev} {}", mat(unsafe { &(*m).m })));
+        0
+    }
+    unsafe extern "C" fn haptic(h: Handle, secs: f32, freq: f32, amp: f32) -> sys::EVROverlayError {
+        log(format!("TriggerLaserMouseHapticVibration {h} {} {} {}", num(secs as f64), num(freq as f64), num(amp as f64)));
+        0
+    }
+    unsafe extern "C" fn hide(h: Handle) -> sys::EVROverlayError {
+        log(format!("HideOverlay {h}"));
+        0
+    }
+    // the poses don't move with `t`: the script's are where each device is at whatever time is asked
+    unsafe extern "C" fn poses(_o: sys::ETrackingUniverseOrigin, t: f32, out: *mut sys::TrackedDevicePose_t, n: u32) {
         let out = unsafe { std::slice::from_raw_parts_mut(out, n as usize) };
         script(|s| {
+            s.pose_times.push(t);
             for (dev, m) in &s.poses {
                 if let Some(p) = out.get_mut(*dev as usize) {
                     p.mDeviceToAbsoluteTracking.m = *m;
-                    p.bPoseIsValid = true;
+                    (p.bPoseIsValid, p.bDeviceIsConnected) = (true, true);
+                }
+            }
+            for dev in &s.connected {
+                if let Some(p) = out.get_mut(*dev as usize) {
+                    p.bDeviceIsConnected = true;
                 }
             }
         });
     }
     // no render model, so laser_pose gives the pose as it is: a trace records the laser itself
-    unsafe extern "C" fn string_prop(_d: u32, _p: sys::ETrackedDeviceProperty, buf: *mut std::os::raw::c_char, size: u32, _e: *mut sys::ETrackedPropertyError) -> u32 {
-        if size > 0 {
-            unsafe { *buf = 0 };
+    /// As OpenVR does it: the length the value needs, NUL included, whatever the buffer. A buffer
+    /// that's too small (or size 0, to ask for the length) gets nothing written and
+    /// TrackedProp_BufferTooSmall. Every caller here passes a 64 or 256 byte buffer, none size 0.
+    unsafe extern "C" fn string_prop(d: u32, p: sys::ETrackedDeviceProperty, buf: *mut std::os::raw::c_char, size: u32, e: *mut sys::ETrackedPropertyError) -> u32 {
+        let v = if p == sys::ETrackedDeviceProperty_Prop_ControllerType_String { script(|s| s.types.iter().find(|x| x.0 == d).map(|x| x.1.clone())) } else { None };
+        let v = v.unwrap_or_default();
+        let need = v.len() as u32 + 1;
+        let err = if size < need {
+            sys::ETrackedPropertyError_TrackedProp_BufferTooSmall
+        } else {
+            unsafe {
+                std::ptr::copy_nonoverlapping(v.as_ptr() as *const std::os::raw::c_char, buf, v.len());
+                *buf.add(v.len()) = 0;
+            }
+            sys::ETrackedPropertyError_TrackedProp_Success
+        };
+        if !e.is_null() {
+            unsafe { *e = err };
         }
-        0
+        need
     }
     unsafe extern "C" fn class(_d: u32) -> sys::ETrackedDeviceClass {
         sys::ETrackedDeviceClass_TrackedDeviceClass_Controller
@@ -416,13 +527,24 @@ pub mod fake {
                 SetOverlayMouseScale: Some(mouse_scale),
                 SetOverlayInputMethod: Some(input_method),
                 ShowOverlay: Some(show),
-                HideOverlay: Some(show),
+                HideOverlay: Some(hide),
+                SetOverlayAlpha: Some(alpha),
+                SetOverlayWidthInMeters: Some(width),
+                SetOverlayCurvature: Some(curvature),
+                SetOverlayTexelAspect: Some(texel),
+                SetOverlayTextureBounds: Some(bounds),
+                SetOverlayTransformAbsolute: Some(absolute),
+                SetOverlayTransformTrackedDeviceRelative: Some(relative),
+                TriggerLaserMouseHapticVibration: Some(haptic),
                 ..Default::default()
             }),
             sys: leak(sys::VR_IVRSystem_FnTable {
                 GetDeviceToAbsoluteTrackingPose: Some(poses),
                 GetStringTrackedDeviceProperty: Some(string_prop),
                 GetTrackedDeviceClass: Some(class),
+                GetTrackedDeviceIndexForControllerRole: Some(role_index),
+                GetTimeSinceLastVsync: Some(vsync),
+                GetFloatTrackedDeviceProperty: Some(float_prop),
                 ..Default::default()
             }),
             ipc: leak(Default::default()),
@@ -432,6 +554,7 @@ pub mod fake {
             notes: None,
         });
         *SCRIPT.lock().unwrap() = Some(s);
+        *DISPLAY.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None; // the last test's display rate
         guard
     }
 }
@@ -443,5 +566,21 @@ mod tests {
     fn a_nul_is_an_error() {
         assert!(super::cstr("controlcenter.panel.desk").is_ok());
         assert!(super::cstr("desk\0wide").is_err());
+    }
+
+    /// The fake's string properties answer as OpenVR's do: the length needed, and BufferTooSmall
+    /// with nothing written when the buffer's short.
+    #[test]
+    fn the_fakes_string_property_says_how_long_it_needs() {
+        use openvr_sys as sys;
+        let _vr = super::fake::install(super::fake::Script { types: vec![(4, "cc_pointer".into())], ..Default::default() });
+        let mut err = 0;
+        let mut buf = [1 as std::os::raw::c_char; 4];
+        let n = crate::call!(sys, GetStringTrackedDeviceProperty, 4, sys::ETrackedDeviceProperty_Prop_ControllerType_String, buf.as_mut_ptr(), 0, &mut err);
+        assert_eq!((n, err), (11, sys::ETrackedPropertyError_TrackedProp_BufferTooSmall), "size 0 asks for the length");
+        let n = crate::call!(sys, GetStringTrackedDeviceProperty, 4, sys::ETrackedDeviceProperty_Prop_ControllerType_String, buf.as_mut_ptr(), buf.len() as u32, &mut err);
+        assert_eq!((n, err, buf[0]), (11, sys::ETrackedPropertyError_TrackedProp_BufferTooSmall, 1), "too short: nothing written");
+        assert_eq!(super::string_prop(4, sys::ETrackedDeviceProperty_Prop_ControllerType_String), "cc_pointer");
+        assert!(!super::is_real_controller(4) && super::is_real_controller(5), "a _pointer type isn't a real controller");
     }
 }
