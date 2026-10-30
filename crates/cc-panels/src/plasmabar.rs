@@ -109,14 +109,16 @@ fn in_bounds(b: [f32; 4], x: f64, y: f64) -> (f64, f64) {
 /// one times kx 1.005 and ky 0.571 (rms 0.005) on Oct 30 and ky 0.581 on Oct 29, and 1440 / 2560
 /// is 0.5625. The bar's own stream (bounds 0 to 1) is left as it was: lasers reach the bar through
 /// the taskbar's frame, and its 13 events in those traces are too few to fit.
-fn drawn_fy(b: [f32; 4], crop: Rect, fy: f64) -> f64 {
+/// SteamVR's quad is taller than the picture, so a laser just above or below the menu still gets
+/// an event: None then, since it's off what's drawn, and clamping it would click the edge item.
+fn drawn_fy(b: [f32; 4], crop: Rect, fy: f64) -> Option<f64> {
     let [u0, v0, u1, v1] = b.map(f64::from);
     if [u0, v0, u1, v1] == [0.0, 0.0, 1.0, 1.0] {
-        return fy;
+        return Some(fy);
     }
     let hit = (v1 - v0) / (u1 - u0).max(1e-9); // SteamVR's quad, height over width
     let drawn = crop[3] as f64 / crop[2].max(1) as f64;
-    (0.5 + (fy - 0.5) * hit / drawn).clamp(0.0, 1.0)
+    Some(0.5 + (fy - 0.5) * hit / drawn).filter(|f| (0.0..=1.0).contains(f))
 }
 
 /// The crop as bounds on the output's stream: u, v min, then max (u right, v down, 0 to 1).
@@ -182,7 +184,7 @@ pub(crate) fn ray_at(pl: &Placement, crop: Rect, o: &V3, d: &V3) -> Option<(f64,
 /// event. With a pose (`ray`, origin and unit direction) it's the ray through the overlay as placed
 /// (`pl`, showing `crop`). Only a device with no pose falls back to SteamVR's point (x, y), put
 /// through the bounds `b` it was made with and unsqueezed up and down (drawn_fy). A ray that
-/// misses (it points away) is the careful case:
+/// misses (it points away), or SteamVR's point off the picture, is the careful case:
 ///   - a move stays at that device's `last` point,
 ///   - a press is dropped, so it never clicks whatever was last under the laser,
 ///   - a release goes where the pointer is (None), and laser() always sends it for a held press.
@@ -194,15 +196,22 @@ fn laser_point(
     last: Option<(f64, f64)>,
     (b, x, y): ([f32; 4], f64, f64),
 ) -> Option<(Option<(f64, f64)>, bool)> {
+    let missed = |fell_back| match kind {
+        Some(PointerKind::Down(_)) => None,
+        Some(PointerKind::Up(_)) => Some((None, fell_back)),
+        _ => Some((last, fell_back)),
+    };
     let Some((o, d)) = ray else {
         let (fx, fy) = in_bounds(b, x, y);
-        return Some((crop.map(|c| global(c, fx, drawn_fy(b, c, fy))), true));
+        let Some(c) = crop else { return Some((None, true)) };
+        return match drawn_fy(b, c, fy) {
+            Some(fy) => Some((Some(global(c, fx, fy)), true)),
+            None => missed(true),
+        };
     };
     match pl.zip(crop).and_then(|(pl, c)| ray_at(&pl, c, &o, &d)) {
         Some(p) => Some((Some(p), false)),
-        None if matches!(kind, Some(PointerKind::Down(_))) => None,
-        None if matches!(kind, Some(PointerKind::Up(_))) => Some((None, false)),
-        None => Some((last, false)),
+        None => missed(false),
     }
 }
 
@@ -802,6 +811,8 @@ mod tests {
 
     /// SteamVR's point for session point `p` on WL-0's stream, cropped to `crop`: of the whole
     /// texture, y up, and squeezed up and down about the crop's middle the way drawn_fy undoes.
+    /// It's the same model drawn_fy undoes, so the fixtures and goldens built on it only show the
+    /// round trip; the real events in steamvrs_point_on_an_open_menu_... are the evidence.
     fn steamvr_saw(crop: Rect, p: (f64, f64)) -> (f64, f64) {
         let [_, v0, _, v1] = bounds(crop, WL0).map(f64::from);
         let (x, y) = ((p.0 - WL0[0] as f64) / 1920.0, 1.0 - (p.1 - WL0[1] as f64) / 1080.0);
@@ -1102,11 +1113,27 @@ mod tests {
         let (at, fell_back) = laser_point(MOVE, None, Some(bar), None, None, ([0.0, 0.0, 1.0, 1.0], x, y)).unwrap();
         assert!(fell_back);
         assert_eq!(at, Some(global(bar, x, y)), "nothing unsqueezed");
-        assert_eq!(drawn_fy([0.0, 0.0, 1.0, 1.0], bar, 0.2), 0.2);
-        // and on the output's stream, the middle stays and the edges clamp
-        assert!((drawn_fy(b, menu, 0.5) - 0.5).abs() < 1e-9 && drawn_fy(b, menu, 0.95) == 1.0 && drawn_fy(b, menu, 0.02) == 0.0);
-        let k = drawn_fy(b, menu, 0.6) - 0.5;
+        assert_eq!(drawn_fy([0.0, 0.0, 1.0, 1.0], bar, 0.2), Some(0.2));
+        // and on the output's stream, the middle stays, and past the picture's edges is off it
+        assert!((drawn_fy(b, menu, 0.5).unwrap() - 0.5).abs() < 1e-9);
+        assert_eq!((drawn_fy(b, menu, 0.95), drawn_fy(b, menu, 0.02)), (None, None));
+        let k = drawn_fy(b, menu, 0.6).unwrap() - 0.5;
         assert!((k / 0.1 - 2560.0 / 1440.0).abs() < 1e-4, "the factor is the texture's width over its height: {}", k / 0.1);
+    }
+
+    /// A real event from the same trace just above the menu: SteamVR's quad still took it, but the
+    /// fitted ray crossed 18% of the menu's height above the picture. A press there clicks
+    /// nothing (not the top item), a move stays where the laser last was, and a release still goes.
+    #[test]
+    fn a_click_just_off_the_open_menu_lands_nowhere() {
+        let menu = [692, 841, 850, 599];
+        let b = bounds(menu, [0, 0, 2560, 1440]);
+        let (x, y) = (0.49701610, 0.36477345); // the ray: 0.6933 across, 1.1838 up
+        assert!(in_bounds(b, x, y).1 <= 1.0, "inside SteamVR's quad");
+        assert_eq!(laser_point(DOWN, None, Some(menu), None, None, (b, x, y)), None, "the press is dropped");
+        let last = Some((1100.0, 850.0));
+        assert_eq!(laser_point(MOVE, None, Some(menu), None, last, (b, x, y)), Some((last, true)), "a move stays put");
+        assert_eq!(laser_point(UP, None, Some(menu), None, last, (b, x, y)), Some((None, true)), "a release goes, where the pointer is");
     }
 
     const MOVE: Option<PointerKind> = Some(PointerKind::Move);
