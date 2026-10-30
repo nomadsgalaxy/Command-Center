@@ -342,7 +342,7 @@ fn names(text: &str) -> BTreeSet<String> {
         }
         // a grouped import, a glob or an alias hides its names from the scan, so each is a name of
         // its own that no list has
-        for pat in ["vr::{", "openvr_sys::{", "vr::*", "openvr_sys::*", "vr as "] {
+        for pat in ["vr::{", "openvr_sys::{", "vr::*", "openvr_sys::*", "vr as ", "call as "] {
             if !starts(code, pat).is_empty() {
                 out.insert(pat.trim_end().into());
             }
@@ -366,7 +366,9 @@ fn check(found: &BTreeMap<String, BTreeSet<String>>, allowed: &[(&str, &str, &[&
         let ok = want.get(f.as_str());
         for n in ns.iter().filter(|n| !ok.is_some_and(|ok| ok.contains(n.as_str()))) {
             if n.ends_with('{') || n.ends_with('*') || n.ends_with(" as") {
-                bad.push(format!("{f}: imports `{n}`: import OpenVR names one at a time and by their own names, so this test sees each"));
+                bad.push(format!(
+                    "{f}: imports `{n}`: import OpenVR names one at a time and by their own names, so this test sees each (a local named vr or call cast with `as` trips it too, on purpose: rename the local)"
+                ));
                 continue;
             }
             bad.push(format!("{f}: uses {n}, which isn't on its list: go through the OpenVR side's Live, or list it with why"));
@@ -443,9 +445,10 @@ fn it_finds_each_kind_of_name_and_leaves_the_rest() {
     assert!(names("use crate::vr::*;").contains("vr::*") && names("use openvr_sys::*;").contains("openvr_sys::*"), "globs");
     assert!(names("use openvr_sys as ovr;").contains("openvr_sys as") && !names("use openvr_sys as sys;").contains("openvr_sys as"), "an alias but sys");
     assert!(names("use crate::vr as v;").contains("vr as"), "an alias of vr");
+    assert!(names("use crate::call as c;").contains("call as") && !names("let n = recall as u32;").contains("call as"), "an alias of call!, not a longer name");
     let grouped = BTreeMap::from([("c.rs".to_string(), names("use crate::vr::{head, index};"))]);
     assert!(check(&grouped, &[("c.rs", "why", &["vr::head", "vr::index"])]).iter().any(|l| l.contains("one at a time")), "and fails even when its names are listed");
-    for hidden in ["use crate::vr::*;", "use openvr_sys as ovr;", "use crate::vr as v;"] {
+    for hidden in ["use crate::vr::*;", "use openvr_sys as ovr;", "use crate::vr as v;", "use crate::call as c;"] {
         let found = BTreeMap::from([("c.rs".to_string(), names(hidden))]);
         assert!(check(&found, &[]).iter().any(|l| l.contains("one at a time")), "{hidden}");
     }
