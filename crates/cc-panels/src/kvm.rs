@@ -79,6 +79,7 @@ fn route(c: char, modified: bool, mode: TextMode) -> Route {
 pub const MODS: [u16; 3] = [29, 56, 125];
 const KEY_HOME: u16 = 102;
 const KEY_G: u16 = 34;
+const KEY_B: u16 = 48;
 const KEY_D: u16 = 32;
 const BTN_MOUSE: u16 = 0x110;
 const BTN_LEFT: u16 = 0x110;
@@ -1218,6 +1219,13 @@ impl Kvm {
         if rctrl_down && code == KEY_D {
             if value == 1 && laser::HEALTHY.load(Relaxed) {
                 laser::pulse(laser::SYSTEM);
+            }
+            return;
+        }
+        // Right Ctrl + B brings every panel in front of you (gather.rs), on the main loop's next tick.
+        if rctrl_down && code == KEY_B {
+            if value == 1 {
+                crate::gather::ask();
             }
             return;
         }

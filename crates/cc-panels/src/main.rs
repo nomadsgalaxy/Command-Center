@@ -24,6 +24,7 @@ mod clipboard;
 mod config;
 mod control;
 mod ffi;
+mod gather;
 mod gaze;
 mod geometry;
 #[cfg(test)]
@@ -1237,6 +1238,10 @@ fn run() -> Result<(), String> {
         laps.lap("dashtab");
         workspace_win.tick(&mut grab, &mut windows, &mut bar);
         laps.lap("workspace");
+        if gather::ASKED.swap(false, Relaxed) {
+            gather::gather(&mut grab, &mut windows); // the dashboard tab's button, or Right Ctrl + B
+            bar.refix();
+        }
         if let Some(s) = &control {
             control::handle(s, &mut grab, &mut windows, &mut bar);
             for i in control::to_connect() {

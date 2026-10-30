@@ -13,6 +13,9 @@
 //!   hide | show
 //!   summon    brings every panel back in sight: nothing minimized (in KWin too), theater
 //!             mode off, nothing hidden
+//!   gather    -> "ok gather <n>": summon, then every panel showing and the open Machines,
+//!             Preferences or Workspace window moved in front of you, not saved (gather.rs; the
+//!             taskbar's "Bring all here", the dashboard tab, Right Ctrl + B, cc-home gather)
 //!   viewer connect <name>   connects a remote that wasn't connected at start (autoconnect)
 //!   viewer disconnect <name>   ends a remote's session (connect starts it again)
 //!   machines show|hide   the Machines window (control/machines.rs), same as its taskbar chip
@@ -137,6 +140,16 @@ pub fn open() -> Option<UnixDatagram> {
             None
         }
     }
+}
+
+/// `summon`: every panel back in sight. Nothing minimized (its window un-minimized in KWin too),
+/// theater mode off, and nothing hidden. Gather does this first (gather.rs).
+pub fn summon(grab: &mut crate::grab::Grab, windows: &mut crate::windows::Windows) {
+    windows.summon(grab); // un-minimizes its windows in KWin too
+    for p in panels() {
+        p.set_minimized(false);
+    }
+    show_panels(true);
 }
 
 pub fn handle(s: &UnixDatagram, grab: &mut crate::grab::Grab, windows: &mut crate::windows::Windows, bar: &mut taskbar::Taskbar) {
@@ -387,12 +400,13 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
         }
         Some("surfaces") => surface::report(panel_now),
         Some("summon") => {
-            windows.summon(grab); // un-minimizes its windows in KWin too
-            for p in panels() {
-                p.set_minimized(false);
-            }
-            show_panels(true);
+            summon(grab, windows);
             "ok summon".into()
+        }
+        Some("gather") => {
+            let n = crate::gather::gather(grab, windows);
+            bar.refix(); // the fixed taskbar goes back under them, as after a spot
+            format!("ok gather {n}")
         }
         Some("taskbar") => match words.get(1) {
             None => format!("ok {}", bar.mode().name()),
