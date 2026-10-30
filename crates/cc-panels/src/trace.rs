@@ -184,7 +184,7 @@ pub fn pose_from(v: &Value) -> Option<(u32, Option<Mat>)> {
 
 /// SteamVR's next event on overlay `h`, written to the trace as `who`'s.
 pub fn poll(who: &str, h: crate::vr::Handle, e: &mut sys::VREvent_t) -> bool {
-    let got = crate::call!(ov, PollNextOverlayEvent, h, e, size_of::<sys::VREvent_t>() as u32);
+    let got = crate::call!(ov, PollNextOverlayEvent, h.0, e, size_of::<sys::VREvent_t>() as u32);
     if got {
         event(who, e);
     }

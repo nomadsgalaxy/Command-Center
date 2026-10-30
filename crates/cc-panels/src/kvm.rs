@@ -2275,7 +2275,7 @@ mod tests {
             // a panel nearer than the bar covers it
             let near = panel(0.1, 1.4, -0.5, 1.0);
             k.place.push(near);
-            f.panels.push(crate::stage::PanelFacts { overlay: 101, size: (1920, 1080), vert: false });
+            f.panels.push(crate::stage::PanelFacts { overlay: crate::vr::Handle(101), size: (1920, 1080), vert: false });
             aim(&mut k, EYE, surface(&near, 0.0, 0.0));
             k.land_with(&mut f);
             assert!(k.on_bar.is_none() && k.active == 1, "the panel in front has it");

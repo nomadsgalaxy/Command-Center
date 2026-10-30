@@ -467,7 +467,7 @@ impl Shown {
             Pixels::Mem(rgba) => {
                 // ponytail: SetOverlayRaw refuses past ~1920x1080; gpu.rs Buffers::upload(src, stride) in S1
                 crate::back::shown(overlay, 0); // no handle, so its back is a plain sheet
-                vr::timed(|| format!("{name}: SetOverlayRaw {}x{}", f.w, f.h), || call!(ov, SetOverlayRaw, overlay, rgba.as_ptr() as *mut _, f.w, f.h, 4)) == 0
+                vr::timed(|| format!("{name}: SetOverlayRaw {}x{}", f.w, f.h), || call!(ov, SetOverlayRaw, overlay.0, rgba.as_ptr() as *mut _, f.w, f.h, 4)) == 0
             }
             Pixels::Dmabuf { fd, offset, stride, modifier } => {
                 let fd = std::os::fd::AsRawFd::as_raw_fd(fd);
@@ -506,7 +506,7 @@ impl Shown {
                 let mut h = h;
                 let mut t =
                     sys::Texture_t { handle: &mut h as *mut _ as *mut std::ffi::c_void, eType: sys::ETextureType_TextureType_SharedTextureHandle, eColorSpace: sys::EColorSpace_ColorSpace_Gamma };
-                let ok = call!(ov, SetOverlayTexture, overlay, &mut t) == 0;
+                let ok = call!(ov, SetOverlayTexture, overlay.0, &mut t) == 0;
                 if ok {
                     crate::back::shown(overlay, h); // its back too, if it has one
                 }

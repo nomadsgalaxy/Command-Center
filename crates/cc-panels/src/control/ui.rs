@@ -300,7 +300,7 @@ pub fn upload(h: vr::Handle, px: &mut Vec<u8>, tw: usize, th: usize, (w, ht): (f
         px.clear();
     } else if full {
         let mut scale = sys::HmdVector2_t { v: [w as f32, ht as f32] };
-        call!(ov, SetOverlayMouseScale, h, &mut scale);
+        call!(ov, SetOverlayMouseScale, h.0, &mut scale);
     }
 }
 
@@ -311,7 +311,7 @@ pub fn upload(h: vr::Handle, px: &mut Vec<u8>, tw: usize, th: usize, (w, ht): (f
 pub fn next_event(h: vr::Handle, e: &mut vr::VREvent_t) -> bool {
     use std::sync::Mutex;
     static SENT: Mutex<Option<(f32, f32)>> = Mutex::new(None); // the point we last moved to
-    if call!(ov, PollNextOverlayEvent, h, e, size_of::<vr::VREvent_t>() as u32) {
+    if call!(ov, PollNextOverlayEvent, h.0, e, size_of::<vr::VREvent_t>() as u32) {
         return true;
     }
     let mut sent = SENT.lock().unwrap();
@@ -321,7 +321,7 @@ pub fn next_event(h: vr::Handle, e: &mut vr::VREvent_t) -> bool {
     }
     let mut k = crate::kvm::lock();
     let mut scale = sys::HmdVector2_t { v: [0.0; 2] };
-    call!(ov, GetOverlayMouseScale, h, &mut scale);
+    call!(ov, GetOverlayMouseScale, h.0, &mut scale);
     let at = k.extra.zip(k.extra_at()).map(|((pl, _), (u, v))| (((u / pl.width + 0.5) * scale.v[0] as f64) as f32, ((v / pl.height + 0.5) * scale.v[1] as f64) as f32));
     let (kind, (x, y), button) = if !k.extra_mouse.is_empty() {
         let down = k.extra_mouse.remove(0);

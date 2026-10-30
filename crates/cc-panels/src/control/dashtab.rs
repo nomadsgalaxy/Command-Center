@@ -249,7 +249,7 @@ impl Dashtab {
 
     /// Our tab is the dashboard's active one: the dashboard is open and this is the page showing.
     pub fn selected(&self) -> bool {
-        OPEN.load(Relaxed) && self.ov.is_some_and(|(h, _)| call!(ov, IsActiveDashboardOverlay, h))
+        OPEN.load(Relaxed) && self.ov.is_some_and(|(h, _)| call!(ov, IsActiveDashboardOverlay, h.0))
     }
 
     /// The tab's page overlay, once it's made (notify.rs hangs SteamVR's toasts off it).
@@ -291,14 +291,14 @@ impl Dashtab {
         } else {
             eprintln!("dashboard tab: no logo at {}, so its icon stays blank", logo.display());
         }
-        call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayWidthInMeters, h, WIDTH_M);
+        call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
+        call!(ov, SetOverlayWidthInMeters, h.0, WIDTH_M);
         // SteamVR's own bar under the tab, with its close (VREvent_OverlayClosed, in events). It's
         // only drawn for what the dashboard hosts, so the floating windows keep our own bar.
         // settings.json `"steamvr_bar": false` turns it off from the next start.
         let bar = crate::config::settings()["steamvr_bar"].as_bool() != Some(false);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_EnableControlBar, bar);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_EnableControlBarClose, bar);
+        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_EnableControlBar, bar);
+        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_EnableControlBarClose, bar);
         self.ov = Some((h, thumb));
         eprintln!("dashboard tab: made");
     }
@@ -307,7 +307,7 @@ impl Dashtab {
     fn events(&mut self, h: vr::Handle, hand: &mut Handoff) {
         let mut e: vr::VREvent_t = Default::default();
         let mut again = false;
-        while call!(ov, PollNextOverlayEvent, h, &mut e, size_of::<vr::VREvent_t>() as u32) {
+        while call!(ov, PollNextOverlayEvent, h.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let m = unsafe { e.data.mouse };
             let at = hit(m.x as f64, from_top(H, m.y as f64)); // page units; events count from the bottom left
             match e.eventType {
@@ -316,7 +316,7 @@ impl Dashtab {
                 // SteamVR's close on the tab quits Command Center, the way it quits any overlay app.
                 // Only when you could have pressed it: the dashboard showing, on our tab. Any other
                 // close (a dashboard restart, say) makes the tab again and leaves the Desktop be.
-                sys::EVREventType_VREvent_OverlayClosed if !(call!(ov, IsDashboardVisible) && call!(ov, IsActiveDashboardOverlay, h)) => {
+                sys::EVREventType_VREvent_OverlayClosed if !(call!(ov, IsDashboardVisible) && call!(ov, IsActiveDashboardOverlay, h.0)) => {
                     eprintln!("dashboard tab: SteamVR closed it while it wasn't showing, so it's made again");
                     again = true;
                 }

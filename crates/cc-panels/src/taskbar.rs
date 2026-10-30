@@ -730,12 +730,12 @@ impl Taskbar {
     pub fn new(assets: &str) -> Taskbar {
         let h = crate::surface::create(crate::surface::Kind::Taskbar, None, "controlcenter.taskbar", "Command Center taskbar").unwrap_or_else(|e| {
             eprintln!("taskbar: no overlay: {e}"); // SteamVR's 128 are shared, and they're used up
-            0
+            crate::vr::Handle::NONE
         });
-        call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
-        call!(ov, SetOverlaySortOrder, h, SORT);
+        call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
+        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
+        call!(ov, SetOverlaySortOrder, h.0, SORT);
         let mode = match config::settings()["taskbar"].as_str() {
             None => Mode::Fixed,
             Some(s) => Mode::parse(s).unwrap_or_else(|| {
@@ -799,7 +799,7 @@ impl Taskbar {
     fn set_mode(&mut self, m: Mode) {
         (self.mode, self.hold, self.placed, self.pose, self.follow) = (m, None, None, None, Follow::default());
         self.alpha = if m == Mode::Wrist { 0.0 } else { 1.0 };
-        call!(ov, SetOverlayAlpha, self.ov, self.alpha);
+        call!(ov, SetOverlayAlpha, self.ov.0, self.alpha);
         crate::surface::set_anchor(self.ov, anchor_of(m));
         eprintln!("taskbar: {}", m.name());
     }
@@ -932,9 +932,9 @@ impl Taskbar {
         if at.is_some() != self.shown {
             self.shown = at.is_some();
             if self.shown {
-                call!(ov, ShowOverlay, self.ov)
+                call!(ov, ShowOverlay, self.ov.0)
             } else {
-                call!(ov, HideOverlay, self.ov)
+                call!(ov, HideOverlay, self.ov.0)
             };
         }
         let (w, h) = (self.frame.w, self.frame.h);
@@ -1259,7 +1259,7 @@ impl Taskbar {
         self.px = vr::timed(|| format!("taskbar: drawn {tw}x{th}"), || scene.draw(s));
         if grab::set_raw(self.ov, &self.px, tw, th) {
             let mut scale = sys::HmdVector2_t { v: [f.w as f32, f.h as f32] }; // events in its units
-            call!(ov, SetOverlayMouseScale, self.ov, &mut scale);
+            call!(ov, SetOverlayMouseScale, self.ov.0, &mut scale);
             self.frame = f;
         } else {
             self.px.clear();
@@ -1311,7 +1311,7 @@ impl Taskbar {
                 let alpha = (self.alpha + if facing { 0.15 } else { -0.08 }).clamp(0.0, 1.0);
                 if alpha != self.alpha {
                     self.alpha = alpha;
-                    call!(ov, SetOverlayAlpha, self.ov, alpha);
+                    call!(ov, SetOverlayAlpha, self.ov.0, alpha);
                 }
                 // fully faded it's hidden, not just see-through, because an invisible overlay still catches lasers
                 if alpha <= 0.0 {
@@ -1395,7 +1395,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cc-taskbar-replay-{}", std::process::id()));
         let mut bar = Taskbar::new(dir.to_str().unwrap()); // no assets there: no labels, which events() doesn't need
         let mut windows = Windows::for_test(0);
-        let mut grab = grab::Grab::with_backdrop(0, 0);
+        let mut grab = grab::Grab::with_backdrop(0, crate::vr::Handle::NONE);
         // Plasma's 891x50 bar in the frame's well, nothing open, and the frame in the room
         let panel = [514, 1770, 891, 50];
         let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
@@ -1952,7 +1952,7 @@ mod tests {
         use crate::geometry::bend;
         use crate::overlay::fake::{Call, Writes};
 
-        const OV: vr::Handle = 5;
+        const OV: vr::Handle = crate::vr::Handle(5);
 
         fn at(x: f64) -> Mat {
             panel_matrix(&Pose { centre: [x, 1.0, -1.0], ..Default::default() })

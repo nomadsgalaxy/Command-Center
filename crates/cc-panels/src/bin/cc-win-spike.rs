@@ -15,6 +15,8 @@ mod back; // capture.rs tells it what went up, so it has to be here
 mod capture;
 #[path = "../geometry.rs"]
 mod geometry;
+#[path = "../ids.rs"]
+mod ids;
 #[path = "../limits.rs"]
 mod limits; // geometry.rs's numbers
 #[path = "../overlay.rs"]
@@ -171,10 +173,10 @@ fn run() -> Result<(), String> {
 
     vr::init().map_err(|e| format!("SteamVR: {e}"))?;
     let overlay = vr::create_overlay("controlcenter.spike", "Command Center spike")?;
-    call!(ov, SetOverlayWidthInMeters, overlay, 1.0);
-    call!(ov, SetOverlayInputMethod, overlay, sys::VROverlayInputMethod_Mouse);
-    call!(ov, SetOverlayFlag, overlay, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-    call!(ov, SetOverlayFlag, overlay, sys::VROverlayFlags_IgnoreTextureAlpha, true);
+    call!(ov, SetOverlayWidthInMeters, overlay.0, 1.0);
+    call!(ov, SetOverlayInputMethod, overlay.0, sys::VROverlayInputMethod_Mouse);
+    call!(ov, SetOverlayFlag, overlay.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+    call!(ov, SetOverlayFlag, overlay.0, sys::VROverlayFlags_IgnoreTextureAlpha, true);
     vr::place(overlay, &ahead(1.2));
 
     let cap = capture::Capture::start();
@@ -224,14 +226,14 @@ fn run() -> Result<(), String> {
                 src.first = true;
                 eprintln!("{}: first frame +{}ms", src.label, src.asked.elapsed().as_millis());
                 if key == 0 {
-                    call!(ov, ShowOverlay, overlay); // shown on its first frame, so there's no black flash
+                    call!(ov, ShowOverlay, overlay.0); // shown on its first frame, so there's no black flash
                 }
             }
         }
         if shown.size != scale {
             scale = shown.size;
             let mut v = sys::HmdVector2_t { v: [scale.0 as f32, scale.1 as f32] };
-            call!(ov, SetOverlayMouseScale, overlay, &mut v);
+            call!(ov, SetOverlayMouseScale, overlay.0, &mut v);
         }
         if let Some(src) = srcs.first() {
             mouse(overlay, src, &s, scale.1 as f64);
@@ -259,7 +261,7 @@ fn run() -> Result<(), String> {
         cap.close(key as u64);
     }
     shown.free();
-    call!(ov, DestroyOverlay, overlay);
+    call!(ov, DestroyOverlay, overlay.0);
     vr::shutdown();
     Ok(())
 }
@@ -287,7 +289,7 @@ fn ahead(d: f64) -> geometry::Mat {
 /// session.
 fn mouse(overlay: vr::Handle, src: &Src, s: &Session, h: f64) {
     let mut e: vr::VREvent_t = Default::default();
-    while call!(ov, PollNextOverlayEvent, overlay, &mut e, size_of::<vr::VREvent_t>() as u32) {
+    while call!(ov, PollNextOverlayEvent, overlay.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
         let Some((origin, px)) = src.origin(s) else { continue };
         let m = unsafe { e.data.mouse };
         let (x, y) = session::to_global(origin, px, h, m.x as f64, m.y as f64);

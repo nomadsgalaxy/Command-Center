@@ -382,11 +382,11 @@ impl Beam {
         hide(); // clear whatever an earlier run left
         // Keeps SteamVR's laser mouse on while the dashboard is closed, with a trick: an
         // invisible interactive overlay far below you, only shown while our laser works.
-        let lasermode = crate::surface::create(crate::surface::Kind::LaserMode, None, "controlcenter.lasermode", "Command Center laser mode").unwrap_or(0);
+        let lasermode = crate::surface::create(crate::surface::Kind::LaserMode, None, "controlcenter.lasermode", "Command Center laser mode").unwrap_or(crate::vr::Handle::NONE);
         let mut px = [0u8; 4 * 4 * 4];
-        call!(ov, SetOverlayRaw, lasermode, px.as_mut_ptr() as *mut _, 4, 4, 4);
-        call!(ov, SetOverlayWidthInMeters, lasermode, 0.001);
-        call!(ov, SetOverlayFlag, lasermode, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+        call!(ov, SetOverlayRaw, lasermode.0, px.as_mut_ptr() as *mut _, 4, 4, 4);
+        call!(ov, SetOverlayWidthInMeters, lasermode.0, 0.001);
+        call!(ov, SetOverlayFlag, lasermode.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
         set_dominant(dominant_hand());
         eprintln!("laser: dominant hand {:?}, the mouse's laser uses the other one while it's free", dominant());
         Beam { laser: Laser::new(Instant::now()), ours: None, pid: 0, refreshed: None, lasermode }
@@ -450,9 +450,9 @@ impl Beam {
         if healthy {
             let below = [[1.0, 0.0, 0.0, eye_x(head)], [0.0, 1.0, 0.0, eye_y(head) - 50.0], [0.0, 0.0, 1.0, eye_z(head)]];
             vr::place(self.lasermode, &below);
-            call!(ov, ShowOverlay, self.lasermode);
+            call!(ov, ShowOverlay, self.lasermode.0);
         } else {
-            call!(ov, HideOverlay, self.lasermode);
+            call!(ov, HideOverlay, self.lasermode.0);
         }
         match self.laser.state {
             State::Healthy if !on_ours => Dot::Hidden,

@@ -158,7 +158,7 @@ static DASH: AtomicU64 = AtomicU64::new(0);
 /// Every frame, on the main loop (the one thread that calls OpenVR): shows the refused notes as
 /// SteamVR's toasts on the dashboard tab's overlay.
 pub fn tick(dash: Option<crate::vr::Handle>) {
-    DASH.store(dash.unwrap_or(0), Relaxed);
+    DASH.store(dash.map_or(0, |h| h.0), Relaxed);
     let toasts = std::mem::take(&mut *TOASTS.lock().unwrap());
     for t in toasts {
         toast(&t);

@@ -47,15 +47,15 @@ fn create(kind: Kind) -> Result<vr::Handle, String> {
         Kind::Status => crate::surface::create(crate::surface::Kind::HudStrip, None, "controlcenter.hud", "Command Center scan")?,
         Kind::Mark => crate::surface::create(crate::surface::Kind::HudMark, None, "controlcenter.hud.mark", "Command Center scan tags")?,
     };
-    call!(ov, SetOverlayAlpha, h, 1.0); // the picture carries its own transparency
+    call!(ov, SetOverlayAlpha, h.0, 1.0); // the picture carries its own transparency
     if kind == Kind::Status {
         apply(&mut Live, h, &Place::new(At::Device(sys::k_unTrackedDeviceIndex_Hmd as u32, status_pose().m), 0.5));
-        call!(ov, SetOverlaySortOrder, h, 196); // over the mark, under the cursor (200)
+        call!(ov, SetOverlaySortOrder, h.0, 196); // over the mark, under the cursor (200)
         // clickable like the cards (grab.rs create), so a laser click can skip the scan's step
-        call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+        call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
+        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
     } else {
-        call!(ov, SetOverlaySortOrder, h, 195); // above panels (10+), the taskbar (190/191) and theater
+        call!(ov, SetOverlaySortOrder, h.0, 195); // above panels (10+), the taskbar (190/191) and theater
     }
     Ok(h)
 }
@@ -116,12 +116,12 @@ pub fn show(kind: Kind, path: &str, w: u32, h: u32, place: Option<(f32, crate::g
     }
     if kind == Kind::Status && hd.height != h as f32 {
         let mut scale = sys::HmdVector2_t { v: [w as f32, h as f32] }; // so mouse events arrive in the picture's pixels
-        call!(ov, SetOverlayMouseScale, hd.overlay, &mut scale);
+        call!(ov, SetOverlayMouseScale, hd.overlay.0, &mut scale);
         hd.height = h as f32;
     }
     hd.skip = skip;
     if hd.shown.is_none() {
-        call!(ov, ShowOverlay, hd.overlay);
+        call!(ov, ShowOverlay, hd.overlay.0);
     }
     hd.shown = Some(Instant::now());
     if SKIP.swap(false, Relaxed) { "ok skip".into() } else { "ok".into() }
@@ -149,7 +149,7 @@ pub fn tick() {
     let mut huds = HUDS.lock().unwrap();
     if let Some(h) = &huds[Kind::Status as usize] {
         let mut e: vr::VREvent_t = Default::default();
-        while call!(ov, PollNextOverlayEvent, h.overlay, &mut e, size_of::<vr::VREvent_t>() as u32) {
+        while call!(ov, PollNextOverlayEvent, h.overlay.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let m = unsafe { e.data.mouse }; // pixels from the bottom left
             if e.eventType == sys::EVREventType_VREvent_MouseButtonDown && h.skip.is_some_and(|r| on_button(&r, m.x, from_top(h.height, m.y))) {
                 SKIP.store(true, Relaxed);

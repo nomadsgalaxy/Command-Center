@@ -110,25 +110,25 @@ pub struct Live;
 
 impl Overlays for Live {
     fn width(&mut self, h: Handle, metres: f32) {
-        call!(ov, SetOverlayWidthInMeters, h, metres);
+        call!(ov, SetOverlayWidthInMeters, h.0, metres);
     }
 
     fn curvature(&mut self, h: Handle, fraction: f32) {
-        call!(ov, SetOverlayCurvature, h, fraction);
+        call!(ov, SetOverlayCurvature, h.0, fraction);
     }
 
     fn texel_aspect(&mut self, h: Handle, aspect: f32) {
-        call!(ov, SetOverlayTexelAspect, h, aspect);
+        call!(ov, SetOverlayTexelAspect, h.0, aspect);
     }
 
     fn bounds(&mut self, h: Handle, b: [f32; 4]) {
         let mut t = sys::VRTextureBounds_t { uMin: b[0], vMin: b[1], uMax: b[2], vMax: b[3] };
-        call!(ov, SetOverlayTextureBounds, h, &mut t);
+        call!(ov, SetOverlayTextureBounds, h.0, &mut t);
     }
 
     fn mouse_scale(&mut self, h: Handle, s: [f32; 2]) {
         let mut scale = sys::HmdVector2_t { v: s };
-        call!(ov, SetOverlayMouseScale, h, &mut scale);
+        call!(ov, SetOverlayMouseScale, h.0, &mut scale);
     }
 
     fn place_room(&mut self, h: Handle, m: &Mat) {
@@ -137,7 +137,7 @@ impl Overlays for Live {
 
     fn place_device(&mut self, h: Handle, dev: u32, m: &Mat) {
         let mut t = sys::HmdMatrix34_t { m: *m };
-        call!(ov, SetOverlayTransformTrackedDeviceRelative, h, dev, &mut t);
+        call!(ov, SetOverlayTransformTrackedDeviceRelative, h.0, dev, &mut t);
     }
 }
 
@@ -232,30 +232,30 @@ mod tests {
     #[test]
     fn a_bare_placement_writes_only_width_and_transform() {
         let mut w = Writes::default();
-        apply(&mut w, 7, &Place::new(At::Room(M), 1.25));
-        assert_eq!(w.0, vec![Call::Width(7, 1.25), Call::Room(7, M)], "no curvature, stretch, bounds or mouse scale unless asked");
+        apply(&mut w, crate::vr::Handle(7), &Place::new(At::Room(M), 1.25));
+        assert_eq!(w.0, vec![Call::Width(crate::vr::Handle(7), 1.25), Call::Room(crate::vr::Handle(7), M)], "no curvature, stretch, bounds or mouse scale unless asked");
     }
 
     #[test]
     fn everything_given_is_written_in_the_same_order_every_time() {
         let mut w = Writes::default();
         let p = Place::new(At::Device(0, M), 0.8).curve(1.0).texel(1.5).bounds([0.1, 0.2, 0.9, 0.8]).mouse_scale([800.0, 600.0]);
-        apply(&mut w, 3, &p);
+        apply(&mut w, crate::vr::Handle(3), &p);
         assert_eq!(
             w.0,
-            vec![Call::Bounds(3, [0.1, 0.2, 0.9, 0.8]), Call::Width(3, 0.8), Call::Texel(3, 1.5), Call::Curvature(3, bend(0.8, 1.0)), Call::MouseScale(3, [800.0, 600.0]), Call::Device(3, 0, M),]
+            vec![Call::Bounds(crate::vr::Handle(3), [0.1, 0.2, 0.9, 0.8]), Call::Width(crate::vr::Handle(3), 0.8), Call::Texel(crate::vr::Handle(3), 1.5), Call::Curvature(crate::vr::Handle(3), bend(0.8, 1.0)), Call::MouseScale(crate::vr::Handle(3), [800.0, 600.0]), Call::Device(crate::vr::Handle(3), 0, M),]
         );
     }
 
     #[test]
     fn the_curve_is_written_as_steamvrs_fraction_and_a_flat_one_as_zero() {
         let mut w = Writes::default();
-        apply(&mut w, 1, &Place::new(At::Room(M), 2.0).curve(2.0));
-        assert!((w.curvature_of(1).unwrap() - 2.0 / (2.0 * std::f32::consts::PI * 2.0)).abs() < 1e-6, "width / (2 pi r)");
-        apply(&mut w, 2, &Place::new(At::Room(M), 2.0).curve(0.0));
-        assert_eq!(w.curvature_of(2), Some(0.0), "a flat panel is told it's flat, so a bent one straightens");
-        apply(&mut w, 3, &Place::new(At::Room(M), 20.0).curve(0.5));
-        assert_eq!(w.curvature_of(3), Some(1.0), "at most a closed cylinder");
+        apply(&mut w, crate::vr::Handle(1), &Place::new(At::Room(M), 2.0).curve(2.0));
+        assert!((w.curvature_of(crate::vr::Handle(1)).unwrap() - 2.0 / (2.0 * std::f32::consts::PI * 2.0)).abs() < 1e-6, "width / (2 pi r)");
+        apply(&mut w, crate::vr::Handle(2), &Place::new(At::Room(M), 2.0).curve(0.0));
+        assert_eq!(w.curvature_of(crate::vr::Handle(2)), Some(0.0), "a flat panel is told it's flat, so a bent one straightens");
+        apply(&mut w, crate::vr::Handle(3), &Place::new(At::Room(M), 20.0).curve(0.5));
+        assert_eq!(w.curvature_of(crate::vr::Handle(3)), Some(1.0), "at most a closed cylinder");
     }
 
     #[test]
@@ -263,18 +263,18 @@ mod tests {
         assert_eq!(At::on(u32::MAX, M), At::Room(M));
         assert_eq!(At::on(5, M), At::Device(5, M));
         let mut w = Writes::default();
-        apply(&mut w, 9, &Place::new(At::on(5, M), 0.4));
-        assert_eq!(w.of(9).last(), Some(&Call::Device(9, 5, M)));
-        assert_eq!(w.room_of(9), None);
+        apply(&mut w, crate::vr::Handle(9), &Place::new(At::on(5, M), 0.4));
+        assert_eq!(w.of(crate::vr::Handle(9)).last(), Some(&Call::Device(crate::vr::Handle(9), 5, M)));
+        assert_eq!(w.room_of(crate::vr::Handle(9)), None);
     }
 
     #[test]
     fn each_overlays_writes_stay_its_own() {
         let mut w = Writes::default();
-        apply(&mut w, 1, &Place::new(At::Room(M), 1.0));
-        apply(&mut w, 2, &Place::new(At::Room(M), 2.0));
-        assert_eq!(w.width_of(1), Some(1.0));
-        assert_eq!(w.width_of(2), Some(2.0));
-        assert_eq!(w.of(2).len(), 2);
+        apply(&mut w, crate::vr::Handle(1), &Place::new(At::Room(M), 1.0));
+        apply(&mut w, crate::vr::Handle(2), &Place::new(At::Room(M), 2.0));
+        assert_eq!(w.width_of(crate::vr::Handle(1)), Some(1.0));
+        assert_eq!(w.width_of(crate::vr::Handle(2)), Some(2.0));
+        assert_eq!(w.of(crate::vr::Handle(2)).len(), 2);
     }
 }

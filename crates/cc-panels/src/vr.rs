@@ -4,7 +4,8 @@ use openvr_sys as sys;
 use std::ffi::{CStr, CString};
 use std::sync::OnceLock;
 
-pub use sys::{VREvent_t, VROverlayHandle_t as Handle};
+pub use crate::ids::SurfaceId as Handle; // the core's id for an overlay; `.0` is SteamVR's handle
+pub use sys::VREvent_t;
 
 pub struct Vr {
     pub ov: &'static sys::VR_IVROverlay_FnTable,
@@ -101,7 +102,7 @@ pub fn create_overlay(key: &str, name: &str) -> Result<Handle, String> {
     let (k, n) = (cstr(key)?, cstr(name)?);
     let mut h = 0;
     match call!(ov, CreateOverlay, k.as_ptr() as *mut _, n.as_ptr() as *mut _, &mut h) {
-        0 => Ok(h),
+        0 => Ok(crate::vr::Handle(h)),
         e => Err(error_name(e)),
     }
 }
@@ -111,7 +112,7 @@ pub fn create_dashboard_overlay(key: &str, name: &str) -> Result<(Handle, Handle
     let (k, n) = (cstr(key)?, cstr(name)?);
     let (mut main, mut thumb) = (0, 0);
     match call!(ov, CreateDashboardOverlay, k.as_ptr() as *mut _, n.as_ptr() as *mut _, &mut main, &mut thumb) {
-        0 => Ok((main, thumb)),
+        0 => Ok((crate::vr::Handle(main), crate::vr::Handle(thumb))),
         e => Err(error_name(e)),
     }
 }
@@ -119,7 +120,7 @@ pub fn create_dashboard_overlay(key: &str, name: &str) -> Result<(Handle, Handle
 pub fn set_from_file(h: Handle, path: &str) {
     match cstr(path) {
         Ok(p) => {
-            call!(ov, SetOverlayFromFile, h, p.as_ptr() as *mut _);
+            call!(ov, SetOverlayFromFile, h.0, p.as_ptr() as *mut _);
         }
         Err(e) => eprintln!("overlay picture: {e}"),
     }
@@ -133,7 +134,7 @@ fn cstr(s: &str) -> Result<CString, String> {
 
 pub fn place(h: Handle, m: &Mat) {
     let mut t = sys::HmdMatrix34_t { m: *m };
-    call!(ov, SetOverlayTransformAbsolute, h, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, &mut t);
+    call!(ov, SetOverlayTransformAbsolute, h.0, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, &mut t);
 }
 
 /// The headset's pose in standing space, while it's tracked.
@@ -374,7 +375,7 @@ pub mod fake {
         script(|s| std::mem::take(&mut s.calls))
     }
 
-    unsafe extern "C" fn poll(_h: Handle, e: *mut sys::VREvent_t, _size: u32) -> bool {
+    unsafe extern "C" fn poll(_h: sys::VROverlayHandle_t, e: *mut sys::VREvent_t, _size: u32) -> bool {
         script(|s| s.events.pop_front()).map(|ev| unsafe { *e = ev }).is_some()
     }
     unsafe extern "C" fn poll_sys(e: *mut sys::VREvent_t, _size: u32) -> bool {
@@ -383,7 +384,7 @@ pub mod fake {
     unsafe extern "C" fn u64_prop(_d: u32, p: sys::ETrackedDeviceProperty, _e: *mut sys::ETrackedPropertyError) -> u64 {
         if p == sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64 { script(|s| s.universe) } else { 0 }
     }
-    unsafe extern "C" fn create(_k: *mut std::os::raw::c_char, _n: *mut std::os::raw::c_char, h: *mut Handle) -> sys::EVROverlayError {
+    unsafe extern "C" fn create(_k: *mut std::os::raw::c_char, _n: *mut std::os::raw::c_char, h: *mut sys::VROverlayHandle_t) -> sys::EVROverlayError {
         let n = script(|s| {
             s.next += 1;
             s.next
@@ -392,28 +393,28 @@ pub mod fake {
         log(format!("CreateOverlay -> {n}"));
         0
     }
-    unsafe extern "C" fn flag(h: Handle, f: sys::VROverlayFlags, on: bool) -> sys::EVROverlayError {
+    unsafe extern "C" fn flag(h: sys::VROverlayHandle_t, f: sys::VROverlayFlags, on: bool) -> sys::EVROverlayError {
         log(format!("SetOverlayFlag {h} {f} {on}"));
         0
     }
-    unsafe extern "C" fn sort(h: Handle, o: u32) -> sys::EVROverlayError {
+    unsafe extern "C" fn sort(h: sys::VROverlayHandle_t, o: u32) -> sys::EVROverlayError {
         log(format!("SetOverlaySortOrder {h} {o}"));
         0
     }
-    unsafe extern "C" fn mouse_scale(h: Handle, s: *mut sys::HmdVector2_t) -> sys::EVROverlayError {
+    unsafe extern "C" fn mouse_scale(h: sys::VROverlayHandle_t, s: *mut sys::HmdVector2_t) -> sys::EVROverlayError {
         let v = unsafe { (*s).v };
         log(format!("SetOverlayMouseScale {h} {} {}", num(v[0] as f64), num(v[1] as f64)));
         0
     }
-    unsafe extern "C" fn input_method(h: Handle, m: sys::VROverlayInputMethod) -> sys::EVROverlayError {
+    unsafe extern "C" fn input_method(h: sys::VROverlayHandle_t, m: sys::VROverlayInputMethod) -> sys::EVROverlayError {
         log(format!("SetOverlayInputMethod {h} {m}"));
         0
     }
-    unsafe extern "C" fn show(h: Handle) -> sys::EVROverlayError {
+    unsafe extern "C" fn show(h: sys::VROverlayHandle_t) -> sys::EVROverlayError {
         log(format!("ShowOverlay {h}"));
         0
     }
-    unsafe extern "C" fn alpha(h: Handle, a: f32) -> sys::EVROverlayError {
+    unsafe extern "C" fn alpha(h: sys::VROverlayHandle_t, a: f32) -> sys::EVROverlayError {
         log(format!("SetOverlayAlpha {h} {}", num(a as f64)));
         0
     }
@@ -434,36 +435,36 @@ pub mod fake {
             0.0
         }
     }
-    unsafe extern "C" fn width(h: Handle, w: f32) -> sys::EVROverlayError {
+    unsafe extern "C" fn width(h: sys::VROverlayHandle_t, w: f32) -> sys::EVROverlayError {
         log(format!("SetOverlayWidthInMeters {h} {}", num(w as f64)));
         0
     }
-    unsafe extern "C" fn curvature(h: Handle, c: f32) -> sys::EVROverlayError {
+    unsafe extern "C" fn curvature(h: sys::VROverlayHandle_t, c: f32) -> sys::EVROverlayError {
         log(format!("SetOverlayCurvature {h} {}", num(c as f64)));
         0
     }
-    unsafe extern "C" fn texel(h: Handle, a: f32) -> sys::EVROverlayError {
+    unsafe extern "C" fn texel(h: sys::VROverlayHandle_t, a: f32) -> sys::EVROverlayError {
         log(format!("SetOverlayTexelAspect {h} {}", num(a as f64)));
         0
     }
-    unsafe extern "C" fn bounds(h: Handle, b: *mut sys::VRTextureBounds_t) -> sys::EVROverlayError {
+    unsafe extern "C" fn bounds(h: sys::VROverlayHandle_t, b: *mut sys::VRTextureBounds_t) -> sys::EVROverlayError {
         let b = unsafe { *b };
         log(format!("SetOverlayTextureBounds {h} {} {} {} {}", num(b.uMin as f64), num(b.vMin as f64), num(b.uMax as f64), num(b.vMax as f64)));
         0
     }
-    unsafe extern "C" fn absolute(h: Handle, o: sys::ETrackingUniverseOrigin, m: *mut sys::HmdMatrix34_t) -> sys::EVROverlayError {
+    unsafe extern "C" fn absolute(h: sys::VROverlayHandle_t, o: sys::ETrackingUniverseOrigin, m: *mut sys::HmdMatrix34_t) -> sys::EVROverlayError {
         log(format!("SetOverlayTransformAbsolute {h} {o} {}", mat(unsafe { &(*m).m })));
         0
     }
-    unsafe extern "C" fn relative(h: Handle, dev: u32, m: *mut sys::HmdMatrix34_t) -> sys::EVROverlayError {
+    unsafe extern "C" fn relative(h: sys::VROverlayHandle_t, dev: u32, m: *mut sys::HmdMatrix34_t) -> sys::EVROverlayError {
         log(format!("SetOverlayTransformTrackedDeviceRelative {h} {dev} {}", mat(unsafe { &(*m).m })));
         0
     }
-    unsafe extern "C" fn haptic(h: Handle, secs: f32, freq: f32, amp: f32) -> sys::EVROverlayError {
+    unsafe extern "C" fn haptic(h: sys::VROverlayHandle_t, secs: f32, freq: f32, amp: f32) -> sys::EVROverlayError {
         log(format!("TriggerLaserMouseHapticVibration {h} {} {} {}", num(secs as f64), num(freq as f64), num(amp as f64)));
         0
     }
-    unsafe extern "C" fn hide(h: Handle) -> sys::EVROverlayError {
+    unsafe extern "C" fn hide(h: sys::VROverlayHandle_t) -> sys::EVROverlayError {
         log(format!("HideOverlay {h}"));
         0
     }

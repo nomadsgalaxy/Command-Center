@@ -289,9 +289,9 @@ impl Prefs {
             self.shown = show;
             grab.set_extra_shown(show);
             if show {
-                call!(ov, ShowOverlay, h)
+                call!(ov, ShowOverlay, h.0)
             } else {
-                call!(ov, HideOverlay, h)
+                call!(ov, HideOverlay, h.0)
             };
         }
         if show {
@@ -312,9 +312,9 @@ impl Prefs {
                 return;
             }
         };
-        call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlaySortOrder, h, SORT);
+        call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
+        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+        call!(ov, SetOverlaySortOrder, h.0, SORT);
         let pose = ui::spot("prefs", W * MPP);
         self.precise = super::machines::precise(); // whatever settings.json says now
         let pl = Placement::from_matrix(&panel_matrix(&pose), pose.width, H / W, pose.curve);

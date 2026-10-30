@@ -1311,9 +1311,9 @@ impl Machines {
             }
             grab.set_extra_shown(show);
             if show {
-                call!(ov, ShowOverlay, h)
+                call!(ov, ShowOverlay, h.0)
             } else {
-                call!(ov, HideOverlay, h)
+                call!(ov, HideOverlay, h.0)
             };
         }
         if show {
@@ -1335,9 +1335,9 @@ impl Machines {
                 return;
             }
         };
-        call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlaySortOrder, h, SORT);
+        call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
+        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+        call!(ov, SetOverlaySortOrder, h.0, SORT);
         let pose = ui::spot("machines", W * MPP);
         self.precise = precise(); // whatever settings.json says now
         self.untold = untold();
@@ -1810,7 +1810,7 @@ impl Machines {
         let (hint, text) = (CString::new(hint).unwrap_or_default(), CString::new(text).unwrap_or_default());
         let mode = sys::EGamepadTextInputMode_k_EGamepadTextInputModeNormal;
         let lines = sys::EGamepadTextInputLineMode_k_EGamepadTextInputLineModeSingleLine;
-        let e = call!(ov, ShowKeyboardForOverlay, h, mode, lines, 0, hint.as_ptr() as *mut _, 64, text.as_ptr() as *mut _, j as u64);
+        let e = call!(ov, ShowKeyboardForOverlay, h.0, mode, lines, 0, hint.as_ptr() as *mut _, 64, text.as_ptr() as *mut _, j as u64);
         if e == 0 {
             self.osk = true;
         } else {

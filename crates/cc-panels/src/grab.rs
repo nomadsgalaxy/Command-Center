@@ -789,7 +789,7 @@ pub fn set_raw(h: vr::Handle, px: &[u8], w: usize, ht: usize) -> bool {
     if crate::gpu::show_raw(h, px, w, ht) {
         return true;
     }
-    match vr::timed(|| format!("SetOverlayRaw {w}x{ht}"), || call!(ov, SetOverlayRaw, h, px.as_ptr() as *mut _, w as u32, ht as u32, 4)) {
+    match vr::timed(|| format!("SetOverlayRaw {w}x{ht}"), || call!(ov, SetOverlayRaw, h.0, px.as_ptr() as *mut _, w as u32, ht as u32, 4)) {
         0 => true,
         e => {
             eprintln!("controls: SteamVR refused a {w}x{ht} texture: {}", vr::error_name(e));
@@ -800,13 +800,13 @@ pub fn set_raw(h: vr::Handle, px: &[u8], w: usize, ht: usize) -> bool {
 
 /// Creates a panel's card overlay. It gets drawn on its first update.
 pub fn create(name: &str, slot: Option<usize>) -> vr::Handle {
-    let h = crate::surface::create(crate::surface::Kind::Card, slot, &format!("controlcenter.card.{name}"), &format!("Command Center card {name}")).unwrap_or(0);
+    let h = crate::surface::create(crate::surface::Kind::Card, slot, &format!("controlcenter.card.{name}"), &format!("Command Center card {name}")).unwrap_or(crate::vr::Handle::NONE);
     // Sort order puts it under its picture. That's set along with the panels' paint order (paint_order).
-    call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-    call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-    call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
-    call!(ov, SetOverlayAlpha, h, 0.0);
-    call!(ov, ShowOverlay, h);
+    call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
+    call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+    call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
+    call!(ov, SetOverlayAlpha, h.0, 0.0);
+    call!(ov, ShowOverlay, h.0);
     h
 }
 
@@ -1026,9 +1026,9 @@ struct Owner {
 /// moves with your head so it always fills your view (about ±63°), and it stays hidden until
 /// theater mode needs it. Its colour gets repainted for each theme (`paint_backdrop`).
 fn backdrop() -> vr::Handle {
-    let h = crate::surface::create(crate::surface::Kind::Backdrop, None, "controlcenter.theater", "Command Center theater").unwrap_or(0);
+    let h = crate::surface::create(crate::surface::Kind::Backdrop, None, "controlcenter.theater", "Command Center theater").unwrap_or(crate::vr::Handle::NONE);
     apply(&mut Live, h, &Place::new(At::Device(sys::k_unTrackedDeviceIndex_Hmd as u32, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, -2.0]]), 8.0));
-    call!(ov, SetOverlayAlpha, h, 0.0);
+    call!(ov, SetOverlayAlpha, h.0, 0.0);
     h
 }
 
@@ -1041,7 +1041,7 @@ fn backdrop_colour(t: &Tokens) -> [u8; 4] {
 
 fn paint_backdrop(h: vr::Handle) {
     let mut px = backdrop_colour(&theme::get().win).repeat(16);
-    call!(ov, SetOverlayRaw, h, px.as_mut_ptr() as *mut _, 4, 4, 4);
+    call!(ov, SetOverlayRaw, h.0, px.as_mut_ptr() as *mut _, 4, 4, 4);
 }
 
 /// Every tracked device's pose in standing space, as it'll be when this frame's picture reaches
@@ -1245,7 +1245,7 @@ impl Grab {
     /// has to be free first (extra_taken).
     pub fn open_extra(&mut self, name: &'static str, win: vr::Handle, sort: u32, accent: Rgb, pl: Placement, open: &'static AtomicBool) {
         let card = create(name, None);
-        call!(ov, SetOverlaySortOrder, card, sort);
+        call!(ov, SetOverlaySortOrder, card.0, sort);
         let mut x = Extra { name, open, win, card, accent, pl, shown: false }; // its owner's first tick shows it (set_extra_shown)
         x.place(&mut Live, &pl.matrix(), pl.width, pl.curve);
         self.extra = Some(x);
@@ -1381,7 +1381,7 @@ impl Grab {
         for i in 0..self.drags.len() {
             let Some(p) = self.owner(i) else { continue };
             {
-                while call!(ov, PollNextOverlayEvent, p.card, &mut e, size_of::<vr::VREvent_t>() as u32) {
+                while call!(ov, PollNextOverlayEvent, p.card.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
                     let part = self.card_part(i, &e, k);
                     match e.eventType {
                         sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_FocusEnter => {
@@ -1870,9 +1870,9 @@ impl Grab {
             if show != self.shown[i] {
                 self.shown[i] = show;
                 if show {
-                    call!(ov, ShowOverlay, p.card)
+                    call!(ov, ShowOverlay, p.card.0)
                 } else {
-                    call!(ov, HideOverlay, p.card)
+                    call!(ov, HideOverlay, p.card.0)
                 };
                 if !p.live {
                     (self.drags[i], self.drawn[i], self.near[i], self.hover[i], self.fade[i], self.focus[i]) = (None, None, None, None, 0.0, 0);
@@ -1908,18 +1908,18 @@ impl Grab {
                 // the card too, because an invisible card still catches lasers (in front of the theater panel)
                 if dim {
                     self.end(i, k); // put it down where it is, there's nothing left to release on
-                    call!(ov, HideOverlay, p.overlay);
-                    call!(ov, HideOverlay, p.card);
+                    call!(ov, HideOverlay, p.overlay.0);
+                    call!(ov, HideOverlay, p.card.0);
                 } else if !hidden {
-                    call!(ov, ShowOverlay, p.overlay);
+                    call!(ov, ShowOverlay, p.overlay.0);
                     if !p.bare {
-                        call!(ov, ShowOverlay, p.card);
+                        call!(ov, ShowOverlay, p.card.0);
                     }
                 }
             }
             self.moving |= want || self.fade[i] != before;
             if self.fade[i] != before || want || first || dim {
-                call!(ov, SetOverlayAlpha, p.card, if dim { 0.0 } else { self.fade[i] });
+                call!(ov, SetOverlayAlpha, p.card.0, if dim { 0.0 } else { self.fade[i] });
             }
         }
         // Theater mode: the room and every other panel go dark behind it, like Steam's does,
@@ -1933,11 +1933,11 @@ impl Grab {
         if self.dim_alpha != target {
             self.moving = true;
             self.dim_alpha = if target > self.dim_alpha { (self.dim_alpha + 0.04).min(target) } else { (self.dim_alpha - 0.06).max(target) };
-            call!(ov, SetOverlayAlpha, self.dim, self.dim_alpha);
+            call!(ov, SetOverlayAlpha, self.dim.0, self.dim_alpha);
             if self.dim_alpha > 0.0 {
-                call!(ov, ShowOverlay, self.dim)
+                call!(ov, ShowOverlay, self.dim.0)
             } else {
-                call!(ov, HideOverlay, self.dim)
+                call!(ov, HideOverlay, self.dim.0)
             };
         }
         if theater != self.theater {
@@ -2002,12 +2002,12 @@ impl Grab {
             return;
         }
         if theater != usize::MAX {
-            call!(ov, SetOverlaySortOrder, self.dim, 10 + under as u32 * 4 - 1);
+            call!(ov, SetOverlaySortOrder, self.dim.0, 10 + under as u32 * 4 - 1);
         }
         for (rank, &i) in order.iter().enumerate() {
             let (p, base) = (&panels()[i], 10 + rank as u32 * 4);
-            call!(ov, SetOverlaySortOrder, p.card, base);
-            call!(ov, SetOverlaySortOrder, p.overlay, base + 1);
+            call!(ov, SetOverlaySortOrder, p.card.0, base);
+            call!(ov, SetOverlaySortOrder, p.overlay.0, base + 1);
         }
         self.backs.resort();
         self.order = order;
@@ -2709,7 +2709,7 @@ mod tests {
         fn world(pl: Placement) -> (Grab, Kvm, Fake) {
             let mut k = Kvm::idle();
             k.place = vec![pl];
-            (Grab::with_backdrop(1, 0), k, Fake::with_panels(1))
+            (Grab::with_backdrop(1, crate::vr::Handle::NONE), k, Fake::with_panels(1))
         }
 
         /// The hand at `from`, its laser pointing at `at`.
@@ -3152,7 +3152,7 @@ mod tests {
             put(0, Some(aimed(EYE, [0.0, 1.6, -1.0])), false);
             let mut k = Kvm::idle();
             k.place = vec![p];
-            let g = Grab::with_backdrop(1, 0);
+            let g = Grab::with_backdrop(1, crate::vr::Handle::NONE);
             crate::vr::fake::take_calls(); // the set-up isn't what's pinned
             (g, k, OverFake::with_panels(1), vr)
         }
@@ -3436,20 +3436,20 @@ mod tests {
             let (top, bottom) = (spec.top(), spec.bottom());
             let (fw, fh) = (pl.width + 2.0 * spec.g, pl.height + 2.0 * spec.g + top + bottom);
             let mut w = Writes::default();
-            apply(&mut w, 7, &card_place(&pl, &spec));
+            apply(&mut w, crate::vr::Handle(7), &card_place(&pl, &spec));
             let at = pl.on_surface(0.0, (top - bottom) / 2.0, -0.002);
             let (tw, th) = (spec.size.0 as f64, spec.size.1 as f64);
-            assert_eq!(w.0, vec![Call::Width(7, fw as f32), Call::Texel(7, (fw * th / (fh * tw)) as f32), Call::Curvature(7, 0.0), Call::MouseScale(7, [fw as f32, fh as f32]), Call::Room(7, at),]);
+            assert_eq!(w.0, vec![Call::Width(crate::vr::Handle(7), fw as f32), Call::Texel(crate::vr::Handle(7), (fw * th / (fh * tw)) as f32), Call::Curvature(crate::vr::Handle(7), 0.0), Call::MouseScale(crate::vr::Handle(7), [fw as f32, fh as f32]), Call::Room(crate::vr::Handle(7), at),]);
         }
 
         #[test]
         fn a_card_bends_with_its_panel_over_its_own_width() {
             let (pl, spec) = card(false, 1.5);
             let mut w = Writes::default();
-            apply(&mut w, 7, &card_place(&pl, &spec));
+            apply(&mut w, crate::vr::Handle(7), &card_place(&pl, &spec));
             let fw = pl.width + 2.0 * spec.g;
-            assert_eq!(w.curvature_of(7), Some(bend(fw, 1.5)), "the card is wider than the picture, so it bends over more of the circle");
-            assert!(w.curvature_of(7).unwrap() > bend(pl.width, 1.5));
+            assert_eq!(w.curvature_of(crate::vr::Handle(7)), Some(bend(fw, 1.5)), "the card is wider than the picture, so it bends over more of the circle");
+            assert!(w.curvature_of(crate::vr::Handle(7)).unwrap() > bend(pl.width, 1.5));
         }
 
         #[test]

@@ -11,10 +11,7 @@ use std::os::fd::BorrowedFd;
 
 use crate::geometry::{Mat, V3};
 
-/// One surface: a panel, card, bar, back, cursor or window of ours. On OpenVR it's the overlay
-/// handle, so phase 0 can swap `vr::Handle` for it without changing a single write.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SurfaceId(pub u64);
+pub use crate::ids::SurfaceId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Hand {

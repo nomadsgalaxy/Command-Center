@@ -545,9 +545,9 @@ impl Workspace {
             }
             grab.set_extra_shown(show);
             if show {
-                call!(ov, ShowOverlay, h)
+                call!(ov, ShowOverlay, h.0)
             } else {
-                call!(ov, HideOverlay, h)
+                call!(ov, HideOverlay, h.0)
             };
         }
         if show {
@@ -567,9 +567,9 @@ impl Workspace {
                 return;
             }
         };
-        call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlaySortOrder, h, SORT);
+        call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
+        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+        call!(ov, SetOverlaySortOrder, h.0, SORT);
         self.refresh();
         self.n = self.rows.len();
         let pose = ui::spot("workspace", W * MPP);
@@ -642,7 +642,7 @@ impl Workspace {
         let (hint, text) = (CString::new("Workspace name").unwrap_or_default(), CString::new(tp.text.clone()).unwrap_or_default());
         let mode = sys::EGamepadTextInputMode_k_EGamepadTextInputModeNormal;
         let lines = sys::EGamepadTextInputLineMode_k_EGamepadTextInputLineModeSingleLine;
-        let e = call!(ov, ShowKeyboardForOverlay, h, mode, lines, 0, hint.as_ptr() as *mut _, 40, text.as_ptr() as *mut _, OSK);
+        let e = call!(ov, ShowKeyboardForOverlay, h.0, mode, lines, 0, hint.as_ptr() as *mut _, 40, text.as_ptr() as *mut _, OSK);
         if e == 0 {
             self.osk = true;
         } else {

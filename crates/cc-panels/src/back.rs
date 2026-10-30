@@ -50,14 +50,14 @@ pub fn shown(front: vr::Handle, tex: u64) {
     let mut t = TEX.lock().unwrap();
     let e = entry(&mut t, front);
     e.1 = tex;
-    if tex != 0 && e.2 != 0 {
+    if tex != 0 && e.2 != crate::vr::Handle::NONE {
         texture(e.2, tex);
     }
 }
 
 fn entry(t: &mut Vec<(vr::Handle, u64, vr::Handle)>, front: vr::Handle) -> &mut (vr::Handle, u64, vr::Handle) {
     let n = t.iter().position(|e| e.0 == front).unwrap_or_else(|| {
-        t.push((front, 0, 0));
+        t.push((front, 0, crate::vr::Handle::NONE));
         t.len() - 1
     });
     &mut t[n]
@@ -65,7 +65,7 @@ fn entry(t: &mut Vec<(vr::Handle, u64, vr::Handle)>, front: vr::Handle) -> &mut 
 
 fn texture(h: vr::Handle, mut tex: u64) -> bool {
     let mut t = sys::Texture_t { handle: &mut tex as *mut _ as *mut std::ffi::c_void, eType: sys::ETextureType_TextureType_SharedTextureHandle, eColorSpace: sys::EColorSpace_ColorSpace_Gamma };
-    call!(ov, SetOverlayTexture, h, &mut t) == 0
+    call!(ov, SetOverlayTexture, h.0, &mut t) == 0
 }
 
 /// Does a panel (centre c, front z) face away from the eye? `was` is last time's answer, for
@@ -162,8 +162,8 @@ impl Backs {
         for b in self.pool.extract_if(.., |b| !keep.contains(&b.i)) {
             crate::surface::destroy(b.h);
             let mut t = TEX.lock().unwrap();
-            t.iter_mut().filter(|e| e.2 == b.h).for_each(|e| e.2 = 0);
-            t.retain(|e| e.1 != 0 || e.2 != 0); // don't keep entries for pictures from memory, or the Extras' would pile up
+            t.iter_mut().filter(|e| e.2 == b.h).for_each(|e| e.2 = crate::vr::Handle::NONE);
+            t.retain(|e| e.1 != 0 || e.2 != crate::vr::Handle::NONE); // don't keep entries for pictures from memory, or the Extras' would pile up
         }
         for &i in &keep {
             let Some(f) = fronts.iter().find(|f| f.i == i) else { continue };
@@ -178,8 +178,8 @@ impl Backs {
                 break;
             };
             let mut sort = 0;
-            call!(ov, GetOverlaySortOrder, f.overlay, &mut sort);
-            call!(ov, SetOverlaySortOrder, h, sort);
+            call!(ov, GetOverlaySortOrder, f.overlay.0, &mut sort);
+            call!(ov, SetOverlaySortOrder, h.0, sort);
             self.pool.push(Back { i, h, front: f.overlay, tex: false, tried: 0, placed: None });
         }
         for b in &mut self.pool {
@@ -197,7 +197,7 @@ impl Backs {
                     b.tex = e.1 != 0 && texture(b.h, e.1);
                     if !b.tex {
                         let mut px = FILL.repeat(16);
-                        call!(ov, SetOverlayRaw, b.h, px.as_mut_ptr() as *mut _, 4, 4, 4);
+                        call!(ov, SetOverlayRaw, b.h.0, px.as_mut_ptr() as *mut _, 4, 4, 4);
                     }
                 }
                 b.tex
@@ -210,7 +210,7 @@ impl Backs {
                 b.placed = placed;
                 let mut front = 1.0;
                 if tex {
-                    call!(ov, GetOverlayTexelAspect, b.front, &mut front);
+                    call!(ov, GetOverlayTexelAspect, b.front.0, &mut front);
                 }
                 apply(&mut Live, b.h, &back_place(&f.pl, front, tex));
             }
@@ -221,8 +221,8 @@ impl Backs {
     pub fn resort(&self) {
         for b in &self.pool {
             let mut sort = 0;
-            call!(ov, GetOverlaySortOrder, b.front, &mut sort);
-            call!(ov, SetOverlaySortOrder, b.h, sort);
+            call!(ov, GetOverlaySortOrder, b.front.0, &mut sort);
+            call!(ov, SetOverlaySortOrder, b.h.0, sort);
         }
     }
 
@@ -231,7 +231,7 @@ impl Backs {
         let mut e: vr::VREvent_t = Default::default();
         let mut out = Vec::new();
         for b in &self.pool {
-            while call!(ov, PollNextOverlayEvent, b.h, &mut e, size_of::<vr::VREvent_t>() as u32) {
+            while call!(ov, PollNextOverlayEvent, b.h.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
                 match e.eventType {
                     sys::EVREventType_VREvent_MouseButtonDown if unsafe { e.data.mouse.button } == sys::EVRMouseButton_VRMouseButton_Left => out.push((b.i, e.trackedDeviceIndex, true)),
                     sys::EVREventType_VREvent_MouseButtonUp => out.push((b.i, e.trackedDeviceIndex, false)),
@@ -255,14 +255,14 @@ fn make(i: usize) -> Option<vr::Handle> {
     let h = crate::surface::create(crate::surface::Kind::Back, Some(i), &format!("controlcenter.back.{i}"), &format!("Command Center back {i}"))
         .inspect_err(|e| eprintln!("backs: no overlay for panel {i}: {e}"))
         .ok()?;
-    call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-    call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-    call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_IgnoreTextureAlpha, IGNORE_ALPHA);
+    call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
+    call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+    call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_IgnoreTextureAlpha, IGNORE_ALPHA);
     let mut bounds = sys::VRTextureBounds_t { uMin: 1.0, vMin: 0.0, uMax: 0.0, vMax: 1.0 };
-    call!(ov, SetOverlayTextureBounds, h, &mut bounds);
-    call!(ov, SetOverlayAlpha, h, ALPHA);
-    call!(ov, SetOverlayColor, h, DIM, DIM, DIM);
-    call!(ov, ShowOverlay, h);
+    call!(ov, SetOverlayTextureBounds, h.0, &mut bounds);
+    call!(ov, SetOverlayAlpha, h.0, ALPHA);
+    call!(ov, SetOverlayColor, h.0, DIM, DIM, DIM);
+    call!(ov, ShowOverlay, h.0);
     Some(h)
 }
 

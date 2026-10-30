@@ -238,7 +238,7 @@ fn register(h: Handle, kind: Kind, slot: Option<usize>, key: &str, name: &str) {
 /// left alone.
 pub fn destroy(h: Handle) {
     forget(h);
-    crate::call!(ov, DestroyOverlay, h);
+    crate::call!(ov, DestroyOverlay, h.0);
 }
 
 /// Takes the overlay off the list.
@@ -305,7 +305,7 @@ mod tests {
     use super::*;
 
     fn entry(kind: Kind, slot: Option<usize>, name: &str) -> Entry {
-        Entry { overlay: 1, key: format!("controlcenter.{name}"), kind, slot, name: name.into(), anchor: anchor_of(kind, slot) }
+        Entry { overlay: crate::vr::Handle(1), key: format!("controlcenter.{name}"), kind, slot, name: name.into(), anchor: anchor_of(kind, slot) }
     }
 
     fn now(used: bool, window: bool, popup: bool, popout: bool, spot: &str, uuid: Option<&str>) -> PanelNow {
@@ -395,17 +395,17 @@ mod tests {
     fn registering_lists_once_and_forgetting_takes_it_off() {
         // handles far from anything real, since the registry is shared with the other tests
         let (a, b) = (0xFFFF_0001, 0xFFFF_0002);
-        register(a, Kind::Taskbar, None, "controlcenter.test.a", "a");
-        register(b, Kind::Cursor, None, "controlcenter.test.b", "b");
-        register(a, Kind::Taskbar, None, "controlcenter.test.a", "a"); // a handle given out again replaces its entry
-        assert_eq!(entries().iter().filter(|e| e.overlay == a).count(), 1);
-        set_anchor(a, Anchor::Head);
-        assert_eq!(entries().iter().find(|e| e.overlay == a).unwrap().anchor, Anchor::Head);
+        register(crate::vr::Handle(a), Kind::Taskbar, None, "controlcenter.test.a", "a");
+        register(crate::vr::Handle(b), Kind::Cursor, None, "controlcenter.test.b", "b");
+        register(crate::vr::Handle(a), Kind::Taskbar, None, "controlcenter.test.a", "a"); // a handle given out again replaces its entry
+        assert_eq!(entries().iter().filter(|e| e.overlay == crate::vr::Handle(a)).count(), 1);
+        set_anchor(crate::vr::Handle(a), Anchor::Head);
+        assert_eq!(entries().iter().find(|e| e.overlay == crate::vr::Handle(a)).unwrap().anchor, Anchor::Head);
         let text = report(|_| None);
         assert!(text.contains("controlcenter.test.a Taskbar anchor=Head") && text.contains("controlcenter.test.b Cursor anchor=Room"), "{text}");
-        forget(a);
-        forget(b);
-        assert!(!entries().iter().any(|e| e.overlay == a || e.overlay == b));
+        forget(crate::vr::Handle(a));
+        forget(crate::vr::Handle(b));
+        assert!(!entries().iter().any(|e| e.overlay == crate::vr::Handle(a) || e.overlay == crate::vr::Handle(b)));
     }
 
     /// The registry only lists what goes through it, so no other code may make an overlay itself.

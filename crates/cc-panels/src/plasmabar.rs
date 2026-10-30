@@ -304,15 +304,15 @@ impl Plasma {
     pub fn new() -> Plasma {
         let h = crate::surface::create(crate::surface::Kind::Plasma, None, "controlcenter.plasma", "Command Center Plasma taskbar").unwrap_or_else(|e| {
             eprintln!("plasma: no overlay: {e}"); // SteamVR's 128 are shared, and we're out
-            0
+            crate::vr::Handle::NONE
         });
         // no input method until a popup is open (`tick` sets it)
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_IgnoreTextureAlpha, true);
-        call!(ov, SetOverlaySortOrder, h, taskbar::SORT + 1); // in front of the taskbar's frame, in case depth isn't used
+        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
+        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_IgnoreTextureAlpha, true);
+        call!(ov, SetOverlaySortOrder, h.0, taskbar::SORT + 1); // in front of the taskbar's frame, in case depth isn't used
         let mut scale = sys::HmdVector2_t { v: [1.0, 1.0] }; // events as fractions, since the crop changes under them
-        call!(ov, SetOverlayMouseScale, h, &mut scale);
+        call!(ov, SetOverlayMouseScale, h.0, &mut scale);
         Plasma {
             ov: h,
             panel: None,
@@ -361,7 +361,7 @@ impl Plasma {
     /// The panel's width and height in pixels, while the session has one and we have an
     /// overlay. taskbar.rs's frame holds it, and since it's fit-content it changes as apps open.
     pub fn size(&self) -> Option<(i32, i32)> {
-        self.panel.as_ref().filter(|_| self.ov != 0).map(|p| (p.1[2], p.1[3]))
+        self.panel.as_ref().filter(|_| self.ov != crate::vr::Handle::NONE).map(|p| (p.1[2], p.1[3]))
     }
 
     fn src(&mut self, win: bool) -> &mut Src {
@@ -399,7 +399,7 @@ impl Plasma {
         if clickable != self.clickable {
             self.clickable = clickable;
             let m = if clickable { sys::VROverlayInputMethod_Mouse } else { sys::VROverlayInputMethod_None };
-            call!(ov, SetOverlayInputMethod, self.ov, m);
+            call!(ov, SetOverlayInputMethod, self.ov.0, m);
         }
         *ABOVE.lock().unwrap() = self.panel.iter().map(|p| p.1).chain(rects.iter().copied()).collect();
         let want = out.is_some() && self.hidden_at.is_none_or(|t| now - t < LINGER);
@@ -444,7 +444,7 @@ impl Plasma {
         if show != self.visible {
             self.visible = show;
             if show {
-                call!(ov, ShowOverlay, self.ov);
+                call!(ov, ShowOverlay, self.ov.0);
             } else {
                 self.hide();
             }
@@ -632,7 +632,7 @@ impl Plasma {
 
     /// Hides it and lets go of any laser press where the pointer is, since its release may never come.
     fn hide(&mut self) {
-        call!(ov, HideOverlay, self.ov);
+        call!(ov, HideOverlay, self.ov.0);
         (self.visible, self.placed) = (false, None);
         self.last = Lasts::default(); // a crop from before it hid means nothing now
         *CROP.lock().unwrap() = None;
@@ -1184,15 +1184,15 @@ mod tests {
         let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
         let (b0, b1) = ([0.0, 0.1, 0.9, 0.5], [0.0, 0.1, 0.9, 0.6]);
         let mut w = Writes::default();
-        crate::overlay::apply(&mut w, 4, &place_for(&m, u32::MAX, 0.89, 2.0, b0, None));
-        assert_eq!(w.0.first(), Some(&Call::Bounds(4, b0)), "the first placement sends the crop, before the width");
-        assert_eq!(w.0.last(), Some(&Call::Room(4, m)));
+        crate::overlay::apply(&mut w, crate::vr::Handle(4), &place_for(&m, u32::MAX, 0.89, 2.0, b0, None));
+        assert_eq!(w.0.first(), Some(&Call::Bounds(crate::vr::Handle(4), b0)), "the first placement sends the crop, before the width");
+        assert_eq!(w.0.last(), Some(&Call::Room(crate::vr::Handle(4), m)));
         let mut w = Writes::default();
-        crate::overlay::apply(&mut w, 4, &place_for(&m, u32::MAX, 0.89, 2.0, b0, Some(b0)));
+        crate::overlay::apply(&mut w, crate::vr::Handle(4), &place_for(&m, u32::MAX, 0.89, 2.0, b0, Some(b0)));
         assert!(!w.0.iter().any(|c| matches!(c, Call::Bounds(..))), "the same crop again: not resent");
         let mut w = Writes::default();
-        crate::overlay::apply(&mut w, 4, &place_for(&m, 2, 0.89, 0.0, b1, Some(b0)));
-        assert!(w.0.contains(&Call::Bounds(4, b1)), "a new crop is");
-        assert_eq!(w.0.last(), Some(&Call::Device(4, 2, m)), "on a controller when the frame is on one");
+        crate::overlay::apply(&mut w, crate::vr::Handle(4), &place_for(&m, 2, 0.89, 0.0, b1, Some(b0)));
+        assert!(w.0.contains(&Call::Bounds(crate::vr::Handle(4), b1)), "a new crop is");
+        assert_eq!(w.0.last(), Some(&Call::Device(crate::vr::Handle(4), 2, m)), "on a controller when the frame is on one");
     }
 }

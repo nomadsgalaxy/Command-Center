@@ -368,7 +368,7 @@ mod tests {
     fn gather_needs_the_head_and_ungather_needs_a_gather() {
         let _vr = crate::trace::fake_vr();
         let mut windows = Windows::for_test(0);
-        let mut grab = grab::Grab::with_backdrop(0, 0);
+        let mut grab = grab::Grab::with_backdrop(0, crate::vr::Handle::NONE);
         let dir = std::env::temp_dir().join(format!("cc-gather-test-{}", std::process::id()));
         let mut bar = crate::taskbar::Taskbar::new(dir.to_str().unwrap());
         crate::HIDDEN.store(true, Relaxed);

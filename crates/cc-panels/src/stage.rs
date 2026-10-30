@@ -59,7 +59,7 @@ impl Stage for Live {
     }
 
     fn pulse(&mut self, h: Handle) {
-        crate::call!(ov, TriggerLaserMouseHapticVibration, h, 0.05, 160.0, 0.6);
+        crate::call!(ov, TriggerLaserMouseHapticVibration, h.0, 0.05, 160.0, 0.6);
     }
 
     fn connected(&self, dev: u32) -> bool {
@@ -112,7 +112,7 @@ pub mod fake {
     impl Fake {
         /// A stage with `n` panels, each 1920x1080 with overlay 100 + its slot, and the head 1.6 m up.
         pub fn with_panels(n: usize) -> Fake {
-            Fake { head: [0.0, 1.6, 0.0], panels: (0..n).map(|i| PanelFacts { overlay: 100 + i as u64, size: (1920, 1080), vert: false }).collect(), ..Default::default() }
+            Fake { head: [0.0, 1.6, 0.0], panels: (0..n).map(|i| PanelFacts { overlay: crate::vr::Handle(100 + i as u64), size: (1920, 1080), vert: false }).collect(), ..Default::default() }
         }
 
         /// Overlay handle of panel i, for reading what was written to it.
@@ -217,7 +217,7 @@ pub mod fake {
     impl OverFake {
         /// `n` panels, each 1920x1080 with overlay 100 + its slot, as `Fake::with_panels` has them.
         pub fn with_panels(n: usize) -> OverFake {
-            OverFake { panels: (0..n).map(|i| PanelFacts { overlay: 100 + i as u64, size: (1920, 1080), vert: false }).collect(), moves: Vec::new() }
+            OverFake { panels: (0..n).map(|i| PanelFacts { overlay: crate::vr::Handle(100 + i as u64), size: (1920, 1080), vert: false }).collect(), moves: Vec::new() }
         }
     }
 

@@ -69,7 +69,7 @@ fn show(p: &Panel) {
     if !crate::kvm::lock().popup_ok(true) {
         return; // never: you asked (here for the record, since the fields ask with false)
     }
-    let e = call!(ov, ShowKeyboardForOverlay, p.overlay, mode, lines, flags, hint.as_ptr() as *mut _, 1024, c"".as_ptr() as *mut _, USER | p.index as u64);
+    let e = call!(ov, ShowKeyboardForOverlay, p.overlay.0, mode, lines, flags, hint.as_ptr() as *mut _, 1024, c"".as_ptr() as *mut _, USER | p.index as u64);
     if e == 0 {
         closed(); // another panel's, if it was open there
         *OPEN.lock().unwrap() = Some((p.index, Instant::now()));
@@ -250,9 +250,9 @@ impl Keys {
             vr::place(h, &m);
         }
         if crate::HIDDEN.load(std::sync::atomic::Ordering::Relaxed) {
-            call!(ov, HideOverlay, h)
+            call!(ov, HideOverlay, h.0)
         } else {
-            call!(ov, ShowOverlay, h)
+            call!(ov, ShowOverlay, h.0)
         };
         self.paint(h, panel(i).accent);
     }
@@ -262,10 +262,10 @@ impl Keys {
             Ok(h) => h,
             Err(e) => return eprintln!("key strip: no overlay: {e}"),
         };
-        call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlaySortOrder, h, SORT);
-        call!(ov, SetOverlayWidthInMeters, h, (W * MPP) as f32);
+        call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
+        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+        call!(ov, SetOverlaySortOrder, h.0, SORT);
+        call!(ov, SetOverlayWidthInMeters, h.0, (W * MPP) as f32);
         self.ov = Some((h, i));
     }
 
@@ -279,7 +279,7 @@ impl Keys {
 
     fn events(&mut self, h: vr::Handle, i: usize) {
         let mut e: vr::VREvent_t = Default::default();
-        while call!(ov, PollNextOverlayEvent, h, &mut e, size_of::<vr::VREvent_t>() as u32) {
+        while call!(ov, PollNextOverlayEvent, h.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
             let m = unsafe { e.data.mouse };
             let at = hit(m.x as f64, crate::geometry::from_top(H, m.y as f64)); // events count from the bottom left
             match e.eventType {

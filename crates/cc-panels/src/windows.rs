@@ -905,14 +905,14 @@ impl Windows {
         let p = panel(self.first + i);
         p.set_minimized(on);
         if !on {
-            call!(ov, HideOverlay, p.overlay); // hide before its buffers go; it's up again on the new stream's first frame
+            call!(ov, HideOverlay, p.overlay.0); // hide before its buffers go; it's up again on the new stream's first frame
             p.set_live(false);
             return self.open(i);
         }
         if self.slots[i].theater.is_some() {
             self.theater(i, grab);
         }
-        call!(ov, HideOverlay, p.overlay); // hide before its buffers go
+        call!(ov, HideOverlay, p.overlay.0); // hide before its buffers go
         self.close_stream(i);
         p.set_live(false);
         // like free(): its held keys go up; typing stays put until a panel is clicked
@@ -1096,7 +1096,7 @@ impl Windows {
             crate::kvm::lock().set_place(p.index, &panel_matrix(&before), before.width, height, before.curve);
         }
         self.keep_pose(i, &w.uuid);
-        call!(ov, HideOverlay, p.overlay); // hide before its buffers go
+        call!(ov, HideOverlay, p.overlay.0); // hide before its buffers go
         self.close_stream(i);
         p.set_live(false);
         p.set_minimized(false); // the slot's next window starts in sight
@@ -1237,7 +1237,7 @@ impl Windows {
             // shown on its first frame, so there's no black flash
             p.set_live(true);
             if !HIDDEN.load(Relaxed) && !p.away() {
-                call!(ov, ShowOverlay, p.overlay);
+                call!(ov, ShowOverlay, p.overlay.0);
             }
             eprintln!("{}: first frame +{}ms", p.v.name, s.asked.map_or(0, |t| t.elapsed().as_millis()));
         }

@@ -256,9 +256,9 @@ pub fn show_panels(show: bool) {
     HIDDEN.store(!show, Relaxed);
     for p in panels() {
         if show && p.live() && !p.away() {
-            call!(ov, ShowOverlay, p.overlay);
+            call!(ov, ShowOverlay, p.overlay.0);
         } else {
-            call!(ov, HideOverlay, p.overlay);
+            call!(ov, HideOverlay, p.overlay.0);
         }
     }
 }
