@@ -63,6 +63,8 @@ fn fail(why: &str) -> ! {
 /// no loader at all (2). A runtime that answers but lacks an extension isn't a failure: it's a "no".
 const RUNTIME_FAILED: i32 = 3;
 
+const OVERRIDE: &str = "XR_RUNTIME_JSON override (what an app gets now)";
+
 /// A manifest to ask, and why it's on the list.
 struct Found {
     path: PathBuf,
@@ -91,10 +93,10 @@ fn found() -> Vec<Found> {
     // when it's set, it wins over everything else the loader would look at
     let overridden = std::env::var_os("XR_RUNTIME_JSON").filter(|v| !v.is_empty()).map(PathBuf::from);
     if let Some(o) = &overridden {
-        out.push((o.clone(), "XR_RUNTIME_JSON override (what an app gets now)"));
+        out.push((o.clone(), OVERRIDE));
     }
     if let Some(active) = config_dirs.iter().map(|d| d.join("openxr/1/active_runtime.json")).find(|p| p.is_file()) {
-        out.push((active, if overridden.is_some() { "the active runtime, which the override wins over" } else { "the active runtime: what the loader picks" }));
+        out.push((active, if overridden.is_some() { "the active runtime, not used while the override is set" } else { "the active runtime: what the loader picks" }));
     }
     for d in dirs {
         let Ok(list) = std::fs::read_dir(d.join("openxr/1")) else { continue };
@@ -186,7 +188,12 @@ fn report(found: &Found, loader: Option<&Path>) {
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let what = if out.status.code() == Some(RUNTIME_FAILED) { "couldn't load this runtime (manifest or library broken?)" } else { "failed" };
-        return println!("   {what}: {}", err.trim());
+        println!("   {what}: {}", err.trim());
+        if found.why == OVERRIDE && out.status.code() == Some(RUNTIME_FAILED) {
+            // the loader doesn't fall back to the active runtime when the override is set
+            println!("   so apps get no OpenXR runtime: the override wins, and it doesn't load");
+        }
+        return;
     }
     println!("   advertised {} extensions", exts.len());
     for w in WATCH {
