@@ -1,7 +1,8 @@
 //! The OpenVR boundary's ratchet (docs/openxr-plan.md, phase 0 step 6). It reads the sources and
 //! fails if any file outside the OpenVR side uses an OpenVR name that isn't on its list below:
-//! a `call!` into one of OpenVR's tables, an `openvr_sys` item, or a `vr::` item (vr::wake and
-//! vr::timed aren't OpenVR, so they don't count). It also fails if a listed name is gone, so the
+//! a `call!` into one of OpenVR's tables, an `openvr_sys` item, a `vr::` item (vr::wake and
+//! vr::timed aren't OpenVR, so they don't count), or a `laser::` item (SteamVR's laser, but for
+//! the `MouseLaser` interface). It also fails if a listed name is gone, so the
 //! list only ever shrinks: each move (6b to 6e) takes its group off as it lands, and once the list
 //! is empty nothing outside the OpenVR side touches OpenVR.
 //!
@@ -16,7 +17,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The OpenVR side: its `Live`s and what they call. Not scanned.
-const SIDE: &[&str] = &["vr.rs", "overlay.rs", "stage.rs", "texture.rs", "keyboard.rs", "shell.rs", "gaze.rs", "poll.rs", "trace.rs"];
+const SIDE: &[&str] = &["vr.rs", "overlay.rs", "stage.rs", "texture.rs", "keyboard.rs", "shell.rs", "gaze.rs", "poll.rs", "trace.rs", "laser.rs"];
 
 /// Whole files that stay on OpenVR, and why. Not scanned.
 const WHOLE: &[(&str, &str)] = &[
@@ -28,6 +29,9 @@ const WHOLE: &[(&str, &str)] = &[
 /// `vr::` items that aren't OpenVR: waking the main loop and timing a call.
 const NEUTRAL: &[&str] = &["wake", "timed", "WOKEN", "MAIN", "Handle", "fake"];
 
+/// `laser::` items that aren't OpenVR: the interface kvm.rs and the backend design name.
+const LASER_NEUTRAL: &[&str] = &["MouseLaser"];
+
 const FAKES: &str = "tests: SteamVR's events and roles, built for vr::fake";
 
 /// Each file's OpenVR names today, in groups by the step that takes them away.
@@ -35,29 +39,17 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
     ("control.rs", "the control socket's SteamVR inspection (its devices, roles and laser tips), OpenVR on purpose", &["vr::devices", "vr::tip"]),
     ("grab.rs", "tests: the golden's \"by {index}\" line and the roles vr::fake answers, by OpenVR's numbers (file-wide, so a production use would pass too)", &["vr::index"]),
     ("grab.rs", FAKES, &["sys::ETrackedControllerRole_TrackedControllerRole_LeftHand", "sys::ETrackedControllerRole_TrackedControllerRole_RightHand"]),
+    ("kvm.rs", "the laser kvm holds, `laser::Live` until the core holds a Backend (phase 1)", &["laser::Live"]),
     (
-        "laser.rs",
-        "the cc_pointer lease and SteamVR's laser mode, moving to the OpenVR side whole (6e)",
-        &[
-            "GetPrimaryDashboardDevice",
-            "GetStringTrackedDeviceProperty",
-            "GetTrackedDeviceIndexForControllerRole",
-            "HideOverlay",
-            "SetOverlayFlag",
-            "SetOverlayWidthInMeters",
-            "ShowOverlay",
-            "sys::ETrackedControllerRole_TrackedControllerRole_LeftHand",
-            "sys::ETrackedControllerRole_TrackedControllerRole_RightHand",
-            "sys::ETrackedDeviceProperty_Prop_ControllerType_String",
-            "sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible",
-            "sys::k_unMaxTrackedDeviceCount",
-            "sys::k_unTrackedDeviceIndexInvalid",
-            "vr::head",
-            "vr::head_raw",
-            "vr::place",
-        ],
+        "main.rs",
+        "start and stop: the backend object's constructor and its end, once the core holds a Backend (phase 1): SteamVR's, the laser's Beam and lease thread, and the laser's hide at exit and on a panic",
+        &["laser::Beam", "laser::Live", "laser::lease_thread", "vr::init", "vr::shutdown"],
     ),
-    ("main.rs", "start and stop: the backend object's constructor and its end, once the core holds a Backend (phase 1)", &["vr::init", "vr::shutdown"]),
+    (
+        "main.rs",
+        "interim: Beam::tick, every frame, aims the laser at the cursor and says how its dot looks (laser::Dot); it's ongoing cursor work, not start and stop, and goes behind the backend with the cursor (phase 1)",
+        &["laser::Dot"],
+    ),
     (
         "main.rs",
         "old_loop, golden_steamvr_events' copy of the loop from before phase 0, and its events (test only)",
@@ -112,7 +104,7 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
 
 /// The OpenVR names in a file's code (comments left out): what it `call!`s, its `openvr_sys`
 /// items (bare `sys::` only where `openvr_sys` is `sys`, since spa and pipewire have one too), its
-/// `vr::` items but the neutral ones, and the trace's raw poll.
+/// `vr::` and `laser::` items but the neutral ones, and the trace's raw poll.
 fn names(text: &str) -> BTreeSet<String> {
     let ident = |s: &str| s.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<String>();
     // each place `pat` starts a path of its own, or follows crate::, super:: or self:: (chains too),
@@ -140,12 +132,13 @@ fn names(text: &str) -> BTreeSet<String> {
             out.extend(after(code, "sys::").into_iter().map(|n| format!("sys::{n}")));
         }
         out.extend(after(code, "vr::").into_iter().filter(|n| !NEUTRAL.contains(&n.as_str())).map(|n| format!("vr::{n}")));
+        out.extend(after(code, "laser::").into_iter().filter(|n| !LASER_NEUTRAL.contains(&n.as_str())).map(|n| format!("laser::{n}")));
         if code.contains("trace::poll(") {
             out.insert("trace::poll".into());
         }
         // a grouped import, a glob or an alias hides its names from the scan, so each is a name of
         // its own that no list has
-        for pat in ["vr::{", "openvr_sys::{", "vr::*", "openvr_sys::*", "vr as ", "call as "] {
+        for pat in ["vr::{", "openvr_sys::{", "laser::{", "vr::*", "openvr_sys::*", "laser::*", "vr as ", "call as ", "laser as "] {
             if !starts(code, pat).is_empty() {
                 out.insert(pat.trim_end().into());
             }
@@ -170,7 +163,7 @@ fn check(found: &BTreeMap<String, BTreeSet<String>>, allowed: &[(&str, &str, &[&
         for n in ns.iter().filter(|n| !ok.is_some_and(|ok| ok.contains(n.as_str()))) {
             if n.ends_with('{') || n.ends_with('*') || n.ends_with(" as") {
                 bad.push(format!(
-                    "{f}: imports `{n}`: import OpenVR names one at a time and by their own names, so this test sees each (a local named vr or call cast with `as` trips it too, on purpose: rename the local)"
+                    "{f}: imports `{n}`: import OpenVR names one at a time and by their own names, so this test sees each (a local named vr, call or laser cast with `as` trips it too, on purpose: rename the local)"
                 ));
                 continue;
             }
@@ -249,9 +242,16 @@ fn it_finds_each_kind_of_name_and_leaves_the_rest() {
     assert!(names("use openvr_sys as ovr;").contains("openvr_sys as") && !names("use openvr_sys as sys;").contains("openvr_sys as"), "an alias but sys");
     assert!(names("use crate::vr as v;").contains("vr as"), "an alias of vr");
     assert!(names("use crate::call as c;").contains("call as") && !names("let n = recall as u32;").contains("call as"), "an alias of call!, not a longer name");
+    assert_eq!(
+        names("let b = laser::Beam::new(); crate::laser::Live.hide(); impl crate::laser::MouseLaser for X {} plasma_laser::x();").into_iter().collect::<Vec<_>>(),
+        ["laser::Beam", "laser::Live"],
+        "laser:: items but MouseLaser, and not a longer name"
+    );
+    assert!(names("use crate::laser::{Beam, Live};").contains("laser::{") && names("use crate::laser::*;").contains("laser::*"), "laser's grouped import and glob");
+    assert!(names("use crate::laser as l;").contains("laser as"), "an alias of laser");
     let grouped = BTreeMap::from([("c.rs".to_string(), names("use crate::vr::{head, index};"))]);
     assert!(check(&grouped, &[("c.rs", "why", &["vr::head", "vr::index"])]).iter().any(|l| l.contains("one at a time")), "and fails even when its names are listed");
-    for hidden in ["use crate::vr::*;", "use openvr_sys as ovr;", "use crate::vr as v;", "use crate::call as c;"] {
+    for hidden in ["use crate::vr::*;", "use openvr_sys as ovr;", "use crate::vr as v;", "use crate::call as c;", "use crate::laser::{Beam};", "use crate::laser::*;", "use crate::laser as l;"] {
         let found = BTreeMap::from([("c.rs".to_string(), names(hidden))]);
         assert!(check(&found, &[]).iter().any(|l| l.contains("one at a time")), "{hidden}");
     }

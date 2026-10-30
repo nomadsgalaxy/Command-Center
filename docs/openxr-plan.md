@@ -622,6 +622,13 @@ cc-panels.
    makes its call, and a move to another panel lets go of left, right and middle in that order.
    A button held when the laser stops working is still let go through it, as before, so nothing
    stays down. The amber dot stays `Beam`'s, on the OpenVR side.
+   Last, laser.rs joins the OpenVR side, and its 16 OpenVR names come off the lists. In the same
+   commit the scan starts counting `laser::` items outside the side, by vr's rules (a grouped
+   import, a glob or an alias fails), with `MouseLaser` the one that isn't OpenVR. What's left is
+   listed: kvm's `laser::Live`, until the core holds a backend; main.rs's start and stop (`Beam`'s
+   creation, the lease thread, the hide at exit and on a panic) with SteamVR's; and, as an interim
+   exception that isn't start and stop, `Beam::tick`, which aims the laser at the cursor every
+   frame and says how its dot looks (`laser::Dot`). It goes behind the backend with the cursor.
 7. (1 d) Tests and a pass in the headset.
 
 Each step is its own small branch, and has to pass the same checks before and after:
