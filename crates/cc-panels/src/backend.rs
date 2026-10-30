@@ -14,6 +14,8 @@ pub use crate::gaze::Input;
 pub use crate::ids::{Ctl, Dev, Hand, SurfaceId};
 #[allow(unused_imports)] // the design names them; the core takes them from keyboard.rs
 pub use crate::keyboard::{Keyboard, KeyboardMode};
+#[allow(unused_imports)] // and laser.rs
+pub use crate::laser::MouseLaser;
 #[allow(unused_imports)] // and overlay.rs
 pub use crate::overlay::{Flag, InputMode, Surfaces};
 #[allow(unused_imports)] // and poll.rs
@@ -82,4 +84,4 @@ pub trait Frames {
 }
 
 /// One runtime, all of it.
-pub trait Backend: Surfaces + Stage + Textures + Pointing + Session + SessionEvents + Frames + Keyboard + Shell + Input {}
+pub trait Backend: Surfaces + Stage + Textures + Pointing + Session + SessionEvents + Frames + Keyboard + Shell + Input + MouseLaser {}

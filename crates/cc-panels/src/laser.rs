@@ -195,6 +195,7 @@ impl Laser {
 
 // ------------------------------------------------------------------ live: the link and the driver
 
+use crate::events::Button;
 use crate::texture::Textures;
 use crate::{call, vr};
 use openvr_sys as sys;
@@ -231,23 +232,72 @@ fn send(msg: &str) {
 }
 
 /// Gives the hand back now (startup, exit, panic), so the driver doesn't wait for its watchdog.
-pub fn hide() {
+fn hide() {
     crate::ffi::lock(&SNAP).hand = None;
     send(HIDE);
 }
 
-pub fn press(bit: u32, down: bool) {
+fn press(bit: u32, down: bool) {
     let mut s = crate::ffi::lock(&SNAP);
     if down { s.held |= bit } else { s.held &= !bit }
 }
 
-pub fn pulse(bit: u32) {
+fn pulse(bit: u32) {
     crate::ffi::lock(&SNAP).pulse = (bit, Instant::now() + Duration::from_millis(60));
 }
 
 /// A wheel notch: the joystick held over for 80 ms, which SteamVR turns into a scroll step.
-pub fn scroll(dir: f64) {
+fn scroll(dir: f64) {
     crate::ffi::lock(&SNAP).scroll = (dir.signum(), Instant::now() + Duration::from_millis(80));
+}
+
+/// The mouse's laser off our panels, as kvm.rs and the settings windows see it. On OpenVR it's
+/// SteamVR's own laser through our cc_pointer device. A runtime without one says it isn't
+/// working, and clicks off our panels go nowhere, as they do on OpenVR when the claim fails.
+pub trait MouseLaser {
+    /// It has the dashboard pointer, so clicks off our panels reach SteamVR's UI (HEALTHY).
+    fn working(&self) -> bool;
+    /// A mouse button down or up. It stays held there until it's let go, wherever the cursor is
+    /// by then.
+    fn press(&self, b: Button, down: bool);
+    /// Opens or closes SteamVR's dashboard (the system button).
+    fn dashboard(&self);
+    /// A wheel notch, up or down by its sign.
+    fn scroll(&self, notches: f64);
+    /// Gives the hand back now (exit, panic), so the driver doesn't wait for its watchdog.
+    fn hide(&self);
+}
+
+/// The OpenVR laser: the lease thread's snapshot, which these set.
+pub struct Live;
+
+impl MouseLaser for Live {
+    fn working(&self) -> bool {
+        HEALTHY.load(Relaxed)
+    }
+
+    fn press(&self, b: Button, down: bool) {
+        press(
+            match b {
+                Button::Left => TRIGGER,
+                Button::Right => B,
+                _ => X,
+            },
+            down,
+        );
+    }
+
+    fn dashboard(&self) {
+        pulse(SYSTEM);
+    }
+
+    fn scroll(&self, notches: f64) {
+        scroll(notches);
+    }
+
+    fn hide(&self) {
+        hide();
+    }
 }
 
 /// Runs on its own thread, every 20 ms while leasing, so a slow frame in the main loop can't trip

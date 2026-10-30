@@ -65,6 +65,7 @@ mod windows;
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
 use gaze::Input;
 use geometry::{Pose, panel_matrix};
+use laser::MouseLaser;
 #[cfg(test)] // only old_loop and the tests name OpenVR's items now (6d): keep it test-only
 use openvr_sys as sys;
 use overlay::{Flag, InputMode, Overlays, Surfaces};
@@ -800,7 +801,7 @@ extern "C" fn on_signal(_: libc::c_int) {
 struct GiveBack;
 impl Drop for GiveBack {
     fn drop(&mut self) {
-        laser::hide();
+        laser::Live.hide();
         crate::kvm::lock().return_devices();
         kwin::restore();
         power::stop(); // the profile it found, back
@@ -889,7 +890,7 @@ fn run() -> Result<(), String> {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if !ffi::guarded() {
-            laser::hide();
+            laser::Live.hide();
         }
         default_hook(info);
         trace::flush(); // what led up to it

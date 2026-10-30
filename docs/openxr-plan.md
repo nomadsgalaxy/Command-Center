@@ -613,6 +613,15 @@ cc-panels.
    sets live) moves to config.rs, and `aim_basis`, which kvm's ray uses too, to geometry.rs. The
    preference's first load stays in `Beam::new`, so nothing changes on OpenVR, and a runtime
    with no `Beam` never loads it and points with the right hand.
+   Then kvm.rs and the settings windows reach the laser through `MouseLaser` (laser.rs, on
+   `laser::Live`): `working` (it has SteamVR's dashboard pointer), `press` with an
+   `events::Button`, so kvm never names a lease bit, `dashboard` (Right Ctrl + D), `scroll` and
+   `hide`, which main.rs's exit and panic hook call. Each is the one snapshot write it was. kvm
+   holds the laser it uses, so a test hands it a stand-in: with none working, a click, a scroll
+   and Right Ctrl + D off our panels make no call and the click isn't counted; with one, each
+   makes its call, and a move to another panel lets go of left, right and middle in that order.
+   A button held when the laser stops working is still let go through it, as before, so nothing
+   stays down. The amber dot stays `Beam`'s, on the OpenVR side.
 7. (1 d) Tests and a pass in the headset.
 
 Each step is its own small branch, and has to pass the same checks before and after:

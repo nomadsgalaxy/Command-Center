@@ -14,7 +14,9 @@
 //! even with gaze lock on, because looking down at the keyboard to find a key is looking away,
 //! and typing would land on the Frame mid-word.
 use crate::config::Viewer;
+use crate::events::Button;
 use crate::geometry::{self, Placement, angles, direction, norm, rotate};
+use crate::laser::MouseLaser;
 use crate::limits::{KEY_NOTCH, KEY_PUSH_RANGE, MAX_WIDTH, MIN_WIDTH};
 use crate::overlay::{At, Live, Place, apply};
 use crate::stage::Stage;
@@ -223,7 +225,7 @@ pub struct Kvm {
     // margins around it (sides, below, above, m). It's nearer than panels and bars, so the ray
     // takes it. The cursor floats on it, and SteamVR's laser, starting just short of it, gives
     // it and its card their events like on a panel's card. That's why clicks need the laser
-    // (laser::HEALTHY).
+    // (MouseLaser::working).
     // ponytail: the laser, not the taskbar's on_bar/bar_clicks, because one path already gives
     // the card's bar, corners, carry and wheel, plus both windows' hover, drags and sliders,
     // their events like a controller's. Doing it the taskbar's way would copy all of that for
@@ -285,6 +287,8 @@ pub struct Kvm {
     // shows up meanwhile or right after (a browser tab dragged out) gets its panel there
     // (windows.rs adopt).
     pub window_drag: Option<([f64; 3], Instant)>,
+    /// The laser that takes the mouse's clicks off our panels (laser::Live; the tests' stand-in).
+    pub laser: &'static (dyn MouseLaser + Sync),
 }
 
 pub static KVM: Mutex<Kvm> = Mutex::new(Kvm::idle());
@@ -363,6 +367,7 @@ impl Kvm {
             keystrokes: 0,
             wheels: 0,
             window_drag: None,
+            laser: &laser::Live,
         }
     }
 
@@ -372,9 +377,9 @@ impl Kvm {
 
     /// Let go of the mouse buttons held on the cursor's machine, since it's moving to another panel.
     fn release_buttons(&mut self) {
-        for (b, bit) in [(PTR_FLAGS_BUTTON1, laser::TRIGGER), (PTR_FLAGS_BUTTON2, laser::B), (PTR_FLAGS_BUTTON3, laser::X)] {
+        for (b, button) in [(PTR_FLAGS_BUTTON1, Button::Left), (PTR_FLAGS_BUTTON2, Button::Right), (PTR_FLAGS_BUTTON3, Button::Middle)] {
             if self.beam_buttons & b != 0 {
-                laser::press(bit, false);
+                self.laser.press(button, false);
             }
         }
         self.beam_buttons = 0;
@@ -1217,8 +1222,8 @@ impl Kvm {
         }
         // Right Ctrl + D opens the SteamVR dashboard through the laser's system button.
         if rctrl_down && code == KEY_D {
-            if value == 1 && laser::HEALTHY.load(Relaxed) {
-                laser::pulse(laser::SYSTEM);
+            if value == 1 && self.laser.working() {
+                self.laser.dashboard();
             }
             return;
         }
@@ -1250,10 +1255,10 @@ impl Kvm {
             }
             // Off our panels the click goes out through the SteamVR laser (if it works), and the
             // button stays held there until you let go, wherever the cursor is by then.
-            let bit = match b {
-                PTR_FLAGS_BUTTON1 => laser::TRIGGER,
-                PTR_FLAGS_BUTTON2 => laser::B,
-                _ => laser::X,
+            let button = match b {
+                PTR_FLAGS_BUTTON1 => Button::Left,
+                PTR_FLAGS_BUTTON2 => Button::Right,
+                _ => Button::Middle,
             };
             if value == 0 && b == PTR_FLAGS_BUTTON1 && self.card_held {
                 self.card_held = false;
@@ -1265,7 +1270,7 @@ impl Kvm {
             }
             if value == 0 && self.beam_buttons & b != 0 {
                 self.beam_buttons &= !b;
-                return laser::press(bit, false);
+                return self.laser.press(button, false);
             }
             if value == 0 && self.shell_buttons & b != 0 {
                 self.shell_buttons &= !b;
@@ -1295,9 +1300,9 @@ impl Kvm {
                 }
                 let (f, a) = (self.free.unwrap(), self.anchor);
                 let depth = norm(&[f[0] - a[0], f[1] - a[1], f[2] - a[2]]);
-                if laser::HEALTHY.load(Relaxed) {
+                if self.laser.working() {
                     (self.beam_depth, self.beam_buttons) = (depth, self.beam_buttons | b);
-                    laser::press(bit, true);
+                    self.laser.press(button, true);
                     self.clicks += 1;
                 } else if b == PTR_FLAGS_BUTTON1 && self.extra_at().is_some() {
                     self.extra_held = true; // it's the window's, like the laser's click would be (ui.rs next_event)
@@ -1385,8 +1390,8 @@ impl Kvm {
             return;
         }
         if self.free.is_some() {
-            if laser::HEALTHY.load(Relaxed) && !horizontal {
-                laser::scroll(notches as f64); // off our panels it's SteamVR's scrolling
+            if self.laser.working() && !horizontal {
+                self.laser.scroll(notches as f64); // off our panels it's SteamVR's scrolling
             }
             return;
         }
@@ -1840,6 +1845,94 @@ mod tests {
         assert!(crate::geometry::bar_hit(k.bar, 0.0, &o, &edge, None).is_some(), "near its edge");
         assert!(crate::geometry::bar_hit(k.bar, 0.02, &o, &edge, None).is_none(), "in its reach");
         k.bar = None;
+    }
+
+    /// A MouseLaser that writes down what it's asked, working or not as the test says.
+    #[derive(Default)]
+    struct StandIn {
+        working: std::sync::atomic::AtomicBool,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl MouseLaser for StandIn {
+        fn working(&self) -> bool {
+            self.working.load(Relaxed)
+        }
+        fn press(&self, b: Button, down: bool) {
+            self.calls.lock().unwrap().push(format!("press {b:?} {down}"));
+        }
+        fn dashboard(&self) {
+            self.calls.lock().unwrap().push("dashboard".into());
+        }
+        fn scroll(&self, notches: f64) {
+            self.calls.lock().unwrap().push(format!("scroll {notches}"));
+        }
+        fn hide(&self) {
+            self.calls.lock().unwrap().push("hide".into());
+        }
+    }
+
+    /// A Kvm off our panels (nothing under the ray, no Extra window), awake, with a stand-in laser.
+    fn off_the_panels(working: bool) -> (Kvm, &'static StandIn) {
+        let laser: &'static StandIn = Box::leak(Box::default());
+        laser.working.store(working, Relaxed);
+        let mut k = Kvm::idle();
+        (k.laser, k.awake, k.free) = (laser, true, Some([0.0, 1.0, -2.0]));
+        (k, laser)
+    }
+
+    fn calls(l: &StandIn) -> Vec<String> {
+        std::mem::take(&mut *l.calls.lock().unwrap())
+    }
+
+    /// Right Ctrl + D, with Right Ctrl held (so it isn't a tap) and the keys going to the remotes.
+    fn ctrl_d(k: &mut Kvm) {
+        (k.rctrl, k.engaged) = (Some(Instant::now()), true);
+        k.key(KEY_D, 1, true);
+        k.key(KEY_D, 0, true);
+        k.rctrl = None;
+    }
+
+    #[test]
+    fn with_no_working_laser_a_click_a_scroll_and_ctrl_d_off_the_panels_go_nowhere() {
+        let (mut k, laser) = off_the_panels(false);
+        ctrl_d(&mut k);
+        k.key(BTN_LEFT, 1, true);
+        k.key(BTN_LEFT, 0, true);
+        k.wheel(1, false);
+        assert_eq!(calls(laser), Vec::<String>::new());
+        assert_eq!((k.clicks, k.beam_buttons), (0, 0), "the press isn't counted or held");
+    }
+
+    #[test]
+    fn with_a_working_laser_each_goes_through_it_and_letting_go_releases_left_right_middle() {
+        let (mut k, laser) = off_the_panels(true);
+        ctrl_d(&mut k);
+        k.key(BTN_LEFT, 1, true);
+        k.key(BTN_LEFT, 0, true);
+        k.wheel(-1, false);
+        assert_eq!(calls(laser), ["dashboard", "press Left true", "press Left false", "scroll -1"]);
+        assert_eq!(k.clicks, 1);
+        // held through the laser, then the cursor moves to another panel: release_buttons
+        for b in [BTN_MIDDLE, BTN_RIGHT, BTN_LEFT] {
+            k.key(b, 1, true);
+        }
+        assert_eq!(calls(laser), ["press Middle true", "press Right true", "press Left true"]);
+        k.release_buttons();
+        assert_eq!(calls(laser), ["press Left false", "press Right false", "press Middle false"]);
+        assert_eq!(k.beam_buttons, 0);
+    }
+
+    #[test]
+    fn a_button_held_when_the_laser_stops_working_is_still_let_go_through_it() {
+        let (mut k, laser) = off_the_panels(true);
+        k.key(BTN_LEFT, 1, true);
+        k.key(BTN_RIGHT, 1, true);
+        laser.working.store(false, Relaxed); // the claim lapsed (Degraded) while they're held
+        k.key(BTN_LEFT, 0, true);
+        assert_eq!(calls(laser), ["press Left true", "press Right true", "press Left false"]);
+        k.release_buttons();
+        assert_eq!(calls(laser), ["press Right false"], "and a move to another panel lets go of the rest");
     }
 
     #[test]

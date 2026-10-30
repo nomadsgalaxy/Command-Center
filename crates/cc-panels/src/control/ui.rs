@@ -317,11 +317,11 @@ pub fn next_event(h: vr::Handle) -> Option<crate::events::SurfaceEvent> {
         return Some(ev);
     }
     let mut sent = SENT.lock().unwrap();
-    if crate::laser::HEALTHY.load(std::sync::atomic::Ordering::Relaxed) {
+    let mut k = crate::kvm::lock();
+    if k.laser.working() {
         *sent = None; // the laser sends its own events now
         return None;
     }
-    let mut k = crate::kvm::lock();
     let scale = crate::overlay::Live.mouse_scale_of(h);
     let at = k.extra.zip(k.extra_at()).map(|((pl, _), (u, v))| (((u / pl.width + 0.5) * scale[0] as f64) as f32, ((v / pl.height + 0.5) * scale[1] as f64) as f32));
     let (kind, (x, y)) = if !k.extra_mouse.is_empty() {
