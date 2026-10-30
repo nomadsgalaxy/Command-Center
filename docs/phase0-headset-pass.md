@@ -196,6 +196,6 @@ Point the mouse at SteamVR's own UI, outside our panels.
   should be there, in the same order, with the same flags and widths. Where they are can differ,
   if you moved things.
 - When you're done, stop new traces: `rm ~/.cache/control-center/vr-trace`. If the pass was
-  clean, also delete the traces (but one you keep as a replay), the two surfaces files,
-  `~/cc-log-start.txt`, `~/cc-pid.txt` and `~/cc-run.log`. If anything failed or wasn't clear, keep them all until it's been looked
-  into.
+  clean, also delete the traces (except any you keep as a replay), the two surfaces files,
+  `~/cc-log-start.txt`, `~/cc-pid.txt` and `~/cc-run.log`. If anything failed or wasn't clear,
+  keep them all until it's been looked into.
