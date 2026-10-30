@@ -7,8 +7,8 @@
   vr SetOverlayMouseScale 1 1.00000 1.00000
   held 0x0, visible true
 == a laser moves onto an item and presses
-  session pointer 0x800 at 599.90348 1199.86109
-  session pointer 0x9000 at 599.90348 1199.86109
+  session pointer 0x800 at 599.90348 1199.86112
+  session pointer 0x9000 at 599.90348 1199.86112
   held 0x1000, visible true
 == the bar goes away with the press still in
   session pointer 0x1000 at where it is

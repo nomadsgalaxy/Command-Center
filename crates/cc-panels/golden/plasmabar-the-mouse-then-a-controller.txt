@@ -14,10 +14,10 @@
   held 0x0, visible true
   mouse has the pointer: true
 == a real controller presses
-  session pointer 0x9000 at 599.90348 1199.86109
+  session pointer 0x9000 at 599.90348 1199.86112
   held 0x1000, visible true
   mouse has the pointer: false
 == and lets go
-  session pointer 0x1000 at 599.90348 1199.86109
+  session pointer 0x1000 at 599.90348 1199.86112
   held 0x0, visible true
   mouse has the pointer: false

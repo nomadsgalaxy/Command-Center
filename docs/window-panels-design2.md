@@ -745,7 +745,11 @@ fake_input motion and buttons with no raise gate.
 - Overlays: +1.
 
 Still open (needs a live run): popups as KWin script windows with geometry (risk 4); the bounds'
-v direction, and SteamVR taking the overlay's aspect and mouse from the bounds; the output's
+v direction, and SteamVR taking the overlay's aspect and mouse from the bounds (traced in the
+headset on Oct 29 and 30: across, its point matched the picture; up and down it was squeezed
+toward the middle by the texture's height over its width, as if its hit quad were as tall as the
+bounds' v range over their u range times the width. plasmabar.rs drawn_fy undoes that on the
+fallback path, fitted from the traces and not yet tested in the headset); the output's
 first frame without damage; the park click closing Kickoff. Also whether KWin streams the dock (a
 layer-shell window) by its internalId, and whether that stream matches the output's crop (its
 size, a floating panel's margins, translucency under IgnoreTextureAlpha).
