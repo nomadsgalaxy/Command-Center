@@ -44,7 +44,7 @@ fn main() {
         one(loader.as_deref());
         return;
     }
-    let manifests: Vec<PathBuf> = if args.is_empty() { found() } else { args.iter().map(PathBuf::from).collect() };
+    let manifests: Vec<Found> = if args.is_empty() { found() } else { args.iter().map(|a| Found { path: a.into(), why: "given", same: Vec::new() }).collect() };
     if manifests.is_empty() {
         println!("no OpenXR runtime manifests found");
     }
@@ -58,25 +58,43 @@ fn fail(why: &str) -> ! {
     std::process::exit(2)
 }
 
-/// Where the loader looks (the OpenXR loader spec, Linux), then SteamVR's own manifest for this CPU.
-fn found() -> Vec<PathBuf> {
+/// The child's exit code when the loader loaded but the runtime didn't answer, as against having
+/// no loader at all (2). A runtime that answers but lacks an extension isn't a failure: it's a "no".
+const RUNTIME_FAILED: i32 = 3;
+
+/// A manifest to ask, and why it's on the list.
+struct Found {
+    path: PathBuf,
+    why: &'static str,
+    /// Other manifests that point at the same runtime library, which aren't asked again.
+    same: Vec<PathBuf>,
+}
+
+/// The loader's own search first (the OpenXR loader spec, Linux: active_runtime.json in the config
+/// dirs, the first one found wins), then any other manifest installed under openxr/1, then SteamVR's
+/// own for this CPU. Only the first of those is what an app gets with no XR_RUNTIME_JSON set.
+fn found() -> Vec<Found> {
     let home = std::env::var("HOME").unwrap_or_default();
     let config = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{home}/.config"));
-    let mut dirs = vec![PathBuf::from(config)];
+    let mut config_dirs = vec![PathBuf::from(config)];
     let xdg_dirs = std::env::var("XDG_CONFIG_DIRS").unwrap_or_else(|_| "/etc/xdg".into());
-    dirs.extend(xdg_dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from));
-    dirs.push("/etc".into());
+    config_dirs.extend(xdg_dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from));
+    config_dirs.push("/etc".into());
     let data = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| format!("{home}/.local/share"));
     let data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
+    let mut dirs = config_dirs.clone();
     dirs.push(PathBuf::from(data));
     dirs.extend(data_dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from));
 
-    let mut out = Vec::new();
+    let mut out: Vec<(PathBuf, &'static str)> = Vec::new();
+    if let Some(active) = config_dirs.iter().map(|d| d.join("openxr/1/active_runtime.json")).find(|p| p.is_file()) {
+        out.push((active, "the active runtime: what the loader picks"));
+    }
     for d in dirs {
         let Ok(list) = std::fs::read_dir(d.join("openxr/1")) else { continue };
         let mut here: Vec<PathBuf> = list.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
         here.sort();
-        out.extend(here);
+        out.extend(here.into_iter().map(|p| (p, "installed, not the active runtime")));
     }
     let steamvr = match std::env::consts::ARCH {
         "aarch64" => "steamxr_linuxarm64.json",
@@ -84,16 +102,47 @@ fn found() -> Vec<PathBuf> {
         _ => "",
     };
     if !steamvr.is_empty() {
-        out.push(Path::new("/opt/steamvr").join(steamvr));
-        out.push(Path::new(&home).join(".steam/steam/steamapps/common/SteamVR").join(steamvr));
+        out.push((Path::new("/opt/steamvr").join(steamvr), "SteamVR's own, outside the loader's search"));
+        out.push((Path::new(&home).join(".steam/steam/steamapps/common/SteamVR").join(steamvr), "SteamVR's own, outside the loader's search"));
     }
-    // The active_runtime.json is usually a link to one of the others: ask each runtime once.
+    // Ask each runtime once: the active runtime is usually a link to another manifest, and two
+    // manifests can name the same library.
+    let mut kept: Vec<Found> = Vec::new();
     let mut seen = BTreeSet::new();
-    out.into_iter().filter(|p| p.is_file()).filter(|p| seen.insert(p.canonicalize().unwrap_or_else(|_| p.clone()))).collect()
+    for (path, why) in out.into_iter().filter(|(p, _)| p.is_file()) {
+        let real = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if !seen.insert(real.clone()) {
+            continue; // the same file, found twice
+        }
+        let lib = library(&path).unwrap_or(real);
+        match kept.iter_mut().find(|k| library(&k.path).as_ref() == Some(&lib)) {
+            Some(k) => k.same.push(path),
+            None => kept.push(Found { path, why, same: Vec::new() }),
+        }
+    }
+    kept
 }
 
-fn report(manifest: &Path, loader: Option<&Path>) {
+/// The runtime library a manifest names, as the loader finds it: relative to the manifest's own
+/// directory (after following links), or a bare name the dynamic linker looks up.
+fn library(manifest: &Path) -> Option<PathBuf> {
+    let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(manifest).ok()?).ok()?;
+    let lib = Path::new(j["runtime"]["library_path"].as_str()?);
+    if lib.components().count() == 1 {
+        return Some(lib.to_path_buf());
+    }
+    let dir = manifest.canonicalize().ok()?.parent()?.to_path_buf();
+    let full = dir.join(lib);
+    Some(full.canonicalize().unwrap_or(full))
+}
+
+fn report(found: &Found, loader: Option<&Path>) {
+    let manifest = found.path.as_path();
     println!("== {}", manifest.display());
+    println!("   found    {}", found.why);
+    for s in &found.same {
+        println!("   same runtime as {}", s.display());
+    }
     let real = manifest.canonicalize().unwrap_or_else(|_| manifest.to_path_buf());
     if real != manifest {
         println!("   links to {}", real.display());
@@ -130,7 +179,8 @@ fn report(manifest: &Path, loader: Option<&Path>) {
     }
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        return println!("   failed: {}", err.trim());
+        let what = if out.status.code() == Some(RUNTIME_FAILED) { "couldn't load this runtime (manifest or library broken?)" } else { "failed" };
+        return println!("   {what}: {}", err.trim());
     }
     println!("   advertised {} extensions", exts.len());
     for w in WATCH {
@@ -171,14 +221,16 @@ fn list(entry: &openxr::Entry) {
     // SAFETY: the two-call idiom. A null list with capacity 0 asks only for the count.
     let r = unsafe { f(std::ptr::null(), 0, &mut n, std::ptr::null_mut()) };
     if r.into_raw() < 0 {
-        fail(&format!("xrEnumerateInstanceExtensionProperties: {r:?}"));
+        eprintln!("xrEnumerateInstanceExtensionProperties: {r:?}");
+        std::process::exit(RUNTIME_FAILED);
     }
     let blank = sys::ExtensionProperties { ty: sys::ExtensionProperties::TYPE, next: std::ptr::null_mut(), extension_name: [0; sys::MAX_EXTENSION_NAME_SIZE], extension_version: 0 };
     let mut props = vec![blank; n as usize];
     // SAFETY: props holds n entries, each with its type set, as the call requires.
     let r = unsafe { f(std::ptr::null(), n, &mut n, props.as_mut_ptr()) };
     if r.into_raw() < 0 {
-        fail(&format!("xrEnumerateInstanceExtensionProperties: {r:?}"));
+        eprintln!("xrEnumerateInstanceExtensionProperties: {r:?}");
+        std::process::exit(RUNTIME_FAILED);
     }
     for p in &props[..n as usize] {
         // SAFETY: the runtime writes a NUL-terminated name inside the fixed array.
