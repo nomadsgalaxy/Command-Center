@@ -201,6 +201,12 @@ pub trait Overlays {
     fn mouse_scale(&mut self, h: Handle, s: [f32; 2]);
     fn place_room(&mut self, h: Handle, m: &Mat);
     fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat);
+    /// The stretch last set, or the runtime's default: 1.0, square texels (openvr.h, IVROverlay_027,
+    /// GetOverlayTexelAspect: "Defaults to 1.0"). A back matches its front's with it (back.rs).
+    fn texel_aspect_of(&self, h: Handle) -> f32;
+    /// The mouse scale last set. openvr.h names no default for it, so one never set (or a failed
+    /// read) reads as [0, 0], what ui.rs started from before. ui.rs scales the mouse's ray by it.
+    fn mouse_scale_of(&self, h: Handle) -> [f32; 2];
 }
 
 /// Sets overlay `h` to `p`: the texture bounds, width, picture stretch, curvature and mouse scale
@@ -258,6 +264,18 @@ impl Overlays for Live {
     fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat) {
         let mut t = sys::HmdMatrix34_t { m: *m };
         call!(ov, SetOverlayTransformTrackedDeviceRelative, h.0, vr::index(dev), &mut t);
+    }
+
+    fn texel_aspect_of(&self, h: Handle) -> f32 {
+        let mut aspect = 1.0;
+        call!(ov, GetOverlayTexelAspect, h.0, &mut aspect);
+        aspect
+    }
+
+    fn mouse_scale_of(&self, h: Handle) -> [f32; 2] {
+        let mut scale = sys::HmdVector2_t { v: [0.0; 2] };
+        call!(ov, GetOverlayMouseScale, h.0, &mut scale);
+        scale.v
     }
 }
 
@@ -339,6 +357,15 @@ pub mod fake {
         fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat) {
             self.0.push(Call::Device(h, vr::index(dev), *m)); // OpenVR's index, as SteamVR gets it
         }
+
+        /// The last one written, or the same defaults as Live's.
+        fn texel_aspect_of(&self, h: Handle) -> f32 {
+            self.texel_of(h).unwrap_or(1.0)
+        }
+
+        fn mouse_scale_of(&self, h: Handle) -> [f32; 2] {
+            self.0.iter().rev().find_map(|c| if let Call::MouseScale(x, s) = c { (*x == h).then_some(*s) } else { None }).unwrap_or([0.0; 2])
+        }
     }
 }
 
@@ -348,6 +375,18 @@ mod tests {
     use super::*;
 
     const M: Mat = [[1.0, 0.0, 0.0, 0.5], [0.0, 1.0, 0.0, 1.5], [0.0, 0.0, 1.0, -2.0]];
+
+    /// The fake reads back what was last written, and before that what a failed read leaves.
+    #[test]
+    fn the_fake_reads_back_what_was_set() {
+        let (mut w, h, other) = (Writes::default(), crate::ids::SurfaceId(1), crate::ids::SurfaceId(2));
+        assert_eq!((w.texel_aspect_of(h), w.mouse_scale_of(h)), (1.0, [0.0; 2]), "nothing written yet");
+        w.texel_aspect(h, 0.5);
+        w.mouse_scale(h, [1920.0, 1080.0]);
+        w.mouse_scale(h, [1280.0, 720.0]);
+        w.texel_aspect(other, 2.0);
+        assert_eq!((w.texel_aspect_of(h), w.mouse_scale_of(h)), (0.5, [1280.0, 720.0]), "the last one, and only its own");
+    }
 
     #[test]
     fn a_bare_placement_writes_only_width_and_transform() {

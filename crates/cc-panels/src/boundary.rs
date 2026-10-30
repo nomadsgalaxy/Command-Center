@@ -28,18 +28,15 @@ const WHOLE: &[(&str, &str)] = &[
 /// `vr::` items that aren't OpenVR: waking the main loop and timing a call.
 const NEUTRAL: &[&str] = &["wake", "timed", "WOKEN", "MAIN", "Handle", "fake"];
 
-const READS: &str = "overlay reads the reviewed design has no call for (texel aspect, mouse scale): to decide in review";
 const STAGE: &str = "Stage: poses, roles and OpenVR's device numbering, kept for logs and R-2 (6c)";
 const SESSION: &str = "Session: the display's rate, the universe, the scene app, start and stop (6d)";
 const FAKES: &str = "tests: SteamVR's events and roles, built for vr::fake";
 
 /// Each file's OpenVR names today, in groups by the step that takes them away.
 const ALLOWED: &[(&str, &str, &[&str])] = &[
-    ("back.rs", READS, &["GetOverlayTexelAspect"]),
     ("control.rs", STAGE, &["vr::devices", "vr::head", "vr::tip"]),
     ("control/machines.rs", STAGE, &["vr::index", "vr::is_real_controller"]),
     ("control/prefs.rs", STAGE, &["vr::index", "vr::is_real_controller"]),
-    ("control/ui.rs", READS, &["GetOverlayMouseScale", "sys::HmdVector2_t"]),
     ("control/ui.rs", STAGE, &["vr::head"]),
     ("control/workspace.rs", STAGE, &["vr::head", "vr::index", "vr::is_real_controller"]),
     ("gather.rs", STAGE, &["vr::head"]),

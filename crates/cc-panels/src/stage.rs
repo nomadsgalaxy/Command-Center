@@ -162,6 +162,14 @@ pub mod fake {
         fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat) {
             self.writes.place_device(h, dev, m);
         }
+
+        fn texel_aspect_of(&self, h: Handle) -> f32 {
+            self.writes.texel_aspect_of(h)
+        }
+
+        fn mouse_scale_of(&self, h: Handle) -> [f32; 2] {
+            self.writes.mouse_scale_of(h)
+        }
     }
 
     impl Stage for Fake {
@@ -264,6 +272,14 @@ pub mod fake {
 
         fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat) {
             Live.place_device(h, dev, m)
+        }
+
+        fn texel_aspect_of(&self, h: Handle) -> f32 {
+            Live.texel_aspect_of(h)
+        }
+
+        fn mouse_scale_of(&self, h: Handle) -> [f32; 2] {
+            Live.mouse_scale_of(h)
         }
     }
 

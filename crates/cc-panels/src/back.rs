@@ -25,7 +25,7 @@ use crate::geometry::{Mat, Placement, V3, chord, dot, norm};
 use crate::overlay::{At, Flag, InputMode, Live, Overlays, Place, Surfaces, apply};
 use crate::poll::Pointing;
 use crate::texture::{self, TexHandle, Textures};
-use crate::{call, vr};
+use crate::vr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -206,10 +206,7 @@ impl Backs {
             let placed = Some((o.matrix(), mm(o.width), mm(o.height), mm(o.curve), tex));
             if b.placed != placed {
                 b.placed = placed;
-                let mut front = 1.0;
-                if tex {
-                    call!(ov, GetOverlayTexelAspect, b.front.0, &mut front);
-                }
+                let front = if tex { Live.texel_aspect_of(b.front) } else { 1.0 };
                 apply(&mut Live, b.h, &back_place(&f.pl, front, tex));
             }
         }

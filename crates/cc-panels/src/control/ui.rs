@@ -8,8 +8,7 @@ use crate::grab::{self, Look, Paint, TagImg, average, line, over, rbox, tint};
 use crate::overlay::Overlays;
 use crate::poll::Pointing;
 use crate::taskbar::{self, LABEL, TAG_ROOM, TAG_TEXT, text_pixel};
-use crate::{call, config, vr};
-use openvr_sys as sys;
+use crate::{config, vr};
 use std::sync::mpsc;
 
 /// ascii.rgba's characters (assets.rs, `ascii`) in file order, which is printable ASCII.
@@ -322,9 +321,8 @@ pub fn next_event(h: vr::Handle) -> Option<crate::events::SurfaceEvent> {
         return None;
     }
     let mut k = crate::kvm::lock();
-    let mut scale = sys::HmdVector2_t { v: [0.0; 2] };
-    call!(ov, GetOverlayMouseScale, h.0, &mut scale);
-    let at = k.extra.zip(k.extra_at()).map(|((pl, _), (u, v))| (((u / pl.width + 0.5) * scale.v[0] as f64) as f32, ((v / pl.height + 0.5) * scale.v[1] as f64) as f32));
+    let scale = crate::overlay::Live.mouse_scale_of(h);
+    let at = k.extra.zip(k.extra_at()).map(|((pl, _), (u, v))| (((u / pl.width + 0.5) * scale[0] as f64) as f32, ((v / pl.height + 0.5) * scale[1] as f64) as f32));
     let (kind, (x, y)) = if !k.extra_mouse.is_empty() {
         let down = k.extra_mouse.remove(0);
         let kind = if down { PointerKind::Down(Button::Left) } else { PointerKind::Up(Button::Left) };

@@ -565,8 +565,10 @@ cc-panels.
    that does `Overlays` does it: every show, hide, flag, input method, sort order, alpha, colour,
    name, visibility and icon file, and `surface.rs`'s create and destroy, each still the one
    OpenVR call it was, in the same order. The few direct `Overlays` writes (mouse scale, width,
-   bounds) go through it too. That took 112 names off the lists. Two reads are left that the
-   design has no call for: a front's texel aspect (back.rs) and an Extra's mouse scale (ui.rs).
+   bounds) go through it too. That took 113 names off the lists. Then `Overlays` gained two reads
+   back of what was set, `texel_aspect_of` (a back matches its front's stretch; SteamVR's default
+   is 1.0) and `mouse_scale_of` (an Extra's mouse ray; openvr.h names no default, so an unset one
+   reads [0, 0]), which the fakes answer from what was written. That took the last 3 of 6b's off.
 7. (1 d) Tests and a pass in the headset.
 
 Each step is its own small branch, and has to pass the same checks before and after:
