@@ -312,16 +312,24 @@ pub fn upload(h: vr::Handle, px: &mut Vec<u8>, tw: usize, th: usize, (w, ht): (f
 pub fn next_event(h: vr::Handle) -> Option<crate::events::SurfaceEvent> {
     use crate::events::{Button, PointerEvent, PointerKind, SurfaceEvent};
     use std::sync::Mutex;
+    // Lock order: SENT, then KVM. SENT is local to this function, so nothing else can take it,
+    // and nothing calls this holding KVM (machines.rs, prefs.rs and workspace.rs take it only
+    // inside their loops over these events): the locks below would never return on a thread that
+    // held it, and the fallback's did that before 6e too. So nothing takes them the other way
+    // round. KVM can still wait here on another thread's hold of it, as any lock of it can.
     static SENT: Mutex<Option<(f32, f32)>> = Mutex::new(None); // the point we last moved to
     if let Some(ev) = crate::poll::Live.next(h) {
         return Some(ev);
     }
     let mut sent = SENT.lock().unwrap();
-    let mut k = crate::kvm::lock();
-    if k.laser.working() {
+    let laser = crate::kvm::lock().laser; // KVM only for this statement
+    if laser.working() {
         *sent = None; // the laser sends its own events now
         return None;
     }
+    // The laser can start working between that check and this lock. The HEALTHY load this
+    // replaced had the same gap, and the next call sees it.
+    let mut k = crate::kvm::lock();
     let scale = crate::overlay::Live.mouse_scale_of(h);
     let at = k.extra.zip(k.extra_at()).map(|((pl, _), (u, v))| (((u / pl.width + 0.5) * scale[0] as f64) as f32, ((v / pl.height + 0.5) * scale[1] as f64) as f32));
     let (kind, (x, y)) = if !k.extra_mouse.is_empty() {
