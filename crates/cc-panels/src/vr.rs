@@ -416,7 +416,13 @@ pub mod fake {
     }
     unsafe extern "C" fn float_prop(_d: u32, p: sys::ETrackedDeviceProperty, _e: *mut sys::ETrackedPropertyError) -> f32 {
         let (_, hz, v2p) = script(|s| s.vsync).unwrap_or_default();
-        if p == sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float { hz } else if p == sys::ETrackedDeviceProperty_Prop_SecondsFromVsyncToPhotons_Float { v2p } else { 0.0 }
+        if p == sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float {
+            hz
+        } else if p == sys::ETrackedDeviceProperty_Prop_SecondsFromVsyncToPhotons_Float {
+            v2p
+        } else {
+            0.0
+        }
     }
     unsafe extern "C" fn width(h: Handle, w: f32) -> sys::EVROverlayError {
         log(format!("SetOverlayWidthInMeters {h} {}", num(w as f64)));
