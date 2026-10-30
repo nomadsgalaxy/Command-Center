@@ -99,8 +99,9 @@ mod tests {
             (e.eventType, e.trackedDeviceIndex) = (t, dev);
             e
         };
-        let reset = sys::EVREventType_VREvent_StandingZeroPoseReset;
-        let events = [ev(sys::EVREventType_VREvent_TrackedDeviceActivated, 3), ev(sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded, 0), ev(reset, 0), ev(reset, 0)];
+        let (reset, ended) = (sys::EVREventType_VREvent_StandingZeroPoseReset, sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded);
+        // a controller's interaction ending isn't the headset coming off: only device 0 is worn
+        let events = [ev(sys::EVREventType_VREvent_TrackedDeviceActivated, 3), ev(ended, 3), ev(ended, 0), ev(reset, 0), ev(reset, 0)];
         let _vr = vr::fake::install(vr::fake::Script { universe: 8, sys_events: events.into(), ..Default::default() });
         let mut q = Queue::new(7);
         let mut got = vec![];
@@ -111,7 +112,8 @@ mod tests {
             got,
             [
                 (SessionEvent::Other(sys::EVREventType_VREvent_TrackedDeviceActivated), sys::EVREventType_VREvent_TrackedDeviceActivated),
-                (SessionEvent::Worn(false), sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded),
+                (SessionEvent::Other(ended), ended),
+                (SessionEvent::Worn(false), ended),
                 (SessionEvent::RoomChanged(8), reset),
                 (SessionEvent::Relocalized, reset),
             ]
