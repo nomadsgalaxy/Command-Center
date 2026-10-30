@@ -149,6 +149,53 @@ pub fn dev(i: u32) -> crate::ids::Dev {
     }
 }
 
+/// One overlay event, as the neutral event the core reads (events.rs): one for one, in order, with
+/// SteamVR's own coordinates and nothing made up. Anything that isn't a pointer, the keyboard or the
+/// tab's close is `Other`, with SteamVR's number.
+pub fn surface_event(e: &VREvent_t) -> crate::events::SurfaceEvent {
+    use crate::events::{Button, KeyboardEvent as K, PointerEvent, PointerKind as P, SurfaceEvent as S};
+    let m = unsafe { e.data.mouse }; // what the code read for every pointer event, scrolls too
+    let button = |b: u32| match b {
+        sys::EVRMouseButton_VRMouseButton_Left => Button::Left,
+        sys::EVRMouseButton_VRMouseButton_Right => Button::Right,
+        sys::EVRMouseButton_VRMouseButton_Middle => Button::Middle,
+        b => Button::Other(b),
+    };
+    let scroll = |smooth| {
+        let s = unsafe { e.data.scroll };
+        P::Scroll { dx: s.xdelta, dy: s.ydelta, smooth }
+    };
+    let kind = match e.eventType {
+        sys::EVREventType_VREvent_FocusEnter => P::Enter,
+        sys::EVREventType_VREvent_MouseMove => P::Move,
+        sys::EVREventType_VREvent_MouseButtonDown => P::Down(button(m.button)),
+        sys::EVREventType_VREvent_MouseButtonUp => P::Up(button(m.button)),
+        sys::EVREventType_VREvent_ScrollDiscrete => scroll(false),
+        sys::EVREventType_VREvent_ScrollSmooth => scroll(true),
+        sys::EVREventType_VREvent_FocusLeave => P::Leave,
+        t => {
+            let k = unsafe { e.data.keyboard };
+            return match t {
+                sys::EVREventType_VREvent_KeyboardCharInput => S::Keyboard(K::Char { user: k.uUserValue, text: typed(&k.cNewInput) }),
+                sys::EVREventType_VREvent_KeyboardDone => S::Keyboard(K::Done { user: k.uUserValue }),
+                sys::EVREventType_VREvent_KeyboardClosed => S::Keyboard(K::Closed { user: k.uUserValue }),
+                sys::EVREventType_VREvent_OverlayClosed => S::Closed,
+                t => S::Other(t),
+            };
+        }
+    };
+    S::Pointer(PointerEvent { kind, x: m.x, y: m.y, from: dev(e.trackedDeviceIndex), age: e.eventAgeSeconds })
+}
+
+/// SteamVR's keyboard's new characters: the bytes up to a NUL (all 8 without one), if they're
+/// UTF-8 and not empty.
+pub fn typed(input: &[std::ffi::c_char; 8]) -> Option<String> {
+    #[allow(clippy::unnecessary_cast)] // c_char is u8 on the Frame (arm64) but i8 on x86 hosts
+    let bytes = input.map(|c| c as u8);
+    let n = bytes.iter().position(|&b| b == 0).unwrap_or(8);
+    String::from_utf8(bytes[..n].to_vec()).ok().filter(|s| !s.is_empty())
+}
+
 /// OpenVR's tracked-device index for `d` (the inverse of `dev`).
 pub fn index(d: crate::ids::Dev) -> u32 {
     use crate::ids::Dev;
@@ -156,7 +203,9 @@ pub fn index(d: crate::ids::Dev) -> u32 {
         Dev::Head => 0,
         Dev::Mouse => sys::k_unMaxTrackedDeviceCount as u32,
         Dev::Controller(c) => {
-            // made only by `dev`, so never the headset's or the mouse's number: those come back as Head or Mouse
+            // made only by `dev`, so never the headset's or the mouse's number: those come back as Head
+            // or Mouse. A debug-build guard only, not a runtime check: a release build passes 0 or
+            // 64 through to SteamVR, as before.
             debug_assert!(c.raw() != 0 && c.raw() != sys::k_unMaxTrackedDeviceCount as u32, "controller {} is the headset's or the mouse's number", c.raw());
             c.raw()
         }
@@ -634,6 +683,53 @@ mod tests {
     #[should_panic(expected = "the headset's or the mouse's number")]
     fn a_controller_numbered_0_is_refused() {
         super::index(crate::ids::Dev::Controller(crate::ids::Ctl::new(0)));
+    }
+
+    /// Each overlay event becomes its neutral event one for one, with SteamVR's own numbers: the
+    /// device converted, the mouse data kept for every pointer kind (a scroll's x and y are its
+    /// deltas, as the code read them), a button SteamVR doesn't name kept as Other, and anything
+    /// else Other by its type.
+    #[test]
+    fn each_overlay_event_translates_one_for_one() {
+        use crate::events::{Button, KeyboardEvent as K, PointerEvent, PointerKind as P, SurfaceEvent as S};
+        use crate::ids::{Ctl, Dev};
+        use openvr_sys as sys;
+        let mouse = |t: u32, b: u32| {
+            let mut e: super::VREvent_t = Default::default();
+            (e.eventType, e.trackedDeviceIndex, e.eventAgeSeconds) = (t, 3, 0.25);
+            e.data.mouse = sys::VREvent_Mouse_t { x: 0.5, y: 0.75, button: b, cursorIndex: 0 };
+            e
+        };
+        let at = |kind| S::Pointer(PointerEvent { kind, x: 0.5, y: 0.75, from: Dev::Controller(Ctl::new(3)), age: 0.25 });
+        assert_eq!(super::surface_event(&mouse(sys::EVREventType_VREvent_MouseMove, 0)), at(P::Move));
+        assert_eq!(super::surface_event(&mouse(sys::EVREventType_VREvent_MouseButtonDown, sys::EVRMouseButton_VRMouseButton_Left)), at(P::Down(Button::Left)));
+        assert_eq!(super::surface_event(&mouse(sys::EVREventType_VREvent_MouseButtonUp, sys::EVRMouseButton_VRMouseButton_Right)), at(P::Up(Button::Right)));
+        assert_eq!(super::surface_event(&mouse(sys::EVREventType_VREvent_MouseButtonDown, sys::EVRMouseButton_VRMouseButton_Middle)), at(P::Down(Button::Middle)));
+        assert_eq!(super::surface_event(&mouse(sys::EVREventType_VREvent_MouseButtonDown, 8)), at(P::Down(Button::Other(8))));
+        assert_eq!(super::surface_event(&mouse(sys::EVREventType_VREvent_FocusEnter, 0)), at(P::Enter));
+        assert_eq!(super::surface_event(&mouse(sys::EVREventType_VREvent_FocusLeave, 0)), at(P::Leave));
+        let mut s = mouse(sys::EVREventType_VREvent_ScrollDiscrete, 0);
+        s.data.scroll = sys::VREvent_Scroll_t { xdelta: 0.0, ydelta: -1.0, unused: 0, viewportscale: 1.0, cursorIndex: 0 };
+        assert_eq!(super::surface_event(&s), S::Pointer(PointerEvent { kind: P::Scroll { dx: 0.0, dy: -1.0, smooth: false }, x: 0.0, y: -1.0, from: Dev::Controller(Ctl::new(3)), age: 0.25 }), "a scroll's x and y are its deltas");
+        s.eventType = sys::EVREventType_VREvent_ScrollSmooth;
+        assert!(matches!(super::surface_event(&s), S::Pointer(PointerEvent { kind: P::Scroll { smooth: true, .. }, .. })));
+        let mut k: super::VREvent_t = Default::default();
+        k.eventType = sys::EVREventType_VREvent_KeyboardCharInput;
+        k.data.keyboard.uUserValue = 7;
+        for (i, c) in b"ab".iter().enumerate() {
+            unsafe { k.data.keyboard.cNewInput[i] = *c as std::ffi::c_char };
+        }
+        assert_eq!(super::surface_event(&k), S::Keyboard(K::Char { user: 7, text: Some("ab".into()) }));
+        k.data.keyboard.cNewInput = [0xffu8 as std::ffi::c_char; 8];
+        assert_eq!(super::surface_event(&k), S::Keyboard(K::Char { user: 7, text: None }), "not text");
+        k.eventType = sys::EVREventType_VREvent_KeyboardDone;
+        assert_eq!(super::surface_event(&k), S::Keyboard(K::Done { user: 7 }));
+        k.eventType = sys::EVREventType_VREvent_KeyboardClosed;
+        assert_eq!(super::surface_event(&k), S::Keyboard(K::Closed { user: 7 }));
+        k.eventType = sys::EVREventType_VREvent_OverlayClosed;
+        assert_eq!(super::surface_event(&k), S::Closed);
+        k.eventType = sys::EVREventType_VREvent_OverlayFocusChanged;
+        assert_eq!(super::surface_event(&k), S::Other(sys::EVREventType_VREvent_OverlayFocusChanged));
     }
 
     /// A NUL in an overlay's name or a picture's path is an error, not a panic.

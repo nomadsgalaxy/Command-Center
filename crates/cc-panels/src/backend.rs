@@ -13,67 +13,8 @@ use crate::geometry::{Mat, V3};
 
 pub use crate::ids::{Ctl, Dev, Hand, SurfaceId};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Button {
-    Left,
-    Right,
-    Middle,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PointerKind {
-    Enter,
-    Move,
-    Down(Button),
-    Up(Button),
-    /// `smooth` is SteamVR's ScrollSmooth against ScrollDiscrete. The panels take both, grab.rs's
-    /// cards only discrete, so the difference is kept.
-    Scroll {
-        dx: f32,
-        dy: f32,
-        smooth: bool,
-    },
-    Leave,
-}
-
-/// A pointer on a surface. x and y are in the surface's pointer units (what `Overlays::mouse_scale`
-/// set: pixels for a panel, metres for a card), from its bottom left, as SteamVR's mouse events are
-/// now. So `geometry::surface_point` and `from_top` stay in the core.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PointerEvent {
-    pub kind: PointerKind,
-    pub x: f32,
-    pub y: f32,
-    pub from: Dev,
-    /// How old the event is, in seconds (VREvent_t's eventAgeSeconds; 0 where a backend doesn't know).
-    pub age: f32,
-}
-
-/// The keyboard's events. `user` is the value the keyboard was opened with (osk.rs uses it for
-/// which panel is typing).
-#[derive(Clone, Debug, PartialEq)]
-pub enum KeyboardEvent {
-    /// What was typed since the last one, as UTF-8 (up to 8 bytes on SteamVR).
-    Char {
-        user: u64,
-        text: String,
-    },
-    Done {
-        user: u64,
-    },
-    Closed {
-        user: u64,
-    },
-}
-
-/// What one surface's queue gives (the ten `PollNextOverlayEvent` loops).
-#[derive(Clone, Debug, PartialEq)]
-pub enum SurfaceEvent {
-    Pointer(PointerEvent),
-    Keyboard(KeyboardEvent),
-    /// SteamVR's close button on the dashboard tab's bar (control/dashtab.rs).
-    Closed,
-}
+#[allow(unused_imports)] // the design names them; the core takes them from events.rs
+pub use crate::events::{Button, KeyboardEvent, PointerEvent, PointerKind, SurfaceEvent};
 
 /// What the runtime says about our session, from its events. On OpenVR an overlay app is always
 /// running, visible and focused, so this only changes on OpenXR. It isn't whether the headset is

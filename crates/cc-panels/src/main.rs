@@ -24,6 +24,7 @@ mod clipboard;
 mod config;
 mod control;
 mod ffi;
+mod events;
 mod gather;
 mod gaze;
 mod geometry;

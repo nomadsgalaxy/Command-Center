@@ -45,7 +45,9 @@ pub struct Ctl(u32);
 
 impl Ctl {
     /// The backend's controller `id`. On OpenVR that's a tracked-device index, never 0 (the
-    /// headset) or 64 (the mouse): those are `Dev::Head` and `Dev::Mouse`, and `vr::index` checks.
+    /// headset) or 64 (the mouse): those are `Dev::Head` and `Dev::Mouse`, and `vr::index` checks
+    /// in a debug build. Being crate-private documents that rule more than it enforces it: any
+    /// code in the crate can still call it.
     pub(crate) const fn new(id: u32) -> Ctl {
         Ctl(id)
     }

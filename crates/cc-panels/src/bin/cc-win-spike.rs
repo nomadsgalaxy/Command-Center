@@ -15,6 +15,9 @@ mod back; // capture.rs tells it what went up, so it has to be here
 mod capture;
 #[path = "../geometry.rs"]
 mod geometry;
+#[path = "../events.rs"]
+#[allow(dead_code)] // the spike reads its events raw
+mod events;
 #[path = "../ids.rs"]
 mod ids;
 #[path = "../limits.rs"]
