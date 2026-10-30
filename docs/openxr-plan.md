@@ -541,6 +541,9 @@ inside what the fixtures pin, not stood in for. The scripts, with the ones that 
 6. **Surface gone with a capture outstanding** (in, on Plasma's bar): press, then the bar hides as
    it does when its window closes, which lets go of the press where the pointer is. The late Up
    and a stray move then send nothing. A window panel's version is still to write.
+   Also in: `golden_carry_reads_poses_at_the_predicted_time`, a carry with SteamVR's vsync running,
+   which pins the time poses are asked for (`vr::to_photons`, `Frame::predicted` in the
+   boundary).
 7. **Roles swap mid-drag** (in, grab.rs with the wrist taskbar): the right hand picks a panel up,
    then the left and right roles swap. The wrist taskbar asks for the off hand's controller every
    frame, so it moves to the other controller, while the drag keeps the index it started with

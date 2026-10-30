@@ -3258,6 +3258,35 @@ mod tests {
             crate::golden::check("grab-dock", &log.0);
         }
 
+        /// Golden: a carry with SteamVR's vsync running, so this frame's picture is 18 ms from the
+        /// eyes (4 ms since vsync at 90 Hz, plus 11 ms to photons). The poses the carry reads are
+        /// asked for at that time (vr::to_photons), which is Frame::predicted in the boundary.
+        #[test]
+        fn golden_carry_reads_poses_at_the_predicted_time() {
+            let p = flat();
+            let (mut g, mut k, mut s, _vr) = golden_world(p);
+            crate::vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).vsync = Some((0.004, 90.0, 0.011));
+            let mut log = crate::golden::Log::default();
+            let times = |log: &mut crate::golden::Log| {
+                let t = std::mem::take(&mut crate::vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).pose_times);
+                let mut t: Vec<String> = t.iter().map(|&x| crate::golden::num(x as f64)).collect();
+                t.sort();
+                t.dedup();
+                log.line(format!("poses asked for at {}", t.join(", ")));
+            };
+            log.step("the right hand takes the bar");
+            aim(HAND, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &s);
+            times(&mut log);
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("carried");
+            aim(HAND, [0.35, 1.25, -0.4], p.c);
+            g.carry(&mut k, &mut s, Instant::now());
+            times(&mut log);
+            golden_observe(&mut log, &g, &k, &mut s);
+            crate::golden::check("grab-carry-predicted", &log.0);
+        }
+
         /// Golden: a carry whose controller goes untracked, blinks back, then goes for good,
         /// after which a controller with another index picks the panel up and the old one's
         /// late Up arrives. What happens today is what's pinned.

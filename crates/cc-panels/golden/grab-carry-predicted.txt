@@ -1,0 +1,14 @@
+== the right hand takes the bar
+  poses asked for at 0.01811
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+== carried
+  poses asked for at 0.01811
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [0.99905 -0.01347 0.04150 0.00194; 0.01169 0.99901 0.04285 1.39917; -0.04204 -0.04232 0.99822 -1.49389]
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.99905 -0.01347 0.04150 0.00194; 0.01169 0.99901 0.04285 1.39917; -0.04204 -0.04232 0.99822 -1.49389]

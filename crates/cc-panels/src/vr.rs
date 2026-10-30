@@ -309,6 +309,8 @@ pub mod fake {
         pub roles: Vec<(sys::ETrackedControllerRole, u32)>, // which device has which hand role; none is Invalid
         pub connected: Vec<u32>,                            // on but untracked (a device in poses is on and tracked)
         pub types: Vec<(u32, String)>,                      // a device's controller type (cc_pointer's ends in _pointer); none is ""
+        pub vsync: Option<(f32, f32, f32)>,                 // seconds since vsync, display Hz, vsync to photons; none is no vsync, so to_photons is 0
+        pub pose_times: Vec<f32>,                           // the predicted times poses were asked for, in order
     }
 
     pub static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -408,9 +410,13 @@ pub mod fake {
     unsafe extern "C" fn role_index(r: sys::ETrackedControllerRole) -> u32 {
         script(|s| s.roles.iter().find(|x| x.0 == r).map_or(sys::k_unTrackedDeviceIndexInvalid as u32, |x| x.1))
     }
-    // no vsync: to_photons is 0, so poses are read at now and a replay doesn't depend on the clock
-    unsafe extern "C" fn vsync(_since: *mut f32, _frame: *mut u64) -> bool {
-        false
+    // no vsync unless the script has one: to_photons is then 0, so poses are read at now
+    unsafe extern "C" fn vsync(since: *mut f32, _frame: *mut u64) -> bool {
+        script(|s| s.vsync).map(|v| unsafe { *since = v.0 }).is_some()
+    }
+    unsafe extern "C" fn float_prop(_d: u32, p: sys::ETrackedDeviceProperty, _e: *mut sys::ETrackedPropertyError) -> f32 {
+        let (_, hz, v2p) = script(|s| s.vsync).unwrap_or_default();
+        if p == sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float { hz } else if p == sys::ETrackedDeviceProperty_Prop_SecondsFromVsyncToPhotons_Float { v2p } else { 0.0 }
     }
     unsafe extern "C" fn width(h: Handle, w: f32) -> sys::EVROverlayError {
         log(format!("SetOverlayWidthInMeters {h} {}", num(w as f64)));
@@ -445,9 +451,11 @@ pub mod fake {
         log(format!("HideOverlay {h}"));
         0
     }
-    unsafe extern "C" fn poses(_o: sys::ETrackingUniverseOrigin, _t: f32, out: *mut sys::TrackedDevicePose_t, n: u32) {
+    // the poses don't move with `t`: the script's are where each device is at whatever time is asked
+    unsafe extern "C" fn poses(_o: sys::ETrackingUniverseOrigin, t: f32, out: *mut sys::TrackedDevicePose_t, n: u32) {
         let out = unsafe { std::slice::from_raw_parts_mut(out, n as usize) };
         script(|s| {
+            s.pose_times.push(t);
             for (dev, m) in &s.poses {
                 if let Some(p) = out.get_mut(*dev as usize) {
                     p.mDeviceToAbsoluteTracking.m = *m;
@@ -519,6 +527,7 @@ pub mod fake {
                 GetTrackedDeviceClass: Some(class),
                 GetTrackedDeviceIndexForControllerRole: Some(role_index),
                 GetTimeSinceLastVsync: Some(vsync),
+                GetFloatTrackedDeviceProperty: Some(float_prop),
                 ..Default::default()
             }),
             ipc: leak(Default::default()),

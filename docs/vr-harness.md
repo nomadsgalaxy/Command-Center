@@ -140,7 +140,10 @@ CC_GOLDEN_WRITE=1 cargo test -p cc-panels golden
 
 Numbers are written to 5 decimals with no `-0`, so the last bits of a float, which can differ
 between x86_64 and aarch64, don't count, and anything from an unordered collection is sorted
-before it's written. The stand-in has no vsync, so `to_photons` is 0 and poses are read at now.
+before it's written. The stand-in has no vsync unless a script gives it one (`vsync`: seconds since vsync, the display's
+Hz and vsync to photons), so `to_photons` is usually 0 and poses are read at now. The fake's poses
+don't move with the time asked for, but it records each time (`pose_times`), and
+`golden_carry_reads_poses_at_the_predicted_time` pins it.
 
 Recorded isn't blessed. A fixture pins what the code does today, and where that may be a bug, the
 test writes a `FLAG:` line into it, so the fixture says so and a fix shows as that line going.
