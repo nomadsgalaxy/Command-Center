@@ -7,11 +7,11 @@
 //!
 //! What stays out of here on purpose: placement maths (`overlay::Place`, `At`, `apply`), geometry,
 //! the KVM, sessions to computers and the layout. None of them know which runtime is underneath.
-use std::os::fd::BorrowedFd;
-
 use crate::geometry::{Mat, V3};
 
 pub use crate::ids::{Ctl, Dev, Hand, SurfaceId};
+#[allow(unused_imports)] // the design names them; the core takes them from texture.rs
+pub use crate::texture::{Dmabuf, Refused, TexHandle, Textures};
 
 #[allow(unused_imports)] // the design names them; the core takes them from events.rs
 pub use crate::events::{Button, KeyboardEvent, PointerEvent, PointerKind, SessionEvent, SessionState, SurfaceEvent};
@@ -80,48 +80,6 @@ pub trait Overlays {
     fn mouse_scale(&mut self, s: SurfaceId, scale: [f32; 2]);
     fn place_room(&mut self, s: SurfaceId, m: &Mat);
     fn place_device(&mut self, s: SurfaceId, dev: Dev, m: &Mat);
-}
-
-/// A dmabuf to show: one plane, as gpu.rs and capture.rs import them now.
-pub struct Dmabuf<'a> {
-    pub fd: BorrowedFd<'a>,
-    pub width: u32,
-    pub height: u32,
-    pub fourcc: u32,
-    pub modifier: u64,
-    pub offset: u32,
-    pub stride: u32,
-}
-
-/// An imported picture: the IPC resource handle on OpenVR.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TexHandle(pub u64);
-
-/// Pictures (gpu.rs, capture.rs). The GBM buffers and their stale tracking stay in the core.
-///
-/// Who owns what, as OpenVR works today (docs/openxr-plan.md, 2.3, has the details):
-///
-/// - **`import` doesn't take the fd.** The runtime takes its own reference, so the caller can close
-///   its fd straight after (gpu.rs does; capture.rs drops its dup with the frame). The picture
-///   stays alive until `release`.
-/// - **The core may write a buffer again once a tick has passed since `present` replaced it** on
-///   screen. Nothing from the runtime says it's done reading: the core assumes it has finished by
-///   its next frame. gpu.rs double-buffers and holds the replaced one for a tick (`held`); capture.rs
-///   holds the shown buffer and the one before it back from PipeWire.
-/// - **The producer says when it's ready, before `present`.** For a PipeWire dmabuf the core polls
-///   the fd for its implicit fence and doesn't present until it's readable. For our own GBM
-///   buffers the copy is done on the CPU, mapped and unmapped, so it's ready when the copy returns.
-/// - **`release` returns at once, with no signal when the runtime has let go.** The core frees the
-///   GBM buffer right after it. Only a UI overlay's resize keeps the old pair a tick longer
-///   (gpu.rs `raw_tick`); a panel's resize frees both at once, the shown one included.
-/// - **One handle can be on two surfaces:** a panel's back shows the panel's handle (back.rs).
-pub trait Textures {
-    fn import(&mut self, buf: &Dmabuf) -> Result<TexHandle, String>;
-    fn present(&mut self, s: SurfaceId, t: TexHandle);
-    fn release(&mut self, t: TexHandle);
-    /// CPU pixels, RGBA (SetOverlayRaw today). False if the runtime wouldn't take them.
-    fn present_pixels(&mut self, s: SurfaceId, px: &[u8], w: usize, h: usize) -> bool;
-    fn clear(&mut self, s: SurfaceId);
 }
 
 /// Pointer events for a surface. There are two contracts, and only the first is in force now:

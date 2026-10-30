@@ -40,6 +40,7 @@ use crate::kvm::Kvm;
 use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, PUSH_ACCEL, PUSH_RATE, PUSH_STREAK, ZOOM, ZOOM_NOTCH};
 use crate::overlay::{At, Live, Overlays, Place, apply};
 use crate::stage::Stage;
+use crate::texture::Textures;
 use crate::theme::{self, Accent, Rgb, Theme, Tokens};
 use crate::{HIDDEN, Source, call, panels, vr};
 use openvr_sys as sys;
@@ -790,10 +791,10 @@ pub fn set_raw(h: vr::Handle, px: &[u8], w: usize, ht: usize) -> bool {
     if crate::gpu::show_raw(h, px, w, ht) {
         return true;
     }
-    match vr::timed(|| format!("SetOverlayRaw {w}x{ht}"), || call!(ov, SetOverlayRaw, h.0, px.as_ptr() as *mut _, w as u32, ht as u32, 4)) {
-        0 => true,
-        e => {
-            eprintln!("controls: SteamVR refused a {w}x{ht} texture: {}", vr::error_name(e));
+    match vr::timed(|| format!("SetOverlayRaw {w}x{ht}"), || crate::texture::Live.present_pixels(h, px, w, ht)) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("controls: SteamVR refused a {w}x{ht} texture: {e}");
             false
         }
     }
@@ -1041,8 +1042,7 @@ fn backdrop_colour(t: &Tokens) -> [u8; 4] {
 }
 
 fn paint_backdrop(h: vr::Handle) {
-    let mut px = backdrop_colour(&theme::get().win).repeat(16);
-    call!(ov, SetOverlayRaw, h.0, px.as_mut_ptr() as *mut _, 4, 4, 4);
+    let _ = crate::texture::Live.present_pixels(h, &backdrop_colour(&theme::get().win).repeat(16), 4, 4);
 }
 
 /// Every tracked device's pose in standing space, as it'll be when this frame's picture reaches

@@ -51,6 +51,7 @@ mod stage;
 mod surface;
 mod tab;
 mod taskbar;
+mod texture;
 mod theme;
 mod trace;
 mod vnc;
@@ -65,6 +66,7 @@ use std::sync::atomic::Ordering::*;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use texture::Textures;
 
 pub static QUIT: AtomicBool = AtomicBool::new(false);
 pub static HIDDEN: AtomicBool = AtomicBool::new(false); // every panel hidden, by the camera scan or the user
@@ -297,7 +299,7 @@ impl Panel {
     pub fn empty(&self) {
         self.set_live(false);
         call!(ov, HideOverlay, self.overlay.0);
-        call!(ov, ClearOverlayTexture, self.overlay.0); // so the next fill shows nothing until its own first frame
+        texture::Live.clear(self.overlay); // so the next fill shows nothing until its own first frame
         {
             let mut k = crate::kvm::lock();
             if k.kbd == self.index {

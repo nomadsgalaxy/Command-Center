@@ -23,6 +23,7 @@
 //! left backwards and turn it round. The card is one-sided too, so it's no use from behind.
 use crate::geometry::{Mat, Placement, V3, chord, dot, norm};
 use crate::overlay::{At, Live, Place, apply};
+use crate::texture::{self, TexHandle, Textures};
 use crate::{call, vr};
 use openvr_sys as sys;
 use std::sync::Mutex;
@@ -63,9 +64,8 @@ fn entry(t: &mut Vec<(vr::Handle, u64, vr::Handle)>, front: vr::Handle) -> &mut 
     &mut t[n]
 }
 
-fn texture(h: vr::Handle, mut tex: u64) -> bool {
-    let mut t = sys::Texture_t { handle: &mut tex as *mut _ as *mut std::ffi::c_void, eType: sys::ETextureType_TextureType_SharedTextureHandle, eColorSpace: sys::EColorSpace_ColorSpace_Gamma };
-    call!(ov, SetOverlayTexture, h.0, &mut t) == 0
+fn texture(h: vr::Handle, tex: u64) -> bool {
+    texture::Live.present(h, TexHandle(tex)).is_ok()
 }
 
 /// Does a panel (centre c, front z) face away from the eye? `was` is last time's answer, for
@@ -196,8 +196,7 @@ impl Backs {
                     b.tried = e.1;
                     b.tex = e.1 != 0 && texture(b.h, e.1);
                     if !b.tex {
-                        let mut px = FILL.repeat(16);
-                        call!(ov, SetOverlayRaw, b.h.0, px.as_mut_ptr() as *mut _, 4, 4, 4);
+                        let _ = texture::Live.present_pixels(b.h, &FILL.repeat(16), 4, 4);
                     }
                 }
                 b.tex

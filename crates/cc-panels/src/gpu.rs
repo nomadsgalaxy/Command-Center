@@ -2,7 +2,8 @@
 //! (B, G, R, then an ignored byte, which is DRM's XRGB8888), imported into SteamVR once.
 //! We go this way because ordinary SteamVR texture uploads on the Frame refuse anything over
 //! ~1920x1080, and imported buffers have no limit.
-use crate::{Panel, call, vr};
+use crate::texture::{self, Dmabuf, TexHandle, Textures};
+use crate::{Panel, vr};
 use openvr_sys as sys;
 use std::os::raw::{c_int, c_void};
 
@@ -181,24 +182,23 @@ impl Buffers {
                 eprintln!("{name}: no {w}x{h} GPU buffer");
                 return false;
             }
-            let mut a: sys::DmabufAttributes_t = Default::default();
-            unsafe {
-                a.unWidth = w as u32;
-                a.unHeight = h as u32;
-                (a.unDepth, a.unMipLevels, a.unArrayLayers, a.unSampleCount) = (1, 1, 1, 1);
-                a.unFormat = format; // XRGB8888 for panels, since they're always opaque
-                a.ulModifier = gbm_bo_get_modifier(s.bo[k]);
-                a.unPlaneCount = 1;
-                a.plane[0].unOffset = gbm_bo_get_offset(s.bo[k], 0);
-                a.plane[0].unStride = gbm_bo_get_stride(s.bo[k]);
-                a.plane[0].nFd = gbm_bo_get_fd(s.bo[k]);
-            }
-            let ok = vr::timed(|| format!("{name}: ImportDmabuf {w}x{h}"), || call!(ipc, ImportDmabuf, sys::EVRApplicationType_VRApplication_Overlay, &mut a, &mut self.handle[k]));
-            unsafe { libc::close(a.plane[0].nFd) };
-            if !ok {
+            let (modifier, offset, stride, fd) = unsafe { (gbm_bo_get_modifier(s.bo[k]), gbm_bo_get_offset(s.bo[k], 0), gbm_bo_get_stride(s.bo[k]), gbm_bo_get_fd(s.bo[k])) };
+            let buf = Dmabuf {
+                fd: unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }, // closed just below; the runtime keeps its own
+                width: w as u32,
+                height: h as u32,
+                fourcc: format, // XRGB8888 for panels, since they're always opaque
+                modifier,
+                offset,
+                stride,
+            };
+            let got = vr::timed(|| format!("{name}: ImportDmabuf {w}x{h}"), || texture::Live.import(&buf));
+            unsafe { libc::close(fd) };
+            let Some(got) = got else {
                 eprintln!("{name}: SteamVR won't import a {w}x{h} buffer");
                 return false;
-            }
+            };
+            self.handle[k] = got.0;
         }
         s.have = s.want;
         true
@@ -207,7 +207,7 @@ impl Buffers {
     pub fn free(&mut self, s: &mut Shared) {
         for k in 0..2 {
             if self.handle[k] != 0 {
-                call!(ipc, UnrefResource, self.handle[k]);
+                texture::Live.release(TexHandle(self.handle[k]));
                 self.handle[k] = 0;
             }
             if !s.bo[k].is_null() {
@@ -246,15 +246,14 @@ impl Buffers {
         let Some(k) = s.flip() else { return };
         // Still under the lock. SteamVR may read the old buffer until its next frame, so the RDP
         // thread leaves it alone until the next tick (held).
-        let mut t = sys::Texture_t { handle: &mut self.handle[k] as *mut _ as *mut c_void, eType: sys::ETextureType_TextureType_SharedTextureHandle, eColorSpace: sys::EColorSpace_ColorSpace_Gamma };
-        match call!(ov, SetOverlayTexture, p.overlay.0, &mut t) {
-            0 => {
+        match texture::Live.present(p.overlay, TexHandle(self.handle[k])) {
+            Ok(()) => {
                 self.uploads += 1;
                 crate::back::shown(p.overlay, self.handle[k]); // its back too, if it has one
             }
-            e => {
+            Err(e) => {
                 s.unflip();
-                eprintln!("{}: upload failed: {}", p.v.name, vr::error_name(e));
+                eprintln!("{}: upload failed: {e}", p.v.name);
             }
         }
     }
@@ -319,14 +318,13 @@ pub fn show_raw(h: vr::Handle, px: &[u8], w: usize, ht: usize) -> bool {
     }
     unsafe { copy_rect(px.as_ptr(), w * 4, dst as *mut u8, stride as usize, w, ht, false) };
     gbm(|| unsafe { gbm_bo_unmap(r.s.bo[k], data) });
-    let mut t = sys::Texture_t { handle: &mut r.b.handle[k] as *mut _ as *mut c_void, eType: sys::ETextureType_TextureType_SharedTextureHandle, eColorSpace: sys::EColorSpace_ColorSpace_Gamma };
-    match call!(ov, SetOverlayTexture, h.0, &mut t) {
-        0 => {
+    match texture::Live.present(h, TexHandle(r.b.handle[k])) {
+        Ok(()) => {
             (r.s.shown, r.s.held) = (k, true); // SteamVR may read the old one until its next frame
             true
         }
-        e => {
-            eprintln!("overlay {h}: upload failed: {}", vr::error_name(e));
+        Err(e) => {
+            eprintln!("overlay {h}: upload failed: {e}");
             false
         }
     }

@@ -28,6 +28,8 @@ mod overlay; // back.rs places its sheets through it
 mod session;
 #[path = "../surface.rs"]
 mod surface; // back.rs makes its overlays through it
+#[path = "../texture.rs"]
+mod texture; // capture.rs and back.rs show their pictures through it
 #[path = "../vr.rs"]
 mod vr;
 

@@ -213,6 +213,7 @@ impl Laser {
 
 // ------------------------------------------------------------------ live: the link and the driver
 
+use crate::texture::Textures;
 use crate::{call, vr};
 use openvr_sys as sys;
 use std::os::linux::net::SocketAddrExt;
@@ -383,8 +384,7 @@ impl Beam {
         // Keeps SteamVR's laser mouse on while the dashboard is closed, with a trick: an
         // invisible interactive overlay far below you, only shown while our laser works.
         let lasermode = crate::surface::create(crate::surface::Kind::LaserMode, None, "controlcenter.lasermode", "Command Center laser mode").unwrap_or(crate::vr::Handle::NONE);
-        let mut px = [0u8; 4 * 4 * 4];
-        call!(ov, SetOverlayRaw, lasermode.0, px.as_mut_ptr() as *mut _, 4, 4, 4);
+        let _ = crate::texture::Live.present_pixels(lasermode, &[0u8; 4 * 4 * 4], 4, 4);
         call!(ov, SetOverlayWidthInMeters, lasermode.0, 0.001);
         call!(ov, SetOverlayFlag, lasermode.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
         set_dominant(dominant_hand());

@@ -6,15 +6,15 @@
 //!
 //! The format is BGRx, which is DRM's XRGB8888, so gpu.rs already imports it. We offer a LINEAR
 //! DMA-BUF first, since that's the only modifier SteamVR takes from us, then shared memory.
-use crate::{call, vr};
-use openvr_sys as sys;
+use crate::texture::{self, Dmabuf, Textures};
+use crate::vr;
 use pipewire as pw;
 use pw::spa;
 use pw::spa::pod::{ChoiceValue, Object, Pod, Property, PropertyFlags, Value};
 use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle, SpaTypes};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::os::fd::{BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -444,7 +444,7 @@ fn fits(len: usize, off: usize, chunk: u32, stride: u32, w: u32, h: u32) -> bool
 /// may still be sampling it. Older ones go back.
 #[derive(Default)]
 pub struct Shown {
-    handles: HashMap<BufId, sys::SharedTextureHandle_t>,
+    handles: HashMap<BufId, texture::TexHandle>,
     held: [Option<BufId>; 2],
     pub size: (u32, u32),
     pub shown: u32, // frames put on the overlay
@@ -458,7 +458,7 @@ impl Shown {
         let gone = std::mem::take(&mut feed.s.lock().unwrap().gone);
         for b in gone {
             if let Some(h) = self.handles.remove(&b) {
-                call!(ipc, UnrefResource, h);
+                texture::Live.release(h);
             }
             self.held.iter_mut().filter(|x| **x == Some(b)).for_each(|x| *x = None);
         }
@@ -467,14 +467,19 @@ impl Shown {
             Pixels::Mem(rgba) => {
                 // ponytail: SetOverlayRaw refuses past ~1920x1080; gpu.rs Buffers::upload(src, stride) in S1
                 crate::back::shown(overlay, 0); // no handle, so its back is a plain sheet
-                vr::timed(|| format!("{name}: SetOverlayRaw {}x{}", f.w, f.h), || call!(ov, SetOverlayRaw, overlay.0, rgba.as_ptr() as *mut _, f.w, f.h, 4)) == 0
+                vr::timed(|| format!("{name}: SetOverlayRaw {}x{}", f.w, f.h), || texture::Live.present_pixels(overlay, rgba, f.w as usize, f.h as usize)).is_ok()
             }
             Pixels::Dmabuf { fd, offset, stride, modifier } => {
-                let fd = std::os::fd::AsRawFd::as_raw_fd(fd);
                 let h = match self.handles.get(&f.buf) {
                     Some(&h) => h,
                     None => {
-                        let h = vr::timed(|| format!("{name}: ImportDmabuf {}x{}", f.w, f.h), || import(fd, f.w, f.h, *offset, *stride, *modifier));
+                        let h = vr::timed(
+                            || format!("{name}: ImportDmabuf {}x{}", f.w, f.h),
+                            || {
+                                let buf = Dmabuf { fd: fd.as_fd(), width: f.w, height: f.h, fourcc: XRGB8888, modifier: *modifier, offset: *offset, stride: *stride };
+                                texture::Live.import(&buf)
+                            },
+                        );
                         if !self.imported || h.is_none() {
                             eprintln!("{name}: import {}", if h.is_some() { "ok" } else { "fail" });
                             self.imported = true;
@@ -485,7 +490,7 @@ impl Shown {
                         };
                         // removed in the meantime and its gone entry may already be handled, so don't cache
                         if !feed.s.lock().unwrap().bufs.contains(&f.buf) {
-                            call!(ipc, UnrefResource, h);
+                            texture::Live.release(h);
                             return false;
                         }
                         self.handles.insert(f.buf, h);
@@ -493,7 +498,7 @@ impl Shown {
                     }
                 };
                 // the producer's implicit fence: it's readable once rendering is done
-                let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                let mut pfd = libc::pollfd { fd: std::os::fd::AsRawFd::as_raw_fd(fd), events: libc::POLLIN, revents: 0 };
                 if unsafe { libc::poll(&mut pfd, 1, 0) } <= 0 {
                     let mut s = feed.s.lock().unwrap();
                     match s.newest {
@@ -503,12 +508,9 @@ impl Shown {
                     }
                     return false;
                 }
-                let mut h = h;
-                let mut t =
-                    sys::Texture_t { handle: &mut h as *mut _ as *mut std::ffi::c_void, eType: sys::ETextureType_TextureType_SharedTextureHandle, eColorSpace: sys::EColorSpace_ColorSpace_Gamma };
-                let ok = call!(ov, SetOverlayTexture, overlay.0, &mut t) == 0;
+                let ok = texture::Live.present(overlay, h).is_ok();
                 if ok {
-                    crate::back::shown(overlay, h); // its back too, if it has one
+                    crate::back::shown(overlay, h.0); // its back too, if it has one
                 }
                 if self.held[1] != Some(f.buf) {
                     if let Some(old) = self.held[0].take() {
@@ -526,25 +528,10 @@ impl Shown {
 
     pub fn free(&mut self) {
         for (_, h) in self.handles.drain() {
-            call!(ipc, UnrefResource, h);
+            texture::Live.release(h);
         }
         self.held = [None; 2];
     }
-}
-
-fn import(fd: i32, w: u32, h: u32, offset: u32, stride: u32, modifier: u64) -> Option<sys::SharedTextureHandle_t> {
-    let mut a: sys::DmabufAttributes_t = Default::default();
-    a.unWidth = w;
-    a.unHeight = h;
-    (a.unDepth, a.unMipLevels, a.unArrayLayers, a.unSampleCount) = (1, 1, 1, 1);
-    a.unFormat = XRGB8888;
-    a.ulModifier = modifier;
-    a.unPlaneCount = 1;
-    a.plane[0].unOffset = offset;
-    a.plane[0].unStride = stride;
-    a.plane[0].nFd = fd;
-    let mut handle = 0;
-    call!(ipc, ImportDmabuf, sys::EVRApplicationType_VRApplication_Overlay, &mut a, &mut handle).then_some(handle)
 }
 
 #[cfg(test)]
