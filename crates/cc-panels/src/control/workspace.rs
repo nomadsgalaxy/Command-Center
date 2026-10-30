@@ -30,12 +30,13 @@
 use super::ui::{self, BTN_H, Edit, GAP, MPP, PAD, Px, ROW, Rect, SCALE, SORT, TITLE, typed, typed_w};
 use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, line, over, tint};
+use crate::keyboard::{self, Keyboard, KeyboardMode};
 use crate::taskbar::{Taskbar, tex_scale};
+use crate::texture::Refused;
 use crate::windows::Windows;
 use crate::{HIDDEN, Source, call, config, panels, theme, vr};
 use cc_proto::conf::{self, Json, TEMPORARY};
 use openvr_sys as sys;
-use std::ffi::CString;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
@@ -608,8 +609,7 @@ impl Workspace {
                 }
                 S::Pointer(PointerEvent { kind: P::Up(_), .. }) => windows.plasma_release(),
                 S::Keyboard(ref k @ (K::Char { user, .. } | K::Done { user })) if user == OSK => {
-                    let mut buf = [0u8; 256];
-                    call!(ov, GetKeyboardText, buf.as_mut_ptr() as *mut _, buf.len() as u32);
+                    let buf = keyboard::Live.text();
                     if let Some(tp) = self.typing.as_mut().filter(|_| self.osk) {
                         tp.text = text_of(&buf);
                         if matches!(k, K::Done { .. }) {
@@ -641,26 +641,20 @@ impl Workspace {
         }
         drop(k);
         crate::osk::forget();
-        let (hint, text) = (CString::new("Workspace name").unwrap_or_default(), CString::new(tp.text.clone()).unwrap_or_default());
-        let mode = sys::EGamepadTextInputMode_k_EGamepadTextInputModeNormal;
-        let lines = sys::EGamepadTextInputLineMode_k_EGamepadTextInputLineModeSingleLine;
-        let e = call!(ov, ShowKeyboardForOverlay, h.0, mode, lines, 0, hint.as_ptr() as *mut _, 40, text.as_ptr() as *mut _, OSK);
-        if e == 0 {
-            self.osk = true;
-        } else {
-            self.status = format!("no keyboard (SteamVR's error {e})");
+        match keyboard::Live.open(h, KeyboardMode::Normal, false, "Workspace name", &tp.text, 40, OSK) {
+            Ok(()) => self.osk = true,
+            Err(Refused(e)) => self.status = format!("no keyboard (SteamVR's error {e})"),
         }
     }
 
     /// Leaves the field: closes SteamVR's keyboard (keeping its text) and gives the physical keyboards back.
     fn hide_keyboard(&mut self) {
         if std::mem::take(&mut self.osk) {
-            let mut buf = [0u8; 256];
-            call!(ov, GetKeyboardText, buf.as_mut_ptr() as *mut _, buf.len() as u32);
+            let buf = keyboard::Live.text();
             if let Some(tp) = self.typing.as_mut() {
                 tp.text = text_of(&buf);
             }
-            call!(ov, HideKeyboard);
+            keyboard::Live.close();
         }
         if let Some(tp) = self.typing.as_mut() {
             tp.editing = false;
@@ -677,7 +671,7 @@ impl Workspace {
         for (code, value, shift) in keys {
             let Some(e) = ui::edit(code, value, shift) else { continue };
             if std::mem::take(&mut self.osk) {
-                call!(ov, HideKeyboard); // the physical keyboard has it now
+                keyboard::Live.close(); // the physical keyboard has it now
             }
             let Some(tp) = self.typing.as_mut() else { return };
             match e {

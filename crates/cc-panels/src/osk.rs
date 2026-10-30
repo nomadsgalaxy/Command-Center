@@ -17,9 +17,9 @@
 use crate::control::ui::{self, BTN_H, GAP, MPP, PAD, Px, SORT};
 use crate::events::{KeyboardEvent, PointerEvent, PointerKind, SurfaceEvent};
 use crate::grab::{Look, Paint, TagImg, line, over, rbox, tint};
+use crate::keyboard::{self, Keyboard, KeyboardMode};
 use crate::{Panel, call, panel, theme, vr};
 use openvr_sys as sys;
-use std::ffi::CString;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -63,21 +63,18 @@ fn closed() {
 fn show(p: &Panel) {
     // said before you type, not after: a panel that can't take characters gets a US keyboard's keys
     let us = if p.text_mode() == crate::kvm::TextMode::UsKeys { " as a US keyboard" } else { "" };
-    let hint = CString::new(format!("Typing to {}{us}", p.v.name)).unwrap_or_default();
-    let mode = sys::EGamepadTextInputMode_k_EGamepadTextInputModeNormal;
-    let lines = sys::EGamepadTextInputLineMode_k_EGamepadTextInputLineModeSingleLine;
-    let flags = sys::EKeyboardFlags_KeyboardFlag_Minimal;
+    let hint = format!("Typing to {}{us}", p.v.name);
     if !crate::kvm::lock().popup_ok(true) {
         return; // never: you asked (here for the record, since the fields ask with false)
     }
-    let e = call!(ov, ShowKeyboardForOverlay, p.overlay.0, mode, lines, flags, hint.as_ptr() as *mut _, 1024, c"".as_ptr() as *mut _, USER | p.index as u64);
-    if e == 0 {
+    let opened = keyboard::Live.open(p.overlay, KeyboardMode::Minimal, false, &hint, "", 1024, USER | p.index as u64);
+    if let Err(e) = opened {
+        eprintln!("{}: no SteamVR keyboard ({e})", p.v.name);
+    } else {
         closed(); // another panel's, if it was open there
         *OPEN.lock().unwrap() = Some((p.index, Instant::now()));
         crate::kvm::lock().type_to(p.index);
         eprintln!("{}: SteamVR keyboard open", p.v.name);
-    } else {
-        eprintln!("{}: no SteamVR keyboard ({})", p.v.name, vr::error_name(e));
     }
 }
 
@@ -225,7 +222,7 @@ impl Keys {
                 None
             };
             if let Some(why) = why {
-                call!(ov, HideKeyboard);
+                keyboard::Live.close();
                 closed();
                 eprintln!("{}: SteamVR keyboard closed {why}", p.v.name);
             }

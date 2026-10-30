@@ -53,11 +53,12 @@
 use super::ui::{self, BTN_H, Edit, GAP, MPP, PAD, ROW, Rect, SCALE, SORT, TITLE, switch, text, text_w, typed, typed_w};
 use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, line, over, tint};
+use crate::keyboard::{self, Keyboard, KeyboardMode};
 use crate::taskbar::{Taskbar, tex_scale};
+use crate::texture::Refused;
 use crate::windows::Windows;
 use crate::{HIDDEN, Source, call, config, panel, panels, theme, vr};
 use openvr_sys as sys;
-use std::ffi::CString;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -1386,8 +1387,7 @@ impl Machines {
                 S::Pointer(PointerEvent { kind: P::Up(_), .. }) => windows.plasma_release(),
                 // the whole text each time, since SteamVR's keyboard keeps it (backspace too)
                 S::Keyboard(ref k @ (K::Char { user, .. } | K::Done { user })) => {
-                    let mut buf = [0u8; 256];
-                    call!(ov, GetKeyboardText, buf.as_mut_ptr() as *mut _, buf.len() as u32);
+                    let buf = keyboard::Live.text();
                     let j = user as usize;
                     let done = matches!(k, K::Done { .. });
                     if let Some((_, r)) = self.rename.as_mut().filter(|r| self.osk && r.1.editing && j == OSK_RENAME) {
@@ -1811,15 +1811,12 @@ impl Machines {
         drop(k);
         crate::osk::forget();
         let hint = if j == OSK_RENAME { "Name shown: empty for none" } else { HINTS[j] };
-        let (hint, text) = (CString::new(hint).unwrap_or_default(), CString::new(text).unwrap_or_default());
-        let mode = sys::EGamepadTextInputMode_k_EGamepadTextInputModeNormal;
-        let lines = sys::EGamepadTextInputLineMode_k_EGamepadTextInputLineModeSingleLine;
-        let e = call!(ov, ShowKeyboardForOverlay, h.0, mode, lines, 0, hint.as_ptr() as *mut _, 64, text.as_ptr() as *mut _, j as u64);
-        if e == 0 {
-            self.osk = true;
-        } else {
-            self.status = format!("no keyboard (SteamVR's error {e})");
-            eprintln!("machines: {}", self.status);
+        match keyboard::Live.open(h, KeyboardMode::Normal, false, hint, &text, 64, j as u64) {
+            Ok(()) => self.osk = true,
+            Err(Refused(e)) => {
+                self.status = format!("no keyboard (SteamVR's error {e})");
+                eprintln!("machines: {}", self.status);
+            }
         }
     }
 
@@ -1840,8 +1837,7 @@ impl Machines {
         if !std::mem::take(&mut self.osk) {
             return;
         }
-        let mut buf = [0u8; 256];
-        call!(ov, GetKeyboardText, buf.as_mut_ptr() as *mut _, buf.len() as u32);
+        let buf = keyboard::Live.text();
         if let Some(f) = self.form.as_mut()
             && let Some(j) = f.editing
         {
@@ -1849,7 +1845,7 @@ impl Machines {
         } else if let Some((_, r)) = self.rename.as_mut().filter(|r| r.1.editing) {
             r.text = keyboard_label(&buf);
         }
-        call!(ov, HideKeyboard);
+        keyboard::Live.close();
     }
 
     /// The physical keyboards' keys in the field being typed in (kvm.rs queues them while it has

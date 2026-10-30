@@ -34,6 +34,7 @@ mod gpu;
 mod grab;
 mod handoff;
 mod ids;
+mod keyboard;
 mod kvm;
 mod kwin;
 mod laser;

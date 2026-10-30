@@ -10,7 +10,9 @@
 use crate::geometry::{Mat, V3};
 
 pub use crate::ids::{Ctl, Dev, Hand, SurfaceId};
-#[allow(unused_imports)] // the design names them; the core takes them from texture.rs
+#[allow(unused_imports)] // the design names them; the core takes them from keyboard.rs
+pub use crate::keyboard::{Keyboard, KeyboardMode};
+#[allow(unused_imports)] // and texture.rs
 pub use crate::texture::{Dmabuf, Refused, TexHandle, Textures};
 
 #[allow(unused_imports)] // the design names them; the core takes them from events.rs
@@ -146,23 +148,6 @@ pub trait Session {
     /// the drawing.
     fn begin_frame(&mut self) -> Frame;
     fn end_frame(&mut self, layers: &[SurfaceId]);
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KeyboardMode {
-    Normal,
-    Password,
-    /// The key strip's minimal mode (osk.rs).
-    Minimal,
-}
-
-/// The runtime's keyboard (SteamVR's, osk.rs, workspace.rs, machines.rs). Its events come in
-/// through `Pointing::next` and `Session` as SteamVR sends them now.
-pub trait Keyboard {
-    /// False when there's no runtime keyboard (OpenXR), and the core opens its own.
-    fn open(&mut self, s: SurfaceId, mode: KeyboardMode, multiline: bool, hint: &str, initial: &str, user: u64) -> bool;
-    fn text(&self) -> String;
-    fn close(&mut self);
 }
 
 /// What only some runtimes have.
