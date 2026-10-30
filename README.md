@@ -90,8 +90,8 @@ updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
   Machines, Preferences or Workspace window, in front of you. They go on an arc 1.4 m ahead,
   facing you, each keeping its size and curve, in rows above and below if there are many. A
   docked panel goes back in the world. It's also on the dashboard tab, Right Ctrl + B, and
-  `cc-home gather`. It isn't saved: Right Ctrl + Shift + B (`cc-home ungather`) puts them back
-  where they were, Right Ctrl + Home sends everything home, and a panel you then carry and let go
+  `cc-home gather`. It isn't saved: Left Ctrl + Shift + B, Right Ctrl + Shift + B or
+  `cc-home ungather` puts them back where they were, Right Ctrl + Home sends everything home, and a panel you then carry and let go
   of is saved as usual.
 - **Right click with the shoulder button:** the Frame controller's bumper is right click on
   SteamVR's laser, so context menus are one press away.
@@ -117,13 +117,28 @@ a Right Ctrl tap).
 | --- | --- |
 | Right Ctrl (a tap) | Typing goes to the panels, or back to the Frame |
 | Right Ctrl + B | Bring all here: every panel in front of you, not saved |
-| Right Ctrl + Shift + B | Put back what Bring all here moved |
+| Right Ctrl + Shift + B | Put back what Bring all here moved (Left Ctrl + Shift + B does too, below) |
 | Right Ctrl + Home | Every panel to its home spot (`cc-home apply home`) |
 | Right Ctrl + F1 to F4 | Recall spot 1 to 4; with Shift, save the panels there |
 | Right Ctrl + Space | The cursor straight ahead |
 | Right Ctrl + D | SteamVR's dashboard |
 | Right Ctrl + G | Gaze lock on or off: the pointer stays on the panel you look at |
 | Right Ctrl + Esc | Close the Desktop |
+
+Not every keyboard has a Right Ctrl, so putting back what Bring all here moved has a second
+shortcut: Left Ctrl + Shift + B, while the keyboard is typing to the panels. Command Center keeps
+that combination, so a remote computer doesn't get it, and in Chrome or Vivaldi there it no longer
+shows or hides the bookmarks bar. Left Ctrl, Shift, and every other key with Left Ctrl still go
+through. To use another combination, set it in `~/.config/control-center/settings.json` and
+restart the Desktop:
+
+```json
+{ "ungather_key": "LeftCtrl+Alt+B" }
+```
+
+It's modifiers and one key joined by `+`: any of `LeftCtrl`, `RightCtrl`, `Shift`, `Alt` and
+`Super`, and a letter, a digit or F1 to F12. It needs at least one modifier. One that doesn't parse
+is logged, and Left Ctrl + Shift + B is used instead.
 
 On the Frame, `cc-home update` updates Command Center's system image to the latest release
 without a password, after checking the release's signature
