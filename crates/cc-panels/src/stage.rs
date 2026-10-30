@@ -70,6 +70,9 @@ impl Stage for Live {
     }
 
     fn is_controller(&self, d: Dev) -> bool {
+        if d == Dev::Mouse {
+            return false; // said here, not left to index 64 being no device's
+        }
         vr::is_real_controller(vr::index(d))
     }
 
@@ -415,5 +418,12 @@ mod tests {
         assert_eq!(Live.label(Dev::Mouse), "64");
         assert_eq!(Live.label(Dev::Controller(Ctl::new(3))), "3");
         assert_eq!(fake::Fake::default().label(Dev::Mouse), "64", "the stand-in names them the same");
+    }
+
+    /// The mouse is never a controller, and Live says so without asking SteamVR: no vr::fake is
+    /// installed here, so any OpenVR call would panic.
+    #[test]
+    fn the_mouse_is_not_a_controller() {
+        assert!(!Live.is_controller(Dev::Mouse));
     }
 }
