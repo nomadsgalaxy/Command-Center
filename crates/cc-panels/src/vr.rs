@@ -431,6 +431,7 @@ pub mod fake {
         pub prop_error: Option<sys::ETrackedPropertyError>, // synthetic: every float and uint64 property sets it, and still gives its value above
         pub scene_pid: u32,                                 // GetCurrentSceneProcessId; 0 is no game
         pub activity: Option<sys::EDeviceActivityLevel>,    // the headset's; none is Unknown
+        pub mouse_scale: [f32; 2],                          // GetOverlayMouseScale's answer, for any overlay
     }
 
     pub static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -528,6 +529,10 @@ pub mod fake {
     unsafe extern "C" fn mouse_scale(h: sys::VROverlayHandle_t, s: *mut sys::HmdVector2_t) -> sys::EVROverlayError {
         let v = unsafe { (*s).v };
         log(format!("SetOverlayMouseScale {h} {} {}", num(v[0] as f64), num(v[1] as f64)));
+        0
+    }
+    unsafe extern "C" fn get_mouse_scale(_h: sys::VROverlayHandle_t, s: *mut sys::HmdVector2_t) -> sys::EVROverlayError {
+        unsafe { (*s).v = script(|s| s.mouse_scale) };
         0
     }
     unsafe extern "C" fn input_method(h: sys::VROverlayHandle_t, m: sys::VROverlayInputMethod) -> sys::EVROverlayError {
@@ -661,6 +666,7 @@ pub mod fake {
                 SetOverlayFlag: Some(flag),
                 SetOverlaySortOrder: Some(sort),
                 SetOverlayMouseScale: Some(mouse_scale),
+                GetOverlayMouseScale: Some(get_mouse_scale),
                 SetOverlayInputMethod: Some(input_method),
                 ShowOverlay: Some(show),
                 HideOverlay: Some(hide),

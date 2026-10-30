@@ -353,6 +353,50 @@ mod tests {
     use crate::theme;
 
     #[test]
+    fn the_extra_windows_mouse_events_come_from_kvm_only_while_the_laser_isnt_working() {
+        use crate::events::{Button, PointerEvent, PointerKind as P, SurfaceEvent as S};
+        use crate::geometry::{Placement, Pose, panel_matrix};
+        // SteamVR has nothing queued for it, and says the window is 500 by 600 for the mouse
+        let _vr = crate::trace::fake_vr(); // the global Kvm, and next_event's SENT: one test at a time
+        crate::vr::fake::SCRIPT.lock().unwrap().as_mut().unwrap().mouse_scale = [500.0, 600.0];
+        let (h, laser) = (crate::ids::SurfaceId(1), crate::laser::fake::StandIn::leak(false));
+        let saved = std::mem::replace(&mut *crate::kvm::lock(), crate::kvm::Kvm::idle());
+        // the mouse's ray (an idle Kvm's: from the origin, straight ahead) at the middle of an Extra
+        // window 0.6 m out
+        let on = |yes: bool| {
+            let mut k = crate::kvm::lock();
+            let pl = Placement::from_matrix(&panel_matrix(&Pose { centre: [0.0, 0.0, -0.6], width: 0.5, ..Default::default() }), 0.5, 0.6, 0.0);
+            k.laser = laser;
+            // one panel, behind you, so the ray misses it
+            k.place = vec![Placement::from_matrix(&panel_matrix(&Pose { centre: [0.0, 0.0, 3.0], width: 1.0, ..Default::default() }), 1.0, 0.6, 0.0)];
+            k.extra = yes.then_some((pl, [0.02, 0.05, 0.03]));
+            k.land();
+        };
+        let ev = |kind, x, y| Some(S::Pointer(PointerEvent { kind, x, y, from: crate::ids::Dev::Mouse, age: 0.0 }));
+        // no laser: a move to the ray's point once, then its presses there, then a leave when it goes
+        on(true);
+        assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0));
+        assert_eq!(next_event(h), None, "the same point again isn't a move");
+        crate::kvm::lock().extra_mouse.extend([true, false]);
+        assert_eq!(next_event(h), ev(P::Down(Button::Left), 250.0, 300.0));
+        assert_eq!(next_event(h), ev(P::Up(Button::Left), 250.0, 300.0));
+        on(false);
+        assert_eq!(next_event(h), ev(P::Leave, 250.0, 300.0));
+        // the laser works: it sends the window's events itself, so this sends none and forgets the point
+        on(true);
+        assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0));
+        laser.working.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(next_event(h), None);
+        // it stops working with the ray already gone: no leave for a point from before
+        on(false);
+        laser.working.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(next_event(h), None, "nothing stale replayed");
+        on(true);
+        assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0), "and the next point is a move again");
+        *crate::kvm::lock() = saved;
+    }
+
+    #[test]
     fn a_window_with_no_spot_here_opens_14_m_ahead_level_and_facing_you() {
         let head: crate::geometry::Mat = [[0.0, 0.0, 1.0, 0.4], [0.0, 1.0, 0.0, 1.6], [-1.0, 0.0, 0.0, -0.3]]; // facing -x
         let p = fresh(&head, 0.36);

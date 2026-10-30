@@ -1847,42 +1847,18 @@ mod tests {
         k.bar = None;
     }
 
-    /// A MouseLaser that writes down what it's asked, working or not as the test says.
-    #[derive(Default)]
-    struct StandIn {
-        working: std::sync::atomic::AtomicBool,
-        calls: Mutex<Vec<String>>,
-    }
-
-    impl MouseLaser for StandIn {
-        fn working(&self) -> bool {
-            self.working.load(Relaxed)
-        }
-        fn press(&self, b: Button, down: bool) {
-            self.calls.lock().unwrap().push(format!("press {b:?} {down}"));
-        }
-        fn dashboard(&self) {
-            self.calls.lock().unwrap().push("dashboard".into());
-        }
-        fn scroll(&self, notches: f64) {
-            self.calls.lock().unwrap().push(format!("scroll {notches}"));
-        }
-        fn hide(&self) {
-            self.calls.lock().unwrap().push("hide".into());
-        }
-    }
+    use crate::laser::fake::StandIn;
 
     /// A Kvm off our panels (nothing under the ray, no Extra window), awake, with a stand-in laser.
     fn off_the_panels(working: bool) -> (Kvm, &'static StandIn) {
-        let laser: &'static StandIn = Box::leak(Box::default());
-        laser.working.store(working, Relaxed);
+        let laser = StandIn::leak(working);
         let mut k = Kvm::idle();
         (k.laser, k.awake, k.free) = (laser, true, Some([0.0, 1.0, -2.0]));
         (k, laser)
     }
 
     fn calls(l: &StandIn) -> Vec<String> {
-        std::mem::take(&mut *l.calls.lock().unwrap())
+        l.take()
     }
 
     /// Right Ctrl + D, with Right Ctrl held (so it isn't a tap) and the keys going to the remotes.

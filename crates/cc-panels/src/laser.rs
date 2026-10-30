@@ -482,6 +482,55 @@ fn eye_z(h: Option<Mat>) -> f32 {
     h.map_or(0.0, |m| m[2][3])
 }
 
+/// A stand-in MouseLaser for tests (kvm.rs, ui.rs).
+#[cfg(test)]
+pub mod fake {
+    use super::*;
+
+    /// Writes down what it's asked, working or not as the test says.
+    #[derive(Default)]
+    pub struct StandIn {
+        pub working: AtomicBool,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl StandIn {
+        /// One that lives as long as a Kvm's laser has to (`&'static`).
+        pub fn leak(working: bool) -> &'static StandIn {
+            let l: &'static StandIn = Box::leak(Box::default());
+            l.working.store(working, Relaxed);
+            l
+        }
+
+        /// What it was asked since the last time.
+        pub fn take(&self) -> Vec<String> {
+            std::mem::take(&mut *self.calls.lock().unwrap())
+        }
+
+        fn note(&self, s: String) {
+            self.calls.lock().unwrap().push(s);
+        }
+    }
+
+    impl MouseLaser for StandIn {
+        fn working(&self) -> bool {
+            self.working.load(Relaxed)
+        }
+        fn press(&self, b: Button, down: bool) {
+            self.note(format!("press {b:?} {down}"));
+        }
+        fn dashboard(&self) {
+            self.note("dashboard".into());
+        }
+        fn scroll(&self, notches: f64) {
+            self.note(format!("scroll {notches}"));
+        }
+        fn hide(&self) {
+            self.note("hide".into());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

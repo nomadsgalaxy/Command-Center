@@ -29,8 +29,9 @@ const WHOLE: &[(&str, &str)] = &[
 /// `vr::` items that aren't OpenVR: waking the main loop and timing a call.
 const NEUTRAL: &[&str] = &["wake", "timed", "WOKEN", "MAIN", "Handle", "fake"];
 
-/// `laser::` items that aren't OpenVR: the interface kvm.rs and the backend design name.
-const LASER_NEUTRAL: &[&str] = &["MouseLaser"];
+/// `laser::` items that aren't OpenVR: the interface kvm.rs and the backend design name, and the
+/// tests' stand-in for it.
+const LASER_NEUTRAL: &[&str] = &["MouseLaser", "fake"];
 
 const FAKES: &str = "tests: SteamVR's events and roles, built for vr::fake";
 
