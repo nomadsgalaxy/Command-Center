@@ -187,13 +187,13 @@ fn report(found: &Found, loader: Option<&Path>) {
     }
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        use std::os::unix::process::ExitStatusExt;
         // a crash loading it (killed by a signal, so no code) is the runtime not loading too
         let broken = out.status.code() == Some(RUNTIME_FAILED) || out.status.code().is_none();
-        let what = match out.status.signal() {
-            Some(sig) => format!("couldn't load this runtime: the probe died loading it (signal {sig})"),
-            None if broken => "couldn't load this runtime (manifest or library broken?)".into(),
-            None => "failed".into(),
+        let what = match (out.status.code(), signal(&out.status)) {
+            (None, Some(sig)) => format!("couldn't load this runtime: the probe died loading it (signal {sig})"),
+            (None, None) => "couldn't load this runtime: the probe died loading it".into(),
+            _ if broken => "couldn't load this runtime (manifest or library broken?)".into(),
+            _ => "failed".into(),
         };
         match err.trim() {
             "" => println!("   {what}"),
@@ -213,6 +213,17 @@ fn report(found: &Found, loader: Option<&Path>) {
     println!("   overlay session, beside a game, usable input: not tested (needs an instance)");
     let rest: Vec<String> = exts.iter().filter(|(n, _)| !WATCH.contains(n)).map(|(n, v)| format!("{n} v{v}")).collect();
     println!("   others: {}", if rest.is_empty() { "none".into() } else { rest.join(", ") });
+}
+
+/// The signal that killed the child, where there are signals.
+#[cfg(unix)]
+fn signal(s: &std::process::ExitStatus) -> Option<i32> {
+    std::os::unix::process::ExitStatusExt::signal(s)
+}
+
+#[cfg(not(unix))]
+fn signal(_: &std::process::ExitStatus) -> Option<i32> {
+    None
 }
 
 /// In the child: load the loader and print one "ext NAME VERSION" line for each extension.
