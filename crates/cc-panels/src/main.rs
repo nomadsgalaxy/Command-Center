@@ -1378,9 +1378,9 @@ mod tests {
     /// main.rs's SteamVR event handling as it was before phase 0 pulled it out of the main loop,
     /// copied as it stood there, with the locals it used as parameters. The golden test runs it and
     /// the extracted function on the same events, so the move is checked against the code before it.
-    fn old_loop(machines: &mut control::machines::Machines, grab: &mut grab::Grab, mut universe: u64, mut on_head: bool) -> (u64, bool, u32, i32) {
+    fn old_loop(machines: &mut control::machines::Machines, grab: &mut grab::Grab, mut universe: u64, mut on_head: bool, last: u32) -> (u64, bool, u32, i32) {
         let mut err = 0;
-        let mut last_event = 0;
+        let mut last_event = last; // the loop's, kept from the tick before
         let mut e: vr::VREvent_t = Default::default();
         let mut events = 0;
         while call!(sys, PollNextEvent, &mut e, size_of::<vr::VREvent_t>() as u32) {
@@ -1429,11 +1429,11 @@ mod tests {
     }
 
     /// The handling a golden run drives: the old loop, or `steamvr_events`. Given the state before
-    /// the event (universe, on head), it gives the state after and the loop's count and last type.
-    type Handle = fn(&mut control::machines::Machines, &mut grab::Grab, u64, bool) -> (u64, bool, u32, i32);
+    /// the pass (universe, on head, the last event's type), it gives the state after and the count.
+    type Handle = fn(&mut control::machines::Machines, &mut grab::Grab, u64, bool, u32) -> (u64, bool, u32, i32);
 
-    fn extracted(machines: &mut control::machines::Machines, grab: &mut grab::Grab, mut universe: u64, mut on_head: bool) -> (u64, bool, u32, i32) {
-        let mut last_event = 0;
+    fn extracted(machines: &mut control::machines::Machines, grab: &mut grab::Grab, mut universe: u64, mut on_head: bool, last: u32) -> (u64, bool, u32, i32) {
+        let mut last_event = last;
         let events = steamvr_events(machines, grab, &mut universe, &mut on_head, &mut last_event);
         (universe, on_head, last_event, events)
     }
@@ -1476,27 +1476,34 @@ mod tests {
             (e.eventType, e.trackedDeviceIndex) = (t, dev);
             e
         };
-        let steps = [
-            ("SteamVR quits", ev(sys::EVREventType_VREvent_Quit, 0), 7),
-            ("the dashboard opens", ev(sys::EVREventType_VREvent_DashboardActivated, 0), 7),
-            ("the dashboard closes", ev(sys::EVREventType_VREvent_DashboardDeactivated, 0), 7),
-            ("our virtual pointer's button", ev(sys::EVREventType_VREvent_ButtonPress, POINTER), 7),
-            ("a real controller's button", ev(sys::EVREventType_VREvent_ButtonPress, 3), 7),
-            ("relocalized, same universe", ev(sys::EVREventType_VREvent_StandingZeroPoseReset, 0), 7),
-            ("relocalized into universe 8", ev(sys::EVREventType_VREvent_StandingZeroPoseReset, 0), 8),
-            ("the headset comes off", ev(sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded, 0), 8),
-            ("a controller's interaction ends", ev(sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded, 3), 8),
-            ("the headset goes back on", ev(sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted, 0), 8),
+        let (started, ended) = (sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted, sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded);
+        let steps: Vec<(&str, Vec<vr::VREvent_t>, u64)> = vec![
+            ("SteamVR quits", vec![ev(sys::EVREventType_VREvent_Quit, 0)], 7),
+            ("the dashboard opens", vec![ev(sys::EVREventType_VREvent_DashboardActivated, 0)], 7),
+            ("the dashboard closes", vec![ev(sys::EVREventType_VREvent_DashboardDeactivated, 0)], 7),
+            ("our virtual pointer's button", vec![ev(sys::EVREventType_VREvent_ButtonPress, POINTER)], 7),
+            ("a real controller's button", vec![ev(sys::EVREventType_VREvent_ButtonPress, 3)], 7),
+            ("relocalized, same universe", vec![ev(sys::EVREventType_VREvent_StandingZeroPoseReset, 0)], 7),
+            ("relocalized into universe 8", vec![ev(sys::EVREventType_VREvent_StandingZeroPoseReset, 0)], 8),
+            ("the headset comes off", vec![ev(ended, 0)], 8),
+            ("a controller's interaction ends", vec![ev(ended, 3)], 8),
+            // only the headset's (device 0) counts: a controller's start mustn't put it back on
+            ("a controller's interaction starts, the headset still off", vec![ev(started, 3)], 8),
+            // nothing this tick: no events, and the last type and the state as they were
+            ("a pass with nothing", vec![], 8),
+            ("the headset goes back on", vec![ev(started, 0)], 8),
+            ("one pass: the dashboard opens and the headset comes off", vec![ev(sys::EVREventType_VREvent_DashboardActivated, 0), ev(ended, 0)], 8),
         ];
-        for (what, e, now) in steps {
+        let mut last = 0;
+        for (what, events, now) in steps {
             log.step(what);
             {
                 let mut s = crate::vr::fake::SCRIPT.lock().unwrap();
                 let s = s.get_or_insert_with(Default::default);
-                (s.universe, s.sys_events) = (now, [e].into());
+                (s.universe, s.sys_events) = (now, events.into());
             }
-            let (u, on, last, n) = handle(&mut machines, &mut grab, universe, on_head);
-            (universe, on_head) = (u, on);
+            let (u, on, l, n) = handle(&mut machines, &mut grab, universe, on_head, last);
+            (universe, on_head, last) = (u, on, l);
             log.vr_calls();
             for c in std::mem::take(&mut *CLOSED.lock().unwrap()) {
                 log.line(format!("close_desktop({c:?})"));

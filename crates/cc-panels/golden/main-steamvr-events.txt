@@ -35,7 +35,19 @@
   events 1, last 104, universe 8, room 8, on head false
   engaged false, mouse has the pointer false, dashboard open false
   machines relocalized 1, grab's stale places 2
+== a controller's interaction starts, the headset still off
+  events 1, last 103, universe 8, room 8, on head false
+  engaged false, mouse has the pointer false, dashboard open false
+  machines relocalized 1, grab's stale places 2
+== a pass with nothing
+  events 0, last 103, universe 8, room 8, on head false
+  engaged false, mouse has the pointer false, dashboard open false
+  machines relocalized 1, grab's stale places 2
 == the headset goes back on
   events 1, last 103, universe 8, room 8, on head true
   engaged false, mouse has the pointer false, dashboard open false
+  machines relocalized 1, grab's stale places 2
+== one pass: the dashboard opens and the headset comes off
+  events 2, last 104, universe 8, room 8, on head false
+  engaged false, mouse has the pointer false, dashboard open true
   machines relocalized 1, grab's stale places 2
