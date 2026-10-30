@@ -8,8 +8,10 @@
 //! takes one.
 use crate::geometry::{Mat, V3};
 use crate::ids::{Ctl, Dev};
-use crate::overlay::{Handle, Live, Overlays};
+pub use crate::overlay::Live;
+use crate::overlay::{Handle, Overlays};
 use crate::vr;
+use openvr_sys as sys;
 
 /// What a panel's slot says about its overlay.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,13 +44,27 @@ pub trait Stage: Overlays {
     fn move_pointer(&mut self, i: usize, x: f64, y: f64);
 }
 
+/// Every tracked device's pose in standing space, as it'll be when this frame's picture reaches
+/// your eyes (vr::to_photons), so what's carried or docked keeps up with the hand.
+fn poses() -> Vec<sys::TrackedDevicePose_t> {
+    let n = sys::k_unMaxTrackedDeviceCount as usize;
+    let mut all: Vec<sys::TrackedDevicePose_t> = vec![Default::default(); n];
+    crate::call!(sys, GetDeviceToAbsoluteTrackingPose, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, vr::to_photons(), all.as_mut_ptr(), n as u32);
+    all
+}
+
 impl Stage for Live {
     fn device(&self, dev: Dev) -> Option<Mat> {
-        crate::grab::pose_of(dev)
+        if dev == Dev::Mouse {
+            return crate::grab::mouse_ray();
+        }
+        let p = *poses().get(vr::index(dev) as usize)?;
+        p.bPoseIsValid.then_some(p.mDeviceToAbsoluteTracking.m)
     }
 
+    /// For the mouse, the laser is just its pose.
     fn laser(&self, dev: Dev) -> Option<Mat> {
-        crate::grab::laser_of(dev)
+        if dev == Dev::Mouse { self.device(dev) } else { vr::laser_pose(vr::index(dev)) }
     }
 
     fn head(&self) -> V3 {
@@ -63,15 +79,16 @@ impl Stage for Live {
         crate::call!(ov, TriggerLaserMouseHapticVibration, h.0, 0.05, 160.0, 0.6);
     }
 
+    /// It can be connected and still untracked for a moment.
     fn connected(&self, dev: Dev) -> bool {
-        crate::grab::connected(dev)
+        dev == Dev::Mouse || poses().get(vr::index(dev) as usize).is_some_and(|p| p.bDeviceIsConnected)
     }
 
     fn controllers(&self) -> Vec<Ctl> {
         // connected, tracked or not: a hand that's out of the cameras' sight right now can still be a
         // target later in the carry (arm() reads its pose each frame)
-        let poses = crate::grab::poses(); // once, not per device
-        (1..openvr_sys::k_unMaxTrackedDeviceCount as u32).filter(|&d| poses.get(d as usize).is_some_and(|p| p.bDeviceIsConnected) && vr::is_real_controller(d)).map(Ctl::new).collect()
+        let poses = poses(); // once, not per device
+        (1..sys::k_unMaxTrackedDeviceCount as u32).filter(|&d| poses.get(d as usize).is_some_and(|p| p.bDeviceIsConnected) && vr::is_real_controller(d)).map(Ctl::new).collect()
     }
 
     fn panel(&self, i: usize) -> PanelFacts {

@@ -10,6 +10,7 @@
 use crate::geometry::{Placement, Pose, angles, panel_matrix};
 use crate::kvm::Kvm;
 use crate::limits::POPOUT_WIDTH;
+use crate::stage::Stage;
 use crate::{Panel, QUIT, Source, config, panel, panels};
 use std::sync::Mutex;
 use std::sync::atomic::Ordering::Relaxed;
@@ -94,7 +95,7 @@ pub fn pop(monitor: &str, uuid: &str) -> String {
     }
     {
         let mut k = crate::kvm::lock();
-        let pose = config::home_pose(&name, None).unwrap_or_else(|| in_front(&k.place[src.index], crate::vr::head_position()));
+        let pose = config::home_pose(&name, None).unwrap_or_else(|| in_front(&k.place[src.index], crate::stage::Live.head()));
         p.set_vert(pose.vert);
         k.set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve);
     }

@@ -577,6 +577,10 @@ cc-panels.
    and OpenVR's own calls, so a generic caller (`impl Surfaces`, `Surfaces::create(&mut Live, ..)`)
    gets past it. That's fine while the core calls `overlay::Live` by name; revisit it when the
    core goes generic over a backend.
+   6c moves `Stage`'s OpenVR parts behind it. First, what needs no new call: grab.rs's pose
+   reading (every device's pose at the predicted time, connected or not, a laser's tip) moves into
+   stage.rs's `Live`, which asks grab only for the mouse's ray; the head's position comes from
+   `Stage::head`, `trace::laser_pose` takes a `Dev`, and osk.rs places through `place_room`.
 7. (1 d) Tests and a pass in the headset.
 
 Each step is its own small branch, and has to pass the same checks before and after:

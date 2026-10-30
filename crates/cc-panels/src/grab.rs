@@ -43,8 +43,7 @@ use crate::poll::Pointing;
 use crate::stage::Stage;
 use crate::texture::Textures;
 use crate::theme::{self, Accent, Rgb, Theme, Tokens};
-use crate::{HIDDEN, Source, call, panels, vr};
-use openvr_sys as sys;
+use crate::{HIDDEN, Source, panels, vr};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
@@ -817,7 +816,7 @@ pub fn create(name: &str, slot: Option<usize>) -> vr::Handle {
 /// they stay easy to hit on a small or far panel. Returns the bar's width and the card's frame, which is 1.4 grips
 /// so the corners are easy to hit.
 fn chrome(pl: &Placement) -> (f64, f64) {
-    let head = vr::head_position();
+    let head = crate::stage::Live.head();
     let dist = norm(&[pl.c[0] - head[0], pl.c[1] - head[1], pl.c[2] - head[2]]).max(0.2);
     let least = dist * 0.03;
     let bar = (0.012 * dist * pl.width).sqrt().clamp(least, least.max(pl.width * 0.5));
@@ -1046,29 +1045,12 @@ fn paint_backdrop(h: vr::Handle) {
     let _ = crate::texture::Live.present_pixels(h, &backdrop_colour(&theme::get().win).repeat(16), 4, 4);
 }
 
-/// Every tracked device's pose in standing space, as it'll be when this frame's picture reaches
-/// your eyes (vr::to_photons), so what's carried or docked keeps up with the hand.
-pub fn poses() -> Vec<sys::TrackedDevicePose_t> {
-    let n = sys::k_unMaxTrackedDeviceCount as usize;
-    let mut all: Vec<sys::TrackedDevicePose_t> = vec![Default::default(); n];
-    call!(sys, GetDeviceToAbsoluteTrackingPose, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, vr::to_photons(), all.as_mut_ptr(), n as u32);
-    all
-}
-
-/// Whether device dev is connected at all (it can be connected and still untracked for a moment).
-pub fn connected(dev: Dev) -> bool {
-    dev == Dev::Mouse || poses().get(vr::index(dev) as usize).is_some_and(|p| p.bDeviceIsConnected)
-}
-
 // The mouse (Dev::Mouse; kvm.rs card_mouse): its pose and laser are kvm's ray as of the last poll.
 static MOUSE_RAY: Mutex<Option<Mat>> = Mutex::new(None);
 
-pub fn pose_of(dev: Dev) -> Option<Mat> {
-    if dev == Dev::Mouse {
-        return *MOUSE_RAY.lock().unwrap();
-    }
-    let p = *poses().get(vr::index(dev) as usize)?;
-    p.bPoseIsValid.then_some(p.mDeviceToAbsoluteTracking.m)
+/// The mouse's ray as of the last poll, its pose and its laser (stage::Live asks).
+pub fn mouse_ray() -> Option<Mat> {
+    *MOUSE_RAY.lock().unwrap()
 }
 
 /// Where a device's laser meets the panel, in the device's own frame so it rides along like a
@@ -1091,11 +1073,6 @@ pub fn taken_by(s: &impl Stage, pl: &Placement, dev: Dev) -> Option<([f64; 3], f
 pub fn depth_of(pl: &Placement, m: &Mat, local: &[f64; 3]) -> f64 {
     let at = [0, 1, 2].map(|r| m[r][0] as f64 * local[0] + m[r][1] as f64 * local[1] + m[r][2] as f64 * local[2] + m[r][3] as f64);
     dot(&[at[0] - pl.c[0], at[1] - pl.c[1], at[2] - pl.c[2]], &pl.z)
-}
-
-/// A device's laser (vr::laser_pose). For the mouse, the laser is just its pose.
-pub(crate) fn laser_of(dev: Dev) -> Option<Mat> {
-    if dev == Dev::Mouse { pose_of(dev) } else { vr::laser_pose(vr::index(dev)) }
 }
 
 /// A world point in a device's own frame. This works because its pose is rigid.
@@ -1960,7 +1937,7 @@ impl Grab {
                 Some(crate::back::Front { i, overlay, pl: self.at(i, k), ok: ok && !hidden && !self.game, held: self.drags[i].is_some() })
             })
             .collect();
-        self.backs.tick(&fronts, &vr::head_position());
+        self.backs.tick(&fronts, &crate::stage::Live.head());
     }
 
     /// SteamVR doesn't depth-test overlays against each other, it just paints them in sort
@@ -1976,7 +1953,7 @@ impl Grab {
             return;
         }
         self.painted = Some(Instant::now());
-        let eye = vr::head_position();
+        let eye = crate::stage::Live.head();
         let n = panels().len();
         // once per panel, not per pair, since chrome() asks SteamVR where the head is
         let margin: Vec<f64> = (0..n).map(|i| chrome(&k.place[i]).1).collect();
@@ -2061,7 +2038,7 @@ impl Grab {
         let snap = self.snap_glyph(i, pl).map(|g| (if self.hover[i] == Some(Part::Snap) { Look::Lit } else { Look::Rest }, g));
         // shown past FACE_TURN and hidden again only under 2/3 of it, so head sway doesn't make it blink
         let shown = self.drawn[i].as_ref().is_some_and(|d| d.spec.face.is_some());
-        let face = (turn(&pl.pose(), &facing(pl, &vr::head_position())) > if shown { FACE_TURN * 2.0 / 3.0 } else { FACE_TURN }).then_some(if self.hover[i] == Some(Part::Face) {
+        let face = (turn(&pl.pose(), &facing(pl, &crate::stage::Live.head())) > if shown { FACE_TURN * 2.0 / 3.0 } else { FACE_TURN }).then_some(if self.hover[i] == Some(Part::Face) {
             Look::Lit
         } else {
             Look::Rest

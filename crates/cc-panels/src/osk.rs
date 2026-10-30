@@ -245,7 +245,7 @@ impl Keys {
             for (r, row) in m.iter_mut().enumerate() {
                 row[3] -= (pl.y[r] * drop - pl.z[r] * 0.005) as f32; // under the card, a hair in front
             }
-            vr::place(h, &m);
+            crate::overlay::Live.place_room(h, &m);
         }
         if crate::HIDDEN.load(std::sync::atomic::Ordering::Relaxed) {
             crate::overlay::Live.hide(h)

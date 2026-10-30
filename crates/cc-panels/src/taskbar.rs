@@ -53,6 +53,7 @@ use crate::ids::Dev;
 use crate::laser::{self, Hand};
 use crate::limits::{BAR_SCALE, CURVE_NOTCH};
 use crate::overlay::{At, Flag, InputMode, Live, Overlays, Place, Surfaces, apply};
+use crate::stage::Stage;
 use crate::theme::{self, Accent, Tokens};
 use crate::windows::Windows;
 use crate::{HIDDEN, Source, call, config, panel, panels, vr};
@@ -832,7 +833,7 @@ impl Taskbar {
         if let Some(p) = config::home_pose("taskbar", None) {
             return self.set_fixed(&p);
         }
-        let eye = vr::head_position();
+        let eye = crate::stage::Live.head();
         let rdp: Vec<Placement> = {
             let k = crate::kvm::lock();
             panels().iter().filter(|p| matches!(p.src, Source::Rdp) && p.used()).map(|p| k.place[p.index]).collect()
@@ -855,7 +856,7 @@ impl Taskbar {
     /// Fixed: scales its units for its distance, so it looks as big as follow's.
     fn fit(&mut self) {
         let Some(m) = self.pose else { return };
-        let eye = vr::head_position();
+        let eye = crate::stage::Live.head();
         let d = norm(&[m[0][3] as f64 - eye[0], m[1][3] as f64 - eye[1], m[2][3] as f64 - eye[2]]);
         self.mpp = MPP * (d / OUT).max(1.0) * self.scale;
     }
@@ -967,7 +968,7 @@ impl Taskbar {
             let pointer = matches!(pe.kind, PointerKind::Move | PointerKind::Down(_) | PointerKind::Up(_));
             let bar = if pointer && self.frame.well.is_some() { crate::kvm::lock().bar } else { None }; // (unlocked again: laser_on_panel takes it)
             if let Some(bar) = bar
-                && let Some(l) = crate::trace::laser_pose(dev)
+                && let Some(l) = crate::trace::laser_pose(pe.from)
                 && let Some(on) = crate::plasmabar::laser_on_panel(&[l[0][3] as f64, l[1][3] as f64, l[2][3] as f64], &frame_point(&bar, &self.frame, pe.x as f64, pe.y as f64))
             {
                 part = match (on, part) {
@@ -1082,7 +1083,7 @@ impl Taskbar {
         let Some(pl) = crate::kvm::lock().bar else { return };
         let kind = match t {
             Take::Carry => {
-                let (Some(d), Some(b)) = (grab::pose_of(dev), self.pose) else { return };
+                let (Some(d), Some(b)) = (crate::stage::Live.device(dev), self.pose) else { return };
                 Kind::Carry { rel: mul(&inv_rigid(&d), &b) }
             }
             Take::Resize(k) => {
@@ -1104,7 +1105,7 @@ impl Taskbar {
     /// by how far the grabbed point has come toward you (along the frame's normal).
     fn holding(&mut self, now: Instant) {
         let Some(h) = self.hold.as_mut() else { return };
-        let Some(d) = grab::pose_of(h.dev) else {
+        let Some(d) = crate::stage::Live.device(h.dev) else {
             if now - *h.lost.get_or_insert(now) > grab::LOST {
                 self.let_go(); // lost tracking: put it down where it was
             }
@@ -1308,8 +1309,8 @@ impl Taskbar {
                     };
                 }
                 let local = self.wrist[(hand == Hand::Right) as usize];
-                let world = real.then(|| grab::pose_of(vr::dev(dev))).flatten().map(|d| mul(&d, &local));
-                let facing = world.is_some_and(|m| facing(&m, &vr::head_position()));
+                let world = real.then(|| crate::stage::Live.device(vr::dev(dev))).flatten().map(|d| mul(&d, &local));
+                let facing = world.is_some_and(|m| facing(&m, &crate::stage::Live.head()));
                 let alpha = (self.alpha + if facing { 0.15 } else { -0.08 }).clamp(0.0, 1.0);
                 if alpha != self.alpha {
                     self.alpha = alpha;

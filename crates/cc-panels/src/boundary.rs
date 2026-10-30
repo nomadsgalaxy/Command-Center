@@ -40,21 +40,7 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
     ("control/ui.rs", STAGE, &["vr::head"]),
     ("control/workspace.rs", STAGE, &["vr::head", "vr::index", "vr::is_real_controller"]),
     ("gather.rs", STAGE, &["vr::head"]),
-    (
-        "grab.rs",
-        STAGE,
-        &[
-            "GetDeviceToAbsoluteTrackingPose",
-            "sys::ETrackingUniverseOrigin_TrackingUniverseStanding",
-            "sys::TrackedDevicePose_t",
-            "sys::k_unMaxTrackedDeviceCount",
-            "vr::head_position",
-            "vr::index",
-            "vr::is_real_controller",
-            "vr::laser_pose",
-            "vr::to_photons",
-        ],
-    ),
+    ("grab.rs", STAGE, &["vr::index", "vr::is_real_controller"]),
     ("grab.rs", FAKES, &["sys::ETrackedControllerRole_TrackedControllerRole_LeftHand", "sys::ETrackedControllerRole_TrackedControllerRole_RightHand"]),
     (
         "laser.rs",
@@ -78,7 +64,7 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "vr::place",
         ],
     ),
-    ("main.rs", STAGE, &["vr::head", "vr::head_position", "vr::head_worn"]),
+    ("main.rs", STAGE, &["vr::head", "vr::head_worn"]),
     (
         "main.rs",
         SESSION,
@@ -108,7 +94,6 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "vr::is_real_controller",
         ],
     ),
-    ("osk.rs", STAGE, &["vr::place"]),
     ("osk.rs", "tests: SteamVR's keyboard bytes, decoded as vr.rs does", &["vr::typed"]),
     ("plasmabar.rs", STAGE, &["vr::index", "vr::is_real_controller", "vr::laser_pose", "vr::openvr_type"]),
     (
@@ -128,7 +113,6 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "sys::VREvent_Mouse_t",
         ],
     ),
-    ("popout.rs", STAGE, &["vr::head_position"]),
     (
         "taskbar.rs",
         STAGE,
@@ -139,7 +123,6 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "sys::k_unTrackedDeviceIndexInvalid",
             "vr::dev",
             "vr::head",
-            "vr::head_position",
             "vr::index",
             "vr::is_real_controller",
         ],
@@ -157,7 +140,7 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "vr::VREvent_t",
         ],
     ),
-    ("windows.rs", STAGE, &["vr::head", "vr::head_position"]),
+    ("windows.rs", STAGE, &["vr::head"]),
 ];
 
 /// The OpenVR names in a file's code (comments left out): what it `call!`s, its `openvr_sys`

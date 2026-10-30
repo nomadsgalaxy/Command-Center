@@ -14,6 +14,7 @@ use crate::attention::{self, Level};
 use crate::geometry::{Mat, Pose, STAND_IN_HEAD, ahead_of, angles, level, level_ahead, panel_matrix};
 use crate::overlay::Surfaces;
 use crate::session::{self, Session, StreamEvent};
+use crate::stage::Stage;
 use crate::{HIDDEN, Panel, capture, config, grab, kwin, panel, plasmabar, vr};
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN};
 use serde_json::{Map, Value, json};
@@ -382,7 +383,7 @@ struct Slot {
 /// A panel centred at the cursor's point p, facing you level (like `ahead`), 10 cm nearer so
 /// it's in front of the panel the drag was on.
 fn at_cursor(p: [f64; 3]) -> Pose {
-    let eye = vr::head_position();
+    let eye = crate::stage::Live.head();
     let f = level([p[0] - eye[0], 0.0, p[2] - eye[2]]);
     let (yaw, pitch) = angles(&f);
     Pose { centre: [p[0] - f[0] * 0.1, p[1], p[2] - f[2] * 0.1], yaw, pitch, width: 1.0, ..Default::default() }

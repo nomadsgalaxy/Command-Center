@@ -68,6 +68,7 @@ use geometry::{Pose, panel_matrix};
 use openvr_sys as sys;
 use overlay::{Flag, InputMode, Overlays, Surfaces};
 use poll::Pointing;
+use stage::Stage;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering::*;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize};
@@ -573,7 +574,7 @@ fn distance(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 /// Puts the cursor overlay where the KVM's cursor is, and works out each panel's pixels
 /// per degree from where the head is now.
 fn update_pointer(cursor: vr::Handle, beam: &mut laser::Beam) {
-    let eye = vr::head_position();
+    let eye = crate::stage::Live.head();
     let mut k = crate::kvm::lock();
     for (i, p) in panels().iter().enumerate() {
         let d = distance(&k.place[i].c, &eye).max(0.2);

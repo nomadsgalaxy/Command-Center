@@ -204,7 +204,8 @@ impl crate::poll::Pointing for Traced {
 }
 
 /// A device's laser (vr::laser_pose), written to the trace.
-pub fn laser_pose(dev: u32) -> Option<Mat> {
+pub fn laser_pose(dev: crate::ids::Dev) -> Option<Mat> {
+    let dev = crate::vr::index(dev); // OpenVR's number, for the call and the trace line
     let m = crate::vr::laser_pose(dev);
     pose(dev, m.as_ref());
     m
