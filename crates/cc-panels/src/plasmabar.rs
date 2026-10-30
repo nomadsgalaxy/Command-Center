@@ -561,9 +561,12 @@ impl Plasma {
             if crate::trace::on() && matches!(kind, Some(PointerKind::Move | PointerKind::Down(_) | PointerKind::Up(_))) {
                 crate::trace::pose(dev, laser.as_ref());
             }
-            let ray: Option<(V3, V3)> = laser.map(|l| ([l[0][3], l[1][3], l[2][3]].map(f64::from), [-l[0][2], -l[1][2], -l[2][2]].map(f64::from)));
+            // SteamVR's own point for now, not the ray: in the headset on Oct 30 the ray from
+            // vr::laser_pose didn't point where SteamVR's laser does (its hits sat on the overlay's
+            // edges) and tracked worse than SteamVR's point. The ray comes back once it's the pose
+            // SteamVR's laser uses. The trace still records the laser above, to check against.
             let last = self.last.get(dev, crop);
-            let Some((spot, fell_back)) = laser_point(kind, pl, crop, ray, last, (b, x as f64, y as f64)) else {
+            let Some((spot, fell_back)) = laser_point(kind, pl, crop, None, last, (b, x as f64, y as f64)) else {
                 if debug() {
                     eprintln!("plasma-debug: a press with the laser's ray off the overlay, dropped");
                 }
