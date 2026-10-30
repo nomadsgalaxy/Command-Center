@@ -5,6 +5,8 @@
 //!   Mouse and keyboard   [Command Center|Steam / game]   where they go. "Steam / game" gives the
 //!                        keyboards and mice back to the Frame (kvm.rs `set_yielded`, the way a VR
 //!                        game does), and "Command Center" takes them again.
+//!   Panels               [Bring all here]   every panel in front of you (gather.rs), for when
+//!                        some get lost; not there while the Desktop is closed
 //! plus a line saying what the choice does. While a 2D Steam game is playing, the same two choices
 //! hand the Desktop back and forth with the game (handoff.rs), and picking this tab does what
 //! pressing "Command Center" does. What it shows is who has the input right now, game or not.
@@ -39,8 +41,16 @@ use std::time::{Duration, Instant};
 
 /// Its labels, drawn by assets.rs at start as tag-ui-<key>.rgba. "dash" is both the title and the
 /// first choice of where the mouse and keyboard go.
-pub const LABELS: [(&str, &str); 6] =
-    [("dash", "Command Center"), ("dashdesktop", "Desktop"), ("dashshow", "Show"), ("dashhide", "Hide"), ("dashinput", "Mouse and keyboard"), ("dashsteam", "Steam / game")];
+pub const LABELS: [(&str, &str); 8] = [
+    ("dash", "Command Center"),
+    ("dashdesktop", "Desktop"),
+    ("dashshow", "Show"),
+    ("dashhide", "Hide"),
+    ("dashinput", "Mouse and keyboard"),
+    ("dashsteam", "Steam / game"),
+    ("dashpanels", "Panels"),
+    ("dashgather", "Bring all here"),
+];
 
 /// How long the closed tab says it's opening the Desktop after Show.
 const OPENING: Duration = Duration::from_secs(60);
@@ -56,7 +66,8 @@ pub fn dashboard(open: bool) {
 }
 
 const W: f64 = 600.0; // in units (the taskbar's: a Breeze logical pixel)
-const ROWS: usize = 3; // Desktop, Mouse and keyboard, and what that choice does
+const ROWS: usize = 4; // Desktop, Mouse and keyboard, what that choice does, and Panels' Bring all here
+const GATHER: usize = 3; // the row with Bring all here (gather.rs)
 const H: f64 = TITLE + ROWS as f64 * ROW + PAD;
 const SEG: f64 = 150.0; // one segment's width
 /// Calibration knob: how wide the page is in the dashboard, in metres. It wants a look in the headset.
@@ -82,6 +93,9 @@ fn hit(x: f64, y: f64) -> Option<Hit> {
         return None;
     }
     let i = ((y - TITLE) / ROW) as usize;
+    if i == GATHER && (y - row_y(i)).abs() <= BTN_H / 2.0 {
+        return (span().0..=span().1).contains(&x).then_some(Hit(GATHER, 0)); // one button, as wide as the two segments
+    }
     if !NAMES.contains(&i) || (y - row_y(i)).abs() > BTN_H / 2.0 {
         return None;
     }
@@ -129,7 +143,8 @@ struct Key {
 #[derive(Default)]
 struct Ui {
     title: Option<TagImg>,
-    names: [Option<TagImg>; 2],
+    names: [Option<TagImg>; 3], // Desktop, Mouse and keyboard, Panels
+    gather: Option<TagImg>,
     segs: [[Option<TagImg>; 2]; 2],
     ascii: Option<TagImg>,
 }
@@ -145,8 +160,14 @@ impl Scene<'_> {
     fn row(&self, i: usize, x: f64, y: f64) -> Px {
         let (t, k, ui, cy) = (&self.p.t, self.k, self.ui, row_y(i));
         let ink = |px: Px, c| tint(px, c, c, c);
-        if k.closed && i == 1 {
-            return ([0.0; 3], 0.0); // nothing to choose with no Desktop
+        if k.closed && (i == 1 || i == GATHER) {
+            return ([0.0; 3], 0.0); // nothing to choose or bring with no Desktop
+        }
+        if i == GATHER {
+            let lit = k.hover == Some(Hit(GATHER, 0));
+            let control = ui::labelled(&self.p, lit, span(), cy, ui.gather.as_ref(), x, y);
+            let name = if x < span().0 - ui::GAP { ink(text(ui.names[2].as_ref(), x, y, PAD + 16.0, cy), t.wtext) } else { ([0.0; 3], 0.0) };
+            return over(name, control);
         }
         if i == 2 {
             let line = match (k.closed, k.opening, k.steam) {
@@ -205,7 +226,8 @@ impl Dashtab {
             quit: false,
             ui: Arc::new(Ui {
                 title: load("dash"),
-                names: ["dashdesktop", "dashinput"].map(load),
+                names: ["dashdesktop", "dashinput", "dashpanels"].map(load),
+                gather: load("dashgather"),
                 segs: [["dashshow", "dashhide"].map(load), ["dash", "dashsteam"].map(load)],
                 ascii: crate::load_tag(&format!("{assets}/ascii.rgba")),
             }),
@@ -372,7 +394,10 @@ impl Dashtab {
 /// A click. The Desktop's choice is applied now; the input's goes to the hand-off, which main.rs
 /// reads on its next frame.
 fn act(Hit(row, seg): Hit, hand: &mut Handoff) {
-    if row == 0 {
+    if row == GATHER {
+        eprintln!("dashboard tab: Bring all here");
+        crate::gather::ask(false); // the main loop has what it moves
+    } else if row == 0 {
         let show = seg == 0;
         if show != HIDDEN.load(Relaxed) {
             return; // already how it says
@@ -389,6 +414,22 @@ fn act(Hit(row, seg): Hit, hand: &mut Handoff) {
 mod tests {
     use super::*;
     use crate::grab;
+
+    /// Bring all here is one button across the segments' width, on its own row, and pressing it
+    /// asks the main loop for a gather.
+    #[test]
+    fn bring_all_here_is_a_button_that_asks_for_a_gather() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (x0, x1) = span();
+        assert_eq!(hit(x0 + 1.0, row_y(GATHER)), Some(Hit(GATHER, 0)));
+        assert_eq!(hit(x1 - 1.0, row_y(GATHER)), Some(Hit(GATHER, 0)), "one button: no second segment");
+        assert_eq!(hit(x0 - 20.0, row_y(GATHER)), None, "not on its name");
+        assert!(H >= row_y(GATHER) + ROW / 2.0, "the page is tall enough for it");
+        let mut hand = Handoff::default();
+        crate::gather::ASKED.store(false, Relaxed);
+        act(Hit(GATHER, 0), &mut hand);
+        assert!(crate::gather::ASKED.swap(false, Relaxed), "asked");
+    }
 
     fn key(hover: Option<Hit>) -> Key {
         Key { shown: true, steam: false, hover, theme: 0, closed: false, opening: false }

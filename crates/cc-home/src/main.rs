@@ -101,6 +101,9 @@ demand: panels stay free to move.
   cc-home selftest                        check the geometry
   cc-home update                          update the system image (the Frame's sysext) from the latest
                                           release, checked against its signature; no password
+  cc-home gather                          bring every panel in front of you, for when some get lost
+                                          (not saved; the same as the taskbar's Bring all here)
+  cc-home ungather                        put back what the last gather moved
   cc-home notify-test [toast] [text]      send a test notification to the headset the way pairing and
                                           host health do, or with `toast` SteamVR's own toast
 
@@ -325,6 +328,15 @@ impl Panels {
             .map_err(|e| format!("cc-panels didn't answer ({})", py_err(&e)))?;
         let reply = String::from_utf8_lossy(&buf[..n]).into_owned();
         if reply.starts_with("ok") { Ok(reply) } else { Err(reply) }
+    }
+}
+
+/// `gather` / `ungather`: asks cc-panels to bring every panel in front of you, or to put back what
+/// the last gather moved (control.rs, gather.rs).
+fn gather(verb: &str) {
+    match target().ask(verb, 2.0) {
+        Ok(r) => println!("{}", r.trim_start_matches("ok").trim()),
+        Err(e) => die(e.trim_start_matches("error ").to_string()),
     }
 }
 
@@ -845,6 +857,7 @@ fn main() {
         ("selftest", _) => selftest(),
         ("update", _) => std::process::exit(update::main()),
         ("notify-test", _) => notify_test(args),
+        (verb @ ("gather" | "ungather"), 0) => gather(verb),
         _ => usage(),
     }
 }

@@ -85,6 +85,14 @@ updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
   Docking is off by default: Command Center moves a docked panel once a frame, which can trail a
   fast hand, and it stays off until SteamVR moves it itself (a device-relative transform)
   ([docs/steamvr-integration.md](docs/steamvr-integration.md)).
+- **Bring all here:** if panels get lost behind you or out of reach, the taskbar's Bring all
+  here chip (four arrows pointing in at a panel) puts every panel that's showing, and an open
+  Machines, Preferences or Workspace window, in front of you. They go on an arc 1.4 m ahead,
+  facing you, each keeping its size and curve, in rows above and below if there are many. A
+  docked panel goes back in the world. It's also on the dashboard tab, Right Ctrl + B, and
+  `cc-home gather`. It isn't saved: Right Ctrl + Shift + B (`cc-home ungather`) puts them back
+  where they were, Right Ctrl + Home sends everything home, and a panel you then carry and let go
+  of is saved as usual.
 - **Right click with the shoulder button:** the Frame controller's bumper is right click on
   SteamVR's laser, so context menus are one press away.
 - **Typing with a controller:** the keyboard button on a panel's bar opens SteamVR's keyboard,
@@ -98,6 +106,24 @@ updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
 - **Notifications:** pairing results, errors, and a computer's screen sharing going down or
   coming back show as notifications in the headset. `"notifications": false` in settings.json
   turns them off.
+
+### Keyboard shortcuts
+
+These are on the Bluetooth keyboard, with Right Ctrl held. Apart from the tap and Right Ctrl +
+Esc, they work while the keyboard is typing to Command Center's panels (after a click on one, or
+a Right Ctrl tap).
+
+| Keys | What it does |
+| --- | --- |
+| Right Ctrl (a tap) | Typing goes to the panels, or back to the Frame |
+| Right Ctrl + B | Bring all here: every panel in front of you, not saved |
+| Right Ctrl + Shift + B | Put back what Bring all here moved |
+| Right Ctrl + Home | Every panel to its home spot (`cc-home apply home`) |
+| Right Ctrl + F1 to F4 | Recall spot 1 to 4; with Shift, save the panels there |
+| Right Ctrl + Space | The cursor straight ahead |
+| Right Ctrl + D | SteamVR's dashboard |
+| Right Ctrl + G | Gaze lock on or off: the pointer stays on the panel you look at |
+| Right Ctrl + Esc | Close the Desktop |
 
 On the Frame, `cc-home update` updates Command Center's system image to the latest release
 without a password, after checking the release's signature

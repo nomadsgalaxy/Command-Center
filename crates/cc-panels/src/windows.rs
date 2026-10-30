@@ -1126,7 +1126,8 @@ impl Windows {
 
     fn keep_pose(&mut self, i: usize, uuid: &str) {
         let p = panel(self.first + i);
-        if p.live() && !is_popup(p.index) {
+        // where a gather put it isn't its place (gather.rs): it's kept once it's carried or placed
+        if p.live() && !is_popup(p.index) && !crate::gather::gathered(p.index) {
             let pl = crate::kvm::lock().place[p.index];
             let mut v = config::pose_json(&pl.pose(), pl.height);
             v["zoom"] = json!(p.zoom());

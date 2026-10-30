@@ -1273,6 +1273,11 @@ impl Grab {
         self.drags[i] = None;
     }
 
+    /// The Extra's window and where it is, while it's showing (gather.rs).
+    pub fn extra_shown(&self) -> Option<(&'static str, Placement)> {
+        self.extra.as_ref().filter(|x| x.shown).map(|x| (x.name, x.pl))
+    }
+
     /// Gives the Extra's window a new shape (height over width, from machines.rs's rows or its
     /// form), keeping its middle and width. Its card follows through draw's resize.
     pub fn reshape_extra(&mut self, aspect: f64) {
@@ -1562,6 +1567,7 @@ impl Grab {
         }
         #[cfg(test)]
         tests::SAVES.with(|n| n.set(n.get() + 1));
+        crate::gather::placed(i); // let go of on purpose: its own place again, not a gather's
         let pl = self.at(i, k);
         if crate::THEATER.load(Relaxed) == i {
             return; // theater mode's place is just for now, not its spot

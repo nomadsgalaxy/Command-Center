@@ -79,6 +79,7 @@ fn route(c: char, modified: bool, mode: TextMode) -> Route {
 pub const MODS: [u16; 3] = [29, 56, 125];
 const KEY_HOME: u16 = 102;
 const KEY_G: u16 = 34;
+const KEY_B: u16 = 48;
 const KEY_D: u16 = 32;
 const BTN_MOUSE: u16 = 0x110;
 const BTN_LEFT: u16 = 0x110;
@@ -1221,6 +1222,14 @@ impl Kvm {
             }
             return;
         }
+        // Right Ctrl + B brings every panel in front of you (gather.rs), on the main loop's next tick,
+        // and Right Ctrl + Shift + B puts them back.
+        if rctrl_down && code == KEY_B {
+            if value == 1 {
+                crate::gather::ask(self.shift);
+            }
+            return;
+        }
         // Right Ctrl + G toggles gaze lock.
         if rctrl_down && code == KEY_G {
             if value == 1 {
@@ -1987,6 +1996,32 @@ mod tests {
         assert!(k.keys.is_empty() && k.keystrokes == 0, "a key held from the field: its repeats and release none of a remote's");
         k.key(super::KEY_LEFTSHIFT, 0, true);
         (k.engaged, k.kbd, k.kbd_shell) = (engaged, kbd, false);
+    }
+
+    /// Right Ctrl + B asks the main loop for a gather, and Right Ctrl + Shift + B for its undo,
+    /// while the keyboards are ours (like Right Ctrl + Home); neither key reaches the remote.
+    #[test]
+    fn right_ctrl_b_gathers_and_with_shift_ungathers() {
+        use crate::gather::{ASKED, UNDO_ASKED};
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut k = Kvm::idle();
+        k.engaged = true;
+        let press = |k: &mut Kvm, code| {
+            k.key(code, 1, true);
+            k.key(code, 0, true);
+        };
+        k.key(KEY_RIGHTCTRL, 1, true);
+        press(&mut k, KEY_B);
+        assert!(ASKED.swap(false, Relaxed) && !UNDO_ASKED.load(Relaxed), "a gather");
+        k.key(KEY_LEFTSHIFT, 1, true);
+        press(&mut k, KEY_B);
+        k.key(KEY_LEFTSHIFT, 0, true);
+        assert!(UNDO_ASKED.swap(false, Relaxed) && !ASKED.load(Relaxed), "an ungather");
+        k.key(KEY_RIGHTCTRL, 0, true);
+        let sent = tests::SENT.with(|s| std::mem::take(&mut *s.borrow_mut()));
+        assert!(!sent.iter().any(|&(c, _)| c == KEY_B), "B never went to the remote: {sent:?}");
+        press(&mut k, KEY_B);
+        assert!(!ASKED.load(Relaxed), "B alone is just B");
     }
 
     #[test]
