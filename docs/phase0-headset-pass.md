@@ -1,6 +1,6 @@
 # Phase 0: the headset pass
 
-This is revision 7 of the checklist.
+This is revision 8 of the checklist.
 
 Phase 0 of the OpenXR plan ([openxr-plan.md](openxr-plan.md)) moved Command Center's OpenVR calls
 behind interfaces. It was meant to change nothing, apart from a few fixes made on purpose: a
@@ -216,17 +216,23 @@ Point the mouse at SteamVR's own UI, outside our panels.
   should be there, in the same order, with the same flags and widths. Where they are can differ,
   if you moved things.
 - When you're done, stop new traces: `rm ~/.cache/control-center/vr-trace`. If the pass was
-  clean, also delete the traces (except any you keep as a replay), the two surfaces files,
-  `~/cc-log-start.txt`, `~/cc-run-ids.txt`, `~/cc-run.log` and any `pass-*` directories. If
-  anything failed, wasn't clear or was incomplete, keep them all until it's been looked into.
+  clean, also delete its traces (except any you keep as a replay), the two surfaces files,
+  `~/cc-log-start.txt`, `~/cc-run-ids.txt`, `~/cc-run.log`, and this run's own
+  `pass-<date>-<time>-<pid>` directory if you saved one (its pid is in `~/cc-run-ids.txt`).
+  Leave every other `pass-*` directory: an earlier run's stays until that run has been looked
+  into, and goes once it has. If anything failed, wasn't clear or was incomplete, keep it all.
 - To run the pass again, first save this run's files in a directory of their own, because the
   next start can move `cc-panels.log` over `cc-panels.log.1`. `~/cc-run-ids.txt`, which goes
-  in with them, names the trace:
+  in with them, names the trace. The log, `~/cc-log-start.txt` and `~/cc-run-ids.txt` are
+  needed; the rest are saved if they're there:
 
   ```sh
   cd ~/.cache/control-center
   dir=pass-$(date +%Y%m%d-%H%M%S)-$(sed -n 's/^pid: //p' ~/cc-run-ids.txt)
-  ok=yes
+  ok=yes missing=
+  for f in cc-panels.log ~/cc-log-start.txt ~/cc-run-ids.txt; do
+    [ -e "$f" ] || missing="$missing $f"
+  done
   if mkdir "$dir"; then  # mkdir fails if it's there, so an earlier one is never overwritten
     for f in cc-panels.log cc-panels.log.1 ~/cc-log-start.txt ~/cc-run-ids.txt ~/cc-run.log \
              ~/cc-surfaces-before.txt ~/cc-surfaces-after.txt; do
@@ -244,10 +250,14 @@ Point the mouse at SteamVR's own UI, outside our panels.
   else
     ok=no
   fi
-  [ "$ok" = yes ] && echo "saved in $dir" || echo "STOP: not everything was saved, so don't restart"
+  if [ "$ok" != yes ]; then echo "STOP: not everything was saved, so don't restart"
+  elif [ -n "$missing" ]; then echo "INCOMPLETE: $dir has what there was, but not$missing"
+  else echo "saved in $dir"; fi
   ```
 
   The running Desktop keeps adding to `cc-panels.log`, so that copy only has to match the
   original's start and be at least as long as the log was before the copy. If it says STOP,
-  don't restart: look at what `cp` or `cmp` printed. Once it's saved, start again from "Before
-  you start", with a new `~/cc-log-start.txt` and `~/cc-run-ids.txt`.
+  don't restart: look at what `cp` or `cmp` printed. If it says INCOMPLETE, this run's log
+  checks can't be done again from the directory: write that down with the results. Once it's
+  saved, start again from "Before you start", with a new `~/cc-log-start.txt` and
+  `~/cc-run-ids.txt`.
