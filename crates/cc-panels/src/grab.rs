@@ -1567,6 +1567,7 @@ impl Grab {
         }
         #[cfg(test)]
         tests::SAVES.with(|n| n.set(n.get() + 1));
+        crate::gather::placed(i); // let go of on purpose: its own place again, not a gather's
         let pl = self.at(i, k);
         if crate::THEATER.load(Relaxed) == i {
             return; // theater mode's place is just for now, not its spot

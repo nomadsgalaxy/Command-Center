@@ -1238,9 +1238,18 @@ fn run() -> Result<(), String> {
         laps.lap("dashtab");
         workspace_win.tick(&mut grab, &mut windows, &mut bar);
         laps.lap("workspace");
-        if gather::ASKED.swap(false, Relaxed) {
-            gather::gather(&mut grab, &mut windows); // the dashboard tab's button, or Right Ctrl + B
-            bar.refix();
+        // the dashboard tab's button or Right Ctrl + B, and Right Ctrl + Shift + B's undo
+        let asked = if gather::ASKED.swap(false, Relaxed) {
+            Some(gather::gather(&mut grab, &mut windows))
+        } else if gather::UNDO_ASKED.swap(false, Relaxed) {
+            Some(gather::ungather(&mut grab))
+        } else {
+            None
+        };
+        match asked {
+            Some(Ok(_)) => bar.refix(),
+            Some(Err(e)) => eprintln!("gather: {e}"),
+            None => {}
         }
         if let Some(s) = &control {
             control::handle(s, &mut grab, &mut windows, &mut bar);

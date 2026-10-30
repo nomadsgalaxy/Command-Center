@@ -1050,8 +1050,10 @@ impl Taskbar {
             crate::control::show(&crate::control::prefs::OPEN, !crate::control::prefs::OPEN.load(Relaxed));
         }
         if c == Chip::Gather {
-            crate::gather::gather(grab, windows);
-            self.refix(); // fixed, it goes back under them, as after a spot
+            match crate::gather::gather(grab, windows) {
+                Ok(_) => self.refix(), // fixed, it goes back under them, as after a spot
+                Err(e) => eprintln!("taskbar: gather: {e}"),
+            }
         }
         if c == Chip::Power {
             let quit;

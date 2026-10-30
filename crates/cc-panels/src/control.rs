@@ -15,7 +15,10 @@
 //!             mode off, nothing hidden
 //!   gather    -> "ok gather <n>": summon, then every panel showing and the open Machines,
 //!             Preferences or Workspace window moved in front of you, not saved (gather.rs; the
-//!             taskbar's "Bring all here", the dashboard tab, Right Ctrl + B, cc-home gather)
+//!             taskbar's "Bring all here", the dashboard tab, Right Ctrl + B, cc-home gather).
+//!             "error ..." with the headset untracked, and then nothing changes
+//!   ungather  -> "ok ungather <n>": puts back what the last gather moved, except a panel you've
+//!             moved since (Right Ctrl + Shift + B, cc-home ungather); "error ..." with nothing to undo
 //!   viewer connect <name>   connects a remote that wasn't connected at start (autoconnect)
 //!   viewer disconnect <name>   ends a remote's session (connect starts it again)
 //!   machines show|hide   the Machines window (control/machines.rs), same as its taskbar chip
@@ -305,6 +308,7 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
             match panels().iter().find(|p| p.live() && p.spot_key() == words[1]) {
                 Some(p) => {
                     grab.cancel(p.index); // a recall beats a carry
+                    crate::gather::placed(p.index); // and it's a place of its own again, saved as usual
                     // a window's height comes from the save (its window follows, windows.rs); a
                     // remote screen's comes from its monitor's shape
                     p.set_vert(pose.vert && matches!(p.src, Source::Rdp)); // set_pose turns the panel for that
@@ -403,11 +407,20 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
             summon(grab, windows);
             "ok summon".into()
         }
-        Some("gather") => {
-            let n = crate::gather::gather(grab, windows);
-            bar.refix(); // the fixed taskbar goes back under them, as after a spot
-            format!("ok gather {n}")
-        }
+        Some("gather") => match crate::gather::gather(grab, windows) {
+            Ok(n) => {
+                bar.refix(); // the fixed taskbar goes back under them, as after a spot
+                format!("ok gather {n}")
+            }
+            Err(e) => format!("error {e}"),
+        },
+        Some("ungather") => match crate::gather::ungather(grab) {
+            Ok(n) => {
+                bar.refix();
+                format!("ok ungather {n}")
+            }
+            Err(e) => format!("error {e}"),
+        },
         Some("taskbar") => match words.get(1) {
             None => format!("ok {}", bar.mode().name()),
             Some(w) => match taskbar::Mode::parse(w) {
