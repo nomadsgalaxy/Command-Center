@@ -1,6 +1,6 @@
 # Phase 0: the headset pass
 
-This is revision 5 of the checklist.
+This is revision 6 of the checklist.
 
 Phase 0 of the OpenXR plan ([openxr-plan.md](openxr-plan.md)) moved Command Center's OpenVR calls
 behind interfaces. It was meant to change nothing, apart from a few fixes made on purpose: a
@@ -217,15 +217,28 @@ Point the mouse at SteamVR's own UI, outside our panels.
   if you moved things.
 - When you're done, stop new traces: `rm ~/.cache/control-center/vr-trace`. If the pass was
   clean, also delete the traces (except any you keep as a replay), the two surfaces files,
-  `~/cc-log-start.txt`, `~/cc-run-ids.txt`, `~/cc-run.log` and any `.pre-pass` copies. If
+  `~/cc-log-start.txt`, `~/cc-run-ids.txt`, `~/cc-run.log` and any `pass-*` directories. If
   anything failed, wasn't clear or was incomplete, keep them all until it's been looked into.
-- To run the pass again, first copy the logs aside, because the next start can move
-  `cc-panels.log` over `cc-panels.log.1`:
+- To run the pass again, first save this run's files in a directory of their own, because the
+  next start can move `cc-panels.log` over `cc-panels.log.1`. `~/cc-run-ids.txt`, which goes
+  in with them, names the trace:
 
   ```sh
   cd ~/.cache/control-center
-  cp cc-panels.log.1 cc-panels.log.1.pre-pass; cp cc-panels.log cc-panels.log.pre-pass
+  dir=pass-$(date +%Y%m%d-%H%M%S)-$(sed -n 's/^pid: //p' ~/cc-run-ids.txt)
+  ok=yes
+  if mkdir "$dir"; then  # mkdir fails if it's there, so an earlier one is never overwritten
+    for f in cc-panels.log cc-panels.log.1 ~/cc-log-start.txt ~/cc-run-ids.txt ~/cc-run.log \
+             ~/cc-surfaces-before.txt ~/cc-surfaces-after.txt; do
+      [ -e "$f" ] || continue
+      cp -p "$f" "$dir/" && cmp "$f" "$dir/${f##*/}" || ok=no
+    done
+  else
+    ok=no
+  fi
+  [ "$ok" = yes ] && echo "saved in $dir" || echo "STOP: not everything was saved, so don't restart"
   ```
 
-  Then start again from "Before you start", with a new `~/cc-log-start.txt` and
+  If it says STOP, don't restart. The Desktop may have written to its log between the copy and
+  the check, so run it again: the new directory gets a new name. Then start again from "Before you start", with a new `~/cc-log-start.txt` and
   `~/cc-run-ids.txt`.
