@@ -307,6 +307,8 @@ pub mod fake {
         pub next: u64,                                      // the last overlay handle handed out
         pub calls: Vec<String>,                             // every write made to it, in order (golden.rs)
         pub roles: Vec<(sys::ETrackedControllerRole, u32)>, // which device has which hand role; none is Invalid
+        pub connected: Vec<u32>,                            // on but untracked (a device in poses is on and tracked)
+        pub types: Vec<(u32, String)>,                      // a device's controller type (cc_pointer's ends in _pointer); none is ""
     }
 
     pub static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -345,6 +347,18 @@ pub mod fake {
         f(SCRIPT.lock().unwrap().get_or_insert_with(Script::default))
     }
 
+    /// A number as the call log (and golden.rs) writes it: 5 decimals and no -0, so the last bits
+    /// of a float, which can differ between x86_64 and aarch64, don't count.
+    pub fn num(x: f64) -> String {
+        let s = format!("{x:.5}");
+        if s.trim_start_matches('-').chars().all(|c| c == '0' || c == '.') { s.trim_start_matches('-').to_string() } else { s }
+    }
+
+    pub fn mat(m: &Mat) -> String {
+        let rows: Vec<String> = m.iter().map(|row| row.iter().map(|&v| num(v as f64)).collect::<Vec<_>>().join(" ")).collect();
+        format!("[{}]", rows.join("; "))
+    }
+
     fn log(c: String) {
         script(|s| s.calls.push(c));
     }
@@ -376,7 +390,7 @@ pub mod fake {
     }
     unsafe extern "C" fn mouse_scale(h: Handle, s: *mut sys::HmdVector2_t) -> sys::EVROverlayError {
         let v = unsafe { (*s).v };
-        log(format!("SetOverlayMouseScale {h} {:.5} {:.5}", v[0], v[1])); // not golden::num: cc-win-spike builds this file too
+        log(format!("SetOverlayMouseScale {h} {} {}", num(v[0] as f64), num(v[1] as f64)));
         0
     }
     unsafe extern "C" fn input_method(h: Handle, m: sys::VROverlayInputMethod) -> sys::EVROverlayError {
@@ -388,7 +402,7 @@ pub mod fake {
         0
     }
     unsafe extern "C" fn alpha(h: Handle, a: f32) -> sys::EVROverlayError {
-        log(format!("SetOverlayAlpha {h} {a:.5}"));
+        log(format!("SetOverlayAlpha {h} {}", num(a as f64)));
         0
     }
     unsafe extern "C" fn role_index(r: sys::ETrackedControllerRole) -> u32 {
@@ -397,6 +411,35 @@ pub mod fake {
     // no vsync: to_photons is 0, so poses are read at now and a replay doesn't depend on the clock
     unsafe extern "C" fn vsync(_since: *mut f32, _frame: *mut u64) -> bool {
         false
+    }
+    unsafe extern "C" fn width(h: Handle, w: f32) -> sys::EVROverlayError {
+        log(format!("SetOverlayWidthInMeters {h} {}", num(w as f64)));
+        0
+    }
+    unsafe extern "C" fn curvature(h: Handle, c: f32) -> sys::EVROverlayError {
+        log(format!("SetOverlayCurvature {h} {}", num(c as f64)));
+        0
+    }
+    unsafe extern "C" fn texel(h: Handle, a: f32) -> sys::EVROverlayError {
+        log(format!("SetOverlayTexelAspect {h} {}", num(a as f64)));
+        0
+    }
+    unsafe extern "C" fn bounds(h: Handle, b: *mut sys::VRTextureBounds_t) -> sys::EVROverlayError {
+        let b = unsafe { *b };
+        log(format!("SetOverlayTextureBounds {h} {} {} {} {}", num(b.uMin as f64), num(b.vMin as f64), num(b.uMax as f64), num(b.vMax as f64)));
+        0
+    }
+    unsafe extern "C" fn absolute(h: Handle, o: sys::ETrackingUniverseOrigin, m: *mut sys::HmdMatrix34_t) -> sys::EVROverlayError {
+        log(format!("SetOverlayTransformAbsolute {h} {o} {}", mat(unsafe { &(*m).m })));
+        0
+    }
+    unsafe extern "C" fn relative(h: Handle, dev: u32, m: *mut sys::HmdMatrix34_t) -> sys::EVROverlayError {
+        log(format!("SetOverlayTransformTrackedDeviceRelative {h} {dev} {}", mat(unsafe { &(*m).m })));
+        0
+    }
+    unsafe extern "C" fn haptic(h: Handle, secs: f32, freq: f32, amp: f32) -> sys::EVROverlayError {
+        log(format!("TriggerLaserMouseHapticVibration {h} {} {} {}", num(secs as f64), num(freq as f64), num(amp as f64)));
+        0
     }
     unsafe extern "C" fn hide(h: Handle) -> sys::EVROverlayError {
         log(format!("HideOverlay {h}"));
@@ -408,17 +451,28 @@ pub mod fake {
             for (dev, m) in &s.poses {
                 if let Some(p) = out.get_mut(*dev as usize) {
                     p.mDeviceToAbsoluteTracking.m = *m;
-                    p.bPoseIsValid = true;
+                    (p.bPoseIsValid, p.bDeviceIsConnected) = (true, true);
+                }
+            }
+            for dev in &s.connected {
+                if let Some(p) = out.get_mut(*dev as usize) {
+                    p.bDeviceIsConnected = true;
                 }
             }
         });
     }
     // no render model, so laser_pose gives the pose as it is: a trace records the laser itself
-    unsafe extern "C" fn string_prop(_d: u32, _p: sys::ETrackedDeviceProperty, buf: *mut std::os::raw::c_char, size: u32, _e: *mut sys::ETrackedPropertyError) -> u32 {
+    unsafe extern "C" fn string_prop(d: u32, p: sys::ETrackedDeviceProperty, buf: *mut std::os::raw::c_char, size: u32, _e: *mut sys::ETrackedPropertyError) -> u32 {
+        let v = if p == sys::ETrackedDeviceProperty_Prop_ControllerType_String { script(|s| s.types.iter().find(|x| x.0 == d).map(|x| x.1.clone())) } else { None };
+        let v = v.unwrap_or_default();
+        let n = v.len().min(size.saturating_sub(1) as usize);
         if size > 0 {
-            unsafe { *buf = 0 };
+            unsafe {
+                std::ptr::copy_nonoverlapping(v.as_ptr() as *const std::os::raw::c_char, buf, n);
+                *buf.add(n) = 0;
+            }
         }
-        0
+        n as u32 + 1
     }
     unsafe extern "C" fn class(_d: u32) -> sys::ETrackedDeviceClass {
         sys::ETrackedDeviceClass_TrackedDeviceClass_Controller
@@ -450,6 +504,13 @@ pub mod fake {
                 ShowOverlay: Some(show),
                 HideOverlay: Some(hide),
                 SetOverlayAlpha: Some(alpha),
+                SetOverlayWidthInMeters: Some(width),
+                SetOverlayCurvature: Some(curvature),
+                SetOverlayTexelAspect: Some(texel),
+                SetOverlayTextureBounds: Some(bounds),
+                SetOverlayTransformAbsolute: Some(absolute),
+                SetOverlayTransformTrackedDeviceRelative: Some(relative),
+                TriggerLaserMouseHapticVibration: Some(haptic),
                 ..Default::default()
             }),
             sys: leak(sys::VR_IVRSystem_FnTable {

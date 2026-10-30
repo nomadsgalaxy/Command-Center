@@ -41,40 +41,7 @@ pub fn check(name: &str, got: &str) {
     );
 }
 
-/// A number as the fixtures write it: 5 decimals, and no -0, so the last bits of a float (which
-/// can differ between x86_64 and aarch64) don't count.
-pub fn num(x: f64) -> String {
-    let s = format!("{x:.5}");
-    if s.trim_start_matches('-').chars().all(|c| c == '0' || c == '.') { s.trim_start_matches('-').to_string() } else { s }
-}
-
-pub fn mat(m: &crate::geometry::Mat) -> String {
-    let mut s = String::from("[");
-    for (r, row) in m.iter().enumerate() {
-        if r > 0 {
-            s.push_str("; ");
-        }
-        let cells: Vec<String> = row.iter().map(|&v| num(v as f64)).collect();
-        let _ = write!(s, "{}", cells.join(" "));
-    }
-    s.push(']');
-    s
-}
-
-/// One of stage::fake's recorded writes.
-pub fn overlay_call(c: &crate::overlay::fake::Call) -> String {
-    use crate::overlay::fake::Call::*;
-    let f = |v: f32| num(v as f64);
-    match c {
-        Width(h, w) => format!("width {h} {}", f(*w)),
-        Curvature(h, v) => format!("curvature {h} {}", f(*v)),
-        Texel(h, v) => format!("texel {h} {}", f(*v)),
-        Bounds(h, b) => format!("bounds {h} {} {} {} {}", f(b[0]), f(b[1]), f(b[2]), f(b[3])),
-        MouseScale(h, s) => format!("mouse scale {h} {} {}", f(s[0]), f(s[1])),
-        Room(h, m) => format!("room {h} {}", mat(m)),
-        Device(h, d, m) => format!("on device {d} {h} {}", mat(m)),
-    }
-}
+pub use crate::vr::fake::{mat, num}; // the same numbers as vr::fake's call log
 
 /// A transcript, one step at a time. Anything written from an unordered collection (a HashMap,
 /// a set) is sorted first, so a run's order can't change it.

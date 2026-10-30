@@ -125,6 +125,12 @@ at each step: the OpenVR calls `vr::fake` logged (`take_calls`), what went to th
 committed file in `crates/cc-panels/golden/`, and any difference fails the test. They're there so
 phase 0 of the OpenXR plan (docs/openxr-plan.md) can move code without changing behaviour.
 
+grab.rs's golden tests use `stage::fake::OverFake`, which is today's `overlay::Live` and
+`stage::Live` over the fake, with only the panel list answered by the test. Devices go in the
+fake's script with `stage::fake::put(dev, pose, off)`: a pose is tracked, none is on but untracked,
+and `off` is switched off. A controller type (`types`, for cc_pointer) and hand roles (`roles`) go
+in the script too.
+
 An ordinary run never writes a fixture, not even a missing one. When a change in behaviour is
 meant, rewrite them on purpose and commit the diff with the change:
 

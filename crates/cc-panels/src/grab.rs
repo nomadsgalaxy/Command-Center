@@ -2680,7 +2680,7 @@ mod tests {
     mod carrying {
         use super::*;
         use crate::geometry::bend;
-        use crate::stage::fake::{Fake, aimed, apart};
+        use crate::stage::fake::{Fake, OverFake, aimed, apart, put};
         use std::time::Duration;
 
         const HAND: u32 = 1;
@@ -3128,64 +3128,94 @@ mod tests {
             assert!(g.drags[0].is_none(), "past LOST: put down where it is");
         }
 
-        /// Golden (golden.rs): a carry whose controller goes untracked, blinks back, then goes for
-        /// good, after which a controller with another index picks the panel up and the old
-        /// one's late Up arrives. What happens today is what's pinned.
+        /// The golden tests' world (golden.rs): today's SteamVR stage (`overlay::Live`, `stage::Live`)
+        /// over the fake SteamVR, so the code phase 0 moves is what's pinned, with the head at EYE
+        /// looking ahead. Hold the guard for the whole test.
+        fn golden_world(p: Placement) -> (Grab, Kvm, OverFake, crate::vr::fake::Guard) {
+            let vr = crate::trace::fake_vr();
+            put(0, Some(aimed(EYE, [0.0, 1.6, -1.0])), false);
+            let mut k = Kvm::idle();
+            k.place = vec![p];
+            let g = Grab::with_backdrop(1, 0);
+            crate::vr::fake::take_calls(); // the set-up isn't what's pinned
+            (g, k, OverFake::with_panels(1), vr)
+        }
+
+        /// A device at `from`, its laser pointing at `at`, in the fake SteamVR.
+        fn aim(dev: u32, from: V3, at: V3) {
+            put(dev, Some(aimed(from, at)), false);
+        }
+
+        /// What SteamVR was told since the last step, the pointer moves sent, and what's held.
+        fn golden_observe(log: &mut crate::golden::Log, g: &Grab, k: &Kvm, s: &mut OverFake) {
+            use crate::golden::{mat, num};
+            log.vr_calls();
+            for (i, x, y) in s.moves.drain(..) {
+                log.line(format!("pointer move on panel {i} to {} {}", num(x), num(y)));
+            }
+            let drag = match &g.drags[0] {
+                Some(d) => {
+                    let mode = match d.mode {
+                        Mode::Move { .. } => "carrying",
+                        Mode::Resize { .. } => "resizing",
+                        Mode::Stretch { .. } => "stretching",
+                        Mode::Curve { .. } => "curving",
+                        Mode::Zoom { .. } => "zooming",
+                    };
+                    format!("by {}, {mode}, lost {}", d.dev, d.lost.is_some())
+                }
+                None => "none".into(),
+            };
+            log.line(format!("drag {drag}"));
+            log.line(format!("docked {:?}", g.docked[0].as_ref().map(|d| d.0)));
+            let pl = &k.place[0];
+            log.line(format!("panel {} wide, curve {}, {}", num(pl.width), num(pl.curve), mat(&pl.matrix())));
+        }
+
+        /// Golden: a carry whose controller goes untracked, blinks back, then goes for good,
+        /// after which a controller with another index picks the panel up and the old one's
+        /// late Up arrives. What happens today is what's pinned.
         #[test]
         fn golden_device_lost_mid_drag() {
-            use crate::golden::{Log, mat, num, overlay_call};
-            fn observe(log: &mut Log, g: &Grab, k: &Kvm, f: &mut Fake) {
-                for c in f.writes.0.drain(..) {
-                    log.line(overlay_call(&c));
-                }
-                for (i, x, y) in f.moves.drain(..) {
-                    log.line(format!("pointer move on panel {i} to {} {}", num(x), num(y)));
-                }
-                let drag = match &g.drags[0] {
-                    Some(d) => format!("by {}, {}", d.dev, if matches!(d.mode, Mode::Move { .. }) { "carrying" } else { "not carrying" }),
-                    None => "none".into(),
-                };
-                log.line(format!("drag {drag}, lost {}", g.drags[0].as_ref().is_some_and(|d| d.lost.is_some())));
-                log.line(format!("panel {}", mat(&k.place[0].matrix())));
-            }
             const NEW: u32 = 5; // the controller back on, under another index
             let p = flat();
-            let (mut g, mut k, mut f) = world(p);
-            let mut log = Log::default();
+            let (mut g, mut k, mut s, _vr) = golden_world(p);
+            let mut log = crate::golden::Log::default();
             let t = Instant::now();
             let ms = |n: u64| t + Duration::from_millis(n);
             log.step("the bar picked up and carried");
-            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
-            g.start(0, Part::Bar, HAND, &k, &f);
-            point(&mut f, HAND, [0.35, 1.25, -0.4], p.c);
-            g.carry(&mut k, &mut f, t);
-            observe(&mut log, &g, &k, &mut f);
-            log.step("the controller goes untracked, 400 ms");
-            f.devices.remove(&HAND);
-            g.carry(&mut k, &mut f, ms(1));
-            g.carry(&mut k, &mut f, ms(400));
-            observe(&mut log, &g, &k, &mut f);
+            aim(HAND, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &s);
+            aim(HAND, [0.35, 1.25, -0.4], p.c);
+            g.carry(&mut k, &mut s, t);
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("the controller goes untracked (still on), 400 ms");
+            put(HAND, None, false);
+            g.carry(&mut k, &mut s, ms(1));
+            g.carry(&mut k, &mut s, ms(400));
+            golden_observe(&mut log, &g, &k, &mut s);
             log.step("it blinks back, moved");
-            point(&mut f, HAND, [0.4, 1.25, -0.4], p.c);
-            g.carry(&mut k, &mut f, ms(450));
-            observe(&mut log, &g, &k, &mut f);
+            aim(HAND, [0.4, 1.25, -0.4], p.c);
+            g.carry(&mut k, &mut s, ms(450));
+            golden_observe(&mut log, &g, &k, &mut s);
             log.step("it goes again, for longer than LOST");
-            f.devices.remove(&HAND);
-            g.carry(&mut k, &mut f, ms(900));
-            g.carry(&mut k, &mut f, ms(1500));
-            observe(&mut log, &g, &k, &mut f);
-            log.step("back under another index, it picks the bar up again");
-            point(&mut f, NEW, [0.4, 1.25, -0.4], p.c);
-            g.start(0, Part::Bar, NEW, &k, &f);
-            point(&mut f, NEW, [0.45, 1.25, -0.4], p.c);
-            g.carry(&mut k, &mut f, ms(1600));
-            observe(&mut log, &g, &k, &mut f);
+            put(HAND, None, false);
+            g.carry(&mut k, &mut s, ms(900));
+            g.carry(&mut k, &mut s, ms(1500));
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("switched off; back under another index, it picks the bar up again");
+            put(HAND, None, true);
+            aim(NEW, [0.4, 1.25, -0.4], p.c);
+            g.start(0, Part::Bar, NEW, &k, &s);
+            aim(NEW, [0.45, 1.25, -0.4], p.c);
+            g.carry(&mut k, &mut s, ms(1600));
+            golden_observe(&mut log, &g, &k, &mut s);
             log.step("the old index's Up arrives late");
             log.line(format!("ended any: {}", g.end_by(HAND, &k)));
-            observe(&mut log, &g, &k, &mut f);
+            golden_observe(&mut log, &g, &k, &mut s);
             log.step("the new one lets go");
             log.line(format!("ended any: {}", g.end_by(NEW, &k)));
-            observe(&mut log, &g, &k, &mut f);
+            golden_observe(&mut log, &g, &k, &mut s);
             crate::golden::check("grab-device-lost-mid-drag", &log.0);
         }
 
@@ -3194,47 +3224,40 @@ mod tests {
         /// drag keeps the index it started with.
         #[test]
         fn golden_roles_swap_mid_drag() {
-            use crate::golden::{Log, mat};
             use openvr_sys as sys;
             const LEFT: u32 = 1;
             const RIGHT: u32 = 2;
-            let set_roles = |l: u32, r: u32| {
+            let roles = |l: u32, r: u32| {
                 let mut s = crate::vr::fake::SCRIPT.lock().unwrap();
-                let s = s.get_or_insert_with(Default::default);
-                s.roles = vec![(sys::ETrackedControllerRole_TrackedControllerRole_LeftHand, l), (sys::ETrackedControllerRole_TrackedControllerRole_RightHand, r)];
-                s.poses = vec![(0, aimed([0.0, 1.6, 0.0], [0.0, 1.0, -1.0])), (LEFT, aimed([-0.2, 1.1, -0.3], [0.0, 1.6, 0.0])), (RIGHT, aimed([0.2, 1.1, -0.3], [0.0, 1.6, 0.0]))];
+                s.get_or_insert_with(Default::default).roles = vec![(sys::ETrackedControllerRole_TrackedControllerRole_LeftHand, l), (sys::ETrackedControllerRole_TrackedControllerRole_RightHand, r)];
             };
-            let _vr = crate::trace::fake_vr();
+            let p = flat();
+            let (mut g, mut k, mut s, _vr) = golden_world(p);
             let dir = std::env::temp_dir().join(format!("cc-golden-roles-{}", std::process::id()));
             let mut bar = crate::taskbar::Taskbar::new(dir.to_str().unwrap());
+            aim(LEFT, [-0.2, 1.1, -0.3], EYE);
+            aim(RIGHT, [0.3, 1.2, -0.4], p.c);
             crate::vr::fake::take_calls(); // the taskbar's set-up isn't what this pins
-            let p = flat();
-            let (mut g, mut k, mut f) = world(p);
-            let mut log = Log::default();
-            let observe = |log: &mut Log, g: &Grab, wrist: Option<u32>| {
-                log.vr_calls();
-                log.line(format!("wrist on {wrist:?}"));
-                log.line(format!("drag {}", g.drags[0].as_ref().map_or("none".into(), |d| format!("by {}", d.dev))));
-            };
+            let mut log = crate::golden::Log::default();
             log.step("roles left 1, right 2; the right hand picks the bar up");
-            set_roles(LEFT, RIGHT);
-            point(&mut f, RIGHT, [0.3, 1.2, -0.4], p.c);
-            g.start(0, Part::Bar, RIGHT, &k, &f);
-            g.carry(&mut k, &mut f, Instant::now());
-            let w = bar.wrist_frame();
-            observe(&mut log, &g, w);
+            roles(LEFT, RIGHT);
+            g.start(0, Part::Bar, RIGHT, &k, &s);
+            g.carry(&mut k, &mut s, Instant::now());
+            log.line(format!("wrist on {:?}", bar.wrist_frame()));
+            golden_observe(&mut log, &g, &k, &mut s);
             log.step("the roles swap: left 2, right 1");
-            set_roles(RIGHT, LEFT);
-            g.carry(&mut k, &mut f, Instant::now());
-            let w = bar.wrist_frame();
-            observe(&mut log, &g, w);
-            log.line(format!("panel {}", mat(&k.place[0].matrix())));
+            roles(RIGHT, LEFT);
+            g.carry(&mut k, &mut s, Instant::now());
+            log.line(format!("wrist on {:?}", bar.wrist_frame()));
+            golden_observe(&mut log, &g, &k, &mut s);
             log.step("device 1, the right-hand role now, lets go");
             log.line(format!("ended any: {}", g.end_by(LEFT, &k)));
-            observe(&mut log, &g, bar.wrist_frame());
+            log.line(format!("wrist on {:?}", bar.wrist_frame()));
+            golden_observe(&mut log, &g, &k, &mut s);
             log.step("device 2 lets go");
             log.line(format!("ended any: {}", g.end_by(RIGHT, &k)));
-            observe(&mut log, &g, bar.wrist_frame());
+            log.line(format!("wrist on {:?}", bar.wrist_frame()));
+            golden_observe(&mut log, &g, &k, &mut s);
             crate::golden::check("grab-roles-swap-mid-drag", &log.0);
         }
 
