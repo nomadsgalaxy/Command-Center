@@ -28,7 +28,8 @@ const WIDER: [f64; 2] = [160.0, 220.0];
 const GAP: f64 = 0.04;
 
 /// Asked for from somewhere without the main loop's state (the dashboard tab, Right Ctrl + B):
-/// the main loop runs it on its next tick. `UNDO_ASKED` is Right Ctrl + Shift + B's ungather.
+/// the main loop runs it on its next tick. `UNDO_ASKED` is the ungather key's
+/// (kvm.rs, Left Ctrl + Shift + B unless settings.json says otherwise) or Right Ctrl + Shift + B's.
 pub static ASKED: AtomicBool = AtomicBool::new(false);
 pub static UNDO_ASKED: AtomicBool = AtomicBool::new(false);
 
@@ -196,7 +197,7 @@ pub fn gather(grab: &mut grab::Grab, windows: &mut Windows) -> Result<usize, Str
     }
     *crate::ffi::lock(&GATHERED) = items.iter().filter_map(|(it, _)| if let Item::Panel(i) = it { Some(*i) } else { None }).collect();
     *crate::ffi::lock(&BEFORE) = items.clone();
-    eprintln!("gather: {} brought in front of you, not saved (Right Ctrl + Shift + B or Right Ctrl + Home puts them back)", items.len());
+    eprintln!("gather: {} brought in front of you, not saved (the ungather key, Left Ctrl + Shift + B unless set, or Right Ctrl + Home puts them back)", items.len());
     Ok(items.len())
 }
 

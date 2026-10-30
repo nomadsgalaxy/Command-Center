@@ -83,6 +83,57 @@ const KEY_HOME: u16 = 102;
 const KEY_G: u16 = 34;
 const KEY_B: u16 = 48;
 const KEY_D: u16 = 32;
+
+/// The modifiers a key combination can name, each with its keys (evdev codes).
+const COMBO_MODS: [(&str, &[u16]); 5] = [("leftctrl", &[29]), ("rightctrl", &[KEY_RIGHTCTRL]), ("shift", &[KEY_LEFTSHIFT, KEY_RIGHTSHIFT]), ("alt", &[56, 100]), ("super", &[125, 126])];
+
+/// One key with an exact set of modifiers (bit i is COMBO_MODS[i]): settings.json's
+/// `ungather_key`, such as "LeftCtrl+Shift+B".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Combo {
+    mods: u8,
+    key: u16,
+}
+
+/// Left Ctrl + Shift + B, since not every keyboard has a Right Ctrl.
+pub const UNGATHER_KEY: Combo = Combo { mods: 0b101, key: KEY_B };
+
+impl Combo {
+    /// Modifiers and one key, joined by +, in any case: a letter, a digit or F1 to F12, and at
+    /// least one modifier, so a plain key never stops reaching the remote.
+    pub fn parse(text: &str) -> Option<Combo> {
+        let (mut mods, mut key) = (0u8, None);
+        for part in text.split('+').map(|p| p.trim().to_ascii_lowercase()) {
+            if let Some(i) = COMBO_MODS.iter().position(|(name, _)| *name == part) {
+                mods |= 1 << i;
+                continue;
+            }
+            let code = match part.strip_prefix('f').and_then(|n| n.parse::<u16>().ok()) {
+                Some(n @ 1..=10) => KEY_F1 + n - 1,
+                Some(n @ 11..=12) => 87 + n - 11,
+                _ => match part.as_bytes() {
+                    [c] if c.is_ascii_alphanumeric() => crate::control::ui::key_for(*c as char)?.0,
+                    _ => return None,
+                },
+            };
+            if key.replace(code).is_some() {
+                return None; // two keys
+            }
+        }
+        Some(Combo { mods, key: key? }).filter(|c| c.mods != 0)
+    }
+}
+
+/// settings.json's `ungather_key`, or Left Ctrl + Shift + B when it's missing or doesn't parse.
+pub fn ungather_key() -> Combo {
+    match crate::config::settings()["ungather_key"].as_str() {
+        None => UNGATHER_KEY,
+        Some(t) => Combo::parse(t).unwrap_or_else(|| {
+            eprintln!("settings.json: ungather_key {t:?} isn't modifiers and a key (like \"LeftCtrl+Shift+B\"); using Left Ctrl + Shift + B");
+            UNGATHER_KEY
+        }),
+    }
+}
 const BTN_MOUSE: u16 = 0x110;
 const BTN_LEFT: u16 = 0x110;
 const BTN_RIGHT: u16 = 0x111;
@@ -279,7 +330,10 @@ pub struct Kvm {
     rctrl: Option<Instant>,          // when Right Ctrl went down, to spot the tap
     rctrl_clean: bool,
     shift: bool,
-    pub moves: u32, // sent since the last status line
+    held_mods: Vec<u16>,     // the COMBO_MODS keys held down
+    pub ungather: Combo,     // the key that puts back what a gather moved (ungather_key)
+    combo_held: Option<u16>, // a combo's key while it's down, so its repeats and release stay ours
+    pub moves: u32,          // sent since the last status line
     pub clicks: u32,
     pub keystrokes: u32,
     pub wheels: u32,
@@ -362,6 +416,9 @@ impl Kvm {
             rctrl: None,
             rctrl_clean: false,
             shift: false,
+            held_mods: Vec::new(),
+            ungather: UNGATHER_KEY,
+            combo_held: None,
             moves: 0,
             clicks: 0,
             keystrokes: 0,
@@ -1186,6 +1243,12 @@ impl Kvm {
         if code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT {
             self.shift = value != 0;
         }
+        if COMBO_MODS.iter().any(|(_, keys)| keys.contains(&code)) {
+            self.held_mods.retain(|&k| k != code);
+            if value != 0 {
+                self.held_mods.push(code);
+            }
+        }
         if !ours {
             return; // the Frame's (a keyboard while released, or one not grabbed yet)
         }
@@ -1203,6 +1266,19 @@ impl Kvm {
             self.last_used = Some(Instant::now());
         } else if !self.keyboards() {
             return; // a mouse's own keys go to the Frame while it has the typing
+        }
+        // The ungather key (Left Ctrl + Shift + B unless settings.json says otherwise) is ours, its
+        // repeats and release too, even after its modifiers let go; they went out as themselves.
+        if self.combo_held == Some(code) {
+            if value == 0 {
+                self.combo_held = None;
+            }
+            return;
+        }
+        if value == 1 && code == self.ungather.key && self.mods_down() == self.ungather.mods {
+            self.combo_held = Some(code);
+            crate::gather::ask(true);
+            return;
         }
         // Right Ctrl + Home sends every panel home; + F1..F4 recalls that preset; + Shift saves it.
         let spot_key = code == KEY_HOME || (KEY_F1..=KEY_F4).contains(&code);
@@ -1228,7 +1304,7 @@ impl Kvm {
             return;
         }
         // Right Ctrl + B brings every panel in front of you (gather.rs), on the main loop's next tick,
-        // and Right Ctrl + Shift + B puts them back.
+        // and Right Ctrl + Shift + B puts them back, as the ungather key does.
         if rctrl_down && code == KEY_B {
             if value == 1 {
                 crate::gather::ask(self.shift);
@@ -1364,6 +1440,11 @@ impl Kvm {
         if value != 0 {
             self.typed = Some(Instant::now());
         }
+    }
+
+    /// The COMBO_MODS held down now, as a Combo's bits.
+    fn mods_down(&self) -> u8 {
+        COMBO_MODS.iter().enumerate().filter(|(_, (_, keys))| keys.iter().any(|k| self.held_mods.contains(k))).fold(0, |m, (i, _)| m | 1 << i)
     }
 
     fn wheel(&mut self, notches: i32, horizontal: bool) {
@@ -2091,6 +2172,70 @@ mod tests {
         assert!(!sent.iter().any(|&(c, _)| c == KEY_B), "B never went to the remote: {sent:?}");
         press(&mut k, KEY_B);
         assert!(!ASKED.load(Relaxed), "B alone is just B");
+    }
+
+    /// Left Ctrl + Shift + B (the ungather key) asks for the undo, and only B stays ours: Left
+    /// Ctrl and Shift, and every other key with Left Ctrl, go to the remote as they are. B's
+    /// release stays ours even after the modifiers let go first.
+    #[test]
+    fn left_ctrl_shift_b_ungathers_and_everything_else_with_left_ctrl_goes_through() {
+        use crate::gather::{ASKED, UNDO_ASKED};
+        use std::sync::atomic::Ordering::Relaxed;
+        const LCTRL: u16 = 29;
+        let mut k = Kvm::idle();
+        k.engaged = true;
+        let sent = || tests::SENT.with(|s| std::mem::take(&mut *s.borrow_mut()));
+        sent();
+        k.key(LCTRL, 1, true);
+        k.key(KEY_LEFTSHIFT, 1, true);
+        k.key(KEY_B, 1, true);
+        k.key(KEY_B, 2, true);
+        k.key(KEY_LEFTSHIFT, 0, true);
+        k.key(LCTRL, 0, true);
+        k.key(KEY_B, 0, true);
+        assert!(UNDO_ASKED.swap(false, Relaxed) && !ASKED.load(Relaxed), "an ungather");
+        assert_eq!(sent(), [(LCTRL, 1), (KEY_LEFTSHIFT, 1), (KEY_LEFTSHIFT, 0), (LCTRL, 0)], "the modifiers went out, B didn't");
+        assert!(k.keys.is_empty() && k.combo_held.is_none());
+        // Left Ctrl + B (the bookmarks bar without Shift), Left Ctrl + Shift + C, and
+        // Left Ctrl + Alt + Shift + B: none of them is the combo, so all of it goes out
+        for (mods, key) in [(&[LCTRL][..], KEY_B), (&[LCTRL, KEY_LEFTSHIFT], 46), (&[LCTRL, 56, KEY_LEFTSHIFT], KEY_B)] {
+            let mut want = Vec::new();
+            for &m in mods {
+                k.key(m, 1, true);
+                want.push((m, 1));
+            }
+            k.key(key, 1, true);
+            k.key(key, 0, true);
+            want.extend([(key, 1), (key, 0)]);
+            for &m in mods.iter().rev() {
+                k.key(m, 0, true);
+                want.push((m, 0));
+            }
+            assert_eq!(sent(), want, "{mods:?} + {key}");
+            assert!(!UNDO_ASKED.load(Relaxed), "{mods:?} + {key} isn't the ungather key");
+        }
+        // Right Shift counts as Shift
+        k.key(LCTRL, 1, true);
+        k.key(KEY_RIGHTSHIFT, 1, true);
+        k.key(KEY_B, 1, true);
+        k.key(KEY_B, 0, true);
+        k.key(KEY_RIGHTSHIFT, 0, true);
+        k.key(LCTRL, 0, true);
+        assert!(UNDO_ASKED.swap(false, Relaxed), "with Right Shift too");
+        assert!(!sent().iter().any(|&(c, _)| c == KEY_B));
+    }
+
+    #[test]
+    fn an_ungather_key_is_modifiers_and_one_key() {
+        assert_eq!(Combo::parse("LeftCtrl+Shift+B"), Some(UNGATHER_KEY));
+        assert_eq!(Combo::parse(" leftctrl + SHIFT + b "), Some(UNGATHER_KEY), "any case and spacing");
+        assert_eq!(Combo::parse("B+Shift+LeftCtrl"), Some(UNGATHER_KEY), "any order");
+        assert_eq!(Combo::parse("Alt+Super+F12"), Some(Combo { mods: 0b11000, key: KEY_F12 }));
+        assert_eq!(Combo::parse("RightCtrl+F10"), Some(Combo { mods: 0b10, key: 68 }));
+        assert_eq!(Combo::parse("Alt+1"), Some(Combo { mods: 0b1000, key: 2 }));
+        for bad in ["", "B", "Shift", "LeftCtrl+B+C", "Ctrl+B", "LeftCtrl+F13", "LeftCtrl+Home", "LeftCtrl+?", "LeftCtrl++B"] {
+            assert_eq!(Combo::parse(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

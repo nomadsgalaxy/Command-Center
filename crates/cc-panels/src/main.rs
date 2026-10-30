@@ -956,6 +956,7 @@ fn run() -> Result<(), String> {
             k.sensitivity = s;
         }
         k.gaze_lock = std::env::var("CC_GAZE").is_ok_and(|v| v == "1");
+        k.ungather = crate::kvm::ungather_key();
         k.rescan();
     }
     let _give_back = GiveBack;
@@ -1247,7 +1248,7 @@ fn run() -> Result<(), String> {
         laps.lap("dashtab");
         workspace_win.tick(&mut grab, &mut windows, &mut bar);
         laps.lap("workspace");
-        // the dashboard tab's button or Right Ctrl + B, and Right Ctrl + Shift + B's undo
+        // the dashboard tab's button or Right Ctrl + B, and the ungather key's or Right Ctrl + Shift + B's undo
         let asked = if gather::ASKED.swap(false, Relaxed) {
             Some(gather::gather(&mut grab, &mut windows))
         } else if gather::UNDO_ASKED.swap(false, Relaxed) {

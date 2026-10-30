@@ -18,7 +18,7 @@
 //!             taskbar's "Bring all here", the dashboard tab, Right Ctrl + B, cc-home gather).
 //!             "error ..." with the headset untracked, and then nothing changes
 //!   ungather  -> "ok ungather <n>": puts back what the last gather moved, except a panel you've
-//!             moved since (Right Ctrl + Shift + B, cc-home ungather); "error ..." with nothing to undo
+//!             moved since (Left or Right Ctrl + Shift + B, cc-home ungather); "error ..." with nothing to undo
 //!   viewer connect <name>   connects a remote that wasn't connected at start (autoconnect)
 //!   viewer disconnect <name>   ends a remote's session (connect starts it again)
 //!   machines show|hide   the Machines window (control/machines.rs), same as its taskbar chip
