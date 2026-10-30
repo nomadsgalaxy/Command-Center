@@ -1,6 +1,9 @@
 //! The headset's eye tracker, done the supported way: an eyetracking action bound to
 //! /user/head/eyetracking (see actions/), read with GetEyeTrackingDataRelativeToNow. I only use
 //! it to tell which panel you're looking at, so its few degrees of error don't matter much.
+//!
+//! `Input` is the boundary (docs/openxr-plan.md, phase 0 step 5) and `Gaze` its OpenVR side, the
+//! only code here that touches OpenVR; main.rs reads where you look through it.
 use crate::geometry::V3;
 use crate::{call, root};
 use openvr_sys as sys;
@@ -11,6 +14,15 @@ use std::time::{Duration, Instant};
 /// Samples that stay invalid this long after valid ones get logged once. The headset coming off
 /// does it too, so this only says "look here", not that anything broke.
 const LOST_AFTER: Duration = Duration::from_secs(5);
+
+/// Controller input that isn't pointing.
+pub trait Input {
+    /// Where the eyes look, as an origin and a unit direction in standing space, if the runtime has
+    /// eye tracking and a valid sample right now.
+    fn gaze(&self) -> Option<(V3, V3)>;
+    /// Stops reading it while a VR game runs (`gaze` starts it again).
+    fn release(&self);
+}
 
 pub struct Gaze {
     action: sys::VRActionHandle_t,
@@ -49,17 +61,19 @@ impl Gaze {
         eprintln!("gaze: action manifest {}: error {e}", manifest.display());
         (e == 0 && action != 0).then_some(Gaze { action, set, health: Mutex::new(Health::default()) })
     }
+}
 
+impl Input for Gaze {
     /// Lets go of the action set while a VR game runs. It's active at priority 0, which takes
     /// nothing from the scene app (global overlay priority would, but only with SteamVR's
     /// experimental "overlay input overrides", which is off), so this is just tidiness.
-    pub fn release(&self) {
+    fn release(&self) {
         call!(input, UpdateActionState, std::ptr::null_mut(), size_of::<sys::VRActiveActionSet_t>() as u32, 0);
     }
 
     /// Where you're looking: an origin and a unit direction in standing space, if the
     /// tracker has a valid sample right now.
-    pub fn sample(&self) -> Option<(V3, V3)> {
+    fn gaze(&self) -> Option<(V3, V3)> {
         let mut active: sys::VRActiveActionSet_t = Default::default();
         active.ulActionSet = self.set;
         active.nPriority = 0; // not the global overlay priority: that needs an experimental SteamVR setting and never took the controllers

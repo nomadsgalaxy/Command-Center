@@ -61,6 +61,7 @@ mod vr;
 mod windows;
 
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
+use gaze::Input;
 use geometry::{Pose, panel_matrix};
 use openvr_sys as sys;
 use std::path::PathBuf;
@@ -1280,7 +1281,7 @@ fn run() -> Result<(), String> {
             && gaze_tried.is_none_or(|t| laps.start.duration_since(t) >= GAZE_EVERY)
         {
             gaze_tried = Some(laps.start);
-            let sample = g.sample();
+            let sample = g.gaze();
             if let Some((o, d)) = sample {
                 gaze_seen = Some((o, d, Instant::now())); // where you look decides the levels (attend)
             }

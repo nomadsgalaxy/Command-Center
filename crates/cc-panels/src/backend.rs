@@ -9,6 +9,8 @@
 //! the KVM, sessions to computers and the layout. None of them know which runtime is underneath.
 use crate::geometry::{Mat, V3};
 
+#[allow(unused_imports)] // and gaze.rs
+pub use crate::gaze::Input;
 pub use crate::ids::{Ctl, Dev, Hand, SurfaceId};
 #[allow(unused_imports)] // the design names them; the core takes them from keyboard.rs
 pub use crate::keyboard::{Keyboard, KeyboardMode};
@@ -150,12 +152,6 @@ pub trait Session {
     /// the drawing.
     fn begin_frame(&mut self) -> Frame;
     fn end_frame(&mut self, layers: &[SurfaceId]);
-}
-
-/// Controller input that isn't pointing.
-pub trait Input {
-    /// Where the eyes look, as an origin and a direction, if the runtime has eye tracking.
-    fn gaze(&self) -> Option<(V3, V3)>;
 }
 
 /// One runtime, all of it.

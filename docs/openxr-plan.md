@@ -523,6 +523,24 @@ cc-panels.
    `PointerEvent` for every kind (events.rs says so).
 5. (2 d) The `Textures`, `Keyboard`, `Shell` and `Input` traits with OpenVR implementations. Code
    moves; it isn't rewritten.
+   Done: each trait moved out of `backend.rs` (which re-exports it) into the file that holds its
+   OpenVR side, a `Live` like `overlay::Live`: `texture.rs`, `keyboard.rs` and `shell.rs`, and
+   `gaze.rs` for `Input`, whose `Gaze` is that side already. capture.rs no longer touches OpenVR.
+   The same calls go out, with the same arguments, in the same order. The changes to the design,
+   all so nothing changes:
+   - `Textures::present` and `present_pixels`, and `Keyboard::open`, return `Result<(), Refused>`,
+     because callers log SteamVR's error. `Refused` looks the name up only when it's printed.
+   - `Textures::import` returns an `Option` (ImportDmabuf only says yes or no). A failed import
+     leaves no handle: what SteamVR left in it is dropped, so nothing lets go of a handle it was
+     never given. That's the one intended edge change.
+   - `Keyboard::open` takes the most characters, and `text` hands back SteamVR's 256 bytes.
+   - `Shell::toast` takes the surface it hangs off and says why it didn't show.
+   - `Input` has `release`, for while a VR game runs.
+
+   The polling (`Pointing` and `Session`, the event loops) is its own branch after this one.
+   `SessionEvent` gains `Other(u32)` there, so an ignored event (which still sets main.rs's
+   `last_event`) differs from an empty queue. `last_event` is an OpenVR-numbered diagnostic;
+   phase 1 gets its own.
 6. (1 d) The source-scan test that nothing outside `vr/openvr` touches OpenVR, and the cargo
    features.
 7. (1 d) Tests and a pass in the headset.
