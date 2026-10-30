@@ -28,17 +28,22 @@ pub fn check(name: &str, got: &str) {
         return;
     }
     let want = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("golden: no fixture {} ({e}). It's written only on purpose: CC_GOLDEN_WRITE=1 (golden.rs)", p.display()));
+    if let Err(why) = compare(&want, got) {
+        panic!("golden: {name} {why}\nIf the change is meant, CC_GOLDEN_WRITE=1 rewrites it (golden.rs); commit the diff with it.");
+    }
+}
+
+/// Where `got` first differs from `want`, if it does.
+fn compare(want: &str, got: &str) -> Result<(), String> {
     if want == got {
-        return;
+        return Ok(());
     }
     let (w, g): (Vec<&str>, Vec<&str>) = (want.lines().collect(), got.lines().collect());
-    let n = (0..w.len().max(g.len())).find(|&i| w.get(i) != g.get(i)).unwrap_or(0);
-    panic!(
-        "golden: {name} changed at line {}\n  want: {}\n  got:  {}\nIf the change is meant, CC_GOLDEN_WRITE=1 rewrites it (golden.rs); commit the diff with it.",
-        n + 1,
-        w.get(n).unwrap_or(&"(the end)"),
-        g.get(n).unwrap_or(&"(the end)")
-    );
+    match (0..w.len().max(g.len())).find(|&i| w.get(i) != g.get(i)) {
+        Some(n) => Err(format!("changed at line {}\n  want: {}\n  got:  {}", n + 1, w.get(n).unwrap_or(&"(the end)"), g.get(n).unwrap_or(&"(the end)"))),
+        // lines() drops the \r of a \r\n and the last newline, so this is only those
+        None => Err("has every line the same, but not the same bytes: its line endings (CRLF) or its last newline differ".into()),
+    }
 }
 
 pub use crate::vr::fake::{mat, num}; // the same numbers as vr::fake's call log
@@ -75,5 +80,14 @@ mod tests {
         assert_eq!(num(0.0), "0.00000");
         assert_eq!(num(-1.234567), "-1.23457");
         assert_eq!(num(2.5), "2.50000");
+    }
+
+    #[test]
+    fn a_difference_says_where_or_that_only_the_line_endings_are() {
+        assert!(compare("a\nb\n", "a\nb\n").is_ok());
+        assert!(compare("a\nb\n", "a\nc\n").unwrap_err().starts_with("changed at line 2"));
+        assert!(compare("a\nb\n", "a\n").unwrap_err().contains("(the end)"));
+        assert!(compare("a\nb\n", "a\r\nb\r\n").unwrap_err().contains("line endings"));
+        assert!(compare("a\nb\n", "a\nb").unwrap_err().contains("last newline"));
     }
 }
