@@ -4,6 +4,13 @@
 //! vr::timed aren't OpenVR, so they don't count). It also fails if a listed name is gone, so the
 //! list only ever shrinks: each move (6b to 6e) takes its group off as it lands, and once the list
 //! is empty nothing outside the OpenVR side touches OpenVR.
+//!
+//! What it doesn't do: it's an interim ratchet, not proof the boundary is done.
+//! - It counts names, not call sites, so another use of a name a file is already allowed passes.
+//! - The groups for tests (`FAKES`), main.rs's old_loop and Plasma's raw loop are file-wide
+//!   allowances, not spans it enforces, so a production use of a name allowed there for a test
+//!   or for that loop passes too.
+//! - It reads text, not Rust (see `names`).
 #![cfg(test)]
 
 use std::collections::{BTreeMap, BTreeSet};
