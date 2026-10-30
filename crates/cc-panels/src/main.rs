@@ -450,16 +450,19 @@ impl Panel {
 /// there were and whether any worked it (a move, click or scroll to its machine, which is
 /// D-045's input).
 fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, bool) {
+    use events::{Button, PointerKind as P, SurfaceEvent as S};
     let (mut e, mut n, mut worked): (vr::VREvent_t, u32, bool) = (Default::default(), 0, false);
     while call!(ov, PollNextOverlayEvent, p.overlay.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
         n += 1;
-        if osk::event(p, &e) {
+        let ev = vr::surface_event(&e);
+        if osk::event(p, &ev) {
             continue; // typed on SteamVR's keyboard, for this panel
         }
-        if grab.panel_event(p.index, &e, &mut crate::kvm::lock()) {
+        if grab.panel_event(p.index, &ev, &mut crate::kvm::lock()) {
             continue; // the release of a drag, not meant for the remote
         }
-        if *mouse_has_it && e.eventType == sys::EVREventType_VREvent_MouseButtonDown {
+        let S::Pointer(pe) = ev else { continue }; // the keyboard's not ours, and anything else: nothing for the remote
+        if *mouse_has_it && matches!(pe.kind, P::Down(_)) {
             controller_pressed();
             *mouse_has_it = false;
         }
@@ -467,45 +470,36 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
             continue;
         }
         let window = matches!(p.src, Source::Window(_));
-        if window && e.eventType == sys::EVREventType_VREvent_FocusLeave {
+        if window && pe.kind == P::Leave {
             windows::leave();
             continue;
         }
-        if window && e.eventType == sys::EVREventType_VREvent_MouseButtonDown {
+        if window && matches!(pe.kind, P::Down(_)) {
             let mut k = crate::kvm::lock();
             k.type_to(p.index); // typing follows the laser's click too
             if !k.engaged {
                 k.set_engaged(true, &format!("clicked {} with a controller", p.v.name));
             }
         }
-        worked |= matches!(
-            e.eventType,
-            sys::EVREventType_VREvent_MouseMove
-                | sys::EVREventType_VREvent_MouseButtonDown
-                | sys::EVREventType_VREvent_MouseButtonUp
-                | sys::EVREventType_VREvent_ScrollDiscrete
-                | sys::EVREventType_VREvent_ScrollSmooth
-        );
-        let m = unsafe { e.data.mouse };
+        worked |= matches!(pe.kind, P::Move | P::Down(_) | P::Up(_) | P::Scroll { .. });
         let (w, h) = p.size();
         let (w, h) = (w as f32, h as f32);
         // from the overlay's bottom left; on a turned one x runs up the picture and y from its right
-        let (x, y) = geometry::surface_point(p.vert(), w - 1.0, m.x, m.y);
+        let (x, y) = geometry::surface_point(p.vert(), w - 1.0, pe.x, pe.y);
         let y = geometry::from_top(h - 1.0, y);
         let (x, y) = (x.clamp(0.0, w - 1.0) as f64, y.clamp(0.0, h - 1.0) as f64);
-        match e.eventType {
-            sys::EVREventType_VREvent_MouseMove => p.mouse(PTR_FLAGS_MOVE, x, y),
-            t @ (sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp) => {
-                let b = match m.button {
-                    sys::EVRMouseButton_VRMouseButton_Right => PTR_FLAGS_BUTTON2,
-                    sys::EVRMouseButton_VRMouseButton_Middle => PTR_FLAGS_BUTTON3,
+        match pe.kind {
+            P::Move => p.mouse(PTR_FLAGS_MOVE, x, y),
+            P::Down(b) | P::Up(b) => {
+                let b = match b {
+                    Button::Right => PTR_FLAGS_BUTTON2,
+                    Button::Middle => PTR_FLAGS_BUTTON3,
                     _ => PTR_FLAGS_BUTTON1,
                 };
-                let down = if t == sys::EVREventType_VREvent_MouseButtonDown { PTR_FLAGS_DOWN } else { 0 };
+                let down = if matches!(pe.kind, P::Down(_)) { PTR_FLAGS_DOWN } else { 0 };
                 p.mouse(b | down, x, y);
             }
-            sys::EVREventType_VREvent_ScrollDiscrete | sys::EVREventType_VREvent_ScrollSmooth => {
-                let dy = unsafe { e.data.scroll.ydelta };
+            P::Scroll { dy, .. } => {
                 if dy != 0.0 {
                     p.wheel(false, dy as f64);
                 }

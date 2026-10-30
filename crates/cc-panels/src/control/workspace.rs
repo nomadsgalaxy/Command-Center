@@ -588,7 +588,7 @@ impl Workspace {
             let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
             // in units from the bottom left; none while the texture is drawn for a different row count
             let at = held(self.hover, n, t, m.x as f64, from_top(height(n), m.y as f64)).filter(|_| drawn == Some(n));
-            grab.panel_event(grab.slot(), &e, &mut crate::kvm::lock());
+            grab.panel_event(grab.slot(), &vr::surface_event(&e), &mut crate::kvm::lock());
             match e.eventType {
                 sys::EVREventType_VREvent_MouseMove => self.hover = at,
                 sys::EVREventType_VREvent_FocusLeave => self.hover = None,

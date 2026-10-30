@@ -1295,17 +1295,19 @@ impl Grab {
     /// An event on panel i's own picture. A laser there brings its controls in. A button
     /// release ends that device's drags, since it may be over another panel by then, and
     /// returns true if it ended any.
-    pub fn panel_event(&mut self, i: usize, e: &vr::VREvent_t, k: &mut Kvm) -> bool {
-        match e.eventType {
-            sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_FocusEnter => {
+    pub fn panel_event(&mut self, i: usize, e: &crate::events::SurfaceEvent, k: &mut Kvm) -> bool {
+        use crate::events::{PointerKind as P, SurfaceEvent as S};
+        let S::Pointer(pe) = e else { return false };
+        match pe.kind {
+            P::Move | P::Enter => {
                 self.touch(i, 1, true);
                 false
             }
-            sys::EVREventType_VREvent_FocusLeave => {
+            P::Leave => {
                 self.touch(i, 1, false);
                 false
             }
-            sys::EVREventType_VREvent_MouseButtonUp => self.end_by(vr::dev(e.trackedDeviceIndex), k),
+            P::Up(_) => self.end_by(pe.from, k),
             _ => false,
         }
     }

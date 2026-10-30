@@ -15,6 +15,7 @@
 //! Workspace windows open the same keyboard for their own fields and call `forget` first, so a
 //! physical key never closes theirs by mistake.
 use crate::control::ui::{self, BTN_H, GAP, MPP, PAD, Px, SORT};
+use crate::events::{KeyboardEvent, PointerEvent, PointerKind, SurfaceEvent};
 use crate::grab::{Look, Paint, TagImg, line, over, rbox, tint};
 use crate::{Panel, call, panel, theme, vr};
 use openvr_sys as sys;
@@ -88,29 +89,28 @@ pub fn forget() {
 /// Handles e if it's the panel keyboard's, from p's overlay: true if it was. A laser click on the
 /// panel while it's open carries the sticky modifiers (false: the click goes on as usual), and the
 /// laser leaving the panel lets go of any it held.
-pub fn event(p: &Panel, e: &vr::VREvent_t) -> bool {
-    let k = unsafe { e.data.keyboard };
-    let ours = k.uUserValue == USER | p.index as u64;
-    match e.eventType {
-        sys::EVREventType_VREvent_KeyboardCharInput if ours => {
-            if let Some(text) = typed(&k.cNewInput) {
-                let n = crate::kvm::lock().type_text(p.index, &text);
+pub fn event(p: &Panel, e: &SurfaceEvent) -> bool {
+    let ours = |user: &u64| *user == USER | p.index as u64;
+    match e {
+        SurfaceEvent::Keyboard(KeyboardEvent::Char { user, text }) if ours(user) => {
+            if let Some(text) = text {
+                let n = crate::kvm::lock().type_text(p.index, text);
                 if n > 0 {
                     missed(n);
                     eprintln!("{}: {n} character(s) from SteamVR's keyboard couldn't be typed", p.v.name);
                 }
             }
         }
-        sys::EVREventType_VREvent_KeyboardDone | sys::EVREventType_VREvent_KeyboardClosed if ours => {
+        SurfaceEvent::Keyboard(KeyboardEvent::Done { user } | KeyboardEvent::Closed { user }) if ours(user) => {
             if open_for(p.index) {
                 closed();
             }
         }
-        t @ (sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp) if open_for(p.index) => {
-            crate::kvm::lock().click_mods(p.index, t == sys::EVREventType_VREvent_MouseButtonDown);
+        SurfaceEvent::Pointer(PointerEvent { kind: k @ (PointerKind::Down(_) | PointerKind::Up(_)), .. }) if open_for(p.index) => {
+            crate::kvm::lock().click_mods(p.index, matches!(k, PointerKind::Down(_)));
             return false;
         }
-        sys::EVREventType_VREvent_FocusLeave if open_for(p.index) => {
+        SurfaceEvent::Pointer(PointerEvent { kind: PointerKind::Leave, .. }) if open_for(p.index) => {
             crate::kvm::lock().release_synth();
             return false;
         }
@@ -318,16 +318,11 @@ impl Keys {
 }
 
 /// The text in a keyboard event: up to 8 bytes of UTF-8, ended by a 0 if it's shorter.
-fn typed(input: &[std::ffi::c_char; 8]) -> Option<String> {
-    #[allow(clippy::unnecessary_cast)] // c_char is u8 on the Frame (arm64) but i8 on x86 hosts
-    let bytes = input.map(|c| c as u8);
-    let n = bytes.iter().position(|&b| b == 0).unwrap_or(8);
-    String::from_utf8(bytes[..n].to_vec()).ok().filter(|s| !s.is_empty())
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vr::typed; // the translation decodes SteamVR's keyboard bytes with it
 
     #[test]
     fn a_real_key_before_the_button_doesnt_close_it() {
