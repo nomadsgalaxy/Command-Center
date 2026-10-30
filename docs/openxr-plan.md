@@ -602,6 +602,9 @@ cc-panels.
    0.0 (Pace's 90 Hz), 0 ("no room yet") and false ("no game"), so every value they act on is the
    one they got before, as long as OpenVR does give 0 there. vr::fake can fail a property now, to
    test that path. SteamVR's start and stop stay listed until the core holds a backend object.
+   vr.rs's re-read of the universe on a relocalization (`session_event`, to tell RoomChanged
+   from Relocalized) stays a direct property read on the OpenVR side, with its error ignored as
+   before; giving it `Session::universe_id`'s rule is phase 1's.
 7. (1 d) Tests and a pass in the headset.
 
 Each step is its own small branch, and has to pass the same checks before and after:

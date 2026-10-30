@@ -65,7 +65,7 @@ mod windows;
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
 use gaze::Input;
 use geometry::{Pose, panel_matrix};
-#[cfg(test)]
+#[cfg(test)] // only old_loop and the tests name OpenVR's items now (6d): keep it test-only
 use openvr_sys as sys;
 use overlay::{Flag, InputMode, Overlays, Surfaces};
 use poll::{Pointing, Session};

@@ -88,7 +88,9 @@ impl Pointing for Live {
 
 /// openvr.h (IVRSystem_022) on both properties: "If the device index is not valid or the property is
 /// not a [float|uint64] type this function will return 0". The error out-param says so too, and that's
-/// what's read here; what the value is on any other error isn't documented.
+/// what's read here; what the value is on any other error isn't documented. The properties are
+/// spelled `openvr_sys::` in full: this file has no `sys` alias outside its tests (in `call!`,
+/// `sys` is the table's name), and the two uses don't earn one.
 impl Session for Live {
     fn display_hz(&self) -> Option<f32> {
         let mut err = 0;
