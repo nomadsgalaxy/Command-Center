@@ -1643,6 +1643,16 @@ impl Grab {
         self.stale = self.scanned.clone();
     }
 
+    /// The aligned places as last read, and as of the last relocalization, for a test: `relocalized`
+    /// copies the one to the other.
+    #[cfg(test)]
+    pub(crate) fn scanned_for_test(&mut self, n: usize) -> (usize, usize) {
+        if n > 0 {
+            self.scanned = vec![None; n];
+        }
+        (self.scanned.len(), self.stale.len())
+    }
+
     /// Align buttons pressed since the last call (panel numbers).
     pub fn take_aligns(&mut self) -> Vec<usize> {
         std::mem::take(&mut self.aligns)
