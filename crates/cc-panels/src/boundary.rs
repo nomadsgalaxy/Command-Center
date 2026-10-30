@@ -250,6 +250,7 @@ fn it_finds_each_kind_of_name_and_leaves_the_rest() {
     );
     assert!(names("use crate::laser::{Beam, Live};").contains("laser::{") && names("use crate::laser::*;").contains("laser::*"), "laser's grouped import and glob");
     assert!(names("use crate::laser as l;").contains("laser as"), "an alias of laser");
+    assert!(names("    /// The laser (laser::Live; the tests' stand-in).\n    // call!(ov, ShowOverlay, h) and vr::head()\n").is_empty(), "doc comments and comments give no names");
     let grouped = BTreeMap::from([("c.rs".to_string(), names("use crate::vr::{head, index};"))]);
     assert!(check(&grouped, &[("c.rs", "why", &["vr::head", "vr::index"])]).iter().any(|l| l.contains("one at a time")), "and fails even when its names are listed");
     for hidden in ["use crate::vr::*;", "use openvr_sys as ovr;", "use crate::vr as v;", "use crate::call as c;", "use crate::laser::{Beam};", "use crate::laser::*;", "use crate::laser as l;"] {
