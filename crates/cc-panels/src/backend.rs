@@ -14,6 +14,8 @@ pub use crate::gaze::Input;
 pub use crate::ids::{Ctl, Dev, Hand, SurfaceId};
 #[allow(unused_imports)] // the design names them; the core takes them from keyboard.rs
 pub use crate::keyboard::{Keyboard, KeyboardMode};
+#[allow(unused_imports)] // and poll.rs
+pub use crate::poll::{Pointing, SessionEvents};
 #[allow(unused_imports)] // and shell.rs
 pub use crate::shell::{NoteRefused, Shell};
 #[allow(unused_imports)] // and texture.rs
@@ -88,34 +90,6 @@ pub trait Overlays {
     fn place_device(&mut self, s: SurfaceId, dev: Dev, m: &Mat);
 }
 
-/// Pointer events for a surface. There are two contracts, and only the first is in force now:
-///
-/// **Phase 0, the OpenVR adapter: today's events and the core's recovery, as they are.** SteamVR
-/// does the hit testing, and the adapter only translates each VREvent_t into a `SurfaceEvent`, one
-/// for one, in order, with the same coordinates. It never makes up an event: no Up that SteamVR
-/// didn't send, no Leave, no clamping. Where SteamVR sends no Up (a controller switched off), the
-/// core's own recovery stays as it is (grab.rs ends the drag after `LOST`), and the golden tests
-/// pin it. Any change in behaviour is its own branch, not part of the move.
-///
-/// **Phase 1, the target both backends meet:**
-///
-/// - **Capture:** a Down on a surface captures that pointer (`from`) for that button. Its moves keep
-///   going to that surface, clamped to its edge, until the Up, even once the ray has left it. That's
-///   how a drag goes past a panel's edge.
-/// - **Hover:** a surface gets Enter, then moves while it's hit and nothing has captured that
-///   pointer. When the hit goes to another surface, the old one gets Leave first.
-/// - **Scroll** goes to the hovered surface, or the captured one during a capture.
-/// - **Endings:** focus lost with a button held, the device lost mid-drag, and a surface destroyed
-///   while it holds a capture all end the capture. The holder, if it still exists, gets Up and then
-///   Leave, so nothing stays held.
-///
-/// OpenXR's ray casting has to meet these itself. Whether OpenVR's adapter grows them too, and how,
-/// is decided after the golden tests show where SteamVR's events differ from them.
-pub trait Pointing {
-    /// The next event for surface s, if there is one (one `PollNextOverlayEvent` today).
-    fn next(&mut self, s: SurfaceId) -> Option<SurfaceEvent>;
-}
-
 /// Where things are, besides where to write (today's `stage::Stage` reads).
 pub trait Stage: Overlays {
     /// A device's pose in standing space, at the current frame's predicted time (`Frame::predicted`;
@@ -139,8 +113,7 @@ pub trait Stage: Overlays {
 }
 
 /// The session and its clock (main.rs's event loop, vr.rs's prediction and pacing).
-pub trait Session {
-    fn next_event(&mut self) -> Option<SessionEvent>;
+pub trait Session: SessionEvents {
     fn display_period(&self) -> Option<f32>;
     /// OpenVR's universe. None where the runtime has no such thing; the room rule then applies
     /// (docs/openxr-plan.md, phase 1).

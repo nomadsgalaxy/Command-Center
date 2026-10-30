@@ -43,6 +43,7 @@ mod notify;
 mod osk;
 mod overlay;
 mod plasmabar;
+mod poll;
 mod popout;
 mod power;
 mod rdp;
@@ -516,26 +517,27 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
 /// coming off or going on. `universe`, `on_head` and `last_event` are the main loop's, kept up to
 /// date here. Returns how many events there were.
 fn steamvr_events(machines: &mut control::machines::Machines, grab: &mut grab::Grab, universe: &mut u64, on_head: &mut bool, last_event: &mut u32) -> i32 {
-    let mut e: vr::VREvent_t = Default::default();
-    let mut events = 0;
-    while call!(sys, PollNextEvent, &mut e, size_of::<vr::VREvent_t>() as u32) {
-        use crate::events::SessionEvent as S;
-        (events, *last_event) = (events + 1, e.eventType);
-        match vr::session_event(&e, *universe) {
-            Some(S::Quit) => close_desktop("SteamVR quit it"), // e.g. a game launched over the Desktop
-            Some(S::DashboardShown(true)) => {
+    use crate::events::SessionEvent as S;
+    use poll::SessionEvents;
+    let (mut queue, mut events) = (poll::Queue::new(*universe), 0);
+    while let Some(ev) = queue.next_event() {
+        // every event counts and is the last, Other too; nothing else here looks at Other
+        (events, *last_event) = (events + 1, queue.last_type());
+        match ev {
+            S::Quit => close_desktop("SteamVR quit it"), // e.g. a game launched over the Desktop
+            S::DashboardShown(true) => {
                 crate::kvm::lock().set_engaged(false, "dashboard opened"); // click to type: typing goes to it
                 control::dashtab::dashboard(true);
             }
-            Some(S::DashboardShown(false)) => control::dashtab::dashboard(false),
-            Some(S::ControllerUsed(_)) => controller_pressed(), // anywhere, not only on our panels
+            S::DashboardShown(false) => control::dashtab::dashboard(false),
+            S::ControllerUsed(_) => controller_pressed(), // anywhere, not only on our panels
             // the Frame relocalized (vrserver.txt: "Standing origin changed. Sending reset standing zero pose event")
-            Some(S::Relocalized) => {
+            S::Relocalized => {
                 machines.relocalized();
                 grab.relocalized(); // aligned monitors' snap buttons switch to align
             }
             // a new universe, like the dummy one's first localization at start, doesn't move any saved spot
-            Some(S::RoomChanged(now)) => {
+            S::RoomChanged(now) => {
                 eprintln!("tracking: universe {universe} -> {now}");
                 *universe = now;
                 // ponytail: the workspace is picked at start. A room change mid-session shows
@@ -543,11 +545,13 @@ fn steamvr_events(machines: &mut control::machines::Machines, grab: &mut grab::G
                 config::UNIVERSE.store(cc_proto::conf::room(now), Relaxed);
             }
             // the headset's proximity sensor: off the head, every stream pauses
-            Some(S::Worn(on)) if on != *on_head => {
+            S::Worn(on) if on != *on_head => {
                 *on_head = on;
                 eprintln!("headset: {}", if on { "on" } else { "off" });
             }
-            _ => {}
+            S::Worn(_) => {} // it already was
+            S::State(_) => {} // OpenXR's; an OpenVR overlay app is always running
+            S::Other(_) => {} // counted and kept as the last event above, and nothing else
         }
     }
     events

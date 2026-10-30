@@ -112,4 +112,8 @@ pub enum SessionEvent {
     DashboardShown(bool),
     /// A real controller's button, anywhere (VREvent_ButtonPress): it's the primary device now.
     ControllerUsed(crate::ids::Ctl),
+    /// Any other event, by the backend's own number (OpenVR's event type), for diagnostics only:
+    /// main.rs keeps the last one it saw. Nothing may match on its value, since OpenXR numbers its
+    /// events differently. It's an event, not an empty queue, which is the next_event's None.
+    Other(u32),
 }
