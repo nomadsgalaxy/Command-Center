@@ -1,0 +1,23 @@
+== the bar, placed with Kickoff open
+  vr CreateOverlay -> 1
+  vr SetOverlayFlag 1 65536 true
+  vr SetOverlayFlag 1 64 true
+  vr SetOverlayFlag 1 4194304 true
+  vr SetOverlaySortOrder 1 191
+  vr SetOverlayMouseScale 1 1.0000 1.0000
+  held 0x0, visible true
+== a laser moves onto an item and presses
+  session pointer 0x800 at 599.9035 1199.8611
+  session pointer 0x9000 at 599.9035 1199.8611
+  held 0x1000, visible true
+== it leaves the bar with the button still down: FocusLeave, no Up
+  session leave
+  held 0x1000, visible true
+== a pass with nothing
+  held 0x1000, visible true
+== it comes back and moves
+  session pointer 0x800 at 599.9035 1199.8611
+  held 0x1000, visible true
+== the button comes up
+  session pointer 0x1000 at 599.9035 1199.8611
+  held 0x0, visible true

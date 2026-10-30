@@ -26,6 +26,8 @@ mod control;
 mod ffi;
 mod gaze;
 mod geometry;
+#[cfg(test)]
+mod golden;
 mod gpu;
 mod grab;
 mod handoff;

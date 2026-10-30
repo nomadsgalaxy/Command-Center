@@ -3128,6 +3128,67 @@ mod tests {
             assert!(g.drags[0].is_none(), "past LOST: put down where it is");
         }
 
+        /// Golden (golden.rs): a carry whose controller goes untracked, blinks back, then goes for
+        /// good, after which a controller with another index picks the panel up and the old
+        /// one's late Up arrives. What happens today is what's pinned.
+        #[test]
+        fn golden_device_lost_mid_drag() {
+            use crate::golden::{Log, mat, num, overlay_call};
+            fn observe(log: &mut Log, g: &Grab, k: &Kvm, f: &mut Fake) {
+                for c in f.writes.0.drain(..) {
+                    log.line(overlay_call(&c));
+                }
+                for (i, x, y) in f.moves.drain(..) {
+                    log.line(format!("pointer move on panel {i} to {} {}", num(x), num(y)));
+                }
+                let drag = match &g.drags[0] {
+                    Some(d) => format!("by {}, {}", d.dev, if matches!(d.mode, Mode::Move { .. }) { "carrying" } else { "not carrying" }),
+                    None => "none".into(),
+                };
+                log.line(format!("drag {drag}, lost {}", g.drags[0].as_ref().is_some_and(|d| d.lost.is_some())));
+                log.line(format!("panel {}", mat(&k.place[0].matrix())));
+            }
+            const NEW: u32 = 5; // the controller back on, under another index
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            let mut log = Log::default();
+            let t = Instant::now();
+            let ms = |n: u64| t + Duration::from_millis(n);
+            log.step("the bar picked up and carried");
+            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &f);
+            point(&mut f, HAND, [0.35, 1.25, -0.4], p.c);
+            g.carry(&mut k, &mut f, t);
+            observe(&mut log, &g, &k, &mut f);
+            log.step("the controller goes untracked, 400 ms");
+            f.devices.remove(&HAND);
+            g.carry(&mut k, &mut f, ms(1));
+            g.carry(&mut k, &mut f, ms(400));
+            observe(&mut log, &g, &k, &mut f);
+            log.step("it blinks back, moved");
+            point(&mut f, HAND, [0.4, 1.25, -0.4], p.c);
+            g.carry(&mut k, &mut f, ms(450));
+            observe(&mut log, &g, &k, &mut f);
+            log.step("it goes again, for longer than LOST");
+            f.devices.remove(&HAND);
+            g.carry(&mut k, &mut f, ms(900));
+            g.carry(&mut k, &mut f, ms(1500));
+            observe(&mut log, &g, &k, &mut f);
+            log.step("back under another index, it picks the bar up again");
+            point(&mut f, NEW, [0.4, 1.25, -0.4], p.c);
+            g.start(0, Part::Bar, NEW, &k, &f);
+            point(&mut f, NEW, [0.45, 1.25, -0.4], p.c);
+            g.carry(&mut k, &mut f, ms(1600));
+            observe(&mut log, &g, &k, &mut f);
+            log.step("the old index's Up arrives late");
+            log.line(format!("ended any: {}", g.end_by(HAND, &k)));
+            observe(&mut log, &g, &k, &mut f);
+            log.step("the new one lets go");
+            log.line(format!("ended any: {}", g.end_by(NEW, &k)));
+            observe(&mut log, &g, &k, &mut f);
+            crate::golden::check("grab-device-lost-mid-drag", &log.0);
+        }
+
         #[test]
         fn the_mouse_picks_up_a_card_when_there_is_no_laser_and_the_wheel_pushes_it() {
             let p = flat();

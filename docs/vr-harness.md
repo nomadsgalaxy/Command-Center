@@ -117,6 +117,24 @@ Its `plasma` lines set Plasma's bar up through `windows`. It needs a `Windows`, 
 `a_laser_on_plasmas_bar_through_the_frame_replays_onto_the_panel` is its first test: a laser with
 no pose on the frame over Plasma's bar moves, presses and releases on the bar's point.
 
+## Golden tests
+
+A golden test (`golden.rs`) runs a script through the same stand-ins and writes down what came out
+at each step: the OpenVR calls `vr::fake` logged (`take_calls`), what went to the session
+(`SHELL_SENT`, `SHELL_OTHER`), and what the code is holding. The transcript is compared with a
+committed file in `crates/cc-panels/golden/`, and any difference fails the test. They're there so
+phase 0 of the OpenXR plan (docs/openxr-plan.md) can move code without changing behaviour.
+
+An ordinary run never writes a fixture, not even a missing one. When a change in behaviour is
+meant, rewrite them on purpose and commit the diff with the change:
+
+```
+CC_GOLDEN_WRITE=1 cargo test -p cc-panels golden
+```
+
+Numbers are written to 4 decimals with no `-0`, so the last bits of a float, which can differ
+between x86_64 and aarch64, don't count.
+
 ## Not done yet
 
 - **Chips.** The trace doesn't carry the taskbar's chips, so a replayed frame has Plasma's bar and

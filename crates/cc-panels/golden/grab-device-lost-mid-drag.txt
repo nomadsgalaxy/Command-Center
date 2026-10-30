@@ -1,0 +1,35 @@
+== the bar picked up and carried
+  width 100 1.6000
+  texel 100 1.0000
+  curvature 100 0.0000
+  room 100 [0.9990 -0.0135 0.0415 0.0019; 0.0117 0.9990 0.0428 1.3992; -0.0420 -0.0423 0.9982 -1.4939]
+  drag by 1, carrying, lost false
+  panel [0.9990 -0.0135 0.0415 0.0019; 0.0117 0.9990 0.0428 1.3992; -0.0420 -0.0423 0.9982 -1.4939]
+== the controller goes untracked, 400 ms
+  drag by 1, carrying, lost true
+  panel [0.9990 -0.0135 0.0415 0.0019; 0.0117 0.9990 0.0428 1.3992; -0.0420 -0.0423 0.9982 -1.4939]
+== it blinks back, moved
+  width 100 1.6000
+  texel 100 1.0000
+  curvature 100 0.0000
+  room 100 [0.9965 -0.0158 0.0821 0.0076; 0.0121 0.9989 0.0445 1.3971; -0.0827 -0.0434 0.9956 -1.4791]
+  drag by 1, carrying, lost false
+  panel [0.9965 -0.0158 0.0821 0.0076; 0.0121 0.9989 0.0445 1.3971; -0.0827 -0.0434 0.9956 -1.4791]
+== it goes again, for longer than LOST
+  drag none, lost false
+  panel [0.9965 -0.0158 0.0821 0.0076; 0.0121 0.9989 0.0445 1.3971; -0.0827 -0.0434 0.9956 -1.4791]
+== back under another index, it picks the bar up again
+  width 100 1.6000
+  texel 100 1.0000
+  curvature 100 0.0000
+  room 100 [0.9924 -0.0182 0.1213 0.0152; 0.0127 0.9988 0.0464 1.3949; -0.1220 -0.0445 0.9915 -1.4630]
+  drag by 5, carrying, lost false
+  panel [0.9924 -0.0182 0.1213 0.0152; 0.0127 0.9988 0.0464 1.3949; -0.1220 -0.0445 0.9915 -1.4630]
+== the old index's Up arrives late
+  ended any: false
+  drag by 5, carrying, lost false
+  panel [0.9924 -0.0182 0.1213 0.0152; 0.0127 0.9988 0.0464 1.3949; -0.1220 -0.0445 0.9915 -1.4630]
+== the new one lets go
+  ended any: true
+  drag none, lost false
+  panel [0.9924 -0.0182 0.1213 0.0152; 0.0127 0.9988 0.0464 1.3949; -0.1220 -0.0445 0.9915 -1.4630]

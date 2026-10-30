@@ -305,6 +305,7 @@ pub mod fake {
         pub events: VecDeque<sys::VREvent_t>,
         pub poses: Vec<(u32, Mat)>, // each device's pose; a device not here isn't tracked
         pub next: u64,              // the last overlay handle handed out
+        pub calls: Vec<String>,     // every write made to it, in order (golden.rs)
     }
 
     pub static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -343,31 +344,50 @@ pub mod fake {
         f(SCRIPT.lock().unwrap().get_or_insert_with(Script::default))
     }
 
+    fn log(c: String) {
+        script(|s| s.calls.push(c));
+    }
+
+    /// The writes made since the last time, in order.
+    pub fn take_calls() -> Vec<String> {
+        script(|s| std::mem::take(&mut s.calls))
+    }
+
     unsafe extern "C" fn poll(_h: Handle, e: *mut sys::VREvent_t, _size: u32) -> bool {
         script(|s| s.events.pop_front()).map(|ev| unsafe { *e = ev }).is_some()
     }
     unsafe extern "C" fn create(_k: *mut std::os::raw::c_char, _n: *mut std::os::raw::c_char, h: *mut Handle) -> sys::EVROverlayError {
-        unsafe {
-            *h = script(|s| {
-                s.next += 1;
-                s.next
-            })
-        };
+        let n = script(|s| {
+            s.next += 1;
+            s.next
+        });
+        unsafe { *h = n };
+        log(format!("CreateOverlay -> {n}"));
         0
     }
-    unsafe extern "C" fn flag(_h: Handle, _f: sys::VROverlayFlags, _on: bool) -> sys::EVROverlayError {
+    unsafe extern "C" fn flag(h: Handle, f: sys::VROverlayFlags, on: bool) -> sys::EVROverlayError {
+        log(format!("SetOverlayFlag {h} {f} {on}"));
         0
     }
-    unsafe extern "C" fn sort(_h: Handle, _o: u32) -> sys::EVROverlayError {
+    unsafe extern "C" fn sort(h: Handle, o: u32) -> sys::EVROverlayError {
+        log(format!("SetOverlaySortOrder {h} {o}"));
         0
     }
-    unsafe extern "C" fn mouse_scale(_h: Handle, _s: *mut sys::HmdVector2_t) -> sys::EVROverlayError {
+    unsafe extern "C" fn mouse_scale(h: Handle, s: *mut sys::HmdVector2_t) -> sys::EVROverlayError {
+        let v = unsafe { (*s).v };
+        log(format!("SetOverlayMouseScale {h} {:.4} {:.4}", v[0], v[1])); // not golden::num: cc-win-spike builds this file too
         0
     }
-    unsafe extern "C" fn input_method(_h: Handle, _m: sys::VROverlayInputMethod) -> sys::EVROverlayError {
+    unsafe extern "C" fn input_method(h: Handle, m: sys::VROverlayInputMethod) -> sys::EVROverlayError {
+        log(format!("SetOverlayInputMethod {h} {m}"));
         0
     }
-    unsafe extern "C" fn show(_h: Handle) -> sys::EVROverlayError {
+    unsafe extern "C" fn show(h: Handle) -> sys::EVROverlayError {
+        log(format!("ShowOverlay {h}"));
+        0
+    }
+    unsafe extern "C" fn hide(h: Handle) -> sys::EVROverlayError {
+        log(format!("HideOverlay {h}"));
         0
     }
     unsafe extern "C" fn poses(_o: sys::ETrackingUniverseOrigin, _t: f32, out: *mut sys::TrackedDevicePose_t, n: u32) {
@@ -416,7 +436,7 @@ pub mod fake {
                 SetOverlayMouseScale: Some(mouse_scale),
                 SetOverlayInputMethod: Some(input_method),
                 ShowOverlay: Some(show),
-                HideOverlay: Some(show),
+                HideOverlay: Some(hide),
                 ..Default::default()
             }),
             sys: leak(sys::VR_IVRSystem_FnTable {

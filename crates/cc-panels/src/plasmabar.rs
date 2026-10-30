@@ -657,6 +657,96 @@ mod tests {
         assert_eq!(p.held, 0, "nothing left held");
     }
 
+    /// The bar placed with Kickoff open, and a maker of its laser events on one of Kickoff's items,
+    /// as trace lines (the same set-up as the replay test above).
+    fn kickoff() -> (String, impl Fn(u32) -> String) {
+        let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
+        let world = crate::geometry::panel_matrix(&crate::geometry::Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let placed =
+            serde_json::json!({"crop": grown, "panel": BAR, "bounds": bounds(grown, WL0), "world": world, "width": 0.6, "aspect": grown[3] as f64 / grown[2] as f64, "curve": 0.0, "clickable": true});
+        let (x, y) = ((600.0 - WL0[0] as f64) / 1920.0, 1.0 - (1200.0 - WL0[1] as f64) / 1080.0);
+        let ev = move |t: u32| {
+            let mut e: vr::VREvent_t = Default::default();
+            (e.eventType, e.trackedDeviceIndex) = (t, 3);
+            e.data.mouse = sys::VREvent_Mouse_t { x: x as f32, y: y as f32, button: sys::EVRMouseButton_VRMouseButton_Left, cursorIndex: 0 };
+            crate::trace::event_line("plasma", &e).unwrap().to_string()
+        };
+        (serde_json::json!({ "plasma": placed }).to_string(), ev)
+    }
+
+    /// One pass of the event loop with these events.
+    fn pass(p: &mut Plasma, events: &[String]) {
+        p.replay(&format!("{{\"tick\":\"plasma\"}}\n{}", events.join("\n")));
+    }
+
+    /// What went to the session, what SteamVR was told and what the bar holds, since last time.
+    fn observe(log: &mut crate::golden::Log, p: &Plasma) {
+        use crate::golden::num;
+        for (f, at) in std::mem::take(&mut *windows::SHELL_SENT.lock().unwrap()) {
+            log.line(format!("session pointer {f:#x} at {}", at.map_or("where it is".into(), |(x, y)| format!("{} {}", num(x), num(y)))));
+        }
+        for o in std::mem::take(&mut *windows::SHELL_OTHER.lock().unwrap()) {
+            log.line(format!("session {o}"));
+        }
+        log.vr_calls();
+        log.line(format!("held {:#x}, visible {}", p.held, p.visible));
+    }
+
+    /// Golden (golden.rs): a laser presses on Kickoff, then leaves the bar with the button still
+    /// down, comes back, and lets go. What happens today is what's pinned, whatever it is.
+    #[test]
+    fn golden_focus_lost_with_a_button_held() {
+        let _vr = crate::trace::fake_vr();
+        let mut log = crate::golden::Log::default();
+        let mut p = Plasma::new();
+        let (placed, ev) = kickoff();
+        log.step("the bar, placed with Kickoff open");
+        p.replay(&placed);
+        observe(&mut log, &p);
+        log.step("a laser moves onto an item and presses");
+        pass(&mut p, &[ev(sys::EVREventType_VREvent_MouseMove), ev(sys::EVREventType_VREvent_MouseButtonDown)]);
+        observe(&mut log, &p);
+        log.step("it leaves the bar with the button still down: FocusLeave, no Up");
+        pass(&mut p, &[ev(sys::EVREventType_VREvent_FocusLeave)]);
+        observe(&mut log, &p);
+        log.step("a pass with nothing");
+        pass(&mut p, &[]);
+        observe(&mut log, &p);
+        log.step("it comes back and moves");
+        pass(&mut p, &[ev(sys::EVREventType_VREvent_FocusEnter), ev(sys::EVREventType_VREvent_MouseMove)]);
+        observe(&mut log, &p);
+        log.step("the button comes up");
+        pass(&mut p, &[ev(sys::EVREventType_VREvent_MouseButtonUp)]);
+        observe(&mut log, &p);
+        crate::golden::check("plasmabar-focus-lost-with-a-button-held", &log.0);
+    }
+
+    /// Golden: a laser presses on Kickoff, then the bar goes away (hide, as when its window closes)
+    /// with the press still in, and the Up arrives after, for an overlay that's gone.
+    #[test]
+    fn golden_surface_gone_with_a_press_outstanding() {
+        let _vr = crate::trace::fake_vr();
+        let mut log = crate::golden::Log::default();
+        let mut p = Plasma::new();
+        let (placed, ev) = kickoff();
+        log.step("the bar, placed with Kickoff open");
+        p.replay(&placed);
+        observe(&mut log, &p);
+        log.step("a laser moves onto an item and presses");
+        pass(&mut p, &[ev(sys::EVREventType_VREvent_MouseMove), ev(sys::EVREventType_VREvent_MouseButtonDown)]);
+        observe(&mut log, &p);
+        log.step("the bar goes away with the press still in");
+        p.hide();
+        observe(&mut log, &p);
+        log.step("the Up arrives after it's gone");
+        pass(&mut p, &[ev(sys::EVREventType_VREvent_MouseButtonUp)]);
+        observe(&mut log, &p);
+        log.step("and a stray move");
+        pass(&mut p, &[ev(sys::EVREventType_VREvent_MouseMove)]);
+        observe(&mut log, &p);
+        crate::golden::check("plasmabar-surface-gone-with-a-press-outstanding", &log.0);
+    }
+
     #[test]
     fn steamvr_points_map_into_the_crop() {
         // the bar alone: the texture is the bar, so nothing changes

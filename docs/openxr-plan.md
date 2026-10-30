@@ -473,26 +473,35 @@ Each step is its own small branch, and has to pass the same checks before and af
 - At the end of the phase, docs/final-test-frame.md in the headset, and the control socket's
   `surfaces` dump compared before and after.
 
-The golden tests come first, in their own branch before any code moves. Each one drives today's
-code through the headset-free harness's OpenVR stand-in (`vr::fake`, docs/vr-harness.md), which
-gets a log of every OpenVR call it receives, with its arguments. The test writes the log down the
-first time, and after that it has to come out the same, call for call. Going through the stand-in,
-not `stage::fake`, means the code that moves (`overlay::Live`, `stage::Live`, the event loops) is
-covered as well as what calls it. The scripts:
+The golden tests come first, before any code moves. Each one writes down, step by step, what
+today's code did: the OpenVR calls it made (the headset-free harness's stand-in, `vr::fake`, keeps
+a log of them, docs/vr-harness.md), what it sent to the computer (the session's pointer, wheel and
+leave, and the keys), and what it was holding (a press, a drag and whether its device is lost). The
+transcript has to match a fixture in `crates/cc-panels/golden/`, line for line. The fixtures were
+written by the code before the move, and an ordinary run never writes them, a missing one
+included: only `CC_GOLDEN_WRITE=1` does, for a change in behaviour that's meant, and the fixture's
+diff goes in with that change (`golden.rs`).
+
+The three that are in pin the endings: `golden_focus_lost_with_a_button_held` and
+`golden_surface_gone_with_a_press_outstanding` go through Plasma's bar's real event loop and
+`vr::fake`, and `golden_device_lost_mid_drag` goes through grab.rs's carry with `stage::fake`.
+That last one pins grab's writes and drag state, but not `overlay::Live` and `stage::Live`
+themselves, so before those move, grab's scripts get a `vr::fake` path too. The scripts:
 
 1. **Carry:** grab a panel's bar with a controller, move it through three poses, push it away
    with the stick, let go.
 2. **Resize:** grab the bottom-right corner, drag it out and back in, let go.
 3. **Dock:** carry a panel to the other controller until it arms (the pulse), let go, then move
    that controller and check the panel follows it.
-4. **Focus lost with a button held:** press on a panel, then FocusLeave with no Up. Today's
-   behaviour, whatever it is, is what gets pinned: the drag, the remote's button state and what
-   comes after the next Enter.
-5. **Device lost mid-drag:** press, then the controller's pose goes invalid and stays invalid past
-   `LOST`. Also the short version, a blink under `LOST` that the drag survives, and the controller
-   coming back with a different index.
-6. **Surface destroyed with a capture outstanding:** press on a window panel, close the window
-   before the Up, then the Up arrives for an overlay that's gone.
+4. **Focus lost with a button held** (in, on Plasma's bar): press, then FocusLeave with no Up,
+   an empty pass, Enter and a move, then the Up. Today the session gets a leave and the press
+   stays held until the Up. A panel's version is still to write.
+5. **Device lost mid-drag** (in, grab.rs): a carry whose controller goes untracked for 400 ms and
+   comes back, then goes for longer than `LOST` and the panel's put down. Then a controller under
+   another index picks it up, the old index's late Up ends nothing, and the new one's ends it.
+6. **Surface gone with a capture outstanding** (in, on Plasma's bar): press, then the bar hides as
+   it does when its window closes, which lets go of the press where the pointer is. The late Up
+   and a stray move then send nothing. A window panel's version is still to write.
 7. **The mouse and a controller:** the mouse working a panel, then a controller's click taking
    over (`controller_pressed`), including a ButtonPress from our virtual pointer, which doesn't
    count.
