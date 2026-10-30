@@ -19,6 +19,7 @@ mod attention;
 mod back;
 #[allow(dead_code)] // the boundary's design: phase 0 moves OpenVR behind it (docs/openxr-plan.md)
 mod backend;
+mod boundary;
 mod capture;
 mod clipboard;
 mod config;

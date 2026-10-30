@@ -551,7 +551,16 @@ cc-panels.
      that isn't a pointer still moves its last point (the two readers above); it moves with that
      fix. tab.rs's loop, which runs before any backend, and cc-win-spike's own queue stay raw too.
 6. (1 d) The source-scan test that nothing outside `vr/openvr` touches OpenVR, and the cargo
-   features.
+   features. Started as a ratchet (6a, `boundary.rs`): the test reads the sources and fails if a
+   file outside the OpenVR side uses an OpenVR name that isn't on its list (a `call!`, an
+   `openvr_sys` item, or a `vr::` item other than `wake` and `timed`), and also if a listed name
+   is gone, so the lists only shrink. Each file's names are grouped by the move that takes them
+   away, one branch each: 6b `Surfaces` (its `Live` and the call sites, with `surface.rs`'s create
+   and destroy moving in), 6c `Stage`'s helpers and OpenVR's device numbering, 6d main.rs's
+   `Session` parts, and 6e `laser.rs` to the OpenVR side. Whole-file exceptions stay named: tab.rs
+   (it runs before any backend) and cc-win-spike. When the lists are empty, nothing outside the
+   OpenVR side touches it. The cargo features come with the first move that lets one gate
+   something; until then a feature would gate nothing.
 7. (1 d) Tests and a pass in the headset.
 
 Each step is its own small branch, and has to pass the same checks before and after:

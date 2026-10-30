@@ -420,7 +420,8 @@ mod tests {
                     if p.file_name().is_some_and(|n| n != "bin") {
                         visit(&p, bad);
                     }
-                } else if p.extension().is_some_and(|x| x == "rs") && !matches!(p.file_name().and_then(|n| n.to_str()), Some("vr.rs" | "surface.rs")) {
+                // (boundary.rs only lists these names, for the OpenVR ratchet)
+                } else if p.extension().is_some_and(|x| x == "rs") && !matches!(p.file_name().and_then(|n| n.to_str()), Some("vr.rs" | "surface.rs" | "boundary.rs")) {
                     let s = std::fs::read_to_string(&p).unwrap();
                     for (n, l) in s.lines().enumerate() {
                         let code = l.split("//").next().unwrap_or("");
@@ -447,7 +448,7 @@ mod tests {
                     if p.file_name().is_some_and(|n| n != "bin") {
                         visit(&p, bad);
                     }
-                } else if p.extension().is_some_and(|x| x == "rs") && p.file_name().and_then(|n| n.to_str()) != Some("surface.rs") {
+                } else if p.extension().is_some_and(|x| x == "rs") && !matches!(p.file_name().and_then(|n| n.to_str()), Some("surface.rs" | "boundary.rs")) {
                     let s = std::fs::read_to_string(&p).unwrap();
                     for (n, l) in s.lines().enumerate() {
                         if l.split("//").next().unwrap_or("").contains("DestroyOverlay") {
