@@ -312,9 +312,11 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
 /// `vr::` items but the neutral ones, and the trace's raw poll.
 fn names(text: &str) -> BTreeSet<String> {
     let ident = |s: &str| s.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<String>();
-    // each place `pat` starts a path of its own (not the end of a longer one, like spa::sys::)
+    // each place `pat` starts a path of its own, or follows crate::, super:: or self:: (chains too),
+    // not the end of a longer one like spa::sys::
     let starts = |code: &str, pat: &str| -> Vec<usize> {
-        code.match_indices(pat).map(|(i, _)| i).filter(|&i| !code[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ':') || code[..i].ends_with("crate::")).collect()
+        let ours = |before: &str| ["crate::", "super::", "self::"].iter().any(|p| before.ends_with(p) && !before[..before.len() - p.len()].ends_with(|c: char| c.is_alphanumeric() || c == '_'));
+        code.match_indices(pat).map(|(i, _)| i).filter(|&i| !code[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ':') || ours(&code[..i])).collect()
     };
     let after = |code: &str, pat: &str| -> Vec<String> { starts(code, pat).into_iter().map(|i| ident(&code[i + pat.len()..])).filter(|n| !n.is_empty()).collect() };
     let openvr_is_sys = text.contains("openvr_sys as sys");
@@ -338,11 +340,15 @@ fn names(text: &str) -> BTreeSet<String> {
         if code.contains("trace::poll(") {
             out.insert("trace::poll".into());
         }
-        // a grouped import hides its names from the scan, so it's a name of its own that no list has
-        for pat in ["vr::{", "openvr_sys::{"] {
+        // a grouped import, a glob or an alias hides its names from the scan, so each is a name of
+        // its own that no list has
+        for pat in ["vr::{", "openvr_sys::{", "vr::*", "openvr_sys::*", "vr as "] {
             if !starts(code, pat).is_empty() {
-                out.insert(pat.into());
+                out.insert(pat.trim_end().into());
             }
+        }
+        if after(code, "openvr_sys as ").iter().any(|a| a != "sys") {
+            out.insert("openvr_sys as".into());
         }
     }
     out
@@ -359,8 +365,8 @@ fn check(found: &BTreeMap<String, BTreeSet<String>>, allowed: &[(&str, &str, &[&
     for (f, ns) in found {
         let ok = want.get(f.as_str());
         for n in ns.iter().filter(|n| !ok.is_some_and(|ok| ok.contains(n.as_str()))) {
-            if n.ends_with('{') {
-                bad.push(format!("{f}: imports {n}..}}: import OpenVR names one at a time, so this test sees each"));
+            if n.ends_with('{') || n.ends_with('*') || n.ends_with(" as") {
+                bad.push(format!("{f}: imports `{n}`: import OpenVR names one at a time and by their own names, so this test sees each"));
                 continue;
             }
             bad.push(format!("{f}: uses {n}, which isn't on its list: go through the OpenVR side's Live, or list it with why"));
@@ -429,8 +435,20 @@ fn it_finds_each_kind_of_name_and_leaves_the_rest() {
     assert!(names("use crate::vr::{head, index};").contains("vr::{"), "a grouped import is caught");
     assert!(names("use openvr_sys::{self as sys};").contains("openvr_sys::{"));
     assert!(!names("use crate::openvr::{x};").contains("vr::{"), "only a vr path of its own");
+    assert!(
+        names("super::vr::head(); super::super::vr::index(d); self::vr::tip(h);").is_superset(&["vr::head", "vr::index", "vr::tip"].map(String::from).into()),
+        "super:: and self:: paths, chains too"
+    );
+    assert!(!names("my_super::vr::head();").contains("vr::head"), "but not a longer name ending in super::");
+    assert!(names("use crate::vr::*;").contains("vr::*") && names("use openvr_sys::*;").contains("openvr_sys::*"), "globs");
+    assert!(names("use openvr_sys as ovr;").contains("openvr_sys as") && !names("use openvr_sys as sys;").contains("openvr_sys as"), "an alias but sys");
+    assert!(names("use crate::vr as v;").contains("vr as"), "an alias of vr");
     let grouped = BTreeMap::from([("c.rs".to_string(), names("use crate::vr::{head, index};"))]);
     assert!(check(&grouped, &[("c.rs", "why", &["vr::head", "vr::index"])]).iter().any(|l| l.contains("one at a time")), "and fails even when its names are listed");
+    for hidden in ["use crate::vr::*;", "use openvr_sys as ovr;", "use crate::vr as v;"] {
+        let found = BTreeMap::from([("c.rs".to_string(), names(hidden))]);
+        assert!(check(&found, &[]).iter().any(|l| l.contains("one at a time")), "{hidden}");
+    }
 }
 
 #[test]
