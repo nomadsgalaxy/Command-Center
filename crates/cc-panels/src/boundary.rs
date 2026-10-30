@@ -313,13 +313,10 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
 fn names(text: &str) -> BTreeSet<String> {
     let ident = |s: &str| s.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<String>();
     // each place `pat` starts a path of its own (not the end of a longer one, like spa::sys::)
-    let after = |code: &str, pat: &str| -> Vec<String> {
-        code.match_indices(pat)
-            .filter(|(i, _)| !code[..*i].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ':') || code[..*i].ends_with("crate::"))
-            .map(|(i, _)| ident(&code[i + pat.len()..]))
-            .filter(|n| !n.is_empty())
-            .collect()
+    let starts = |code: &str, pat: &str| -> Vec<usize> {
+        code.match_indices(pat).map(|(i, _)| i).filter(|&i| !code[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ':') || code[..i].ends_with("crate::")).collect()
     };
+    let after = |code: &str, pat: &str| -> Vec<String> { starts(code, pat).into_iter().map(|i| ident(&code[i + pat.len()..])).filter(|n| !n.is_empty()).collect() };
     let openvr_is_sys = text.contains("openvr_sys as sys");
     let mut out = BTreeSet::new();
     for line in text.lines() {
@@ -341,6 +338,12 @@ fn names(text: &str) -> BTreeSet<String> {
         if code.contains("trace::poll(") {
             out.insert("trace::poll".into());
         }
+        // a grouped import hides its names from the scan, so it's a name of its own that no list has
+        for pat in ["vr::{", "openvr_sys::{"] {
+            if !starts(code, pat).is_empty() {
+                out.insert(pat.into());
+            }
+        }
     }
     out
 }
@@ -356,6 +359,10 @@ fn check(found: &BTreeMap<String, BTreeSet<String>>, allowed: &[(&str, &str, &[&
     for (f, ns) in found {
         let ok = want.get(f.as_str());
         for n in ns.iter().filter(|n| !ok.is_some_and(|ok| ok.contains(n.as_str()))) {
+            if n.ends_with('{') {
+                bad.push(format!("{f}: imports {n}..}}: import OpenVR names one at a time, so this test sees each"));
+                continue;
+            }
             bad.push(format!("{f}: uses {n}, which isn't on its list: go through the OpenVR side's Live, or list it with why"));
         }
     }
@@ -419,6 +426,11 @@ fn it_finds_each_kind_of_name_and_leaves_the_rest() {
     let got: Vec<String> = names(text).into_iter().collect();
     assert_eq!(got, ["PollNextEvent", "ShowOverlay", "sys::VROverlayFlags_IgnoreTextureAlpha", "sys::k_unMaxTrackedDeviceCount", "trace::poll", "vr::head", "vr::index"]);
     assert!(names("let x = sys::Thing;").is_empty(), "a bare sys:: only counts where openvr_sys is sys");
+    assert!(names("use crate::vr::{head, index};").contains("vr::{"), "a grouped import is caught");
+    assert!(names("use openvr_sys::{self as sys};").contains("openvr_sys::{"));
+    assert!(!names("use crate::openvr::{x};").contains("vr::{"), "only a vr path of its own");
+    let grouped = BTreeMap::from([("c.rs".to_string(), names("use crate::vr::{head, index};"))]);
+    assert!(check(&grouped, &[("c.rs", "why", &["vr::head", "vr::index"])]).iter().any(|l| l.contains("one at a time")), "and fails even when its names are listed");
 }
 
 #[test]
