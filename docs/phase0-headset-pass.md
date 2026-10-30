@@ -1,6 +1,6 @@
 # Phase 0: the headset pass
 
-This is revision 3 of the checklist.
+This is revision 4 of the checklist.
 
 Phase 0 of the OpenXR plan ([openxr-plan.md](openxr-plan.md)) moved Command Center's OpenVR calls
 behind interfaces. It was meant to change nothing, apart from a few fixes made on purpose: a
@@ -13,8 +13,12 @@ takes about 15 minutes in one sitting. If a step fails, write down what you saw 
 With the results, write down:
 
 - the checklist's revision (above);
-- the commit the build was made from, and the binary's time, which
-  `stat -L -c %y /proc/$(pgrep -xn cc-panels)/exe` gives while the Desktop runs;
+- the commit the build was made from, as whoever built it reports it (for the first pass,
+  49db50d, built at 14:21 on 2026-10-30), next to the binary's time, which
+  `stat -L -c %y /proc/$(pgrep -xn cc-panels)/exe` gives while the Desktop runs. The time only
+  says when the file was written, not what it was built from;
+- any restart of the Desktop you didn't cause, with the extra trace it wrote, apart from the
+  rest;
 - each step's result: passed, failed (with what you saw), skipped, or not available here (and
   why, such as no eye tracking). A log search that comes up empty is a pass only for a step you
   did. For a step you skipped, it says nothing.
@@ -39,9 +43,14 @@ you go by what you see.
    and `universe` commands. On an older build, `cc surfaces` answers with an error instead.
    Skip this and the diff at the end, and compare by eye: the same panels, bars and windows, in
    front of each other the same way.
-4. Note where the log ends, so the searches afterwards read only this run:
-   `wc -l < ~/.cache/control-center/cc-panels.log > ~/cc-log-start.txt`.
-5. Install the phase 0 build and open the Desktop.
+4. Note where the log ends, and which file it is, so the searches afterwards read only this run:
+
+   ```sh
+   echo "$(wc -l < ~/.cache/control-center/cc-panels.log) $(stat -c '%i-%W' ~/.cache/control-center/cc-panels.log)" > ~/cc-log-start.txt
+   ```
+
+5. Install the phase 0 build and open the Desktop. Once it's up, save its pid, which names its
+   trace: `pgrep -xn cc-panels > ~/cc-pid.txt`.
 
 ## Two checks from the last build (3 minutes)
 
@@ -134,20 +143,37 @@ Point the mouse at SteamVR's own UI, outside our panels.
 
 ## Afterwards (1 minute)
 
-- Search only this run's part of `~/.cache/control-center/cc-panels.log`, from the line you
-  noted:
+- Put this run's part of `~/.cache/control-center/cc-panels.log` in one file. The log moves to
+  `cc-panels.log.1` when the Desktop starts with it past 5 MB, so which file has your saved
+  line count is told by its inode and the time it was made (`%i-%W`), not its length. The inode
+  alone isn't enough: once the old file is deleted, a new one can get its number.
 
   ```sh
-  tail -n +$(( $(cat ~/cc-log-start.txt) + 1 )) ~/.cache/control-center/cc-panels.log |
+  cd ~/.cache/control-center
+  read n id < ~/cc-log-start.txt
+  if [ "$(stat -c '%i-%W' cc-panels.log)" = "$id" ]; then
+    tail -n +$((n + 1)) cc-panels.log
+  elif [ "$(stat -c '%i-%W' cc-panels.log.1)" = "$id" ]; then  # it moved when the Desktop started
+    tail -n +$((n + 1)) cc-panels.log.1; cat cc-panels.log
+  else  # it moved twice, so the Desktop started again during the pass
+    cat cc-panels.log.1 cc-panels.log
+  fi > ~/cc-run.log
+  grep -n '^=== cc-panels ' ~/cc-run.log
+  ```
+
+  Each start writes `=== cc-panels <date> <time> ===` first, and this run begins at the first one
+  at or after the time you opened the Desktop. Lines above it are the old Desktop shutting down.
+  A second one later means the Desktop started again during the pass: write that down as a
+  restart. Then search from your run's line, putting its number in for `<line>`:
+
+  ```sh
+  sed -n '<line>,$p' ~/cc-run.log |
     grep -nF -e panicked -e 'import fail' -e "won't import" -e "laser: SteamVR didn't" \
       -e 'binding loads' -e 'no cc_pointer driver' -e 'toast failed' \
       -e 'no SteamVR keyboard' -e "couldn't be typed" -e 'taskbar: wrist: no'
   ```
 
-  If the log is now shorter than the number you noted, it was moved to `cc-panels.log.1` when
-  the Desktop started (that happens past 5 MB), and the whole of `cc-panels.log` is this run, so
-  drop the `tail`. Nothing should come up. Each search covers these steps, and counts only for
-  the ones you did:
+  Nothing should come up. Each search covers these steps, and counts only for the ones you did:
   - `panicked`: all of them;
   - `import fail` and `won't import`: 3;
   - `laser: SteamVR didn't`, `binding loads` and `no cc_pointer driver`: 4 and 16 to 19.
@@ -156,7 +182,9 @@ Point the mouse at SteamVR's own UI, outside our panels.
   - `toast failed`: 11;
   - `no SteamVR keyboard` and `couldn't be typed`: 10;
   - `taskbar: wrist: no`: 9.
-- In the newest `~/.cache/control-center/vr-trace-*.jsonl`:
+- In this run's trace, `~/.cache/control-center/vr-trace-*-$(cat ~/cc-pid.txt).jsonl`, picked
+  by the pid you saved rather than by which is newest. A restart during the pass writes another
+  trace under a new pid: keep it, and note it with the restart.
   - `grep -c '"ev"'` isn't 0: the lasers' events were read and recorded;
   - `grep -c '"pose"'` isn't 0, and `grep -c '"m":null'` (a laser that wasn't tracked) is small;
   - for the start menu, the `"plasma"` lines say where Plasma's overlay was, and each Plasma
@@ -167,5 +195,7 @@ Point the mouse at SteamVR's own UI, outside our panels.
   `diff ~/cc-surfaces-before.txt ~/cc-surfaces-after.txt`. The same panels, bars and windows
   should be there, in the same order, with the same flags and widths. Where they are can differ,
   if you moved things.
-- When you're done with them, delete the trace flag, the traces, the two surfaces files and
-  `~/cc-log-start.txt`.
+- When you're done, stop new traces: `rm ~/.cache/control-center/vr-trace`. If the pass was
+  clean, also delete the traces (but one you keep as a replay), the two surfaces files,
+  `~/cc-log-start.txt`, `~/cc-pid.txt` and `~/cc-run.log`. If anything failed or wasn't clear, keep them all until it's been looked
+  into.
