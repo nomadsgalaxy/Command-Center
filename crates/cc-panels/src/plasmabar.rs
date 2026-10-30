@@ -548,8 +548,9 @@ impl Plasma {
         // texture and bounds SteamVR had when it made the event, and right after a menu opens
         // that isn't always what's drawn. In the headset on Oct 29, SteamVR's point (through
         // in_bounds) was right across the open menu but pulled toward its middle up and down, one
-        // or two items low at the top: drawn_fy undoes that squeeze. The ray fixes that if SteamVR's hit quad isn't the picture
-        // as drawn; it doesn't if the crop to the session's coordinates (global) is what's off.
+        // or two items low at the top: drawn_fy undoes that squeeze. The ray fixes that if
+        // SteamVR's hit quad isn't the picture as drawn; it doesn't if the crop to the session's
+        // coordinates (global) is what's off.
         // Copies, taken once: no lock is held while the loop asks OpenVR for poses.
         let b = self.placed.map_or([0.0, 0.0, 1.0, 1.0], |q| q.4);
         let (pl, crop) = (crate::kvm::lock().plasma, CROP.lock().unwrap().map(|c| c.0));
@@ -799,8 +800,6 @@ mod tests {
         assert_eq!(p.held, 0, "nothing left held");
     }
 
-    /// The bar placed with Kickoff open, and a maker of its laser events on one of Kickoff's items,
-    /// as trace lines (the same set-up as the replay test above).
     /// SteamVR's point for session point `p` on WL-0's stream, cropped to `crop`: of the whole
     /// texture, y up, and squeezed up and down about the crop's middle the way drawn_fy undoes.
     fn steamvr_saw(crop: Rect, p: (f64, f64)) -> (f64, f64) {
@@ -810,6 +809,8 @@ mod tests {
         (x, mid + (y - mid) * 1080.0 / 1920.0)
     }
 
+    /// The bar placed with Kickoff open, and a maker of its laser events on one of Kickoff's items,
+    /// as trace lines (the same set-up as the replay test above).
     fn kickoff() -> (String, impl Fn(u32) -> String) {
         let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
         let world = crate::geometry::panel_matrix(&crate::geometry::Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
@@ -1077,7 +1078,7 @@ mod tests {
     /// Oct 30 (vr-trace-1793398995-49196), the right hand on Kickoff's list near its bottom, two
     /// thirds up and near its top. The expected point is where the laser's ray, fitted from
     /// 436 events (its direction in the pose's frame (-0.018, -0.680, -0.733)), crossed the picture
-    /// as drawn. SteamVR's own point, unsqueezed, comes within 2% of it; as it was, 5 to 19% low or
+    /// as drawn. SteamVR's own point, unsqueezed, comes within 2% of it; as it was, 8 to 19% low or
     /// high. Then a closed bar's event, from the same trace: bounds 0 to 1, left as it was.
     #[test]
     fn steamvrs_point_on_an_open_menu_unsqueezes_to_where_the_ray_hit() {
