@@ -105,15 +105,25 @@ pub enum SurfaceEvent {
     Closed,
 }
 
-/// What the runtime says about our session. On OpenVR an overlay app is always running, visible,
-/// focused and rendering, so this only changes on OpenXR. It isn't whether the headset is worn:
-/// that's `SessionEvent::Worn`, and the two are never folded together.
+/// What the runtime says about our session, from its events. On OpenVR an overlay app is always
+/// running, visible and focused, so this only changes on OpenXR. It isn't whether the headset is
+/// worn: that's `SessionEvent::Worn`, and the two are never folded together. Whether to draw this
+/// frame isn't here either: it comes with each frame (`Frame`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionState {
     pub running: bool,
     pub visible: bool,
     pub focused: bool,
+}
+
+/// One frame, as `begin_frame` starts it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    /// False when the runtime says not to draw (OpenXR's shouldRender). The frame still ends.
     pub should_render: bool,
+    /// Seconds from now until this frame's picture reaches the eyes: when poses are read for
+    /// (vr::to_photons on OpenVR, predictedDisplayTime on OpenXR).
+    pub predicted: f32,
 }
 
 /// What the runtime's own queue gives (main.rs's `PollNextEvent` loop).
@@ -262,9 +272,11 @@ pub trait Pointing {
 
 /// Where things are, besides where to write (today's `stage::Stage` reads).
 pub trait Stage: Overlays {
-    /// A device's pose in standing space. None when it isn't tracked.
+    /// A device's pose in standing space, at the current frame's predicted time (`Frame::predicted`;
+    /// vr::to_photons on OpenVR today). None when it isn't tracked.
     fn device(&self, d: Dev) -> Option<Mat>;
-    /// A device's laser, pointing along -z: the controller's tip on OpenVR, the aim pose on OpenXR.
+    /// A device's laser, pointing along -z, at the same time: the controller's tip on OpenVR, the
+    /// aim pose on OpenXR.
     fn laser(&self, d: Dev) -> Option<Mat>;
     fn head(&self) -> V3;
     fn head_pose(&self) -> Option<Mat>;
@@ -275,24 +287,24 @@ pub trait Stage: Overlays {
     /// The controller in a hand right now, if there is one (the wrist taskbar asks each frame).
     fn in_hand(&self, h: Hand) -> Option<Ctl>;
     fn connected(&self, d: Dev) -> bool;
-    /// A short buzz in the hand whose laser last worked surface s (a dock target arming).
+    /// A short buzz in the hand whose laser last worked surface s (a dock target arming). Its one
+    /// caller today uses one strength and length, so they aren't parameters (stage.rs).
     fn pulse(&mut self, s: SurfaceId);
 }
 
 /// The session and its clock (main.rs's event loop, vr.rs's prediction and pacing).
 pub trait Session {
     fn next_event(&mut self) -> Option<SessionEvent>;
-    /// Seconds from now until the picture reaches the eyes (vr::to_photons today).
-    fn to_photons(&self) -> f32;
     fn display_period(&self) -> Option<f32>;
     /// OpenVR's universe. None where the runtime has no such thing; the room rule then applies
     /// (docs/openxr-plan.md, phase 1).
     fn universe_id(&self) -> Option<u64>;
     /// Whether a game is the scene app. None when the backend can't tell, which isn't "no game".
     fn scene_app_running(&self) -> Option<bool>;
-    /// No-ops on OpenVR. On OpenXR, wait, begin and end are called every frame while the session
-    /// runs, and `should_render` only skips the drawing.
-    fn begin_frame(&mut self) -> SessionState;
+    /// OpenVR: no wait, should_render always, and predicted is vr::to_photons. On OpenXR, wait,
+    /// begin and end are called every frame while the session runs, and `should_render` only skips
+    /// the drawing.
+    fn begin_frame(&mut self) -> Frame;
     fn end_frame(&mut self, layers: &[SurfaceId]);
 }
 
