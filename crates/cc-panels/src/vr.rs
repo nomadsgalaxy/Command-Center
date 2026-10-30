@@ -428,6 +428,9 @@ pub mod fake {
         pub pose_times: Vec<f32>,                           // the predicted times poses were asked for, in order
         pub sys_events: VecDeque<sys::VREvent_t>,           // SteamVR's own queue (PollNextEvent), apart from the overlays'
         pub universe: u64,                                  // Prop_CurrentUniverseId_Uint64
+        pub prop_error: Option<sys::ETrackedPropertyError>, // every float and uint64 property fails with it, and gives 0 (openvr.h)
+        pub scene_pid: u32,                                 // GetCurrentSceneProcessId; 0 is no game
+        pub activity: Option<sys::EDeviceActivityLevel>,    // the headset's; none is Unknown
     }
 
     pub static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -493,8 +496,18 @@ pub mod fake {
     unsafe extern "C" fn poll_sys(e: *mut sys::VREvent_t, _size: u32) -> bool {
         script(|s| s.sys_events.pop_front()).map(|ev| unsafe { *e = ev }).is_some()
     }
-    unsafe extern "C" fn u64_prop(_d: u32, p: sys::ETrackedDeviceProperty, _e: *mut sys::ETrackedPropertyError) -> u64 {
+    unsafe extern "C" fn u64_prop(_d: u32, p: sys::ETrackedDeviceProperty, e: *mut sys::ETrackedPropertyError) -> u64 {
+        if let Some(err) = script(|s| s.prop_error) {
+            unsafe { *e = err };
+            return 0;
+        }
         if p == sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64 { script(|s| s.universe) } else { 0 }
+    }
+    unsafe extern "C" fn scene_pid() -> u32 {
+        script(|s| s.scene_pid)
+    }
+    unsafe extern "C" fn activity(_d: u32) -> sys::EDeviceActivityLevel {
+        script(|s| s.activity).unwrap_or(sys::EDeviceActivityLevel_k_EDeviceActivityLevel_Unknown)
     }
     unsafe extern "C" fn create(_k: *mut std::os::raw::c_char, _n: *mut std::os::raw::c_char, h: *mut sys::VROverlayHandle_t) -> sys::EVROverlayError {
         let n = script(|s| {
@@ -537,7 +550,11 @@ pub mod fake {
     unsafe extern "C" fn vsync(since: *mut f32, _frame: *mut u64) -> bool {
         script(|s| s.vsync).map(|v| unsafe { *since = v.0 }).is_some()
     }
-    unsafe extern "C" fn float_prop(_d: u32, p: sys::ETrackedDeviceProperty, _e: *mut sys::ETrackedPropertyError) -> f32 {
+    unsafe extern "C" fn float_prop(_d: u32, p: sys::ETrackedDeviceProperty, e: *mut sys::ETrackedPropertyError) -> f32 {
+        if let Some(err) = script(|s| s.prop_error) {
+            unsafe { *e = err };
+            return 0.0;
+        }
         let (_, hz, v2p) = script(|s| s.vsync).unwrap_or_default();
         if p == sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float {
             hz
@@ -668,12 +685,13 @@ pub mod fake {
                 GetFloatTrackedDeviceProperty: Some(float_prop),
                 GetUint64TrackedDeviceProperty: Some(u64_prop),
                 PollNextEvent: Some(poll_sys),
+                GetTrackedDeviceActivityLevel: Some(activity),
                 ..Default::default()
             }),
             ipc: leak(Default::default()),
             input: leak(Default::default()),
             rm: leak(Default::default()),
-            apps: leak(Default::default()),
+            apps: leak(sys::VR_IVRApplications_FnTable { GetCurrentSceneProcessId: Some(scene_pid), ..Default::default() }),
             notes: None,
         });
         // a test that panicked holding it mustn't fail the ones after it

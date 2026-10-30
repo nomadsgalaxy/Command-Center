@@ -17,7 +17,7 @@ pub use crate::keyboard::{Keyboard, KeyboardMode};
 #[allow(unused_imports)] // and overlay.rs
 pub use crate::overlay::{Flag, InputMode, Surfaces};
 #[allow(unused_imports)] // and poll.rs
-pub use crate::poll::{Pointing, SessionEvents};
+pub use crate::poll::{Pointing, Session, SessionEvents};
 #[allow(unused_imports)] // and shell.rs
 pub use crate::shell::{NoteRefused, Shell};
 #[allow(unused_imports)] // and texture.rs
@@ -71,14 +71,9 @@ pub trait Stage: Overlays {
     fn pulse(&mut self, s: SurfaceId);
 }
 
-/// The session and its clock (main.rs's event loop, vr.rs's prediction and pacing).
-pub trait Session: SessionEvents {
-    fn display_period(&self) -> Option<f32>;
-    /// OpenVR's universe. None where the runtime has no such thing; the room rule then applies
-    /// (docs/openxr-plan.md, phase 1).
-    fn universe_id(&self) -> Option<u64>;
-    /// Whether a game is the scene app. None when the backend can't tell, which isn't "no game".
-    fn scene_app_running(&self) -> Option<bool>;
+/// The frame loop (vr.rs's prediction and pacing). The design's, not moved yet: the session's reads
+/// are `Session` (poll.rs), its events `SessionEvents`.
+pub trait Frames {
     /// OpenVR: no wait, should_render always, and predicted is vr::to_photons. On OpenXR, wait,
     /// begin and end are called every frame while the session runs, and `should_render` only skips
     /// the drawing.
@@ -87,4 +82,4 @@ pub trait Session: SessionEvents {
 }
 
 /// One runtime, all of it.
-pub trait Backend: Surfaces + Stage + Textures + Pointing + Session + Keyboard + Shell + Input {}
+pub trait Backend: Surfaces + Stage + Textures + Pointing + Session + SessionEvents + Frames + Keyboard + Shell + Input {}

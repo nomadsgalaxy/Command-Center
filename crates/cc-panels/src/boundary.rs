@@ -28,7 +28,6 @@ const WHOLE: &[(&str, &str)] = &[
 /// `vr::` items that aren't OpenVR: waking the main loop and timing a call.
 const NEUTRAL: &[&str] = &["wake", "timed", "WOKEN", "MAIN", "Handle", "fake"];
 
-const SESSION: &str = "Session: the display's rate, the universe, the scene app, whether it's worn at start, start and stop (6d)";
 const FAKES: &str = "tests: SteamVR's events and roles, built for vr::fake";
 
 /// Each file's OpenVR names today, in groups by the step that takes them away.
@@ -58,19 +57,7 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "vr::place",
         ],
     ),
-    (
-        "main.rs",
-        SESSION,
-        &[
-            "vr::head_worn",
-            "GetFloatTrackedDeviceProperty",
-            "GetUint64TrackedDeviceProperty",
-            "sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64",
-            "sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float",
-            "vr::init",
-            "vr::shutdown",
-        ],
-    ),
+    ("main.rs", "start and stop: the backend object's constructor and its end, once the core holds a Backend (phase 1)", &["vr::init", "vr::shutdown"]),
     (
         "main.rs",
         "old_loop, golden_steamvr_events' copy of the loop from before phase 0, and its events (test only)",
@@ -86,6 +73,8 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted",
             "vr::VREvent_t",
             "vr::is_real_controller",
+            "GetUint64TrackedDeviceProperty",
+            "sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64",
         ],
     ),
     ("osk.rs", "tests: SteamVR's keyboard bytes, decoded as vr.rs does", &["vr::typed"]),
@@ -107,7 +96,6 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "sys::VREvent_Mouse_t",
         ],
     ),
-    ("taskbar.rs", SESSION, &["GetCurrentSceneProcessId"]),
     (
         "taskbar.rs",
         FAKES,

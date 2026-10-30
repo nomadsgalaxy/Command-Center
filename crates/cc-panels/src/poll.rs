@@ -40,7 +40,24 @@ pub trait SessionEvents {
     fn next_event(&mut self) -> Option<SessionEvent>;
 }
 
-/// SteamVR's overlay queues, for real.
+/// What the runtime says about the session when asked (not its events). Each is None when the
+/// runtime can't tell; the callers' fallbacks are theirs (main.rs, taskbar.rs).
+pub trait Session {
+    /// The display's refresh rate, in Hz (not a period: Pace takes Hz, and a round trip through
+    /// 1/x isn't always the same float). None when the runtime can't tell: on OpenVR, when its
+    /// error is set.
+    fn display_hz(&self) -> Option<f32>;
+    /// OpenVR's universe: the room. None where the runtime can't tell, or has no such thing (the
+    /// room rule then applies, docs/openxr-plan.md phase 1).
+    fn universe_id(&self) -> Option<u64>;
+    /// Whether a game is the scene app. None when the runtime can't tell, which isn't "no game".
+    fn scene_app_running(&self) -> Option<bool>;
+    /// Whether the headset is worn now, from its proximity sensor: the start before any
+    /// `SessionEvent::Worn`. None when it can't tell.
+    fn worn(&self) -> Option<bool>;
+}
+
+/// SteamVR's overlay queues and session, for real.
 pub struct Live;
 
 /// SteamVR's own queue, for real. `universe` is the one the session's in, which a relocalization
@@ -69,6 +86,32 @@ impl Pointing for Live {
     }
 }
 
+/// openvr.h (IVRSystem_022) on both properties: "If the device index is not valid or the property is
+/// not a [float|uint64] type this function will return 0". The error out-param says so too, and that's
+/// what's read here; what the value is on any other error isn't documented.
+impl Session for Live {
+    fn display_hz(&self) -> Option<f32> {
+        let mut err = 0;
+        let hz = call!(sys, GetFloatTrackedDeviceProperty, 0, openvr_sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &mut err);
+        (err == 0).then_some(hz)
+    }
+
+    fn universe_id(&self) -> Option<u64> {
+        let mut err = 0;
+        let u = call!(sys, GetUint64TrackedDeviceProperty, 0, openvr_sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
+        (err == 0).then_some(u)
+    }
+
+    /// GetCurrentSceneProcessId has no error to read, so OpenVR always tells.
+    fn scene_app_running(&self) -> Option<bool> {
+        Some(call!(apps, GetCurrentSceneProcessId) != 0)
+    }
+
+    fn worn(&self) -> Option<bool> {
+        vr::head_worn()
+    }
+}
+
 impl SessionEvents for Queue {
     fn next_event(&mut self) -> Option<SessionEvent> {
         let mut e: vr::VREvent_t = Default::default();
@@ -88,6 +131,34 @@ impl SessionEvents for Queue {
 mod tests {
     use super::*;
     use openvr_sys as sys;
+
+    /// The session's reads through Live against vr::fake: what SteamVR says when it can, None when
+    /// its error is set (where it gives 0, as openvr.h says), and the scene app and worn state,
+    /// which OpenVR always or sometimes can tell.
+    #[test]
+    fn the_session_reads_say_what_steamvr_does_and_none_on_its_error() {
+        let ok =
+            vr::fake::Script { vsync: Some((0.0, 90.0, 0.011)), universe: 7, scene_pid: 4242, activity: Some(sys::EDeviceActivityLevel_k_EDeviceActivityLevel_UserInteraction), ..Default::default() };
+        let _vr = vr::fake::install(ok);
+        assert_eq!((Live.display_hz(), Live.universe_id()), (Some(90.0), Some(7)), "what SteamVR says");
+        assert_eq!((Live.scene_app_running(), Live.worn()), (Some(true), Some(true)), "a game, and on the head");
+        drop(_vr);
+
+        let failed = vr::fake::Script {
+            vsync: Some((0.0, 90.0, 0.011)),
+            universe: 7,
+            prop_error: Some(sys::ETrackedPropertyError_TrackedProp_UnknownProperty),
+            activity: Some(sys::EDeviceActivityLevel_k_EDeviceActivityLevel_Idle),
+            ..Default::default()
+        };
+        let _vr = vr::fake::install(failed);
+        assert_eq!((Live.display_hz(), Live.universe_id()), (None, None), "its error is set: can't tell");
+        assert_eq!((Live.scene_app_running(), Live.worn()), (Some(false), Some(false)), "no game, and off the head");
+        drop(_vr);
+
+        let _vr = vr::fake::install(vr::fake::Script::default()); // the activity level Unknown
+        assert_eq!(Live.worn(), None, "the sensor can't tell");
+    }
 
     /// At the polling boundary: an event nothing acts on is an event (Other, and the last type
     /// moves), an empty queue is None (and the last type stays), and the universe follows a room

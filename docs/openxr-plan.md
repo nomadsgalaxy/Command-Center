@@ -593,6 +593,15 @@ cc-panels.
    What's left of OpenVR's numbering outside the OpenVR side is tests, Plasma's raw loop and its
    debug line, and the control socket's SteamVR inspection (`tip`, `devices`), which is OpenVR on
    purpose. Whether the headset is worn at start went with the session reads to 6d.
+   6d puts main.rs's and the taskbar's session reads behind `Session` (poll.rs, on `poll::Live`):
+   `display_hz` (Hz, not the design's period, so Pace gets the same float), `universe_id`,
+   `scene_app_running` and `worn`, the headset's state at start. `Session` no longer extends
+   `SessionEvents`; `Backend` asks for both, and the design's frame calls are their own `Frames`.
+   Live gives None for the rate and the universe when OpenVR's error is set, where openvr.h says
+   it gives 0 for a bad index or type (other errors it doesn't document); the callers fall back to
+   0.0 (Pace's 90 Hz), 0 ("no room yet") and false ("no game"), so every value they act on is the
+   one they got before, as long as OpenVR does give 0 there. vr::fake can fail a property now, to
+   test that path. SteamVR's start and stop stay listed until the core holds a backend object.
 7. (1 d) Tests and a pass in the headset.
 
 Each step is its own small branch, and has to pass the same checks before and after:

@@ -53,10 +53,11 @@ use crate::ids::Dev;
 use crate::laser::{self, Hand};
 use crate::limits::{BAR_SCALE, CURVE_NOTCH};
 use crate::overlay::{At, Flag, InputMode, Live, Overlays, Place, Surfaces, apply};
+use crate::poll::Session;
 use crate::stage::Stage;
 use crate::theme::{self, Accent, Tokens};
 use crate::windows::Windows;
-use crate::{HIDDEN, Source, call, config, panel, panels, vr};
+use crate::{HIDDEN, Source, config, panel, panels, vr};
 #[cfg(test)]
 use openvr_sys as sys;
 use std::sync::Arc;
@@ -881,7 +882,8 @@ impl Taskbar {
         let before = (self.placed, self.alpha);
         if self.game_at.is_none_or(|t| now - t >= GAME_EVERY) {
             self.game_at = Some(now); // by time, since the idle loop only ticks every 40 ms
-            let game = call!(apps, GetCurrentSceneProcessId) != 0;
+            // false, the fallback on any runtime that can't tell, is "no game": the taskbar stays
+            let game = crate::poll::Live.scene_app_running().unwrap_or(false);
             if game != self.game {
                 self.game = game;
                 eprintln!("taskbar: {}", if game { "a VR game is running: hidden" } else { "no VR game: back" });

@@ -65,9 +65,10 @@ mod windows;
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
 use gaze::Input;
 use geometry::{Pose, panel_matrix};
+#[cfg(test)]
 use openvr_sys as sys;
 use overlay::{Flag, InputMode, Overlays, Surfaces};
-use poll::Pointing;
+use poll::{Pointing, Session};
 use stage::Stage;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering::*;
@@ -963,8 +964,9 @@ fn run() -> Result<(), String> {
     power::start("desktop");
     let dev = gpu::device().ok_or("no GPU buffers (GBM on renderD128)")?;
     // The workspace for this room (its SteamVR tracking universe). Its spots place the panels.
-    let mut err = 0;
-    let mut universe = call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
+    // 0, the fallback on any runtime, is "no room yet": choose_workspace logs it and lets the
+    // workspace hint decide, as OpenVR's error (which gives 0) did before
+    let mut universe = poll::Live.universe_id().unwrap_or(0);
     let (workspace, new) = config::choose_workspace(universe);
     eprintln!("workspace: {workspace}{}", if new { " (made for this room: the Workspace window's Save as workspace keeps it)" } else { "" });
     let mut list = Vec::new();
@@ -1079,12 +1081,11 @@ fn run() -> Result<(), String> {
     let mut status = Instant::now();
     let mut ticks = 0u64;
     let mut att: Vec<attention::Attention> = panels().iter().map(|_| Default::default()).collect();
-    let mut on_head = vr::head_worn().unwrap_or(true); // as SteamVR says at start, else worn; VREvent 103/104 keep it up to date
+    let mut on_head = poll::Live.worn().unwrap_or(true); // as SteamVR says at start, else worn; VREvent 103/104 keep it up to date
     let mut gaze_seen: Option<([f64; 3], [f64; 3], Instant)> = None; // the last valid gaze sample
-    let display_hz = || {
-        let mut err = 0;
-        call!(sys, GetFloatTrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &mut err)
-    };
+    // 0.0, the fallback on any runtime, is "no rate": Pace runs at 90 Hz then (its test), as
+    // OpenVR's error (which gives 0) did before
+    let display_hz = || poll::Live.display_hz().unwrap_or(0.0);
     let mut pace = Pace::new(display_hz(), Instant::now());
     let _ = vr::MAIN.set(std::thread::current()); // vr::wake ends the wait between ticks
     let mut gaze_tried: Option<Instant> = None;
