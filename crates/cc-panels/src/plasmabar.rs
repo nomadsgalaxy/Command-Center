@@ -753,6 +753,48 @@ mod tests {
         crate::golden::check("plasmabar-surface-gone-with-a-press-outstanding", &log.0);
     }
 
+    /// Golden: the mouse has the pointer (it was used last), so a laser's moves on the bar are
+    /// dropped. A press from our virtual pointer (cc_pointer, not a real controller) doesn't
+    /// take it over; a real controller's press does, and goes through.
+    #[test]
+    fn golden_the_mouse_then_a_controller() {
+        const POINTER: u32 = 9; // cc_pointer's virtual controller
+        let _vr = crate::trace::fake_vr();
+        crate::vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).types = vec![(POINTER, "cc_pointer".into())];
+        let mut log = crate::golden::Log::default();
+        let mut p = Plasma::new();
+        let (placed, ev) = kickoff(); // its events come from device 3, a real controller
+        let from = |dev: u32, t: u32| {
+            let mut v: serde_json::Value = serde_json::from_str(&ev(t)).unwrap();
+            v["dev"] = dev.into();
+            v.to_string()
+        };
+        let awake = |log: &mut crate::golden::Log| log.line(format!("mouse has the pointer: {}", crate::kvm::lock().awake));
+        log.step("the bar placed, then the mouse used");
+        p.replay(&placed);
+        crate::kvm::lock().awake = true; // as the mouse waking leaves it (set_awake also recenters on the panels, which a test has none of)
+        observe(&mut log, &p);
+        awake(&mut log);
+        log.step("a laser moves on the bar");
+        pass(&mut p, &[ev(sys::EVREventType_VREvent_MouseMove)]);
+        observe(&mut log, &p);
+        awake(&mut log);
+        log.step("our virtual pointer presses");
+        pass(&mut p, &[from(POINTER, sys::EVREventType_VREvent_MouseButtonDown), from(POINTER, sys::EVREventType_VREvent_MouseButtonUp)]);
+        observe(&mut log, &p);
+        awake(&mut log);
+        log.step("a real controller presses");
+        pass(&mut p, &[ev(sys::EVREventType_VREvent_MouseButtonDown)]);
+        observe(&mut log, &p);
+        awake(&mut log);
+        log.step("and lets go");
+        pass(&mut p, &[ev(sys::EVREventType_VREvent_MouseButtonUp)]);
+        observe(&mut log, &p);
+        awake(&mut log);
+        crate::kvm::lock().awake = false; // as the other replays leave it
+        crate::golden::check("plasmabar-the-mouse-then-a-controller", &log.0);
+    }
+
     #[test]
     fn steamvr_points_map_into_the_crop() {
         // the bar alone: the texture is the bar, so nothing changes
