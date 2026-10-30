@@ -211,8 +211,9 @@ pub fn typed(input: &[std::ffi::c_char; 8]) -> Option<String> {
 }
 
 /// One of SteamVR's own events (PollNextEvent), as the neutral event the core reads (events.rs):
-/// `Other` with its type for one main.rs doesn't act on. A relocalization reads the universe now, as main.rs
-/// did, to tell the same room (`Relocalized`) from a new one (`RoomChanged`) against `universe`.
+/// `Other` with its type for one main.rs doesn't act on. A relocalization reads the universe now,
+/// as main.rs did, to tell the same room (`Relocalized`) from a new one (`RoomChanged`) against
+/// `universe`.
 /// A button counts only on a real controller, and wearing only on the headset.
 pub fn session_event(e: &VREvent_t, universe: u64) -> crate::events::SessionEvent {
     use crate::events::SessionEvent as S;
