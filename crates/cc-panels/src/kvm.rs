@@ -599,6 +599,13 @@ impl Kvm {
     fn release_held(&mut self) {
         self.release_buttons();
         self.release_keys();
+        self.forget_combo();
+    }
+
+    /// Forgets the modifiers held and a combo's key, for when a release may never come (the
+    /// keyboard handed back, a device gone), so a lost one can't swallow the next B.
+    fn forget_combo(&mut self) {
+        (self.held_mods, self.combo_held) = (Vec::new(), None);
     }
 
     /// Give the keyboards to a Command Center window's text field (owner is the window),
@@ -653,6 +660,7 @@ impl Kvm {
         }
         if !on {
             self.release_keys();
+            self.forget_combo();
         }
         self.engaged = on;
         self.grab_keyboards();
@@ -2196,6 +2204,18 @@ mod tests {
         assert!(UNDO_ASKED.swap(false, Relaxed) && !ASKED.load(Relaxed), "an ungather");
         assert_eq!(sent(), [(LCTRL, 1), (KEY_LEFTSHIFT, 1), (KEY_LEFTSHIFT, 0), (LCTRL, 0)], "the modifiers went out, B didn't");
         assert!(k.keys.is_empty() && k.combo_held.is_none());
+        // the keyboard handed back with the combo held: its release never comes, and the next B
+        // after taking it again is just B
+        k.key(LCTRL, 1, true);
+        k.key(KEY_LEFTSHIFT, 1, true);
+        k.key(KEY_B, 1, true);
+        k.set_engaged(false, "test");
+        k.set_engaged(true, "test");
+        sent();
+        k.key(KEY_B, 1, true);
+        k.key(KEY_B, 0, true);
+        assert_eq!(sent(), [(KEY_B, 1), (KEY_B, 0)], "B after a lost release goes out");
+        assert!(UNDO_ASKED.swap(false, Relaxed));
         // Left Ctrl + B (the bookmarks bar without Shift), Left Ctrl + Shift + C, and
         // Left Ctrl + Alt + Shift + B: none of them is the combo, so all of it goes out
         for (mods, key) in [(&[LCTRL][..], KEY_B), (&[LCTRL, KEY_LEFTSHIFT], 46), (&[LCTRL, 56, KEY_LEFTSHIFT], KEY_B)] {
