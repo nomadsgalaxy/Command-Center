@@ -204,8 +204,11 @@ pub trait Overlays {
     /// The stretch last set, or the runtime's default: 1.0, square texels (openvr.h, IVROverlay_027,
     /// GetOverlayTexelAspect: "Defaults to 1.0"). A back matches its front's with it (back.rs).
     fn texel_aspect_of(&self, h: Handle) -> f32;
-    /// The mouse scale last set. openvr.h names no default for it, so one never set (or a failed
-    /// read) reads as [0, 0], what ui.rs started from before. ui.rs scales the mouse's ray by it.
+    /// The mouse scale last set; ui.rs scales the mouse's ray by it. Live asks the runtime with a
+    /// zeroed answer and ignores its error, as ui.rs did. What SteamVR gives for an overlay whose
+    /// scale was never set isn't documented (openvr.h names no default) and hasn't been checked,
+    /// so the fake's [0, 0] is its own fallback, not the runtime's. A backend that keeps this
+    /// itself needs a stated default and a fixture for it.
     fn mouse_scale_of(&self, h: Handle) -> [f32; 2];
 }
 
@@ -358,7 +361,8 @@ pub mod fake {
             self.0.push(Call::Device(h, vr::index(dev), *m)); // OpenVR's index, as SteamVR gets it
         }
 
-        /// The last one written, or the same defaults as Live's.
+        /// The last one written, or 1.0 (SteamVR's documented default) and [0, 0] (the fake's own
+        /// fallback: what SteamVR gives an unset mouse scale isn't known).
         fn texel_aspect_of(&self, h: Handle) -> f32 {
             self.texel_of(h).unwrap_or(1.0)
         }
@@ -376,7 +380,7 @@ mod tests {
 
     const M: Mat = [[1.0, 0.0, 0.0, 0.5], [0.0, 1.0, 0.0, 1.5], [0.0, 0.0, 1.0, -2.0]];
 
-    /// The fake reads back what was last written, and before that what a failed read leaves.
+    /// The fake reads back what was last written, and before that its fallbacks.
     #[test]
     fn the_fake_reads_back_what_was_set() {
         let (mut w, h, other) = (Writes::default(), crate::ids::SurfaceId(1), crate::ids::SurfaceId(2));

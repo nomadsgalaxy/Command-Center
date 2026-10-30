@@ -567,8 +567,11 @@ cc-panels.
    OpenVR call it was, in the same order. The few direct `Overlays` writes (mouse scale, width,
    bounds) go through it too. That took 113 names off the lists. Then `Overlays` gained two reads
    back of what was set, `texel_aspect_of` (a back matches its front's stretch; SteamVR's default
-   is 1.0) and `mouse_scale_of` (an Extra's mouse ray; openvr.h names no default, so an unset one
-   reads [0, 0]), which the fakes answer from what was written. That took the last 3 of 6b's off.
+   is 1.0) and `mouse_scale_of` (an Extra's mouse ray), which the fakes answer from what was
+   written. What SteamVR gives an overlay whose mouse scale was never set isn't documented and
+   hasn't been checked: Live asks with a zeroed answer and ignores the error, as before, and the
+   fake's [0, 0] is its own fallback. A backend that keeps this state itself needs a stated
+   default and a fixture. That took the last 3 of 6b's off.
    surface.rs's registry scan, which keeps every overlay made and destroyed through
    `surface::create` and `destroy`, reads text too: it looks for `Live.create(`, `Live.destroy(`
    and OpenVR's own calls, so a generic caller (`impl Surfaces`, `Surfaces::create(&mut Live, ..)`)
