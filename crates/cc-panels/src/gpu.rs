@@ -195,6 +195,7 @@ impl Buffers {
             let got = vr::timed(|| format!("{name}: ImportDmabuf {w}x{h}"), || texture::Live.import(&buf));
             unsafe { libc::close(fd) };
             let Some(got) = got else {
+                self.handle[k] = 0; // nothing was imported, so free() has nothing of SteamVR's to let go of
                 eprintln!("{name}: SteamVR won't import a {w}x{h} buffer");
                 return false;
             };

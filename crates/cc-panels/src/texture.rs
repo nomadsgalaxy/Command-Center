@@ -81,6 +81,7 @@ impl Textures for Live {
         };
         a.plane[0] = sys::DmabufPlane_t { unOffset: buf.offset, unStride: buf.stride, nFd: buf.fd.as_raw_fd() };
         let mut handle = 0;
+        // on a failure, whatever SteamVR left in handle is dropped here: it was never given to us
         call!(ipc, ImportDmabuf, sys::EVRApplicationType_VRApplication_Overlay, &mut a, &mut handle).then_some(TexHandle(handle))
     }
 
