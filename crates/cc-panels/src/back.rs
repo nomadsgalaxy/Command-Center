@@ -227,14 +227,15 @@ impl Backs {
     }
 
     /// Laser presses and releases on the backs, as (slot, device, pressed).
-    pub fn events(&self) -> Vec<(usize, u32, bool)> {
+    pub fn events(&self) -> Vec<(usize, crate::ids::Dev, bool)> {
+        use crate::events::{Button, PointerEvent, PointerKind as P, SurfaceEvent as S};
         let mut e: vr::VREvent_t = Default::default();
         let mut out = Vec::new();
         for b in &self.pool {
             while call!(ov, PollNextOverlayEvent, b.h.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
-                match e.eventType {
-                    sys::EVREventType_VREvent_MouseButtonDown if unsafe { e.data.mouse.button } == sys::EVRMouseButton_VRMouseButton_Left => out.push((b.i, e.trackedDeviceIndex, true)),
-                    sys::EVREventType_VREvent_MouseButtonUp => out.push((b.i, e.trackedDeviceIndex, false)),
+                match vr::surface_event(&e) {
+                    S::Pointer(PointerEvent { kind: P::Down(Button::Left), from, .. }) => out.push((b.i, from, true)),
+                    S::Pointer(PointerEvent { kind: P::Up(_), from, .. }) => out.push((b.i, from, false)),
                     _ => {}
                 }
             }

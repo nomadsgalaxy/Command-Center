@@ -1326,16 +1326,16 @@ impl Grab {
         self.near[i] = Some(if on { until } else { self.near[i].map_or(until, |t| t.min(until)) });
     }
 
-    /// The part of panel i's card under an overlay mouse event. The card's mouse scale is its
-    /// size in metres, measured from the bottom left.
-    fn card_part(&self, i: usize, e: &vr::VREvent_t, k: &Kvm) -> Option<Part> {
+    /// The part of panel i's card under a laser at (x, y). The card's mouse scale is its size in
+    /// metres, measured from the bottom left.
+    fn card_part(&self, i: usize, (x, y): (f32, f32), k: &Kvm) -> Option<Part> {
         let pl = &self.at(i, k);
         let spec = &self.drawn[i].as_ref()?.spec;
         let g = spec.g;
         let fw = pl.width + 2.0 * g;
-        let m = unsafe { e.data.mouse }; // metres from the card's bottom left
-        // on a turned card (its panel curves top to bottom), the event's bottom left is the card's bottom right
-        let (mx, my) = surface_point(pl.vert, fw, m.x as f64, m.y as f64);
+        // metres from the card's bottom left; on a turned card (its panel curves top to bottom), the
+        // event's bottom left is the card's bottom right
+        let (mx, my) = surface_point(pl.vert, fw, x as f64, y as f64);
         let (u, v) = (mx - fw / 2.0, my - (pl.height / 2.0 + g + spec.bottom()));
         held_part(spec, pl.width, pl.height, i == self.slot(), self.hover[i], u, v)
     }
@@ -1345,9 +1345,9 @@ impl Grab {
         let s = &mut Live;
         for (i, dev, down) in self.backs.events() {
             if down {
-                self.start(i, Part::Bar, vr::dev(dev), k, s)
+                self.start(i, Part::Bar, dev, k, s)
             } else {
-                self.end_by(vr::dev(dev), k);
+                self.end_by(dev, k);
             }
         }
         self.poll_mouse(k, s);
@@ -1383,28 +1383,31 @@ impl Grab {
             let Some(p) = self.owner(i) else { continue };
             {
                 while call!(ov, PollNextOverlayEvent, p.card.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
-                    let part = self.card_part(i, &e, k);
-                    match e.eventType {
-                        sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_FocusEnter => {
+                    use crate::events::{Button, PointerKind as P, SurfaceEvent as S};
+                    let S::Pointer(pe) = vr::surface_event(&e) else { continue };
+                    let part = self.card_part(i, (pe.x, pe.y), k);
+                    match pe.kind {
+                        P::Move | P::Enter => {
                             self.touch(i, 2, true);
                             self.hover[i] = part;
                         }
-                        sys::EVREventType_VREvent_FocusLeave => {
+                        P::Leave => {
                             self.touch(i, 2, false);
                             self.hover[i] = None;
                         }
-                        sys::EVREventType_VREvent_MouseButtonDown if unsafe { e.data.mouse.button } == sys::EVRMouseButton_VRMouseButton_Left => {
-                            eprintln!("{}: card pressed by device {} on {part:?}", p.name, e.trackedDeviceIndex);
+                        P::Down(Button::Left) => {
+                            let index = vr::index(pe.from); // SteamVR's number, as it's always been logged
+                            eprintln!("{}: card pressed by device {index} on {part:?}", p.name);
                             crate::windows::shell_outside(); // a click outside Plasma's open popup
-                            if vr::is_real_controller(e.trackedDeviceIndex) && k.awake {
+                            if vr::is_real_controller(index) && k.awake {
                                 k.set_awake(false); // whichever device was pressed last is primary (R-2)
                             }
-                            self.press(i, part, vr::dev(e.trackedDeviceIndex), k, s);
+                            self.press(i, part, pe.from, k, s);
                         }
-                        sys::EVREventType_VREvent_MouseButtonUp => {
-                            self.end_by(vr::dev(e.trackedDeviceIndex), k);
+                        P::Up(_) => {
+                            self.end_by(pe.from, k);
                         }
-                        sys::EVREventType_VREvent_ScrollDiscrete => self.scroll(i, unsafe { e.data.scroll.ydelta } as f64, k, s),
+                        P::Scroll { dy, smooth: false, .. } => self.scroll(i, dy as f64, k, s),
                         _ => {}
                     }
                 }
