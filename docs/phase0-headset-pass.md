@@ -1,6 +1,6 @@
 # Phase 0: the headset pass
 
-This is revision 2 of the checklist.
+This is revision 3 of the checklist.
 
 Phase 0 of the OpenXR plan ([openxr-plan.md](openxr-plan.md)) moved Command Center's OpenVR calls
 behind interfaces. It was meant to change nothing, apart from a few fixes made on purpose: a
@@ -127,9 +127,10 @@ Point the mouse at SteamVR's own UI, outside our panels.
     Then let go of the button, put the controller down, and point the mouse at the dashboard
     again. Nothing should still be dragging, and the next click should work as usual. Write the
     two down separately: whether the slider stopped when the laser went, and whether the next
-    click worked. There's no log line for this. If clicks off the panels stop
-    working after it, look for `binding loads` in the log: each time the laser reconnects, it
-    spends one of SteamVR's binding loads.
+    click worked. There's no log line for this. If clicks off the panels stop working after it,
+    look for `binding loads` in the log. Each time the laser reconnects, it spends one of
+    SteamVR's binding loads, but the line is written only when the budget runs out, not on each
+    reconnect, so a hit means it really ran out.
 
 ## Afterwards (1 minute)
 
@@ -149,7 +150,9 @@ Point the mouse at SteamVR's own UI, outside our panels.
   the ones you did:
   - `panicked`: all of them;
   - `import fail` and `won't import`: 3;
-  - `laser: SteamVR didn't`, `binding loads` and `no cc_pointer driver`: 4 and 16 to 19;
+  - `laser: SteamVR didn't`, `binding loads` and `no cc_pointer driver`: 4 and 16 to 19.
+    `binding loads` is logged only when SteamVR's binding-load budget runs out, not on each
+    reconnect, so a hit means it really ran out;
   - `toast failed`: 11;
   - `no SteamVR keyboard` and `couldn't be typed`: 10;
   - `taskbar: wrist: no`: 9.
