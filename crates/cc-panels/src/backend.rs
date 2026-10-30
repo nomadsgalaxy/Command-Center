@@ -14,6 +14,8 @@ pub use crate::gaze::Input;
 pub use crate::ids::{Ctl, Dev, Hand, SurfaceId};
 #[allow(unused_imports)] // the design names them; the core takes them from keyboard.rs
 pub use crate::keyboard::{Keyboard, KeyboardMode};
+#[allow(unused_imports)] // and overlay.rs
+pub use crate::overlay::{Flag, InputMode, Surfaces};
 #[allow(unused_imports)] // and poll.rs
 pub use crate::poll::{Pointing, SessionEvents};
 #[allow(unused_imports)] // and shell.rs
@@ -32,49 +34,6 @@ pub struct Frame {
     /// Seconds from now until this frame's picture reaches the eyes: when poses are read for
     /// (vr::to_photons on OpenVR, predictedDisplayTime on OpenXR).
     pub predicted: f32,
-}
-
-/// What a surface asks of the runtime. Each is a SteamVR overlay flag today. OpenXR does without
-/// most of them (we draw our own cursor and get every scroll).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Flag {
-    /// MakeOverlaysInteractiveIfVisible: the laser works it whenever it's visible.
-    Interactive,
-    /// SendVRDiscreteScrollEvents.
-    DiscreteScroll,
-    /// IgnoreTextureAlpha: alpha comes from `Surfaces::alpha`, not the picture.
-    IgnoreAlpha,
-    /// EnableControlBar and EnableControlBarClose: SteamVR's bar under the dashboard tab.
-    ControlBar,
-    ControlBarClose,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InputMode {
-    None,
-    /// The runtime's laser sends this surface pointer events.
-    Pointer,
-}
-
-/// Creating, showing and ordering surfaces (surface.rs's create and destroy, and the show, hide,
-/// sort, alpha, colour, flag and input-method calls everywhere).
-pub trait Surfaces {
-    fn create(&mut self, key: &str, name: &str) -> Result<SurfaceId, String>;
-    /// The dashboard tab and its thumbnail. `None` where there's no dashboard (OpenXR).
-    fn create_dashboard(&mut self, key: &str, name: &str) -> Option<Result<(SurfaceId, SurfaceId), String>>;
-    fn destroy(&mut self, s: SurfaceId);
-    fn show(&mut self, s: SurfaceId);
-    fn hide(&mut self, s: SurfaceId);
-    fn visible(&self, s: SurfaceId) -> bool;
-    fn order(&mut self, s: SurfaceId, order: u32);
-    fn order_of(&self, s: SurfaceId) -> u32;
-    fn alpha(&mut self, s: SurfaceId, a: f32);
-    fn color(&mut self, s: SurfaceId, rgb: [f32; 3]);
-    fn flag(&mut self, s: SurfaceId, f: Flag, on: bool);
-    fn input(&mut self, s: SurfaceId, m: InputMode);
-    fn rename(&mut self, s: SurfaceId, name: &str);
-    /// A picture from a file (icons).
-    fn picture_file(&mut self, s: SurfaceId, path: &str);
 }
 
 /// The writes behind a placement: today's `overlay::Overlays`, with `SurfaceId` and `Dev`. It keeps

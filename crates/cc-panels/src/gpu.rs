@@ -4,7 +4,6 @@
 //! ~1920x1080, and imported buffers have no limit.
 use crate::texture::{self, Dmabuf, TexHandle, Textures};
 use crate::{Panel, vr};
-use openvr_sys as sys;
 use std::os::raw::{c_int, c_void};
 
 /// Every thread shares one GBM device (one gallium screen and context), and it isn't
@@ -166,7 +165,7 @@ impl Shared {
 /// The main loop's side of a panel's buffers: SteamVR's handles for them.
 #[derive(Default)]
 pub struct Buffers {
-    handle: [sys::SharedTextureHandle_t; 2],
+    handle: [u64; 2],                  // TexHandle.0s
     pub uploads: u32,                  // since the last status line
     tried: Option<std::time::Instant>, // the last failed make, so we retry once a second instead of every tick
 }

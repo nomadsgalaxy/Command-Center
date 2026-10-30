@@ -22,11 +22,10 @@
 //! A laser press on a back carries its panel (grab.rs poll), so you can grab a panel that was
 //! left backwards and turn it round. The card is one-sided too, so it's no use from behind.
 use crate::geometry::{Mat, Placement, V3, chord, dot, norm};
-use crate::overlay::{At, Live, Place, apply};
+use crate::overlay::{At, Flag, InputMode, Live, Overlays, Place, Surfaces, apply};
 use crate::poll::Pointing;
 use crate::texture::{self, TexHandle, Textures};
 use crate::{call, vr};
-use openvr_sys as sys;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -178,9 +177,8 @@ impl Backs {
                 self.failed = Some(Instant::now());
                 break;
             };
-            let mut sort = 0;
-            call!(ov, GetOverlaySortOrder, f.overlay.0, &mut sort);
-            call!(ov, SetOverlaySortOrder, h.0, sort);
+            let sort = crate::overlay::Live.order_of(f.overlay);
+            crate::overlay::Live.order(h, sort);
             self.pool.push(Back { i, h, front: f.overlay, tex: false, tried: 0, placed: None });
         }
         for b in &mut self.pool {
@@ -220,9 +218,8 @@ impl Backs {
     /// The paint order changed (grab.rs paint_order), so each back re-sorts with its picture.
     pub fn resort(&self) {
         for b in &self.pool {
-            let mut sort = 0;
-            call!(ov, GetOverlaySortOrder, b.front.0, &mut sort);
-            call!(ov, SetOverlaySortOrder, b.h.0, sort);
+            let sort = crate::overlay::Live.order_of(b.front);
+            crate::overlay::Live.order(b.h, sort);
         }
     }
 
@@ -255,14 +252,13 @@ fn make(i: usize) -> Option<vr::Handle> {
     let h = crate::surface::create(crate::surface::Kind::Back, Some(i), &format!("controlcenter.back.{i}"), &format!("Command Center back {i}"))
         .inspect_err(|e| eprintln!("backs: no overlay for panel {i}: {e}"))
         .ok()?;
-    call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
-    call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-    call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_IgnoreTextureAlpha, IGNORE_ALPHA);
-    let mut bounds = sys::VRTextureBounds_t { uMin: 1.0, vMin: 0.0, uMax: 0.0, vMax: 1.0 };
-    call!(ov, SetOverlayTextureBounds, h.0, &mut bounds);
-    call!(ov, SetOverlayAlpha, h.0, ALPHA);
-    call!(ov, SetOverlayColor, h.0, DIM, DIM, DIM);
-    call!(ov, ShowOverlay, h.0);
+    crate::overlay::Live.input(h, InputMode::Pointer);
+    crate::overlay::Live.flag(h, Flag::Interactive, true);
+    crate::overlay::Live.flag(h, Flag::IgnoreAlpha, IGNORE_ALPHA);
+    crate::overlay::Live.bounds(h, [1.0, 0.0, 0.0, 1.0]);
+    crate::overlay::Live.alpha(h, ALPHA);
+    crate::overlay::Live.color(h, [DIM, DIM, DIM]);
+    crate::overlay::Live.show(h);
     Some(h)
 }
 

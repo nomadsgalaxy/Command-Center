@@ -36,6 +36,7 @@
 //! saved (windows.rs `theater`).
 //!
 //! This file is also built by the cc-win-spike binary (with back.rs), so it uses only vr.rs.
+use crate::overlay::Surfaces;
 use crate::vr;
 use std::fmt;
 use std::sync::Mutex;
@@ -215,7 +216,7 @@ static REGISTRY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 /// Makes an overlay and lists it. `slot` is the panel slot it belongs to, if any, and `name` is
 /// the panel's or the Extra's. Every overlay in cc-panels is made through here.
 pub fn create(kind: Kind, slot: Option<usize>, key: &str, name: &str) -> Result<Handle, String> {
-    let h = vr::create_overlay(key, name)?;
+    let h = crate::overlay::Live.create(key, name)?;
     register(h, kind, slot, key, name);
     Ok(h)
 }
@@ -223,7 +224,8 @@ pub fn create(kind: Kind, slot: Option<usize>, key: &str, name: &str) -> Result<
 /// Makes the dashboard tab: its page, listed here, and its icon, which counts against SteamVR's 128
 /// overlays but isn't placed by us, so it isn't listed. (`CreateDashboardOverlay` makes both at once.)
 pub fn create_dashboard(key: &str, name: &str) -> Result<(Handle, Handle), String> {
-    let (main, thumb) = vr::create_dashboard_overlay(key, name)?;
+    // OpenVR always has a dashboard (an OpenXR backend says None)
+    let (main, thumb) = crate::overlay::Live.create_dashboard(key, name).unwrap_or_else(|| Err("no dashboard".into()))?;
     register(main, Kind::Dashtab, None, key, name);
     Ok((main, thumb))
 }
@@ -238,7 +240,7 @@ fn register(h: Handle, kind: Kind, slot: Option<usize>, key: &str, name: &str) {
 /// left alone.
 pub fn destroy(h: Handle) {
     forget(h);
-    crate::call!(ov, DestroyOverlay, h.0);
+    crate::overlay::Live.destroy(h);
 }
 
 /// Takes the overlay off the list.
@@ -409,7 +411,8 @@ mod tests {
     }
 
     /// The registry only lists what goes through it, so no other code may make an overlay itself.
-    /// This reads the sources: a new `vr::create_overlay` call anywhere but here is a bug.
+    /// This reads the sources: a new `vr::create_overlay` or `Live.create` call anywhere but here
+    /// (and overlay.rs's Live, which makes them for it) is a bug.
     #[test]
     fn every_overlay_is_made_through_the_registry() {
         fn visit(dir: &std::path::Path, bad: &mut Vec<String>) {
@@ -421,11 +424,11 @@ mod tests {
                         visit(&p, bad);
                     }
                 // (boundary.rs only lists these names, for the OpenVR ratchet)
-                } else if p.extension().is_some_and(|x| x == "rs") && !matches!(p.file_name().and_then(|n| n.to_str()), Some("vr.rs" | "surface.rs" | "boundary.rs")) {
+                } else if p.extension().is_some_and(|x| x == "rs") && !matches!(p.file_name().and_then(|n| n.to_str()), Some("vr.rs" | "overlay.rs" | "surface.rs" | "boundary.rs")) {
                     let s = std::fs::read_to_string(&p).unwrap();
                     for (n, l) in s.lines().enumerate() {
                         let code = l.split("//").next().unwrap_or("");
-                        if code.contains("vr::create_overlay") || code.contains("create_dashboard_overlay") || code.contains("CreateOverlay,") || code.contains("CreateDashboardOverlay,") {
+                        if ["vr::create_overlay", "create_dashboard_overlay", "CreateOverlay,", "CreateDashboardOverlay,", "Live.create(", "Live.create_dashboard("].iter().any(|p| code.contains(p)) {
                             bad.push(format!("{}:{}: {}", p.display(), n + 1, l.trim()));
                         }
                     }
@@ -448,10 +451,11 @@ mod tests {
                     if p.file_name().is_some_and(|n| n != "bin") {
                         visit(&p, bad);
                     }
-                } else if p.extension().is_some_and(|x| x == "rs") && !matches!(p.file_name().and_then(|n| n.to_str()), Some("surface.rs" | "boundary.rs")) {
+                } else if p.extension().is_some_and(|x| x == "rs") && !matches!(p.file_name().and_then(|n| n.to_str()), Some("overlay.rs" | "surface.rs" | "boundary.rs")) {
                     let s = std::fs::read_to_string(&p).unwrap();
                     for (n, l) in s.lines().enumerate() {
-                        if l.split("//").next().unwrap_or("").contains("DestroyOverlay") {
+                        let code = l.split("//").next().unwrap_or("");
+                        if code.contains("DestroyOverlay") || code.contains("Live.destroy(") {
                             bad.push(format!("{}:{}: {}", p.display(), n + 1, l.trim()));
                         }
                     }

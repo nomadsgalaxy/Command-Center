@@ -54,11 +54,11 @@ use super::ui::{self, BTN_H, Edit, GAP, MPP, PAD, ROW, Rect, SCALE, SORT, TITLE,
 use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, line, over, tint};
 use crate::keyboard::{self, Keyboard, KeyboardMode};
+use crate::overlay::{Flag, InputMode, Surfaces};
 use crate::taskbar::{Taskbar, tex_scale};
 use crate::texture::Refused;
 use crate::windows::Windows;
-use crate::{HIDDEN, Source, call, config, panel, panels, theme, vr};
-use openvr_sys as sys;
+use crate::{HIDDEN, Source, config, panel, panels, theme, vr};
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -1312,9 +1312,9 @@ impl Machines {
             }
             grab.set_extra_shown(show);
             if show {
-                call!(ov, ShowOverlay, h.0)
+                crate::overlay::Live.show(h)
             } else {
-                call!(ov, HideOverlay, h.0)
+                crate::overlay::Live.hide(h)
             };
         }
         if show {
@@ -1336,9 +1336,9 @@ impl Machines {
                 return;
             }
         };
-        call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlaySortOrder, h.0, SORT);
+        crate::overlay::Live.input(h, InputMode::Pointer);
+        crate::overlay::Live.flag(h, Flag::Interactive, true);
+        crate::overlay::Live.order(h, SORT);
         let pose = ui::spot("machines", W * MPP);
         self.precise = precise(); // whatever settings.json says now
         self.untold = untold();

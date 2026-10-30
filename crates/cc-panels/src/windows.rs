@@ -12,8 +12,9 @@
 //! when it's back. Plasma's own panel and popups belong to plasmabar.rs, fed from here.
 use crate::attention::{self, Level};
 use crate::geometry::{Mat, Pose, STAND_IN_HEAD, ahead_of, angles, level, level_ahead, panel_matrix};
+use crate::overlay::Surfaces;
 use crate::session::{self, Session, StreamEvent};
-use crate::{HIDDEN, Panel, call, capture, config, grab, kwin, panel, plasmabar, vr};
+use crate::{HIDDEN, Panel, capture, config, grab, kwin, panel, plasmabar, vr};
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
@@ -905,14 +906,14 @@ impl Windows {
         let p = panel(self.first + i);
         p.set_minimized(on);
         if !on {
-            call!(ov, HideOverlay, p.overlay.0); // hide before its buffers go; it's up again on the new stream's first frame
+            crate::overlay::Live.hide(p.overlay); // hide before its buffers go; it's up again on the new stream's first frame
             p.set_live(false);
             return self.open(i);
         }
         if self.slots[i].theater.is_some() {
             self.theater(i, grab);
         }
-        call!(ov, HideOverlay, p.overlay.0); // hide before its buffers go
+        crate::overlay::Live.hide(p.overlay); // hide before its buffers go
         self.close_stream(i);
         p.set_live(false);
         // like free(): its held keys go up; typing stays put until a panel is clicked
@@ -1096,7 +1097,7 @@ impl Windows {
             crate::kvm::lock().set_place(p.index, &panel_matrix(&before), before.width, height, before.curve);
         }
         self.keep_pose(i, &w.uuid);
-        call!(ov, HideOverlay, p.overlay.0); // hide before its buffers go
+        crate::overlay::Live.hide(p.overlay); // hide before its buffers go
         self.close_stream(i);
         p.set_live(false);
         p.set_minimized(false); // the slot's next window starts in sight
@@ -1237,7 +1238,7 @@ impl Windows {
             // shown on its first frame, so there's no black flash
             p.set_live(true);
             if !HIDDEN.load(Relaxed) && !p.away() {
-                call!(ov, ShowOverlay, p.overlay.0);
+                crate::overlay::Live.show(p.overlay);
             }
             eprintln!("{}: first frame +{}ms", p.v.name, s.asked.map_or(0, |t| t.elapsed().as_millis()));
         }

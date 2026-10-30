@@ -66,6 +66,7 @@ use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_F
 use gaze::Input;
 use geometry::{Pose, panel_matrix};
 use openvr_sys as sys;
+use overlay::{Flag, InputMode, Overlays, Surfaces};
 use poll::Pointing;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering::*;
@@ -218,10 +219,10 @@ impl Panel {
             codecs: Mutex::default(),
         };
         // Lasers work it with the dashboard closed, wheels scroll it in steps, and it's never see-through.
-        call!(ov, SetOverlayInputMethod, p.overlay.0, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, p.overlay.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlayFlag, p.overlay.0, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
-        call!(ov, SetOverlayFlag, p.overlay.0, sys::VROverlayFlags_IgnoreTextureAlpha, true);
+        crate::overlay::Live.input(p.overlay, InputMode::Pointer);
+        crate::overlay::Live.flag(p.overlay, Flag::Interactive, true);
+        crate::overlay::Live.flag(p.overlay, Flag::DiscreteScroll, true);
+        crate::overlay::Live.flag(p.overlay, Flag::IgnoreAlpha, true);
         p.set_mouse_scale();
         Ok(p)
     }
@@ -240,8 +241,7 @@ impl Panel {
     fn set_mouse_scale(&self) {
         let (w, h) = self.size();
         let (w, h) = if self.vert() { (h, w) } else { (w, h) }; // a turned overlay's own axes
-        let mut scale = sys::HmdVector2_t { v: [w as f32, h as f32] };
-        call!(ov, SetOverlayMouseScale, self.overlay.0, &mut scale);
+        crate::overlay::Live.mouse_scale(self.overlay, [w as f32, h as f32]);
     }
 
     /// Its tag and how many times it has changed, so the card knows when to redraw.
@@ -293,8 +293,7 @@ impl Panel {
         }
         self.gone.store(false, Relaxed);
         self.set_size(w, h);
-        let name = std::ffi::CString::new(format!("Command Center {}", self.v.name)).unwrap_or_default();
-        call!(ov, SetOverlayName, self.overlay.0, name.as_ptr() as *mut _);
+        crate::overlay::Live.rename(self.overlay, &format!("Command Center {}", self.v.name));
         true
     }
 
@@ -304,7 +303,7 @@ impl Panel {
     /// without a click.
     pub fn empty(&self) {
         self.set_live(false);
-        call!(ov, HideOverlay, self.overlay.0);
+        crate::overlay::Live.hide(self.overlay);
         texture::Live.clear(self.overlay); // so the next fill shows nothing until its own first frame
         {
             let mut k = crate::kvm::lock();
@@ -582,7 +581,7 @@ fn update_pointer(cursor: vr::Handle, beam: &mut laser::Beam) {
     }
     let hidden = HIDDEN.load(Relaxed);
     if !k.awake || hidden {
-        call!(ov, HideOverlay, cursor.0);
+        crate::overlay::Live.hide(cursor);
         beam.tick(false, [0.0; 3], false);
         return;
     }
@@ -590,10 +589,10 @@ fn update_pointer(cursor: vr::Handle, beam: &mut laser::Beam) {
     let (at, on_ours) = k.cursor();
     let dot = beam.tick(true, at, on_ours);
     if dot == laser::Dot::Hidden {
-        call!(ov, HideOverlay, cursor.0); // SteamVR's own laser dot is the cursor there
+        crate::overlay::Live.hide(cursor); // SteamVR's own laser dot is the cursor there
     }
     let (r, g, b) = if dot == laser::Dot::Amber { (1.0, 0.7, 0.2) } else { (1.0, 1.0, 1.0) };
-    call!(ov, SetOverlayColor, cursor.0, r, g, b);
+    crate::overlay::Live.color(cursor, [r, g, b]);
     let (p, pl) = (panel(k.active), k.place[k.active]);
     // The dot always faces you so it's round from any angle, just in front of what it's on.
     // Off a panel (on a taskbar, or floating) it's pulled 6 mm toward you, because Plasma's bar
@@ -614,7 +613,7 @@ fn update_pointer(cursor: vr::Handle, beam: &mut laser::Beam) {
     // 0.4 degrees across at any distance
     overlay::apply(&mut overlay::Live, cursor, &overlay::Place::new(overlay::At::Room(m), 2.0 * d * 0.2f64.to_radians().tan()));
     if dot != laser::Dot::Hidden {
-        call!(ov, ShowOverlay, cursor.0);
+        crate::overlay::Live.show(cursor);
     }
 }
 
@@ -845,7 +844,7 @@ fn main() -> std::process::ExitCode {
 fn connect(p: &'static Panel, after: Duration) -> std::thread::JoinHandle<()> {
     p.set_live(true);
     // (its sort order: painted back to front with the others, grab.rs paint_order)
-    call!(ov, ShowOverlay, p.overlay.0);
+    crate::overlay::Live.show(p.overlay);
     std::thread::spawn(move || {
         std::thread::sleep(after);
         if p.v.vnc.is_some() { vnc::run(p) } else { rdp::run(p) }
@@ -867,7 +866,7 @@ pub fn place_remote(p: &Panel) -> (Pose, bool) {
 /// RDP thread woken from its wait. It ends within a second (main.rs joins it). Connect starts fresh.
 pub fn disconnect(p: &Panel) {
     p.set_live(false);
-    call!(ov, HideOverlay, p.overlay.0);
+    crate::overlay::Live.hide(p.overlay);
     rdp::poke(p);
     eprintln!("{}: disconnecting", p.v.name);
 }
@@ -1038,8 +1037,8 @@ fn run() -> Result<(), String> {
     let mut windows = windows::Windows::start(first_window);
 
     let cursor = surface::create(surface::Kind::Cursor, None, "controlcenter.cursor", "Command Center cursor").unwrap_or(crate::vr::Handle::NONE);
-    vr::set_from_file(cursor, &format!("{assets}/cursor.png"));
-    call!(ov, SetOverlaySortOrder, cursor.0, 200);
+    crate::overlay::Live.picture_file(cursor, &format!("{assets}/cursor.png"));
+    crate::overlay::Live.order(cursor, 200);
     {
         let mut k = crate::kvm::lock();
         let (w, h) = panel(0).size();
@@ -1113,7 +1112,7 @@ fn run() -> Result<(), String> {
                     p.v.name,
                     if p.connected.load(Relaxed) { "connected" } else { "not connected" },
                     b.uploads as f64 / 5.0,
-                    call!(ov, IsOverlayVisible, p.overlay.0) as i32,
+                    crate::overlay::Live.visible(p.overlay) as i32,
                     format!("{:?}", p.level()).to_lowercase(),
                     k.ppd[p.index]
                 );

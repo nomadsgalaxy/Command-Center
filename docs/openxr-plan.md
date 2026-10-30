@@ -561,6 +561,12 @@ cc-panels.
    (it runs before any backend) and cc-win-spike. When the lists are empty, nothing outside the
    OpenVR side touches it. The cargo features come with the first move that lets one gate
    something; until then a feature would gate nothing.
+   6b moved `Surfaces`, with `Flag` and `InputMode`, into overlay.rs, and the same `overlay::Live`
+   that does `Overlays` does it: every show, hide, flag, input method, sort order, alpha, colour,
+   name, visibility and icon file, and `surface.rs`'s create and destroy, each still the one
+   OpenVR call it was, in the same order. The few direct `Overlays` writes (mouse scale, width,
+   bounds) go through it too. That took 112 names off the lists. Two reads are left that the
+   design has no call for: a front's texel aspect (back.rs) and an Extra's mouse scale (ui.rs).
 7. (1 d) Tests and a pass in the headset.
 
 Each step is its own small branch, and has to pass the same checks before and after:

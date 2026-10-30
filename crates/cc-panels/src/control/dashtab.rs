@@ -32,11 +32,11 @@ use super::ui::{self, BTN_H, PAD, Px, ROW, Rect, SCALE, TITLE, text, typed, type
 use crate::geometry::from_top;
 use crate::grab::{Paint, TagImg, over, tint};
 use crate::handoff::Handoff;
+use crate::overlay::{Flag, InputMode, Overlays, Surfaces};
 use crate::poll::Pointing;
 use crate::shell::{self, Shell};
 use crate::taskbar::tex_scale;
-use crate::{HIDDEN, call, theme, vr};
-use openvr_sys as sys;
+use crate::{HIDDEN, theme, vr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::{Duration, Instant};
@@ -289,18 +289,18 @@ impl Dashtab {
         self.failed = false;
         let logo = crate::root().join("packaging/command-center.png");
         if logo.exists() {
-            vr::set_from_file(thumb, &logo.to_string_lossy());
+            crate::overlay::Live.picture_file(thumb, &logo.to_string_lossy());
         } else {
             eprintln!("dashboard tab: no logo at {}, so its icon stays blank", logo.display());
         }
-        call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayWidthInMeters, h.0, WIDTH_M);
+        crate::overlay::Live.input(h, InputMode::Pointer);
+        crate::overlay::Live.width(h, WIDTH_M);
         // SteamVR's own bar under the tab, with its close (VREvent_OverlayClosed, in events). It's
         // only drawn for what the dashboard hosts, so the floating windows keep our own bar.
         // settings.json `"steamvr_bar": false` turns it off from the next start.
         let bar = crate::config::settings()["steamvr_bar"].as_bool() != Some(false);
-        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_EnableControlBar, bar);
-        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_EnableControlBarClose, bar);
+        crate::overlay::Live.flag(h, Flag::ControlBar, bar);
+        crate::overlay::Live.flag(h, Flag::ControlBarClose, bar);
         self.ov = Some((h, thumb));
         eprintln!("dashboard tab: made");
     }

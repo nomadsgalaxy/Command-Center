@@ -38,7 +38,7 @@ use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, dot, in
 use crate::ids::Dev;
 use crate::kvm::Kvm;
 use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, PUSH_ACCEL, PUSH_RATE, PUSH_STREAK, ZOOM, ZOOM_NOTCH};
-use crate::overlay::{At, Live, Overlays, Place, apply};
+use crate::overlay::{At, Flag, InputMode, Live, Overlays, Place, Surfaces, apply};
 use crate::poll::Pointing;
 use crate::stage::Stage;
 use crate::texture::Textures;
@@ -805,11 +805,11 @@ pub fn set_raw(h: vr::Handle, px: &[u8], w: usize, ht: usize) -> bool {
 pub fn create(name: &str, slot: Option<usize>) -> vr::Handle {
     let h = crate::surface::create(crate::surface::Kind::Card, slot, &format!("controlcenter.card.{name}"), &format!("Command Center card {name}")).unwrap_or(crate::vr::Handle::NONE);
     // Sort order puts it under its picture. That's set along with the panels' paint order (paint_order).
-    call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
-    call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-    call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
-    call!(ov, SetOverlayAlpha, h.0, 0.0);
-    call!(ov, ShowOverlay, h.0);
+    crate::overlay::Live.input(h, InputMode::Pointer);
+    crate::overlay::Live.flag(h, Flag::Interactive, true);
+    crate::overlay::Live.flag(h, Flag::DiscreteScroll, true);
+    crate::overlay::Live.alpha(h, 0.0);
+    crate::overlay::Live.show(h);
     h
 }
 
@@ -1031,7 +1031,7 @@ struct Owner {
 fn backdrop() -> vr::Handle {
     let h = crate::surface::create(crate::surface::Kind::Backdrop, None, "controlcenter.theater", "Command Center theater").unwrap_or(crate::vr::Handle::NONE);
     apply(&mut Live, h, &Place::new(At::Device(Dev::Head, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, -2.0]]), 8.0));
-    call!(ov, SetOverlayAlpha, h.0, 0.0);
+    crate::overlay::Live.alpha(h, 0.0);
     h
 }
 
@@ -1245,7 +1245,7 @@ impl Grab {
     /// has to be free first (extra_taken).
     pub fn open_extra(&mut self, name: &'static str, win: vr::Handle, sort: u32, accent: Rgb, pl: Placement, open: &'static AtomicBool) {
         let card = create(name, None);
-        call!(ov, SetOverlaySortOrder, card.0, sort);
+        crate::overlay::Live.order(card, sort);
         let mut x = Extra { name, open, win, card, accent, pl, shown: false }; // its owner's first tick shows it (set_extra_shown)
         x.place(&mut Live, &pl.matrix(), pl.width, pl.curve);
         self.extra = Some(x);
@@ -1874,9 +1874,9 @@ impl Grab {
             if show != self.shown[i] {
                 self.shown[i] = show;
                 if show {
-                    call!(ov, ShowOverlay, p.card.0)
+                    crate::overlay::Live.show(p.card)
                 } else {
-                    call!(ov, HideOverlay, p.card.0)
+                    crate::overlay::Live.hide(p.card)
                 };
                 if !p.live {
                     (self.drags[i], self.drawn[i], self.near[i], self.hover[i], self.fade[i], self.focus[i]) = (None, None, None, None, 0.0, 0);
@@ -1912,18 +1912,18 @@ impl Grab {
                 // the card too, because an invisible card still catches lasers (in front of the theater panel)
                 if dim {
                     self.end(i, k); // put it down where it is, there's nothing left to release on
-                    call!(ov, HideOverlay, p.overlay.0);
-                    call!(ov, HideOverlay, p.card.0);
+                    crate::overlay::Live.hide(p.overlay);
+                    crate::overlay::Live.hide(p.card);
                 } else if !hidden {
-                    call!(ov, ShowOverlay, p.overlay.0);
+                    crate::overlay::Live.show(p.overlay);
                     if !p.bare {
-                        call!(ov, ShowOverlay, p.card.0);
+                        crate::overlay::Live.show(p.card);
                     }
                 }
             }
             self.moving |= want || self.fade[i] != before;
             if self.fade[i] != before || want || first || dim {
-                call!(ov, SetOverlayAlpha, p.card.0, if dim { 0.0 } else { self.fade[i] });
+                crate::overlay::Live.alpha(p.card, if dim { 0.0 } else { self.fade[i] });
             }
         }
         // Theater mode: the room and every other panel go dark behind it, like Steam's does,
@@ -1937,11 +1937,11 @@ impl Grab {
         if self.dim_alpha != target {
             self.moving = true;
             self.dim_alpha = if target > self.dim_alpha { (self.dim_alpha + 0.04).min(target) } else { (self.dim_alpha - 0.06).max(target) };
-            call!(ov, SetOverlayAlpha, self.dim.0, self.dim_alpha);
+            crate::overlay::Live.alpha(self.dim, self.dim_alpha);
             if self.dim_alpha > 0.0 {
-                call!(ov, ShowOverlay, self.dim.0)
+                crate::overlay::Live.show(self.dim)
             } else {
-                call!(ov, HideOverlay, self.dim.0)
+                crate::overlay::Live.hide(self.dim)
             };
         }
         if theater != self.theater {
@@ -2006,12 +2006,12 @@ impl Grab {
             return;
         }
         if theater != usize::MAX {
-            call!(ov, SetOverlaySortOrder, self.dim.0, 10 + under as u32 * 4 - 1);
+            crate::overlay::Live.order(self.dim, 10 + under as u32 * 4 - 1);
         }
         for (rank, &i) in order.iter().enumerate() {
             let (p, base) = (&panels()[i], 10 + rank as u32 * 4);
-            call!(ov, SetOverlaySortOrder, p.card.0, base);
-            call!(ov, SetOverlaySortOrder, p.overlay.0, base + 1);
+            crate::overlay::Live.order(p.card, base);
+            crate::overlay::Live.order(p.overlay, base + 1);
         }
         self.backs.resort();
         self.order = order;

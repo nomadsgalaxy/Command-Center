@@ -5,6 +5,7 @@
 //! It's free functions, not a framework. Each window keeps its own hits, key and rows.
 use crate::geometry::{Pose, STAND_IN_HEAD};
 use crate::grab::{self, Look, Paint, TagImg, average, line, over, rbox, tint};
+use crate::overlay::Overlays;
 use crate::poll::Pointing;
 use crate::taskbar::{self, LABEL, TAG_ROOM, TAG_TEXT, text_pixel};
 use crate::{call, config, vr};
@@ -300,8 +301,7 @@ pub fn upload(h: vr::Handle, px: &mut Vec<u8>, tw: usize, th: usize, (w, ht): (f
     if !grab::set_raw(h, px, tw, th) {
         px.clear();
     } else if full {
-        let mut scale = sys::HmdVector2_t { v: [w as f32, ht as f32] };
-        call!(ov, SetOverlayMouseScale, h.0, &mut scale);
+        crate::overlay::Live.mouse_scale(h, [w as f32, ht as f32]);
     }
 }
 

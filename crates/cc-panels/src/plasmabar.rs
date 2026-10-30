@@ -27,9 +27,9 @@
 //! a hover), since KWin sends a window's stream nothing until it changes.
 use crate::events::{Button, PointerEvent, PointerKind, SurfaceEvent};
 use crate::geometry::{Mat, Placement, V3, norm};
-use crate::overlay::{At, Live, Place, apply};
+use crate::overlay::{At, Flag, InputMode, Live, Overlays, Place, Surfaces, apply};
 use crate::session::{Output, Session, StreamEvent};
-use crate::{call, capture, session, taskbar, vr, windows};
+use crate::{capture, session, taskbar, vr, windows};
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
 use openvr_sys as sys;
 use serde_json::Value;
@@ -319,12 +319,11 @@ impl Plasma {
             crate::vr::Handle::NONE
         });
         // no input method until a popup is open (`tick` sets it)
-        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
-        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_IgnoreTextureAlpha, true);
-        call!(ov, SetOverlaySortOrder, h.0, taskbar::SORT + 1); // in front of the taskbar's frame, in case depth isn't used
-        let mut scale = sys::HmdVector2_t { v: [1.0, 1.0] }; // events as fractions, since the crop changes under them
-        call!(ov, SetOverlayMouseScale, h.0, &mut scale);
+        crate::overlay::Live.flag(h, Flag::Interactive, true);
+        crate::overlay::Live.flag(h, Flag::DiscreteScroll, true);
+        crate::overlay::Live.flag(h, Flag::IgnoreAlpha, true);
+        crate::overlay::Live.order(h, taskbar::SORT + 1); // in front of the taskbar's frame, in case depth isn't used
+        crate::overlay::Live.mouse_scale(h, [1.0, 1.0]); // events as fractions, since the crop changes under them
         Plasma {
             ov: h,
             panel: None,
@@ -410,8 +409,7 @@ impl Plasma {
         let clickable = self.popups.iter().filter(on).any(|p| p.2) || tip && TIP.load(Relaxed);
         if clickable != self.clickable {
             self.clickable = clickable;
-            let m = if clickable { sys::VROverlayInputMethod_Mouse } else { sys::VROverlayInputMethod_None };
-            call!(ov, SetOverlayInputMethod, self.ov.0, m);
+            crate::overlay::Live.input(self.ov, if clickable { InputMode::Pointer } else { InputMode::None });
         }
         *ABOVE.lock().unwrap() = self.panel.iter().map(|p| p.1).chain(rects.iter().copied()).collect();
         let want = out.is_some() && self.hidden_at.is_none_or(|t| now - t < LINGER);
@@ -456,7 +454,7 @@ impl Plasma {
         if show != self.visible {
             self.visible = show;
             if show {
-                call!(ov, ShowOverlay, self.ov.0);
+                crate::overlay::Live.show(self.ov);
             } else {
                 self.hide();
             }
@@ -649,7 +647,7 @@ impl Plasma {
 
     /// Hides it and lets go of any laser press where the pointer is, since its release may never come.
     fn hide(&mut self) {
-        call!(ov, HideOverlay, self.ov.0);
+        crate::overlay::Live.hide(self.ov);
         (self.visible, self.placed) = (false, None);
         self.last = Lasts::default(); // a crop from before it hid means nothing now
         *CROP.lock().unwrap() = None;

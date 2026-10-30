@@ -15,10 +15,10 @@ use super::ui::{self, BTN_H, GAP, MPP, PAD, Px, ROW, Rect, SCALE, SORT, TITLE, t
 use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, over, tint};
 use crate::laser::{self, Hand};
+use crate::overlay::{Flag, InputMode, Surfaces};
 use crate::taskbar::{Mode, Taskbar, tex_scale};
 use crate::windows::Windows;
-use crate::{HIDDEN, call, config, theme, vr};
-use openvr_sys as sys;
+use crate::{HIDDEN, config, theme, vr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
@@ -289,9 +289,9 @@ impl Prefs {
             self.shown = show;
             grab.set_extra_shown(show);
             if show {
-                call!(ov, ShowOverlay, h.0)
+                crate::overlay::Live.show(h)
             } else {
-                call!(ov, HideOverlay, h.0)
+                crate::overlay::Live.hide(h)
             };
         }
         if show {
@@ -312,9 +312,9 @@ impl Prefs {
                 return;
             }
         };
-        call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlaySortOrder, h.0, SORT);
+        crate::overlay::Live.input(h, InputMode::Pointer);
+        crate::overlay::Live.flag(h, Flag::Interactive, true);
+        crate::overlay::Live.order(h, SORT);
         let pose = ui::spot("prefs", W * MPP);
         self.precise = super::machines::precise(); // whatever settings.json says now
         let pl = Placement::from_matrix(&panel_matrix(&pose), pose.width, H / W, pose.curve);

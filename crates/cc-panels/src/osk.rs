@@ -18,9 +18,9 @@ use crate::control::ui::{self, BTN_H, GAP, MPP, PAD, Px, SORT};
 use crate::events::{KeyboardEvent, PointerEvent, PointerKind, SurfaceEvent};
 use crate::grab::{Look, Paint, TagImg, line, over, rbox, tint};
 use crate::keyboard::{self, Keyboard, KeyboardMode};
+use crate::overlay::{Flag, InputMode, Overlays, Surfaces};
 use crate::poll::Pointing;
-use crate::{Panel, call, panel, theme, vr};
-use openvr_sys as sys;
+use crate::{Panel, panel, theme, vr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -248,9 +248,9 @@ impl Keys {
             vr::place(h, &m);
         }
         if crate::HIDDEN.load(std::sync::atomic::Ordering::Relaxed) {
-            call!(ov, HideOverlay, h.0)
+            crate::overlay::Live.hide(h)
         } else {
-            call!(ov, ShowOverlay, h.0)
+            crate::overlay::Live.show(h)
         };
         self.paint(h, panel(i).accent);
     }
@@ -260,10 +260,10 @@ impl Keys {
             Ok(h) => h,
             Err(e) => return eprintln!("key strip: no overlay: {e}"),
         };
-        call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlaySortOrder, h.0, SORT);
-        call!(ov, SetOverlayWidthInMeters, h.0, (W * MPP) as f32);
+        crate::overlay::Live.input(h, InputMode::Pointer);
+        crate::overlay::Live.flag(h, Flag::Interactive, true);
+        crate::overlay::Live.order(h, SORT);
+        crate::overlay::Live.width(h, (W * MPP) as f32);
         self.ov = Some((h, i));
     }
 

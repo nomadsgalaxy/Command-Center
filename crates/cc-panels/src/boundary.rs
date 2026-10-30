@@ -28,100 +28,21 @@ const WHOLE: &[(&str, &str)] = &[
 /// `vr::` items that aren't OpenVR: waking the main loop and timing a call.
 const NEUTRAL: &[&str] = &["wake", "timed", "WOKEN", "MAIN", "Handle", "fake"];
 
-const SURFACES: &str = "Surfaces and overlay calls not yet behind a Live (6b)";
+const READS: &str = "overlay reads the reviewed design has no call for (texel aspect, mouse scale): to decide in review";
 const STAGE: &str = "Stage: poses, roles and OpenVR's device numbering, kept for logs and R-2 (6c)";
 const SESSION: &str = "Session: the display's rate, the universe, the scene app, start and stop (6d)";
 const FAKES: &str = "tests: SteamVR's events and roles, built for vr::fake";
 
 /// Each file's OpenVR names today, in groups by the step that takes them away.
 const ALLOWED: &[(&str, &str, &[&str])] = &[
-    (
-        "back.rs",
-        SURFACES,
-        &[
-            "GetOverlaySortOrder",
-            "GetOverlayTexelAspect",
-            "SetOverlayAlpha",
-            "SetOverlayColor",
-            "SetOverlayFlag",
-            "SetOverlayInputMethod",
-            "SetOverlaySortOrder",
-            "SetOverlayTextureBounds",
-            "ShowOverlay",
-            "sys::VROverlayFlags_IgnoreTextureAlpha",
-            "sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible",
-            "sys::VROverlayInputMethod_Mouse",
-            "sys::VRTextureBounds_t",
-        ],
-    ),
-    ("control.rs", SURFACES, &["HideOverlay", "ShowOverlay"]),
+    ("back.rs", READS, &["GetOverlayTexelAspect"]),
     ("control.rs", STAGE, &["vr::devices", "vr::head", "vr::tip"]),
-    (
-        "control/dashtab.rs",
-        SURFACES,
-        &[
-            "SetOverlayFlag",
-            "SetOverlayInputMethod",
-            "SetOverlayWidthInMeters",
-            "sys::VROverlayFlags_EnableControlBar",
-            "sys::VROverlayFlags_EnableControlBarClose",
-            "sys::VROverlayInputMethod_Mouse",
-            "vr::set_from_file",
-        ],
-    ),
-    (
-        "control/hud.rs",
-        SURFACES,
-        &[
-            "SetOverlayAlpha",
-            "SetOverlayFlag",
-            "SetOverlayInputMethod",
-            "SetOverlayMouseScale",
-            "SetOverlaySortOrder",
-            "ShowOverlay",
-            "sys::HmdMatrix34_t",
-            "sys::HmdVector2_t",
-            "sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible",
-            "sys::VROverlayInputMethod_Mouse",
-        ],
-    ),
-    (
-        "control/machines.rs",
-        SURFACES,
-        &["HideOverlay", "SetOverlayFlag", "SetOverlayInputMethod", "SetOverlaySortOrder", "ShowOverlay", "sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible", "sys::VROverlayInputMethod_Mouse"],
-    ),
     ("control/machines.rs", STAGE, &["vr::index", "vr::is_real_controller"]),
-    (
-        "control/prefs.rs",
-        SURFACES,
-        &["HideOverlay", "SetOverlayFlag", "SetOverlayInputMethod", "SetOverlaySortOrder", "ShowOverlay", "sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible", "sys::VROverlayInputMethod_Mouse"],
-    ),
     ("control/prefs.rs", STAGE, &["vr::index", "vr::is_real_controller"]),
-    ("control/ui.rs", SURFACES, &["GetOverlayMouseScale", "SetOverlayMouseScale", "sys::HmdVector2_t"]),
+    ("control/ui.rs", READS, &["GetOverlayMouseScale", "sys::HmdVector2_t"]),
     ("control/ui.rs", STAGE, &["vr::head"]),
-    (
-        "control/workspace.rs",
-        SURFACES,
-        &["HideOverlay", "SetOverlayFlag", "SetOverlayInputMethod", "SetOverlaySortOrder", "ShowOverlay", "sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible", "sys::VROverlayInputMethod_Mouse"],
-    ),
     ("control/workspace.rs", STAGE, &["vr::head", "vr::index", "vr::is_real_controller"]),
     ("gather.rs", STAGE, &["vr::head"]),
-    ("gpu.rs", "the handle type its buffers keep, Textures' TexHandle in all but name (6b)", &["sys::SharedTextureHandle_t"]),
-    (
-        "grab.rs",
-        SURFACES,
-        &[
-            "HideOverlay",
-            "SetOverlayAlpha",
-            "SetOverlayFlag",
-            "SetOverlayInputMethod",
-            "SetOverlaySortOrder",
-            "ShowOverlay",
-            "sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible",
-            "sys::VROverlayFlags_SendVRDiscreteScrollEvents",
-            "sys::VROverlayInputMethod_Mouse",
-        ],
-    ),
     (
         "grab.rs",
         STAGE,
@@ -160,27 +81,6 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "vr::place",
         ],
     ),
-    (
-        "main.rs",
-        SURFACES,
-        &[
-            "HideOverlay",
-            "IsOverlayVisible",
-            "SetOverlayColor",
-            "SetOverlayFlag",
-            "SetOverlayInputMethod",
-            "SetOverlayMouseScale",
-            "SetOverlayName",
-            "SetOverlaySortOrder",
-            "ShowOverlay",
-            "sys::HmdVector2_t",
-            "sys::VROverlayFlags_IgnoreTextureAlpha",
-            "sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible",
-            "sys::VROverlayFlags_SendVRDiscreteScrollEvents",
-            "sys::VROverlayInputMethod_Mouse",
-            "vr::set_from_file",
-        ],
-    ),
     ("main.rs", STAGE, &["vr::head", "vr::head_position", "vr::head_worn"]),
     (
         "main.rs",
@@ -211,40 +111,8 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "vr::is_real_controller",
         ],
     ),
-    (
-        "osk.rs",
-        SURFACES,
-        &[
-            "HideOverlay",
-            "SetOverlayFlag",
-            "SetOverlayInputMethod",
-            "SetOverlaySortOrder",
-            "SetOverlayWidthInMeters",
-            "ShowOverlay",
-            "sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible",
-            "sys::VROverlayInputMethod_Mouse",
-        ],
-    ),
     ("osk.rs", STAGE, &["vr::place"]),
     ("osk.rs", "tests: SteamVR's keyboard bytes, decoded as vr.rs does", &["vr::typed"]),
-    (
-        "plasmabar.rs",
-        SURFACES,
-        &[
-            "HideOverlay",
-            "SetOverlayFlag",
-            "SetOverlayInputMethod",
-            "SetOverlayMouseScale",
-            "SetOverlaySortOrder",
-            "ShowOverlay",
-            "sys::HmdVector2_t",
-            "sys::VROverlayFlags_IgnoreTextureAlpha",
-            "sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible",
-            "sys::VROverlayFlags_SendVRDiscreteScrollEvents",
-            "sys::VROverlayInputMethod_Mouse",
-            "sys::VROverlayInputMethod_None",
-        ],
-    ),
     ("plasmabar.rs", STAGE, &["vr::index", "vr::is_real_controller", "vr::laser_pose", "vr::openvr_type"]),
     (
         "plasmabar.rs",
@@ -264,24 +132,7 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
         ],
     ),
     ("popout.rs", STAGE, &["vr::head_position"]),
-    ("surface.rs", "Surfaces::create and destroy, which move into the Live (6b)", &["DestroyOverlay", "vr::create_dashboard_overlay", "vr::create_overlay"]),
-    (
-        "taskbar.rs",
-        SURFACES,
-        &[
-            "HideOverlay",
-            "SetOverlayAlpha",
-            "SetOverlayFlag",
-            "SetOverlayInputMethod",
-            "SetOverlayMouseScale",
-            "SetOverlaySortOrder",
-            "ShowOverlay",
-            "sys::HmdVector2_t",
-            "sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible",
-            "sys::VROverlayFlags_SendVRDiscreteScrollEvents",
-            "sys::VROverlayInputMethod_Mouse",
-        ],
-    ),
+    ("surface.rs", "its own test's search for overlays made outside the registry (a string)", &["vr::create_overlay"]),
     (
         "taskbar.rs",
         STAGE,
@@ -310,7 +161,6 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "vr::VREvent_t",
         ],
     ),
-    ("windows.rs", SURFACES, &["HideOverlay", "ShowOverlay"]),
     ("windows.rs", STAGE, &["vr::head", "vr::head_position"]),
 ];
 

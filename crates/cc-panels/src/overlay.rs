@@ -76,6 +76,122 @@ impl Place {
     }
 }
 
+/// What a surface asks of the runtime. Each is a SteamVR overlay flag today. OpenXR does without
+/// most of them (we draw our own cursor and get every scroll).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flag {
+    /// MakeOverlaysInteractiveIfVisible: the laser works it whenever it's visible.
+    Interactive,
+    /// SendVRDiscreteScrollEvents.
+    DiscreteScroll,
+    /// IgnoreTextureAlpha: alpha comes from `Surfaces::alpha`, not the picture.
+    IgnoreAlpha,
+    /// EnableControlBar and EnableControlBarClose: SteamVR's bar under the dashboard tab.
+    ControlBar,
+    ControlBarClose,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputMode {
+    None,
+    /// The runtime's laser sends this surface pointer events.
+    Pointer,
+}
+
+/// Creating, showing and ordering surfaces (surface.rs's create and destroy, and the show, hide,
+/// sort, alpha, colour, flag and input-method calls everywhere).
+pub trait Surfaces {
+    fn create(&mut self, key: &str, name: &str) -> Result<Handle, String>;
+    /// The dashboard tab and its thumbnail. `None` where there's no dashboard (OpenXR).
+    fn create_dashboard(&mut self, key: &str, name: &str) -> Option<Result<(Handle, Handle), String>>;
+    fn destroy(&mut self, s: Handle);
+    fn show(&mut self, s: Handle);
+    fn hide(&mut self, s: Handle);
+    fn visible(&self, s: Handle) -> bool;
+    fn order(&mut self, s: Handle, order: u32);
+    fn order_of(&self, s: Handle) -> u32;
+    fn alpha(&mut self, s: Handle, a: f32);
+    fn color(&mut self, s: Handle, rgb: [f32; 3]);
+    fn flag(&mut self, s: Handle, f: Flag, on: bool);
+    fn input(&mut self, s: Handle, m: InputMode);
+    fn rename(&mut self, s: Handle, name: &str);
+    /// A picture from a file (icons).
+    fn picture_file(&mut self, s: Handle, path: &str);
+}
+
+/// SteamVR, for real: each is the one OpenVR call it was where it's called from now.
+impl Surfaces for Live {
+    fn create(&mut self, key: &str, name: &str) -> Result<Handle, String> {
+        vr::create_overlay(key, name)
+    }
+
+    fn create_dashboard(&mut self, key: &str, name: &str) -> Option<Result<(Handle, Handle), String>> {
+        Some(vr::create_dashboard_overlay(key, name))
+    }
+
+    fn destroy(&mut self, h: Handle) {
+        call!(ov, DestroyOverlay, h.0);
+    }
+
+    fn show(&mut self, h: Handle) {
+        call!(ov, ShowOverlay, h.0);
+    }
+
+    fn hide(&mut self, h: Handle) {
+        call!(ov, HideOverlay, h.0);
+    }
+
+    fn visible(&self, h: Handle) -> bool {
+        call!(ov, IsOverlayVisible, h.0)
+    }
+
+    fn order(&mut self, h: Handle, order: u32) {
+        call!(ov, SetOverlaySortOrder, h.0, order);
+    }
+
+    fn order_of(&self, h: Handle) -> u32 {
+        let mut order = 0;
+        call!(ov, GetOverlaySortOrder, h.0, &mut order);
+        order
+    }
+
+    fn alpha(&mut self, h: Handle, a: f32) {
+        call!(ov, SetOverlayAlpha, h.0, a);
+    }
+
+    fn color(&mut self, h: Handle, [r, g, b]: [f32; 3]) {
+        call!(ov, SetOverlayColor, h.0, r, g, b);
+    }
+
+    fn flag(&mut self, h: Handle, f: Flag, on: bool) {
+        let f = match f {
+            Flag::Interactive => sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible,
+            Flag::DiscreteScroll => sys::VROverlayFlags_SendVRDiscreteScrollEvents,
+            Flag::IgnoreAlpha => sys::VROverlayFlags_IgnoreTextureAlpha,
+            Flag::ControlBar => sys::VROverlayFlags_EnableControlBar,
+            Flag::ControlBarClose => sys::VROverlayFlags_EnableControlBarClose,
+        };
+        call!(ov, SetOverlayFlag, h.0, f, on);
+    }
+
+    fn input(&mut self, h: Handle, m: InputMode) {
+        let m = match m {
+            InputMode::None => sys::VROverlayInputMethod_None,
+            InputMode::Pointer => sys::VROverlayInputMethod_Mouse,
+        };
+        call!(ov, SetOverlayInputMethod, h.0, m);
+    }
+
+    fn rename(&mut self, h: Handle, name: &str) {
+        let name = std::ffi::CString::new(name).unwrap_or_default();
+        call!(ov, SetOverlayName, h.0, name.as_ptr() as *mut _);
+    }
+
+    fn picture_file(&mut self, h: Handle, path: &str) {
+        vr::set_from_file(h, path);
+    }
+}
+
 /// The writes behind a placement.
 pub trait Overlays {
     fn width(&mut self, h: Handle, metres: f32);

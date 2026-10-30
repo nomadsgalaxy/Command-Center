@@ -52,7 +52,7 @@ use crate::grab::{self, Look, TagImg, average, line, over, rbox, tint};
 use crate::ids::Dev;
 use crate::laser::{self, Hand};
 use crate::limits::{BAR_SCALE, CURVE_NOTCH};
-use crate::overlay::{At, Live, Overlays, Place, apply};
+use crate::overlay::{At, Flag, InputMode, Live, Overlays, Place, Surfaces, apply};
 use crate::theme::{self, Accent, Tokens};
 use crate::windows::Windows;
 use crate::{HIDDEN, Source, call, config, panel, panels, vr};
@@ -734,10 +734,10 @@ impl Taskbar {
             eprintln!("taskbar: no overlay: {e}"); // SteamVR's 128 are shared, and they're used up
             crate::vr::Handle::NONE
         });
-        call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlayFlag, h.0, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
-        call!(ov, SetOverlaySortOrder, h.0, SORT);
+        crate::overlay::Live.input(h, InputMode::Pointer);
+        crate::overlay::Live.flag(h, Flag::Interactive, true);
+        crate::overlay::Live.flag(h, Flag::DiscreteScroll, true);
+        crate::overlay::Live.order(h, SORT);
         let mode = match config::settings()["taskbar"].as_str() {
             None => Mode::Fixed,
             Some(s) => Mode::parse(s).unwrap_or_else(|| {
@@ -801,7 +801,7 @@ impl Taskbar {
     fn set_mode(&mut self, m: Mode) {
         (self.mode, self.hold, self.placed, self.pose, self.follow) = (m, None, None, None, Follow::default());
         self.alpha = if m == Mode::Wrist { 0.0 } else { 1.0 };
-        call!(ov, SetOverlayAlpha, self.ov.0, self.alpha);
+        crate::overlay::Live.alpha(self.ov, self.alpha);
         crate::surface::set_anchor(self.ov, anchor_of(m));
         eprintln!("taskbar: {}", m.name());
     }
@@ -934,9 +934,9 @@ impl Taskbar {
         if at.is_some() != self.shown {
             self.shown = at.is_some();
             if self.shown {
-                call!(ov, ShowOverlay, self.ov.0)
+                crate::overlay::Live.show(self.ov)
             } else {
-                call!(ov, HideOverlay, self.ov.0)
+                crate::overlay::Live.hide(self.ov)
             };
         }
         let (w, h) = (self.frame.w, self.frame.h);
@@ -1261,8 +1261,7 @@ impl Taskbar {
         self.drawn_at = Some(now);
         self.px = vr::timed(|| format!("taskbar: drawn {tw}x{th}"), || scene.draw(s));
         if grab::set_raw(self.ov, &self.px, tw, th) {
-            let mut scale = sys::HmdVector2_t { v: [f.w as f32, f.h as f32] }; // events in its units
-            call!(ov, SetOverlayMouseScale, self.ov.0, &mut scale);
+            crate::overlay::Live.mouse_scale(self.ov, [f.w as f32, f.h as f32]); // events in its units
             self.frame = f;
         } else {
             self.px.clear();
@@ -1314,7 +1313,7 @@ impl Taskbar {
                 let alpha = (self.alpha + if facing { 0.15 } else { -0.08 }).clamp(0.0, 1.0);
                 if alpha != self.alpha {
                     self.alpha = alpha;
-                    call!(ov, SetOverlayAlpha, self.ov.0, alpha);
+                    crate::overlay::Live.alpha(self.ov, alpha);
                 }
                 // fully faded it's hidden, not just see-through, because an invisible overlay still catches lasers
                 if alpha <= 0.0 {

@@ -64,8 +64,9 @@ pub mod workspace;
 const HUD_USAGE: &str = "error usage: hud <rgba file> <w> <h> [skip=x0,y0,x1,y1] | hud mark <rgba file> <w> <h> <width> <12 numbers> | hud hide";
 
 use crate::geometry::{Pose, panel_matrix};
+use crate::overlay::Surfaces;
 use crate::surface;
-use crate::{HIDDEN, Source, call, panels, taskbar};
+use crate::{HIDDEN, Source, panels, taskbar};
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::sync::OnceLock;
@@ -256,9 +257,9 @@ pub fn show_panels(show: bool) {
     HIDDEN.store(!show, Relaxed);
     for p in panels() {
         if show && p.live() && !p.away() {
-            call!(ov, ShowOverlay, p.overlay.0);
+            crate::overlay::Live.show(p.overlay);
         } else {
-            call!(ov, HideOverlay, p.overlay.0);
+            crate::overlay::Live.hide(p.overlay);
         }
     }
 }
