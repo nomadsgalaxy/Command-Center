@@ -301,24 +301,27 @@ one `trait Backend`, and `Stage` keeps extending `Overlays`:
 3. `Textures`: `import(&Dmabuf) -> TexHandle`, `present(surface, TexHandle)`, `release(TexHandle)`,
    `present_pixels(surface, &[u8], w, h)` and `clear`. `gpu.rs` keeps the GBM buffers and the
    stale tracking (core); only the `Texture_t`, `ImportDmabuf` and `SetOverlayTexture` parts move.
-4. `Pointing`: `next(surface) -> Option<SurfaceEvent>`. The rules live in the trait, not in each
-   backend, so grab.rs gets the same behaviour from both:
-   - **Capture:** a Down on a surface captures that pointer for that button. Its moves keep going
-     to that surface, clamped to its edge, until the Up, even once the ray has left it. That's how
-     a drag goes past a panel's edge.
-   - **Hover:** a surface gets Enter, then moves while it's hit and nothing has captured that
-     pointer. When the hit goes to another surface, the old one gets Leave first.
-   - **Scroll:** goes to the hovered surface, or the captured one during a capture.
-   - **Endings:** focus lost with a button held, the device lost mid-drag and a surface destroyed
-     while it holds a capture all end the capture. The holder, if it still exists, gets Up and then
-     Leave, so nothing stays held.
+4. `Pointing`: `next(surface) -> Option<SurfaceEvent>`. It has two contracts, kept apart:
+   - **Phase 0, the OpenVR adapter, preserves today's events and the core's recovery.** SteamVR
+     does the hit testing, and the adapter translates each `VREvent_t` into one `SurfaceEvent`, in
+     order, with the same coordinates (so `main.rs:444`'s logic matches the neutral kind instead
+     of `sys::EVREventType_*`). It never makes one up: no Up SteamVR didn't send, no Leave, no
+     clamping. Where SteamVR sends no Up (a controller switched off), grab.rs's `LOST` recovery
+     stays as it is, and the golden tests pin it. Any behaviour fix is its own branch.
+   - **Phase 1, the target both backends meet:**
+     - **Capture:** a Down on a surface captures that pointer for that button. Its moves keep
+       going to that surface, clamped to its edge, until the Up, even once the ray has left it.
+       That's how a drag goes past a panel's edge.
+     - **Hover:** a surface gets Enter, then moves while it's hit and nothing has captured that
+       pointer. When the hit goes to another surface, the old one gets Leave first.
+     - **Scroll:** goes to the hovered surface, or the captured one during a capture.
+     - **Endings:** focus lost with a button held, the device lost mid-drag and a surface
+       destroyed while it holds a capture all end the capture. The holder, if it still exists,
+       gets Up and then Leave, so nothing stays held.
 
-   On OpenVR, SteamVR does the hit testing and the backend only translates `VREvent_t` (so
-   `main.rs:444`'s logic matches the neutral kind instead of `sys::EVREventType_*`). Where SteamVR
-   doesn't meet a rule (it sends no Up for a controller that switches off, so grab.rs ends the drag
-   after `LOST`), the core's own handling stays, and the golden tests pin it. OpenXR ray-casts the
-   hands' `aim` poses (and the mouse ray) against the visible surfaces in phase 1, takes clicks
-   from action state, and has to meet the rules itself.
+     OpenXR ray-casts the hands' `aim` poses (and the mouse ray) against the visible surfaces,
+     takes clicks from action state, and has to meet these itself. Whether the OpenVR adapter
+     grows them too is decided once the golden tests show where SteamVR's events differ.
 5. `Stage` (exists): `device/laser/head/head_pose/controllers/hand/in_hand/connected/pulse`.
    `controllers()` returns `Vec<Ctl>`, and `pulse` takes a surface, as now (SteamVR buzzes the hand
    whose laser last worked it). `panel` and `move_pointer` aren't the runtime's, so they stay on the

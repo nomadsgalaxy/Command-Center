@@ -216,8 +216,16 @@ pub trait Textures {
     fn clear(&mut self, s: SurfaceId);
 }
 
-/// Pointer events for a surface. The rules below hold whichever backend makes them, so grab.rs,
-/// the taskbar and the cards behave the same on both:
+/// Pointer events for a surface. There are two contracts, and only the first is in force now:
+///
+/// **Phase 0, the OpenVR adapter: today's events and the core's recovery, as they are.** SteamVR
+/// does the hit testing, and the adapter only translates each VREvent_t into a `SurfaceEvent`, one
+/// for one, in order, with the same coordinates. It never makes up an event: no Up that SteamVR
+/// didn't send, no Leave, no clamping. Where SteamVR sends no Up (a controller switched off), the
+/// core's own recovery stays as it is (grab.rs ends the drag after `LOST`), and the golden tests
+/// pin it. Any change in behaviour is its own branch, not part of the move.
+///
+/// **Phase 1, the target both backends meet:**
 ///
 /// - **Capture:** a Down on a surface captures that pointer (`from`) for that button. Its moves keep
 ///   going to that surface, clamped to its edge, until the Up, even once the ray has left it. That's
@@ -229,10 +237,8 @@ pub trait Textures {
 ///   while it holds a capture all end the capture. The holder, if it still exists, gets Up and then
 ///   Leave, so nothing stays held.
 ///
-/// On OpenVR, SteamVR does the hit testing and the backend only translates its events, so these
-/// are what SteamVR does, as far as the code relies on it. Where SteamVR doesn't (it sends no Up for
-/// a controller that switches off, so grab.rs ends a drag after `LOST`), the core's own handling
-/// stays, and the golden tests pin it. OpenXR's ray casting (phase 1) has to meet the rules itself.
+/// OpenXR's ray casting has to meet these itself. Whether OpenVR's adapter grows them too, and how,
+/// is decided after the golden tests show where SteamVR's events differ from them.
 pub trait Pointing {
     /// The next event for surface s, if there is one (one `PollNextOverlayEvent` today).
     fn next(&mut self, s: SurfaceId) -> Option<SurfaceEvent>;
