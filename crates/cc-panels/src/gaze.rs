@@ -20,8 +20,9 @@ pub trait Input {
     /// Where the eyes look, as an origin and a unit direction in standing space, if the runtime has
     /// eye tracking and a valid sample right now.
     fn gaze(&self) -> Option<(V3, V3)>;
-    /// Stops reading it while a VR game runs (`gaze` starts it again).
-    fn release(&self);
+    /// Stops reading it while a VR game runs (`gaze` starts it again). Not `release`, which
+    /// `Textures` has: a backend implements both.
+    fn pause(&self);
 }
 
 pub struct Gaze {
@@ -67,7 +68,7 @@ impl Input for Gaze {
     /// Lets go of the action set while a VR game runs. It's active at priority 0, which takes
     /// nothing from the scene app (global overlay priority would, but only with SteamVR's
     /// experimental "overlay input overrides", which is off), so this is just tidiness.
-    fn release(&self) {
+    fn pause(&self) {
         call!(input, UpdateActionState, std::ptr::null_mut(), size_of::<sys::VRActiveActionSet_t>() as u32, 0);
     }
 

@@ -534,8 +534,9 @@ cc-panels.
      leaves no handle: what SteamVR left in it is dropped, so nothing lets go of a handle it was
      never given. That's the one intended edge change.
    - `Keyboard::open` takes the most characters, and `text` hands back SteamVR's 256 bytes.
-   - `Shell::toast` takes the surface it hangs off and says why it didn't show.
-   - `Input` has `release`, for while a VR game runs.
+   - `Shell::toast` takes the surface it hangs off and says why it didn't show, with its own
+     `NoteRefused`, since notification errors aren't numbered like overlay errors.
+   - `Input` has `pause`, for while a VR game runs (not `release`, which `Textures` has).
 
    The polling (`Pointing` and `Session`, the event loops) is its own branch after this one.
    `SessionEvent` gains `Other(u32)` there, so an ignored event (which still sets main.rs's

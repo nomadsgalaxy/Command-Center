@@ -15,7 +15,7 @@ pub use crate::ids::{Ctl, Dev, Hand, SurfaceId};
 #[allow(unused_imports)] // the design names them; the core takes them from keyboard.rs
 pub use crate::keyboard::{Keyboard, KeyboardMode};
 #[allow(unused_imports)] // and shell.rs
-pub use crate::shell::Shell;
+pub use crate::shell::{NoteRefused, Shell};
 #[allow(unused_imports)] // and texture.rs
 pub use crate::texture::{Dmabuf, Refused, TexHandle, Textures};
 

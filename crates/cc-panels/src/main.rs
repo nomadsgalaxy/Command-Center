@@ -1273,7 +1273,7 @@ fn run() -> Result<(), String> {
         if bar.game() != gaze_off {
             gaze_off = bar.game();
             if let (true, Some(g)) = (gaze_off, &gaze) {
-                g.release();
+                g.pause();
                 crate::kvm::lock().gaze(None);
             }
         }
