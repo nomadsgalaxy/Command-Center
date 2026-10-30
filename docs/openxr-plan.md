@@ -732,6 +732,9 @@ Behaviour changes phase 0 put off, each its own branch with its own test:
 - Before a `Stage` is injected: the fake's `head_pose` and `head_now` give different fixtures,
   so swapping them fails a test, and the registry scan learns generic callers (6b).
 - The dominant hand loads at start on any runtime, not in the OpenVR laser's `Beam::new` (6e).
+- While the laser works, the settings windows' fallback doesn't take the mouse's queued presses
+  (kvm's `extra_mouse`), so a press queued just before it started working comes out the next
+  time it stops. Drop them when it starts working instead (6e).
 
 What counts as "works":
 
