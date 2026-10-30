@@ -466,6 +466,11 @@ impl Plasma {
             if debug() && e.eventType != sys::EVREventType_VREvent_MouseMove {
                 eprintln!("plasma-debug: overlay event {} at {:.3},{:.3} (crop {fx:.3},{fy:.3}) -> {:?} crop {:?}", e.eventType, m.x, m.y, at(fx, fy), *CROP.lock().unwrap());
             }
+            // while a trace runs, the laser SteamVR hit-tested for this event, so its point can be
+            // checked against where that ray meets the overlay (docs/vr-harness.md)
+            if crate::trace::on() && matches!(e.eventType, sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp) {
+                crate::trace::laser_pose(e.trackedDeviceIndex);
+            }
             self.laser(&e, at(fx, fy));
         }
     }
@@ -793,6 +798,31 @@ mod tests {
         awake(&mut log);
         crate::kvm::lock().awake = false; // as the other replays leave it
         crate::golden::check("plasmabar-the-mouse-then-a-controller", &log.0);
+    }
+
+    /// While a trace runs, each pointer event on the bar is followed by its laser's pose, so
+    /// SteamVR's point can be checked against the ray afterwards. A focus event gets none.
+    #[test]
+    fn a_traced_pointer_event_is_followed_by_its_lasers_pose() {
+        let _vr = crate::trace::fake_vr();
+        let m = crate::geometry::panel_matrix(&crate::geometry::Pose { centre: [0.1, 1.2, -0.3], ..Default::default() });
+        crate::vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).poses = vec![(3, m)];
+        let path = std::env::temp_dir().join(format!("cc-trace-plasma-pose-{}.jsonl", std::process::id()));
+        crate::trace::record_to(&path);
+        let mut p = Plasma::new();
+        let (placed, ev) = kickoff();
+        p.replay(&placed);
+        pass(&mut p, &[ev(sys::EVREventType_VREvent_MouseMove), ev(sys::EVREventType_VREvent_FocusLeave), ev(sys::EVREventType_VREvent_MouseButtonDown)]);
+        let text = crate::trace::stop_recording();
+        let _ = std::fs::remove_file(&path);
+        let lines: Vec<serde_json::Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let at = |t: u32| lines.iter().position(|v| v["ev"] == "plasma" && v["type"] == t).unwrap_or_else(|| panic!("no event {t}: {text}"));
+        for t in [sys::EVREventType_VREvent_MouseMove, sys::EVREventType_VREvent_MouseButtonDown] {
+            let next = &lines[at(t) + 1];
+            assert_eq!(next["pose"], 3, "event {t}: its laser's pose next: {text}");
+            assert_eq!(crate::trace::pose_from(next), Some((3, Some(m))), "the pose SteamVR had");
+        }
+        assert!(lines.get(at(sys::EVREventType_VREvent_FocusLeave) + 1).is_none_or(|v| v.get("pose").is_none()), "a focus event has no pose: {text}");
     }
 
     #[test]

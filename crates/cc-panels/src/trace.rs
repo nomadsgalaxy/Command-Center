@@ -223,6 +223,31 @@ pub fn event(who: &str, e: &sys::VREvent_t) {
     }
 }
 
+/// Starts writing a trace to `path` (a test's, in place of the flag file's).
+#[cfg(test)]
+pub fn record_to(path: &std::path::Path) {
+    let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path).unwrap(); // read back by stop_recording
+    *crate::ffi::lock(&OUT) = Some(Out::new(f));
+}
+
+/// Stops a test's trace and gives back what it wrote.
+#[cfg(test)]
+pub fn stop_recording() -> String {
+    let o = crate::ffi::lock(&OUT).take();
+    match o {
+        Some(mut o) => {
+            use std::io::{Read, Seek, Write};
+            o.file.flush().unwrap();
+            let mut f = o.file.into_inner().unwrap();
+            let mut s = String::new();
+            f.seek(std::io::SeekFrom::Start(0)).unwrap();
+            let _ = f.read_to_string(&mut s);
+            s
+        }
+        None => String::new(),
+    }
+}
+
 pub fn pose(dev: u32, m: Option<&Mat>) {
     if on() {
         write(pose_line(dev, m));

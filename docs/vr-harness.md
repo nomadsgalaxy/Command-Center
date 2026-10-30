@@ -61,6 +61,11 @@ Each line is one JSON object:
 - `{"pose":3,"m":[[…],[…],[…]]}`: a laser's pose as `laser_pose` gave it (`null`: not tracked).
   That's the laser itself, the render model's tip offset included, and the fake has no render
   model, so `laser_pose` hands it back unchanged in a replay (`a_replayed_pose_is_the_laser_it_recorded`).
+  The taskbar writes one when it reads a laser. Plasma's bar writes one right after each of its
+  pointer events (a move, press or release; not focus or scroll), for the device that sent it,
+  so the point SteamVR reported can be checked against where that laser's ray meets the drawn
+  overlay (`a_traced_pointer_event_is_followed_by_its_lasers_pose`). It's only read while a
+  trace is on.
 - `{"plasma":{"crop":…,"panel":…,"bounds":…,"world":…,"width":…,"aspect":…,"curve":…,"clickable":…}}`:
   Plasma's overlay, each time tick() places it somewhere new.
 
