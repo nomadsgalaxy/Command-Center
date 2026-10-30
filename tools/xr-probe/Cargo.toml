@@ -1,0 +1,13 @@
+[package]
+name = "xr-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Lists what each OpenXR runtime on this machine advertises, without starting it"
+
+# Not a member of the repo's workspace, so nothing in Command Center depends on OpenXR yet.
+[workspace]
+
+[dependencies]
+openxr = { version = "0.22", default-features = false, features = ["loaded"] }
+serde_json = "1"
