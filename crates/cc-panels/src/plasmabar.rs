@@ -515,7 +515,10 @@ impl Plasma {
         // in the whole texture's coordinates (c937884), so with a popup open, and the texture the
         // whole output, it's turned into fractions of the crop. That point depends on which
         // texture and bounds SteamVR had when it made the event, and right after a menu opens
-        // that isn't always what's drawn.
+        // that isn't always what's drawn. In the headset on Oct 29, SteamVR's point (through
+        // in_bounds) was right across the open menu but pulled toward its middle up and down, one
+        // or two items low at the top. The ray fixes that if SteamVR's hit quad isn't the picture
+        // as drawn; it doesn't if the crop to the session's coordinates (global) is what's off.
         // Copies, taken once: no lock is held while the loop asks OpenVR for poses.
         let b = self.placed.map_or([0.0, 0.0, 1.0, 1.0], |q| q.4);
         let (pl, crop) = (crate::kvm::lock().plasma, CROP.lock().unwrap().map(|c| c.0));
@@ -1043,6 +1046,37 @@ mod tests {
         assert_eq!(laser_point(MOVE, Some(pl), Some(grown), away, last, ([0.0; 4], 0.0, 0.0)), Some((last, false)), "a move stays put");
         assert_eq!(laser_point(DOWN, Some(pl), Some(grown), away, last, ([0.0; 4], 0.0, 0.0)), None, "the press is dropped: the item isn't clicked");
         assert_eq!(laser_point(UP, Some(pl), Some(grown), away, last, ([0.0; 4], 0.0, 0.0)), Some((None, false)), "the release goes in, where the pointer is");
+    }
+
+    /// Replayed through the event loop: a laser presses on Kickoff's item by its ray, then loses
+    /// tracking, and its release still lets the press go in the session. A pass with no events
+    /// in between sends nothing and changes nothing.
+    #[test]
+    fn a_release_after_the_laser_loses_tracking_still_lets_go() {
+        use crate::geometry::Pose;
+        let _vr = crate::trace::fake_vr();
+        let mut p = Plasma::new();
+        let (placed, ev) = kickoff(); // the bar with Kickoff open, at kickoff's world below
+        p.replay(&placed);
+        let world = crate::geometry::panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
+        let pl = Placement::from_matrix(&world, 0.6, grown[3] as f64 / grown[2] as f64, 0.0);
+        let item = (600.0, 1200.0);
+        let (o, d) = laser_at(&pl, grown, item);
+        let aim = crate::stage::fake::aimed(o, [o[0] + d[0], o[1] + d[1], o[2] + d[2]]);
+        let pose = |m: Option<crate::geometry::Mat>| crate::trace::pose_line(3, m.as_ref()).to_string();
+        p.replay(&[pose(Some(aim)), "{\"tick\":\"plasma\"}".into(), ev(sys::EVREventType_VREvent_MouseButtonDown)].join("\n"));
+        let sent = std::mem::take(&mut *windows::SHELL_SENT.lock().unwrap());
+        assert_eq!(sent.len(), 1, "the press: {sent:?}");
+        let at = sent[0].1.unwrap();
+        assert!((at.0 - item.0).abs() < 2.0 && (at.1 - item.1).abs() < 2.0, "by its ray, on the item: {at:?}");
+        assert_eq!(p.held, PTR_FLAGS_BUTTON1);
+        pass(&mut p, &[]);
+        assert!(windows::SHELL_SENT.lock().unwrap().is_empty() && p.held == PTR_FLAGS_BUTTON1, "an empty pass: nothing sent, still held");
+        p.replay(&[pose(None), "{\"tick\":\"plasma\"}".into(), ev(sys::EVREventType_VREvent_MouseButtonUp)].join("\n"));
+        let sent = std::mem::take(&mut *windows::SHELL_SENT.lock().unwrap());
+        assert_eq!(sent.iter().map(|s| s.0).collect::<Vec<_>>(), [PTR_FLAGS_BUTTON1], "the release went in with no pose: {sent:?}");
+        assert_eq!(p.held, 0, "nothing left held");
     }
 
     #[test]
