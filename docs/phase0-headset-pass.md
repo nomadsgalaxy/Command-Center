@@ -240,5 +240,5 @@ Point the mouse at SteamVR's own UI, outside our panels.
   ```
 
   If it says STOP, don't restart. The Desktop may have written to its log between the copy and
-  the check, so run it again: the new directory gets a new name. Then start again from "Before you start", with a new `~/cc-log-start.txt` and
-  `~/cc-run-ids.txt`.
+  the check, so run it again: the new directory gets a new name. Once it's saved, start again
+  from "Before you start", with a new `~/cc-log-start.txt` and `~/cc-run-ids.txt`.
