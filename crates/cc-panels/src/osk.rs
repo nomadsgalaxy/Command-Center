@@ -280,12 +280,12 @@ impl Keys {
     fn events(&mut self, h: vr::Handle, i: usize) {
         let mut e: vr::VREvent_t = Default::default();
         while call!(ov, PollNextOverlayEvent, h.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
-            let m = unsafe { e.data.mouse };
-            let at = hit(m.x as f64, crate::geometry::from_top(H, m.y as f64)); // events count from the bottom left
-            match e.eventType {
-                sys::EVREventType_VREvent_MouseMove => self.hover = at,
-                sys::EVREventType_VREvent_FocusLeave => self.hover = None,
-                sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => match at {
+            let SurfaceEvent::Pointer(pe) = vr::surface_event(&e) else { continue }; // nothing else does anything on the strip
+            let at = hit(pe.x as f64, crate::geometry::from_top(H, pe.y as f64)); // events count from the bottom left
+            match pe.kind {
+                PointerKind::Move => self.hover = at,
+                PointerKind::Leave => self.hover = None,
+                PointerKind::Down(crate::events::Button::Left) => match at {
                     Some(b) if KEYS[b].1 != 0 => crate::kvm::lock().strip_key(i, KEYS[b].1),
                     Some(b) => {
                         let mut k = crate::kvm::lock();

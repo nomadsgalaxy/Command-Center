@@ -583,17 +583,19 @@ impl Workspace {
         let n = self.rows.len();
         let t = typing_row(self.typing.as_ref(), n);
         let drawn = self.painter.drawn().map(|k| k.rows.len());
-        let mut e: vr::VREvent_t = Default::default();
-        while ui::next_event(h, &mut e) {
-            let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
+        while let Some(ev) = ui::next_event(h) {
+            use crate::events::{Button, KeyboardEvent as K, PointerEvent, PointerKind as P, SurfaceEvent as S};
             // in units from the bottom left; none while the texture is drawn for a different row count
-            let at = held(self.hover, n, t, m.x as f64, from_top(height(n), m.y as f64)).filter(|_| drawn == Some(n));
-            grab.panel_event(grab.slot(), &vr::surface_event(&e), &mut crate::kvm::lock());
-            match e.eventType {
-                sys::EVREventType_VREvent_MouseMove => self.hover = at,
-                sys::EVREventType_VREvent_FocusLeave => self.hover = None,
-                sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
-                    if vr::is_real_controller(dev) {
+            let at = match &ev {
+                S::Pointer(pe) => held(self.hover, n, t, pe.x as f64, from_top(height(n), pe.y as f64)).filter(|_| drawn == Some(n)),
+                _ => None,
+            };
+            grab.panel_event(grab.slot(), &ev, &mut crate::kvm::lock());
+            match ev {
+                S::Pointer(PointerEvent { kind: P::Move, .. }) => self.hover = at,
+                S::Pointer(PointerEvent { kind: P::Leave, .. }) => self.hover = None,
+                S::Pointer(PointerEvent { kind: P::Down(Button::Left), from, .. }) => {
+                    if vr::is_real_controller(vr::index(from)) {
                         let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed is primary (R-2)
@@ -604,19 +606,19 @@ impl Workspace {
                         None => self.hide_keyboard(),
                     }
                 }
-                sys::EVREventType_VREvent_MouseButtonUp => windows.plasma_release(),
-                sys::EVREventType_VREvent_KeyboardCharInput | sys::EVREventType_VREvent_KeyboardDone if unsafe { e.data.keyboard }.uUserValue == OSK => {
+                S::Pointer(PointerEvent { kind: P::Up(_), .. }) => windows.plasma_release(),
+                S::Keyboard(ref k @ (K::Char { user, .. } | K::Done { user })) if user == OSK => {
                     let mut buf = [0u8; 256];
                     call!(ov, GetKeyboardText, buf.as_mut_ptr() as *mut _, buf.len() as u32);
                     if let Some(tp) = self.typing.as_mut().filter(|_| self.osk) {
                         tp.text = text_of(&buf);
-                        if e.eventType == sys::EVREventType_VREvent_KeyboardDone {
+                        if matches!(k, K::Done { .. }) {
                             self.osk = false;
                             self.act(Hit::Save, h); // Enter saves
                         }
                     }
                 }
-                sys::EVREventType_VREvent_KeyboardClosed if unsafe { e.data.keyboard }.uUserValue == OSK && self.osk => {
+                S::Keyboard(K::Closed { user }) if user == OSK && self.osk => {
                     self.osk = false;
                     self.hide_keyboard();
                 }

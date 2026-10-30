@@ -308,21 +308,24 @@ impl Dashtab {
         let mut e: vr::VREvent_t = Default::default();
         let mut again = false;
         while call!(ov, PollNextOverlayEvent, h.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
-            let m = unsafe { e.data.mouse };
-            let at = hit(m.x as f64, from_top(H, m.y as f64)); // page units; events count from the bottom left
-            match e.eventType {
-                sys::EVREventType_VREvent_MouseMove => self.hover = at,
-                sys::EVREventType_VREvent_FocusLeave => self.hover = None,
+            use crate::events::{Button, PointerEvent, PointerKind as P, SurfaceEvent as S};
+            let ev = vr::surface_event(&e);
+            // page units; events count from the bottom left
+            let at = if let S::Pointer(pe) = &ev { hit(pe.x as f64, from_top(H, pe.y as f64)) } else { None };
+            let kind = if let S::Pointer(PointerEvent { kind, .. }) = &ev { Some(*kind) } else { None };
+            match (&ev, kind) {
+                (_, Some(P::Move)) => self.hover = at,
+                (_, Some(P::Leave)) => self.hover = None,
                 // SteamVR's close on the tab quits Command Center, the way it quits any overlay app.
                 // Only when you could have pressed it: the dashboard showing, on our tab. Any other
                 // close (a dashboard restart, say) makes the tab again and leaves the Desktop be.
-                sys::EVREventType_VREvent_OverlayClosed if !(call!(ov, IsDashboardVisible) && call!(ov, IsActiveDashboardOverlay, h.0)) => {
+                (S::Closed, _) if !(call!(ov, IsDashboardVisible) && call!(ov, IsActiveDashboardOverlay, h.0)) => {
                     eprintln!("dashboard tab: SteamVR closed it while it wasn't showing, so it's made again");
                     again = true;
                 }
-                sys::EVREventType_VREvent_OverlayClosed if self.closed => self.quit = true, // tab.rs ends
-                sys::EVREventType_VREvent_OverlayClosed => crate::close_desktop("the dashboard tab's close"),
-                sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => match at {
+                (S::Closed, _) if self.closed => self.quit = true, // tab.rs ends
+                (S::Closed, _) => crate::close_desktop("the dashboard tab's close"),
+                (_, Some(P::Down(Button::Left))) => match at {
                     Some(Hit(0, 0)) if self.closed => self.open_desktop(),
                     Some(_) if self.closed => {}
                     Some(a) => act(a, hand),

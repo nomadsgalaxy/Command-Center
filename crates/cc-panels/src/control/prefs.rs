@@ -325,17 +325,17 @@ impl Prefs {
 
     /// Laser events: hovering, and presses on a control.
     fn events(&mut self, h: vr::Handle, grab: &mut grab::Grab, windows: &mut Windows, bar: &mut Taskbar) {
-        let mut e: vr::VREvent_t = Default::default();
-        while ui::next_event(h, &mut e) {
-            let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
-            let at = held(self.hover, m.x as f64, from_top(H, m.y as f64)); // window units; events count from the bottom left
+        while let Some(ev) = ui::next_event(h) {
+            use crate::events::{Button, PointerKind as P, SurfaceEvent as S};
             // its card fades in, and a release ends a carry (even one pressed elsewhere and let go over it)
-            grab.panel_event(grab.slot(), &vr::surface_event(&e), &mut crate::kvm::lock());
-            match e.eventType {
-                sys::EVREventType_VREvent_MouseMove => self.hover = at,
-                sys::EVREventType_VREvent_FocusLeave => self.hover = None,
-                sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
-                    if vr::is_real_controller(dev) {
+            grab.panel_event(grab.slot(), &ev, &mut crate::kvm::lock());
+            let S::Pointer(pe) = ev else { continue }; // nothing else does anything here
+            let at = held(self.hover, pe.x as f64, from_top(H, pe.y as f64)); // window units; events count from the bottom left
+            match pe.kind {
+                P::Move => self.hover = at,
+                P::Leave => self.hover = None,
+                P::Down(Button::Left) => {
+                    if vr::is_real_controller(vr::index(pe.from)) {
                         let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed becomes primary (R-2)
@@ -346,7 +346,7 @@ impl Prefs {
                     }
                 }
                 // a press on Plasma's bar that was let go over it (taskbar.rs)
-                sys::EVREventType_VREvent_MouseButtonUp => windows.plasma_release(),
+                P::Up(_) => windows.plasma_release(),
                 _ => {}
             }
         }

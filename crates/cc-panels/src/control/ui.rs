@@ -306,39 +306,38 @@ pub fn upload(h: vr::Handle, px: &mut Vec<u8>, tw: usize, th: usize, (w, ht): (f
 
 /// The next event on the Extra's window h. SteamVR's come first. Then, with no laser (both
 /// controllers on), the mouse's events from kvm's ray, shaped like a laser's would be (a move
-/// when its point changes, a leave, its left presses) and from device grab::MOUSE. False when
-/// there are none.
-pub fn next_event(h: vr::Handle, e: &mut vr::VREvent_t) -> bool {
+/// when its point changes, a leave, its left presses) and from Dev::Mouse. None when there are
+/// none.
+pub fn next_event(h: vr::Handle) -> Option<crate::events::SurfaceEvent> {
+    use crate::events::{Button, PointerEvent, PointerKind, SurfaceEvent};
     use std::sync::Mutex;
     static SENT: Mutex<Option<(f32, f32)>> = Mutex::new(None); // the point we last moved to
-    if call!(ov, PollNextOverlayEvent, h.0, e, size_of::<vr::VREvent_t>() as u32) {
-        return true;
+    let mut e: vr::VREvent_t = Default::default();
+    if call!(ov, PollNextOverlayEvent, h.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
+        return Some(vr::surface_event(&e));
     }
     let mut sent = SENT.lock().unwrap();
     if crate::laser::HEALTHY.load(std::sync::atomic::Ordering::Relaxed) {
         *sent = None; // the laser sends its own events now
-        return false;
+        return None;
     }
     let mut k = crate::kvm::lock();
     let mut scale = sys::HmdVector2_t { v: [0.0; 2] };
     call!(ov, GetOverlayMouseScale, h.0, &mut scale);
     let at = k.extra.zip(k.extra_at()).map(|((pl, _), (u, v))| (((u / pl.width + 0.5) * scale.v[0] as f64) as f32, ((v / pl.height + 0.5) * scale.v[1] as f64) as f32));
-    let (kind, (x, y), button) = if !k.extra_mouse.is_empty() {
+    let (kind, (x, y)) = if !k.extra_mouse.is_empty() {
         let down = k.extra_mouse.remove(0);
-        let kind = if down { sys::EVREventType_VREvent_MouseButtonDown } else { sys::EVREventType_VREvent_MouseButtonUp };
-        (kind, at.or(*sent).unwrap_or_default(), sys::EVRMouseButton_VRMouseButton_Left)
+        let kind = if down { PointerKind::Down(Button::Left) } else { PointerKind::Up(Button::Left) };
+        (kind, at.or(*sent).unwrap_or_default())
     } else if at.is_some() && at != *sent {
-        (sys::EVREventType_VREvent_MouseMove, at.unwrap(), 0)
+        (PointerKind::Move, at.unwrap())
     } else if at.is_none() && sent.is_some() {
-        (sys::EVREventType_VREvent_FocusLeave, sent.unwrap(), 0)
+        (PointerKind::Leave, sent.unwrap())
     } else {
-        return false;
+        return None;
     };
     *sent = at;
-    *e = Default::default();
-    (e.eventType, e.trackedDeviceIndex) = (kind as u32, crate::vr::index(crate::ids::Dev::Mouse));
-    e.data.mouse = sys::VREvent_Mouse_t { x, y, button: button as u32, cursorIndex: 0 };
-    true
+    Some(SurfaceEvent::Pointer(PointerEvent { kind, x, y, from: crate::ids::Dev::Mouse, age: 0.0 }))
 }
 
 #[cfg(test)]

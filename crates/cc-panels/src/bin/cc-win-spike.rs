@@ -16,7 +16,7 @@ mod capture;
 #[path = "../geometry.rs"]
 mod geometry;
 #[path = "../events.rs"]
-#[allow(dead_code)] // the spike reads its events raw
+#[allow(dead_code)] // the spike only reads a laser's
 mod events;
 #[path = "../ids.rs"]
 mod ids;
@@ -293,22 +293,23 @@ fn ahead(d: f64) -> geometry::Mat {
 fn mouse(overlay: vr::Handle, src: &Src, s: &Session, h: f64) {
     let mut e: vr::VREvent_t = Default::default();
     while call!(ov, PollNextOverlayEvent, overlay.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
+        use events::{Button, PointerKind as P, SurfaceEvent as S};
+        let S::Pointer(pe) = vr::surface_event(&e) else { continue }; // only a laser does anything here
         let Some((origin, px)) = src.origin(s) else { continue };
-        let m = unsafe { e.data.mouse };
-        let (x, y) = session::to_global(origin, px, h, m.x as f64, m.y as f64);
-        let button = match m.button {
-            sys::EVRMouseButton_VRMouseButton_Right => session::BTN_RIGHT,
-            sys::EVRMouseButton_VRMouseButton_Middle => session::BTN_MIDDLE,
+        let (x, y) = session::to_global(origin, px, h, pe.x as f64, pe.y as f64);
+        let button = match pe.kind {
+            P::Down(Button::Right) | P::Up(Button::Right) => session::BTN_RIGHT,
+            P::Down(Button::Middle) | P::Up(Button::Middle) => session::BTN_MIDDLE,
             _ => session::BTN_LEFT,
         };
-        match e.eventType {
-            sys::EVREventType_VREvent_MouseMove => s.pointer_to(x, y),
-            sys::EVREventType_VREvent_MouseButtonDown => {
+        match pe.kind {
+            P::Move => s.pointer_to(x, y),
+            P::Down(_) => {
                 s.pointer_to(x, y);
                 s.button(button, true);
                 eprintln!("click {x:.0},{y:.0}");
             }
-            sys::EVREventType_VREvent_MouseButtonUp => {
+            P::Up(_) => {
                 s.pointer_to(x, y);
                 s.button(button, false);
                 eprintln!("release {x:.0},{y:.0}");

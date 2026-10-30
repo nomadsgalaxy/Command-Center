@@ -1355,19 +1355,23 @@ impl Machines {
     fn events(&mut self, h: vr::Handle, grab: &mut grab::Grab, windows: &mut Windows) {
         let (n, form, offer) = (self.rows.len(), shape(self.form.as_ref()), self.offer.is_some());
         let renamed = self.rename.as_ref().and_then(|(i, r)| Some((self.rows.iter().position(|x| x == i)?, r.choice)));
-        let mut e: vr::VREvent_t = Default::default();
-        while ui::next_event(h, &mut e) {
-            let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
+        while let Some(ev) = ui::next_event(h) {
+            use crate::events::{Button, KeyboardEvent as K, PointerEvent, PointerKind as P, SurfaceEvent as S};
             // its units, from the bottom left; none while the texture (and its mouse scale) is still another shape's
-            let (x, y) = (m.x as f64, from_top(height(n, form), m.y as f64));
-            let at = renamed.and_then(|(r, c)| rename_hit(r, c, x, y)).unwrap_or_else(|| held(self.hover, n, form, offer, x, y)).filter(|_| self.drawn_shape() == Some((n, form)));
+            let at = match &ev {
+                S::Pointer(pe) => {
+                    let (x, y) = (pe.x as f64, from_top(height(n, form), pe.y as f64));
+                    renamed.and_then(|(r, c)| rename_hit(r, c, x, y)).unwrap_or_else(|| held(self.hover, n, form, offer, x, y)).filter(|_| self.drawn_shape() == Some((n, form)))
+                }
+                _ => None,
+            };
             // its card fades in, and a release ends a carry (including a press elsewhere let go over it)
-            grab.panel_event(grab.slot(), &vr::surface_event(&e), &mut crate::kvm::lock());
-            match e.eventType {
-                sys::EVREventType_VREvent_MouseMove => self.hover = at,
-                sys::EVREventType_VREvent_FocusLeave => self.hover = None,
-                sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
-                    if vr::is_real_controller(dev) {
+            grab.panel_event(grab.slot(), &ev, &mut crate::kvm::lock());
+            match ev {
+                S::Pointer(PointerEvent { kind: P::Move, .. }) => self.hover = at,
+                S::Pointer(PointerEvent { kind: P::Leave, .. }) => self.hover = None,
+                S::Pointer(PointerEvent { kind: P::Down(Button::Left), from, .. }) => {
+                    if vr::is_real_controller(vr::index(from)) {
                         let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed is primary (R-2)
@@ -1379,13 +1383,13 @@ impl Machines {
                     }
                 }
                 // a press on Plasma's bar let go over it (taskbar.rs)
-                sys::EVREventType_VREvent_MouseButtonUp => windows.plasma_release(),
+                S::Pointer(PointerEvent { kind: P::Up(_), .. }) => windows.plasma_release(),
                 // the whole text each time, since SteamVR's keyboard keeps it (backspace too)
-                sys::EVREventType_VREvent_KeyboardCharInput | sys::EVREventType_VREvent_KeyboardDone => {
+                S::Keyboard(ref k @ (K::Char { user, .. } | K::Done { user })) => {
                     let mut buf = [0u8; 256];
                     call!(ov, GetKeyboardText, buf.as_mut_ptr() as *mut _, buf.len() as u32);
-                    let j = unsafe { e.data.keyboard }.uUserValue as usize;
-                    let done = e.eventType == sys::EVREventType_VREvent_KeyboardDone;
+                    let j = user as usize;
+                    let done = matches!(k, K::Done { .. });
                     if let Some((_, r)) = self.rename.as_mut().filter(|r| self.osk && r.1.editing && j == OSK_RENAME) {
                         r.text = keyboard_label(&buf);
                         if done {
@@ -1402,8 +1406,8 @@ impl Machines {
                 }
                 // only its field's: a field left for another closes the first after the second opened, and one
                 // we closed ourselves (a physical key) leaves the field typed in
-                sys::EVREventType_VREvent_KeyboardClosed => {
-                    let j = unsafe { e.data.keyboard }.uUserValue as usize;
+                S::Keyboard(K::Closed { user }) => {
+                    let j = user as usize;
                     if self.osk && (self.form.as_ref().is_some_and(|f| f.editing == Some(j)) || (j == OSK_RENAME && self.rename.as_ref().is_some_and(|r| r.1.editing))) {
                         self.osk = false;
                         self.hide_keyboard();
