@@ -30,10 +30,11 @@ pub trait Stage: Overlays {
     fn laser(&self, dev: Dev) -> Option<Mat>;
     /// Where the head is (or was last tracked).
     fn head(&self) -> V3;
-    /// The head's pose right now, if it's tracked.
+    /// The head's pose predicted to when this frame's picture reaches the eyes (vr::head_predicted,
+    /// at vr::to_photons), if it's tracked: for what has to keep up with the head this frame.
     fn head_pose(&self) -> Option<Mat>;
-    /// The head's pose as it is now, not predicted to the frame, if it's tracked: what new things
-    /// are placed in front of (vr::head). Using the predicted pose there would be a change of its own.
+    /// The head's pose as it is now, unpredicted (vr::head, at time 0), if it's tracked: what new
+    /// things are placed in front of. Using the predicted pose there would be a change of its own.
     fn head_now(&self) -> Option<Mat>;
     /// Whether d is a real controller: not the mouse, and not our cc_pointer device, which SteamVR
     /// tracks as a controller. A press from one makes it the primary device (R-2).
