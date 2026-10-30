@@ -131,6 +131,10 @@ fake's script with `stage::fake::put(dev, pose, off)`: a pose is tracked, none i
 and `off` is switched off. A controller type (`types`, for cc_pointer) and hand roles (`roles`) go
 in the script too.
 
+SteamVR's own event queue (`PollNextEvent`) is `sys_events` in the script, and the universe id is
+`universe`. While a test holds the fake, `close_desktop` adds to `tests::CLOSED` instead of writing
+the real desktop-closed file and setting QUIT, which the RDP threads read.
+
 An ordinary run never writes a fixture, not even a missing one. When a change in behaviour is
 meant, rewrite them on purpose and commit the diff with the change:
 

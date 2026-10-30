@@ -219,6 +219,10 @@ How textures are owned today, on OpenVR (gpu.rs, capture.rs, back.rs). This is w
   That's how it is today, and if it ever shows as a blank frame, the fix is its own branch.
 - **A handle can be on two overlays:** a panel's back shows the panel's handle (`back::shown`).
 
+These are assumptions that OpenVR happens to tolerate, not guarantees: SteamVR never says when it's
+done with a buffer. For OpenXR, each has to be tested or designed out, the shared front and back
+handle included, rather than carried over.
+
 The Vulkan side gets its own contract after this one is pinned, covering the same five points
 (lifetime, reuse, readiness, release, sharing), plus a failed import falling back to a staging
 upload and saying so once.
@@ -312,6 +316,9 @@ Neutral types, which replace the OpenVR ones the core sees today:
   events, or `XR_EXT_user_presence`), and never folded in. Whether to draw isn't a session state:
   `begin_frame` returns a `Frame` with `should_render` and `predicted`, the time poses are read for
   (`vr::to_photons` on OpenVR today), and `Stage::device` and `laser` are at that time.
+  `predicted` is OpenVR's prediction horizon, seconds from now as an f32. The OpenXR backend keeps
+  the runtime's own `predictedDisplayTime` for every locate and every submit in that frame, and
+  never rebuilds it from the float.
 - `scene_app_running()` returns `Option<bool>`, where `None` means the backend can't tell.
 
 The traits, in `crates/cc-panels/src/backend.rs` (the design: nothing uses it yet), compose into
@@ -542,9 +549,9 @@ inside what the fixtures pin, not stood in for. The scripts, with the ones that 
 4. **Focus lost with a button held** (in, on Plasma's bar): press, then FocusLeave with no Up,
    an empty pass, Enter and a move, then the Up. Today the session gets a leave and the press
    stays held until the Up. Recorded isn't blessed: the fixture flags it (a `FLAG:` line), since if
-   SteamVR never sends that Up, the computer keeps the button down. A trace recorded in the headset
-   (press, look away, release) will show whether it does, and a fix, if it needs one, is its own
-   branch. A panel's version is still to write.
+   SteamVR never sends that Up, the computer keeps the button down. It stays a tracked risk until a
+   trace recorded in the headset (press, look away, release) shows whether it does, and a fix, if
+   it needs one, is its own branch. A panel's version is still to write.
 5. **Device lost mid-drag** (in, grab.rs): a carry whose controller goes untracked for 400 ms and
    comes back, then goes for longer than `LOST` and the panel's put down. Then a controller under
    another index picks it up, the old index's late Up ends nothing, and the new one's ends it.
@@ -558,13 +565,15 @@ inside what the fixtures pin, not stood in for. The scripts, with the ones that 
 8. **The mouse and a controller** (in, on Plasma's bar,
    `golden_the_mouse_then_a_controller`): the mouse has the pointer, so a laser's move is dropped.
    A press from our virtual pointer (cc_pointer) doesn't take over; a real controller's does, and
-   goes through. A panel's version (main.rs `laser`, `controller_pressed`) needs a panel in a
-   test, which there's no way to make yet.
-9. **Session:** Quit, the dashboard opening and closing, a relocalization in the same universe
-   and a change of universe, the headset off and on. Not in yet: the handling is inline in
-   main.rs's main loop, so a test can't drive it without pulling it out into a function first.
-   That's a code move, so it waits for the design to clear, and goes in as phase 0's first step
-   with this golden written against the code before the move.
+   goes through. This covers Plasma's bar only, not main.rs's panel path (`laser`,
+   `controller_pressed`): that needs a panel in a test, which there's no way to make yet.
+9. **Session** (in, `golden_steamvr_events`): Quit, the dashboard opening and closing, a button on
+   a real controller and on our virtual pointer, a relocalization in the same universe and into
+   another, and the headset off and on (and a controller's interaction, which doesn't count). The
+   handling was inline in main.rs's loop, so the golden was written first against a copy of that
+   loop as it stood (`old_loop` in main's tests). Then the handling was pulled out into
+   `steamvr_events`, extraction only, and the same events through both write the same fixture.
+   This was phase 0's first step.
 10. **Recorded traces:** each trace from the headset (docs/vr-harness.md), replayed, including the
    session recorded with Plasma's debug log on, once it's in.
 
