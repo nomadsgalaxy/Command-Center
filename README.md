@@ -91,8 +91,8 @@ updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
   facing you, each keeping its size and curve, in rows above and below if there are many. A
   docked panel goes back in the world. It's also on the dashboard tab, Right Ctrl + B, and
   `cc-home gather`. It isn't saved: Left Ctrl + Shift + B, Right Ctrl + Shift + B or
-  `cc-home ungather` puts them back where they were, Right Ctrl + Home sends everything home, and a panel you then carry and let go
-  of is saved as usual.
+  `cc-home ungather` puts them back where they were, Right Ctrl + Home sends everything home,
+  and a panel you then carry and let go of is saved as usual.
 - **Right click with the shoulder button:** the Frame controller's bumper is right click on
   SteamVR's laser, so context menus are one press away.
 - **Typing with a controller:** the keyboard button on a panel's bar opens SteamVR's keyboard,

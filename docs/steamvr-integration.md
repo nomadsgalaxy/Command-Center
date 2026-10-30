@@ -34,8 +34,8 @@ apps, and it stays off. `cc-home install remove` takes it out.
 
 While the Desktop is open, the tab's **Bring all here** brings every panel in front of you, for
 when some get lost behind you or out of reach (the same as the taskbar's chip and Right Ctrl + B;
-see the README). It isn't saved, and Left or Right Ctrl + Shift + B puts them back (the left one can be
-changed; see the README's keyboard shortcuts).
+see the README). It isn't saved, and Left or Right Ctrl + Shift + B puts them back (the left
+one can be changed; see the README's keyboard shortcuts).
 
 What it costs: one OpenVR connection each time SteamVR starts, and the memory of one idle process.
 It has no action manifest and takes no controller input except the laser on its own page.
