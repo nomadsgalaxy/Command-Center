@@ -1,10 +1,23 @@
 # Phase 0: the headset pass
 
+This is revision 2 of the checklist.
+
 Phase 0 of the OpenXR plan ([openxr-plan.md](openxr-plan.md)) moved Command Center's OpenVR calls
-behind interfaces without changing what they do. The fakes and the golden tests show the calls
-are the same ones, in the same order. They can't show that real SteamVR answers them the same
-way, so this is the check in the headset. It takes about 15 minutes in one sitting. If a step
-fails, write down what you saw and carry on.
+behind interfaces. It was meant to change nothing, apart from a few fixes made on purpose: a
+failed texture import leaves no handle, and a PipeWire or GBM file descriptor is only copied or
+borrowed when it's a real one. The fakes and the golden tests show that, in the cases they cover,
+the calls are the same ones, in the same order. They don't show that the whole program behaves
+the same, or that real SteamVR answers the same way, so this is the check in the headset. It
+takes about 15 minutes in one sitting. If a step fails, write down what you saw and carry on.
+
+With the results, write down:
+
+- the checklist's revision (above);
+- the commit the build was made from, and the binary's time, which
+  `stat -L -c %y /proc/$(pgrep -xn cc-panels)/exe` gives while the Desktop runs;
+- each step's result: passed, failed (with what you saw), skipped, or not available here (and
+  why, such as no eye tracking). A log search that comes up empty is a pass only for a step you
+  did. For a step you skipped, it says nothing.
 
 Every log line below is quoted from the code. Where a step has no log line, it says so, and
 you go by what you see.
@@ -26,7 +39,9 @@ you go by what you see.
    and `universe` commands. On an older build, `cc surfaces` answers with an error instead.
    Skip this and the diff at the end, and compare by eye: the same panels, bars and windows, in
    front of each other the same way.
-4. Install the phase 0 build and open the Desktop.
+4. Note where the log ends, so the searches afterwards read only this run:
+   `wc -l < ~/.cache/control-center/cc-panels.log > ~/cc-log-start.txt`.
+5. Install the phase 0 build and open the Desktop.
 
 ## Two checks from the last build (3 minutes)
 
@@ -106,24 +121,38 @@ Point the mouse at SteamVR's own UI, outside our panels.
     For 16 to 18, the `kvm: ... sent <m> moves, <c> clicks, <k> keys, <w> wheel` line counts the
     clicks and the wheel, and there's no `laser: SteamVR didn't give it the dashboard pointer`.
 19. **Losing the laser with a button held.** Hold the left button on a dashboard slider or
-    scroll bar. Still holding it, pick up the controller in the hand you don't point with: it
-    takes that hand, so the mouse's laser goes. Let go of the button, put the controller down,
-    and point the mouse at the dashboard again. Nothing should still be dragging, and the next
-    click should work as usual. There's no log line for this. If clicks off the panels stop
+    scroll bar and drag it a little. Still holding it, pick up the controller in the hand you
+    don't point with: it takes that hand, so the mouse's laser goes. Before you let go, move the
+    mouse, and watch whether the slider stops as soon as the laser goes or keeps following.
+    Then let go of the button, put the controller down, and point the mouse at the dashboard
+    again. Nothing should still be dragging, and the next click should work as usual. Write the
+    two down separately: whether the slider stopped when the laser went, and whether the next
+    click worked. There's no log line for this. If clicks off the panels stop
     working after it, look for `binding loads` in the log: each time the laser reconnects, it
     spends one of SteamVR's binding loads.
 
 ## Afterwards (1 minute)
 
-- Search `~/.cache/control-center/cc-panels.log` for each of these. They should all come up
-  empty:
-  - `panicked`;
-  - `import fail` and `won't import`;
-  - `laser: SteamVR didn't` and `binding loads`;
-  - `no cc_pointer driver`;
-  - `toast failed`;
-  - `no SteamVR keyboard` and `couldn't be typed`;
-  - `taskbar: wrist: no`.
+- Search only this run's part of `~/.cache/control-center/cc-panels.log`, from the line you
+  noted:
+
+  ```sh
+  tail -n +$(( $(cat ~/cc-log-start.txt) + 1 )) ~/.cache/control-center/cc-panels.log |
+    grep -nF -e panicked -e 'import fail' -e "won't import" -e "laser: SteamVR didn't" \
+      -e 'binding loads' -e 'no cc_pointer driver' -e 'toast failed' \
+      -e 'no SteamVR keyboard' -e "couldn't be typed" -e 'taskbar: wrist: no'
+  ```
+
+  If the log is now shorter than the number you noted, it was moved to `cc-panels.log.1` when
+  the Desktop started (that happens past 5 MB), and the whole of `cc-panels.log` is this run, so
+  drop the `tail`. Nothing should come up. Each search covers these steps, and counts only for
+  the ones you did:
+  - `panicked`: all of them;
+  - `import fail` and `won't import`: 3;
+  - `laser: SteamVR didn't`, `binding loads` and `no cc_pointer driver`: 4 and 16 to 19;
+  - `toast failed`: 11;
+  - `no SteamVR keyboard` and `couldn't be typed`: 10;
+  - `taskbar: wrist: no`: 9.
 - In the newest `~/.cache/control-center/vr-trace-*.jsonl`:
   - `grep -c '"ev"'` isn't 0: the lasers' events were read and recorded;
   - `grep -c '"pose"'` isn't 0, and `grep -c '"m":null'` (a laser that wasn't tracked) is small;
@@ -135,4 +164,5 @@ Point the mouse at SteamVR's own UI, outside our panels.
   `diff ~/cc-surfaces-before.txt ~/cc-surfaces-after.txt`. The same panels, bars and windows
   should be there, in the same order, with the same flags and widths. Where they are can differ,
   if you moved things.
-- When you're done with them, delete the trace flag, the traces and the two surfaces files.
+- When you're done with them, delete the trace flag, the traces, the two surfaces files and
+  `~/cc-log-start.txt`.
