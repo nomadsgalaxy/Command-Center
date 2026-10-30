@@ -98,10 +98,23 @@ pub struct Combo {
 /// Left Ctrl + Shift + B, since not every keyboard has a Right Ctrl.
 pub const UNGATHER_KEY: Combo = Combo { mods: 0b101, key: KEY_B };
 
+/// The keys key() takes with Right Ctrl held, whatever else is: a combo with Right Ctrl and one of
+/// them would shadow that shortcut, since the combo is checked first. Keep it in step with key().
+const RCTRL_KEYS: [u16; 10] = [KEY_ESC, KEY_HOME, KEY_F1, 60, 61, KEY_F4, KEY_SPACE, KEY_D, KEY_B, KEY_G];
+
 impl Combo {
     /// Modifiers and one key, joined by +, in any case: a letter, a digit or F1 to F12, and at
-    /// least one modifier, so a plain key never stops reaching the remote.
-    pub fn parse(text: &str) -> Option<Combo> {
+    /// least one modifier, so a plain key never stops reaching the remote. Not one of Right Ctrl's
+    /// own shortcuts (RCTRL_KEYS). Err says why not.
+    pub fn parse(text: &str) -> Result<Combo, &'static str> {
+        let c = Self::parse_keys(text).ok_or("isn't modifiers and a key (like \"LeftCtrl+Shift+B\")")?;
+        if c.mods & 0b10 != 0 && RCTRL_KEYS.contains(&c.key) {
+            return Err("is one of Right Ctrl's own shortcuts");
+        }
+        Ok(c)
+    }
+
+    fn parse_keys(text: &str) -> Option<Combo> {
         let (mut mods, mut key) = (0u8, None);
         for part in text.split('+').map(|p| p.trim().to_ascii_lowercase()) {
             if let Some(i) = COMBO_MODS.iter().position(|(name, _)| *name == part) {
@@ -128,8 +141,8 @@ impl Combo {
 pub fn ungather_key() -> Combo {
     match crate::config::settings()["ungather_key"].as_str() {
         None => UNGATHER_KEY,
-        Some(t) => Combo::parse(t).unwrap_or_else(|| {
-            eprintln!("settings.json: ungather_key {t:?} isn't modifiers and a key (like \"LeftCtrl+Shift+B\"); using Left Ctrl + Shift + B");
+        Some(t) => Combo::parse(t).unwrap_or_else(|why| {
+            eprintln!("settings.json: ungather_key {t:?} {why}; using Left Ctrl + Shift + B");
             UNGATHER_KEY
         }),
     }
@@ -603,7 +616,9 @@ impl Kvm {
     }
 
     /// Forgets the modifiers held and a combo's key, for when a release may never come (the
-    /// keyboard handed back, a device gone), so a lost one can't swallow the next B.
+    /// keyboard handed back, a device gone), so a lost one can't swallow the next B. Modifiers
+    /// still down through it are forgotten too, so the combo goes to the remote until they're
+    /// pressed again: the safe way round.
     fn forget_combo(&mut self) {
         (self.held_mods, self.combo_held) = (Vec::new(), None);
     }
@@ -2247,14 +2262,19 @@ mod tests {
 
     #[test]
     fn an_ungather_key_is_modifiers_and_one_key() {
-        assert_eq!(Combo::parse("LeftCtrl+Shift+B"), Some(UNGATHER_KEY));
-        assert_eq!(Combo::parse(" leftctrl + SHIFT + b "), Some(UNGATHER_KEY), "any case and spacing");
-        assert_eq!(Combo::parse("B+Shift+LeftCtrl"), Some(UNGATHER_KEY), "any order");
-        assert_eq!(Combo::parse("Alt+Super+F12"), Some(Combo { mods: 0b11000, key: KEY_F12 }));
-        assert_eq!(Combo::parse("RightCtrl+F10"), Some(Combo { mods: 0b10, key: 68 }));
-        assert_eq!(Combo::parse("Alt+1"), Some(Combo { mods: 0b1000, key: 2 }));
+        assert_eq!(Combo::parse("LeftCtrl+Shift+B"), Ok(UNGATHER_KEY));
+        assert_eq!(Combo::parse(" leftctrl + SHIFT + b "), Ok(UNGATHER_KEY), "any case and spacing");
+        assert_eq!(Combo::parse("B+Shift+LeftCtrl"), Ok(UNGATHER_KEY), "any order");
+        assert_eq!(Combo::parse("Alt+Super+F12"), Ok(Combo { mods: 0b11000, key: KEY_F12 }));
+        assert_eq!(Combo::parse("RightCtrl+F10"), Ok(Combo { mods: 0b10, key: 68 }));
+        assert_eq!(Combo::parse("Alt+1"), Ok(Combo { mods: 0b1000, key: 2 }));
+        // one of Right Ctrl's own shortcuts, with or without more modifiers, would shadow it
+        for taken in ["RightCtrl+G", "RightCtrl+Shift+B", "RightCtrl+D", "Alt+RightCtrl+F1", "RightCtrl+F4"] {
+            assert_eq!(Combo::parse(taken), Err("is one of Right Ctrl's own shortcuts"), "{taken:?}");
+        }
+        assert!(Combo::parse("LeftCtrl+G").is_ok() && Combo::parse("RightCtrl+F5").is_ok(), "the same keys without Right Ctrl, or past F4, are free");
         for bad in ["", "B", "Shift", "LeftCtrl+B+C", "Ctrl+B", "LeftCtrl+F13", "LeftCtrl+Home", "LeftCtrl+?", "LeftCtrl++B"] {
-            assert_eq!(Combo::parse(bad), None, "{bad:?}");
+            assert!(Combo::parse(bad).is_err(), "{bad:?}");
         }
     }
 

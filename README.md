@@ -137,8 +137,9 @@ restart the Desktop:
 ```
 
 It's modifiers and one key joined by `+`: any of `LeftCtrl`, `RightCtrl`, `Shift`, `Alt` and
-`Super`, and a letter, a digit or F1 to F12. It needs at least one modifier. One that doesn't parse
-is logged, and Left Ctrl + Shift + B is used instead.
+`Super`, and a letter, a digit or F1 to F12. It needs at least one modifier, and it can't be one of
+the Right Ctrl shortcuts above (Right Ctrl with B, D, G or F1 to F4, whatever else is held). One
+that doesn't parse, or is taken, is logged, and Left Ctrl + Shift + B is used instead.
 
 On the Frame, `cc-home update` updates Command Center's system image to the latest release
 without a password, after checking the release's signature
