@@ -70,8 +70,8 @@ struct Found {
     same: Vec<PathBuf>,
 }
 
-/// The loader's own search first (the OpenXR loader spec, Linux: active_runtime.json in the config
-/// dirs, the first one found wins), then any other manifest installed under openxr/1, then SteamVR's
+/// The loader's own search first (the OpenXR loader spec, Linux: XR_RUNTIME_JSON if it's set, else
+/// active_runtime.json in the config dirs, the first one found wins), then any other manifest installed under openxr/1, then SteamVR's
 /// own for this CPU. Only the first of those is what an app gets with no XR_RUNTIME_JSON set.
 fn found() -> Vec<Found> {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -87,8 +87,13 @@ fn found() -> Vec<Found> {
     dirs.extend(data_dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from));
 
     let mut out: Vec<(PathBuf, &'static str)> = Vec::new();
+    // when it's set, it wins over everything else the loader would look at
+    let overridden = std::env::var_os("XR_RUNTIME_JSON").filter(|v| !v.is_empty()).map(PathBuf::from);
+    if let Some(o) = &overridden {
+        out.push((o.clone(), "XR_RUNTIME_JSON override (what an app gets now)"));
+    }
     if let Some(active) = config_dirs.iter().map(|d| d.join("openxr/1/active_runtime.json")).find(|p| p.is_file()) {
-        out.push((active, "the active runtime: what the loader picks"));
+        out.push((active, if overridden.is_some() { "the active runtime, which the override wins over" } else { "the active runtime: what the loader picks" }));
     }
     for d in dirs {
         let Ok(list) = std::fs::read_dir(d.join("openxr/1")) else { continue };
