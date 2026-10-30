@@ -478,17 +478,26 @@ pub mod fake {
         });
     }
     // no render model, so laser_pose gives the pose as it is: a trace records the laser itself
-    unsafe extern "C" fn string_prop(d: u32, p: sys::ETrackedDeviceProperty, buf: *mut std::os::raw::c_char, size: u32, _e: *mut sys::ETrackedPropertyError) -> u32 {
+    /// As OpenVR does it: the length the value needs, NUL included, whatever the buffer. A buffer
+    /// that's too small (or size 0, to ask for the length) gets nothing written and
+    /// TrackedProp_BufferTooSmall. Every caller here passes a 64 or 256 byte buffer, none size 0.
+    unsafe extern "C" fn string_prop(d: u32, p: sys::ETrackedDeviceProperty, buf: *mut std::os::raw::c_char, size: u32, e: *mut sys::ETrackedPropertyError) -> u32 {
         let v = if p == sys::ETrackedDeviceProperty_Prop_ControllerType_String { script(|s| s.types.iter().find(|x| x.0 == d).map(|x| x.1.clone())) } else { None };
         let v = v.unwrap_or_default();
-        let n = v.len().min(size.saturating_sub(1) as usize);
-        if size > 0 {
+        let need = v.len() as u32 + 1;
+        let err = if size < need {
+            sys::ETrackedPropertyError_TrackedProp_BufferTooSmall
+        } else {
             unsafe {
-                std::ptr::copy_nonoverlapping(v.as_ptr() as *const std::os::raw::c_char, buf, n);
-                *buf.add(n) = 0;
+                std::ptr::copy_nonoverlapping(v.as_ptr() as *const std::os::raw::c_char, buf, v.len());
+                *buf.add(v.len()) = 0;
             }
+            sys::ETrackedPropertyError_TrackedProp_Success
+        };
+        if !e.is_null() {
+            unsafe { *e = err };
         }
-        n as u32 + 1
+        need
     }
     unsafe extern "C" fn class(_d: u32) -> sys::ETrackedDeviceClass {
         sys::ETrackedDeviceClass_TrackedDeviceClass_Controller
@@ -557,5 +566,21 @@ mod tests {
     fn a_nul_is_an_error() {
         assert!(super::cstr("controlcenter.panel.desk").is_ok());
         assert!(super::cstr("desk\0wide").is_err());
+    }
+
+    /// The fake's string properties answer as OpenVR's do: the length needed, and BufferTooSmall
+    /// with nothing written when the buffer's short.
+    #[test]
+    fn the_fakes_string_property_says_how_long_it_needs() {
+        use openvr_sys as sys;
+        let _vr = super::fake::install(super::fake::Script { types: vec![(4, "cc_pointer".into())], ..Default::default() });
+        let mut err = 0;
+        let mut buf = [1 as std::os::raw::c_char; 4];
+        let n = crate::call!(sys, GetStringTrackedDeviceProperty, 4, sys::ETrackedDeviceProperty_Prop_ControllerType_String, buf.as_mut_ptr(), 0, &mut err);
+        assert_eq!((n, err), (11, sys::ETrackedPropertyError_TrackedProp_BufferTooSmall), "size 0 asks for the length");
+        let n = crate::call!(sys, GetStringTrackedDeviceProperty, 4, sys::ETrackedDeviceProperty_Prop_ControllerType_String, buf.as_mut_ptr(), buf.len() as u32, &mut err);
+        assert_eq!((n, err, buf[0]), (11, sys::ETrackedPropertyError_TrackedProp_BufferTooSmall, 1), "too short: nothing written");
+        assert_eq!(super::string_prop(4, sys::ETrackedDeviceProperty_Prop_ControllerType_String), "cc_pointer");
+        assert!(!super::is_real_controller(4) && super::is_real_controller(5), "a _pointer type isn't a real controller");
     }
 }
