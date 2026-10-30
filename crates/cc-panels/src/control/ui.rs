@@ -336,7 +336,7 @@ pub fn next_event(h: vr::Handle, e: &mut vr::VREvent_t) -> bool {
     };
     *sent = at;
     *e = Default::default();
-    (e.eventType, e.trackedDeviceIndex) = (kind as u32, grab::MOUSE);
+    (e.eventType, e.trackedDeviceIndex) = (kind as u32, crate::vr::index(crate::ids::Dev::Mouse));
     e.data.mouse = sys::VREvent_Mouse_t { x, y, button: button as u32, cursorIndex: 0 };
     true
 }

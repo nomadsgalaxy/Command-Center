@@ -118,10 +118,14 @@ pub fn at(fx: f64, fy: f64) -> Option<(f64, f64)> {
     CROP.lock().unwrap().map(|c| global(c.0, fx, fy))
 }
 
-/// Plasma's overlay at `local` on device `dev` (MAX is the room), `width` wide and bent to
+/// How the overlay was last placed: its matrix, the device it's on (None: the room), the crop, its
+/// width in mm, the texture bounds and the curve in mm.
+type Placed = Option<(Mat, Option<crate::ids::Dev>, Rect, u32, [f32; 4], u32)>;
+
+/// Plasma's overlay at `local` on device `dev` (None is the room), `width` wide and bent to
 /// `curve`, showing the part of its texture in `b`. The bounds are only sent when they differ from
 /// the last ones (`was`), because the crop moves far more often than it changes.
-fn place_for(local: &Mat, dev: u32, width: f64, curve: f64, b: [f32; 4], was: Option<[f32; 4]>) -> Place {
+fn place_for(local: &Mat, dev: Option<crate::ids::Dev>, width: f64, curve: f64, b: [f32; 4], was: Option<[f32; 4]>) -> Place {
     let place = Place::new(At::on(dev, *local), width).curve(curve);
     if was != Some(b) { place.bounds(b) } else { place }
 }
@@ -291,13 +295,13 @@ pub struct Plasma {
     on_win: bool,                      // which of them is on the overlay
     live: bool,                        // a frame is showing
     visible: bool,
-    clickable: bool,                                      // it takes lasers itself (a popup is open), otherwise the taskbar's frame forwards them
-    hidden_at: Option<Instant>,                           // when it stopped being wanted
-    placed: Option<(Mat, u32, Rect, u32, [f32; 4], u32)>, // as last placed: its matrix, the device it's on (MAX: the room), the crop, width in mm, texture bounds, curve in mm
-    held: u32,                                            // laser buttons down on it, in RDP's flags
-    pub moving: bool,                                     // a laser on it this frame (events or a held press), which sets the main loop's pace
-    pub released: Vec<u32>,                               // devices whose button came up on it, ending a hold on the taskbar's frame
-    last: Lasts,                                          // each laser's last point in the session, for a ray that misses
+    clickable: bool,            // it takes lasers itself (a popup is open), otherwise the taskbar's frame forwards them
+    hidden_at: Option<Instant>, // when it stopped being wanted
+    placed: Placed,
+    held: u32,                          // laser buttons down on it, in RDP's flags
+    pub moving: bool,                   // a laser on it this frame (events or a held press), which sets the main loop's pace
+    pub released: Vec<crate::ids::Dev>, // devices whose button came up on it, ending a hold on the taskbar's frame
+    last: Lasts,                        // each laser's last point in the session, for a ray that misses
 }
 
 impl Plasma {
@@ -377,7 +381,7 @@ impl Plasma {
     ///   - `curve`: the frame's curve radius as drawn (taskbar.rs), 0 for flat.
     /// It streams while shown (and for LINGER after), only puts new frames up, and places the
     /// crop on the frame's surface.
-    pub fn tick(&mut self, ses: Option<&Arc<Session>>, cap: &capture::Capture, at: Option<(Mat, Mat, u32)>, lift: f64, mpp: f64, curve: f64) {
+    pub fn tick(&mut self, ses: Option<&Arc<Session>>, cap: &capture::Capture, at: Option<(Mat, Mat, Option<crate::ids::Dev>)>, lift: f64, mpp: f64, curve: f64) {
         self.events();
         let now = Instant::now();
         self.hidden_at = if at.is_some() { None } else { self.hidden_at.or(Some(now)) };
@@ -586,7 +590,7 @@ impl Plasma {
         self.moving = true;
         let (m, t) = (unsafe { e.data.mouse }, e.eventType);
         if t == sys::EVREventType_VREvent_MouseButtonUp {
-            self.released.push(e.trackedDeviceIndex);
+            self.released.push(vr::dev(e.trackedDeviceIndex));
         }
         let b = match m.button {
             sys::EVRMouseButton_VRMouseButton_Right => PTR_FLAGS_BUTTON2,
@@ -709,7 +713,7 @@ impl Plasma {
         let world: Mat = serde_json::from_value(v["world"].clone()).unwrap();
         let (width, aspect, curve) = (v["width"].as_f64().unwrap(), v["aspect"].as_f64().unwrap(), v["curve"].as_f64().unwrap());
         (self.visible, self.clickable, self.live) = (true, v["clickable"].as_bool().unwrap_or(true), true);
-        self.placed = Some((world, u32::MAX, c, (width * 1000.0).round() as u32, b, (curve * 1000.0).round() as u32));
+        self.placed = Some((world, None, c, (width * 1000.0).round() as u32, b, (curve * 1000.0).round() as u32));
         *CROP.lock().unwrap() = Some((c, p));
         let mut k = crate::kvm::lock();
         k.plasma = Some(Placement::from_matrix(&world, width, aspect, curve));
@@ -1184,14 +1188,14 @@ mod tests {
         let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
         let (b0, b1) = ([0.0, 0.1, 0.9, 0.5], [0.0, 0.1, 0.9, 0.6]);
         let mut w = Writes::default();
-        crate::overlay::apply(&mut w, crate::vr::Handle(4), &place_for(&m, u32::MAX, 0.89, 2.0, b0, None));
+        crate::overlay::apply(&mut w, crate::vr::Handle(4), &place_for(&m, None, 0.89, 2.0, b0, None));
         assert_eq!(w.0.first(), Some(&Call::Bounds(crate::vr::Handle(4), b0)), "the first placement sends the crop, before the width");
         assert_eq!(w.0.last(), Some(&Call::Room(crate::vr::Handle(4), m)));
         let mut w = Writes::default();
-        crate::overlay::apply(&mut w, crate::vr::Handle(4), &place_for(&m, u32::MAX, 0.89, 2.0, b0, Some(b0)));
+        crate::overlay::apply(&mut w, crate::vr::Handle(4), &place_for(&m, None, 0.89, 2.0, b0, Some(b0)));
         assert!(!w.0.iter().any(|c| matches!(c, Call::Bounds(..))), "the same crop again: not resent");
         let mut w = Writes::default();
-        crate::overlay::apply(&mut w, crate::vr::Handle(4), &place_for(&m, 2, 0.89, 0.0, b1, Some(b0)));
+        crate::overlay::apply(&mut w, crate::vr::Handle(4), &place_for(&m, Some(crate::ids::Dev::Controller(crate::ids::Ctl(2))), 0.89, 0.0, b1, Some(b0)));
         assert!(w.0.contains(&Call::Bounds(crate::vr::Handle(4), b1)), "a new crop is");
         assert_eq!(w.0.last(), Some(&Call::Device(crate::vr::Handle(4), 2, m)), "on a controller when the frame is on one");
     }

@@ -137,6 +137,28 @@ pub fn place(h: Handle, m: &Mat) {
     call!(ov, SetOverlayTransformAbsolute, h.0, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, &mut t);
 }
 
+/// The device behind OpenVR's tracked-device index `i`: 0 is the headset, 64 (one past SteamVR's
+/// own, k_unMaxTrackedDeviceCount) is our mouse's ray, and the rest are controllers, ours and
+/// other apps' virtual pointers included (`is_real_controller` tells them apart).
+pub fn dev(i: u32) -> crate::ids::Dev {
+    use crate::ids::{Ctl, Dev};
+    match i {
+        0 => Dev::Head,
+        i if i == sys::k_unMaxTrackedDeviceCount as u32 => Dev::Mouse,
+        i => Dev::Controller(Ctl(i)),
+    }
+}
+
+/// OpenVR's tracked-device index for `d` (the inverse of `dev`).
+pub fn index(d: crate::ids::Dev) -> u32 {
+    use crate::ids::Dev;
+    match d {
+        Dev::Head => 0,
+        Dev::Mouse => sys::k_unMaxTrackedDeviceCount as u32,
+        Dev::Controller(c) => c.0,
+    }
+}
+
 /// The headset's pose in standing space, while it's tracked.
 pub fn head() -> Option<Mat> {
     let mut pose: sys::TrackedDevicePose_t = Default::default();

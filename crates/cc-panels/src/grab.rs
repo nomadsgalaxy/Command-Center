@@ -35,6 +35,7 @@
 //! in front and keeps every laser inside it; where on the card a laser lands says whether it's
 //! the bar, an edge or a corner.
 use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta, surface_point};
+use crate::ids::Dev;
 use crate::kvm::Kvm;
 use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, PUSH_ACCEL, PUSH_RATE, PUSH_STREAK, ZOOM, ZOOM_NOTCH};
 use crate::overlay::{At, Live, Overlays, Place, apply};
@@ -840,20 +841,20 @@ enum Mode {
 }
 
 struct Drag {
-    dev: u32,
+    dev: Dev,
     mode: Mode,
     lost: Option<Instant>,
     streak: Option<Streak>,             // the push or pull going on, for its speed-up
     since: Instant,                     // when it started, to tell a tap on the curve button from a pull
     bent0: f64,                         // ...and how bent the panel was then (its sagitta, metres)
-    others: Vec<u32>,                   // a carry's dock targets: the other controllers (none with docking off)
+    others: Vec<crate::ids::Ctl>,       // a carry's dock targets: the other controllers (none with docking off)
     arm: Option<(Dock, Instant, bool)>, // the target the hand's in, since when, and whether it's armed (DOCK_DWELL)
 }
 
 /// What a docked panel rides on (the spec's rule 7). World is not docked.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Dock {
-    Hand(u32), // a controller
+    Hand(crate::ids::Ctl), // a controller
     Head,
 }
 
@@ -890,7 +891,7 @@ fn within_reach(dock: Dock, mut rel: Mat) -> Mat {
 
 /// Where a panel let go by a hand at `hand` goes: onto one of the other `controllers` (their
 /// positions), onto the head, or the world (None).
-fn dock_for(hand: V3, head: V3, controllers: &[(u32, V3)]) -> Option<Dock> {
+fn dock_for(hand: V3, head: V3, controllers: &[(crate::ids::Ctl, V3)]) -> Option<Dock> {
     let d = |a: V3, b: V3| norm(&[a[0] - b[0], a[1] - b[1], a[2] - b[2]]);
     let near = controllers.iter().map(|&(c, p)| (c, d(hand, p))).filter(|&(_, x)| x < DOCK_HAND).min_by(|a, b| a.1.total_cmp(&b.1));
     match near {
@@ -970,7 +971,7 @@ pub struct Grab {
     dim_gen: u32,               // the theme the backdrop was painted for
     painted: Option<Instant>,   // when paint_order last ran (None: run it now)
     moving: bool,               // something moved or faded this frame, so main.rs keeps the display's rate
-    pub released: Vec<u32>,     // devices whose button came up on a panel or card this frame (a hold that started on the taskbar)
+    pub released: Vec<Dev>,     // devices whose button came up on a panel or card this frame (a hold that started on the taskbar)
     extra: Option<Extra>,       // the window in the slot after the panels', while it's open
     scanned: Vec<Option<Pose>>, // each panel's aligned place (home.json "scanned"), reread every second
     scanned_read: Option<Instant>,
@@ -1027,7 +1028,7 @@ struct Owner {
 /// theater mode needs it. Its colour gets repainted for each theme (`paint_backdrop`).
 fn backdrop() -> vr::Handle {
     let h = crate::surface::create(crate::surface::Kind::Backdrop, None, "controlcenter.theater", "Command Center theater").unwrap_or(crate::vr::Handle::NONE);
-    apply(&mut Live, h, &Place::new(At::Device(sys::k_unTrackedDeviceIndex_Hmd as u32, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, -2.0]]), 8.0));
+    apply(&mut Live, h, &Place::new(At::Device(Dev::Head, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, -2.0]]), 8.0));
     call!(ov, SetOverlayAlpha, h.0, 0.0);
     h
 }
@@ -1054,31 +1055,29 @@ pub fn poses() -> Vec<sys::TrackedDevicePose_t> {
 }
 
 /// Whether device dev is connected at all (it can be connected and still untracked for a moment).
-pub fn connected(dev: u32) -> bool {
-    dev == MOUSE || poses().get(dev as usize).is_some_and(|p| p.bDeviceIsConnected)
+pub fn connected(dev: Dev) -> bool {
+    dev == Dev::Mouse || poses().get(vr::index(dev) as usize).is_some_and(|p| p.bDeviceIsConnected)
 }
 
-/// The mouse, as a device number just past SteamVR's (kvm.rs card_mouse). Its pose and laser
-/// are kvm's ray as of the last poll.
-pub const MOUSE: u32 = sys::k_unMaxTrackedDeviceCount as u32;
+// The mouse (Dev::Mouse; kvm.rs card_mouse): its pose and laser are kvm's ray as of the last poll.
 static MOUSE_RAY: Mutex<Option<Mat>> = Mutex::new(None);
 
-pub fn pose_of(dev: u32) -> Option<Mat> {
-    if dev == MOUSE {
+pub fn pose_of(dev: Dev) -> Option<Mat> {
+    if dev == Dev::Mouse {
         return *MOUSE_RAY.lock().unwrap();
     }
-    let p = *poses().get(dev as usize)?;
+    let p = *poses().get(vr::index(dev) as usize)?;
     p.bPoseIsValid.then_some(p.mDeviceToAbsoluteTracking.m)
 }
 
 /// Where a device's laser meets the panel, in the device's own frame so it rides along like a
 /// carried panel, and how far in front of the panel's middle that point is.
-pub fn taken(pl: &Placement, dev: u32) -> Option<([f64; 3], f64)> {
+pub fn taken(pl: &Placement, dev: Dev) -> Option<([f64; 3], f64)> {
     taken_by(&Live, pl, dev)
 }
 
 /// `taken` through a stage (SteamVR, or a test's stand-in).
-pub fn taken_by(s: &impl Stage, pl: &Placement, dev: u32) -> Option<([f64; 3], f64)> {
+pub fn taken_by(s: &impl Stage, pl: &Placement, dev: Dev) -> Option<([f64; 3], f64)> {
     let (l, d) = (s.laser(dev)?, s.device(dev)?);
     let o = [l[0][3] as f64, l[1][3] as f64, l[2][3] as f64];
     let dir = [-l[0][2] as f64, -l[1][2] as f64, -l[2][2] as f64];
@@ -1094,8 +1093,8 @@ pub fn depth_of(pl: &Placement, m: &Mat, local: &[f64; 3]) -> f64 {
 }
 
 /// A device's laser (vr::laser_pose). For the mouse, the laser is just its pose.
-pub(crate) fn laser_of(dev: u32) -> Option<Mat> {
-    if dev == MOUSE { pose_of(dev) } else { vr::laser_pose(dev) }
+pub(crate) fn laser_of(dev: Dev) -> Option<Mat> {
+    if dev == Dev::Mouse { pose_of(dev) } else { vr::laser_pose(vr::index(dev)) }
 }
 
 /// A world point in a device's own frame. This works because its pose is rigid.
@@ -1105,12 +1104,12 @@ fn to_device(d: &Mat, p: &[f64; 3]) -> [f64; 3] {
 }
 
 /// Where a device's laser meets the panel's surface, extended past its edges, as (u, v).
-pub fn laser_on(pl: &Placement, dev: u32) -> Option<(f64, f64)> {
+pub fn laser_on(pl: &Placement, dev: Dev) -> Option<(f64, f64)> {
     laser_on_by(&Live, pl, dev)
 }
 
 /// `laser_on` through a stage.
-pub fn laser_on_by(s: &impl Stage, pl: &Placement, dev: u32) -> Option<(f64, f64)> {
+pub fn laser_on_by(s: &impl Stage, pl: &Placement, dev: Dev) -> Option<(f64, f64)> {
     let l = s.laser(dev)?;
     let o = [l[0][3] as f64, l[1][3] as f64, l[2][3] as f64];
     let d = [-l[0][2] as f64, -l[1][2] as f64, -l[2][2] as f64];
@@ -1306,7 +1305,7 @@ impl Grab {
                 self.touch(i, 1, false);
                 false
             }
-            sys::EVREventType_VREvent_MouseButtonUp => self.end_by(e.trackedDeviceIndex, k),
+            sys::EVREventType_VREvent_MouseButtonUp => self.end_by(vr::dev(e.trackedDeviceIndex), k),
             _ => false,
         }
     }
@@ -1344,9 +1343,9 @@ impl Grab {
         let s = &mut Live;
         for (i, dev, down) in self.backs.events() {
             if down {
-                self.start(i, Part::Bar, dev, k, s)
+                self.start(i, Part::Bar, vr::dev(dev), k, s)
             } else {
-                self.end_by(dev, k);
+                self.end_by(vr::dev(dev), k);
             }
         }
         self.poll_mouse(k, s);
@@ -1359,18 +1358,18 @@ impl Grab {
         // The mouse's presses on a card with no laser (kvm.rs card_mouse) land where its ray meets the card.
         for (i, down) in std::mem::take(&mut k.card_mouse) {
             if !down {
-                self.end_by(MOUSE, k);
+                self.end_by(Dev::Mouse, k);
                 continue;
             }
             let i = if i == usize::MAX { self.slot() } else { i };
             let pl = self.at(i, k);
-            let part = self.drawn[i].as_ref().zip(laser_on_by(s, &pl, MOUSE)).and_then(|(d, (u, v))| held_part(&d.spec, pl.width, pl.height, i == self.slot(), self.hover[i], u, v));
+            let part = self.drawn[i].as_ref().zip(laser_on_by(s, &pl, Dev::Mouse)).and_then(|(d, (u, v))| held_part(&d.spec, pl.width, pl.height, i == self.slot(), self.hover[i], u, v));
             eprintln!("{}: card pressed by the mouse on {part:?}", self.owner(i).map_or("", |o| o.name));
             crate::windows::shell_outside();
-            self.press(i, part, MOUSE, k, s);
+            self.press(i, part, Dev::Mouse, k, s);
         }
         let notches = std::mem::take(&mut k.card_wheel);
-        if let Some(i) = (notches != 0.0).then(|| self.drags.iter().position(|d| d.as_ref().is_some_and(|d| d.dev == MOUSE))).flatten() {
+        if let Some(i) = (notches != 0.0).then(|| self.drags.iter().position(|d| d.as_ref().is_some_and(|d| d.dev == Dev::Mouse))).flatten() {
             self.scroll(i, notches, k, s);
         }
     }
@@ -1398,10 +1397,10 @@ impl Grab {
                             if vr::is_real_controller(e.trackedDeviceIndex) && k.awake {
                                 k.set_awake(false); // whichever device was pressed last is primary (R-2)
                             }
-                            self.press(i, part, e.trackedDeviceIndex, k, s);
+                            self.press(i, part, vr::dev(e.trackedDeviceIndex), k, s);
                         }
                         sys::EVREventType_VREvent_MouseButtonUp => {
-                            self.end_by(e.trackedDeviceIndex, k);
+                            self.end_by(vr::dev(e.trackedDeviceIndex), k);
                         }
                         sys::EVREventType_VREvent_ScrollDiscrete => self.scroll(i, unsafe { e.data.scroll.ydelta } as f64, k, s),
                         _ => {}
@@ -1429,7 +1428,7 @@ impl Grab {
     }
 
     /// A press on a part of slot i's card: either a button, or the start of a drag on dev.
-    fn press(&mut self, i: usize, part: Option<Part>, dev: u32, k: &mut Kvm, s: &mut impl Stage) {
+    fn press(&mut self, i: usize, part: Option<Part>, dev: Dev, k: &mut Kvm, s: &mut impl Stage) {
         match part {
             // the Extra's close; its window does the closing on its own tick
             Some(Part::Ctl(_)) if i == self.slot() => {
@@ -1446,7 +1445,7 @@ impl Grab {
         }
     }
 
-    fn start(&mut self, i: usize, part: Part, dev: u32, k: &Kvm, s: &impl Stage) {
+    fn start(&mut self, i: usize, part: Part, dev: Dev, k: &Kvm, s: &impl Stage) {
         let pl = &self.at(i, k);
         let mode = match part {
             // theater mode has its own size, so there this corner works like the others
@@ -1483,15 +1482,15 @@ impl Grab {
             Mode::Move { .. } => "carried",
         };
         // a controller's carry can dock: its targets are the other controllers, looked up once here
-        let others = if self.docking && matches!(mode, Mode::Move { .. }) && dev != MOUSE { s.controllers().into_iter().filter(|&c| c != dev).collect() } else { Vec::new() };
+        let others = if self.docking && matches!(mode, Mode::Move { .. }) && dev != Dev::Mouse { s.controllers().into_iter().filter(|&c| Dev::Controller(c) != dev).collect() } else { Vec::new() };
         self.drags[i] = Some(Drag { dev, mode, lost: None, streak: None, since: Instant::now(), bent0: sagitta(pl.width, pl.curve), others, arm: None });
-        eprintln!("{}: {what} by device {dev}", self.owner(i).map_or("", |o| o.name));
+        eprintln!("{}: {what} by device {}", self.owner(i).map_or("", |o| o.name), vr::index(dev));
     }
 
     /// Letting go: the panel stays where it is and its new place is saved into "home".
     fn end(&mut self, i: usize, k: &Kvm) {
         let Some(d) = self.drags[i].take() else { return };
-        if matches!(d.mode, Mode::Move { .. }) && d.dev != MOUSE && crate::THEATER.load(Relaxed) != i {
+        if matches!(d.mode, Mode::Move { .. }) && d.dev != Dev::Mouse && crate::THEATER.load(Relaxed) != i {
             let armed = d.arm.filter(|a| a.2).map(|a| a.0);
             return self.drops.push((i, armed)); // settle docks it, or puts it in the world and saves it
         }
@@ -1507,11 +1506,11 @@ impl Grab {
     /// A carry's hand at `hand`: which dock target it's in, for how long, and whether that's armed
     /// yet (DOCK_DWELL, with a buzz). Only with docking on.
     fn arm(&mut self, i: usize, hand: &Mat, s: &mut impl Stage, now: Instant) {
-        if !self.docking || self.drags[i].as_ref().is_none_or(|d| d.dev == MOUSE) || crate::THEATER.load(Relaxed) == i {
+        if !self.docking || self.drags[i].as_ref().is_none_or(|d| d.dev == Dev::Mouse) || crate::THEATER.load(Relaxed) == i {
             return;
         }
         let pos = |m: Mat| [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64];
-        let others: Vec<(u32, V3)> = self.drags[i].as_ref().unwrap().others.iter().filter_map(|&c| Some((c, pos(s.device(c)?)))).collect();
+        let others: Vec<(crate::ids::Ctl, V3)> = self.drags[i].as_ref().unwrap().others.iter().filter_map(|&c| Some((c, pos(s.device(Dev::Controller(c))?)))).collect();
         let want = dock_for(pos(*hand), s.head(), &others);
         let card = self.owner(i).map_or_else(|| s.panel(i).overlay, |o| o.card); // a slot with no owner is only a test's
         let d = self.drags[i].as_mut().unwrap();
@@ -1534,7 +1533,7 @@ impl Grab {
     fn settle(&mut self, k: &mut Kvm, s: &mut impl Stage) {
         for (i, dock) in std::mem::take(&mut self.drops) {
             let on = match dock {
-                Some(Dock::Hand(c)) => s.device(c),
+                Some(Dock::Hand(c)) => s.device(Dev::Controller(c)),
                 Some(Dock::Head) => s.head_pose(),
                 None => None,
             };
@@ -1587,7 +1586,7 @@ impl Grab {
 
     /// A device's button came up somewhere (the taskbar's frame counts too), so whatever it was
     /// carrying or resizing gets put down.
-    pub fn end_by(&mut self, dev: u32, k: &Kvm) -> bool {
+    pub fn end_by(&mut self, dev: Dev, k: &Kvm) -> bool {
         self.released.push(dev);
         let mut any = false;
         for i in 0..self.drags.len() {
@@ -1739,10 +1738,10 @@ impl Grab {
             }
             let Some((dock, rel, lost)) = self.docked[i] else { continue };
             let on = match dock {
-                Dock::Hand(c) => s.device(c),
+                Dock::Hand(c) => s.device(Dev::Controller(c)),
                 Dock::Head => s.head_pose(),
             };
-            let off = matches!(dock, Dock::Hand(c) if !s.connected(c));
+            let off = matches!(dock, Dock::Hand(c) if !s.connected(Dev::Controller(c)));
             if !off {
                 self.off_since[i] = None;
             }
@@ -2699,7 +2698,8 @@ mod tests {
         use crate::stage::fake::{Fake, OverFake, aimed, apart, put};
         use std::time::Duration;
 
-        const HAND: u32 = 1;
+        const HAND: Dev = Dev::Controller(crate::ids::Ctl(1));
+        const TWO: Dev = Dev::Controller(crate::ids::Ctl(2)); // another controller
         const EYE: V3 = [0.0, 1.6, 0.0]; // where Fake::with_panels puts the head
 
         fn flat() -> Placement {
@@ -2713,7 +2713,7 @@ mod tests {
         }
 
         /// The hand at `from`, its laser pointing at `at`.
-        fn point(f: &mut Fake, dev: u32, from: V3, at: V3) {
+        fn point(f: &mut Fake, dev: Dev, from: V3, at: V3) {
             f.devices.insert(dev, aimed(from, at));
         }
 
@@ -2841,7 +2841,7 @@ mod tests {
 
         #[test]
         fn let_go_by_the_other_hand_it_docks_there_and_rides_along_until_torn_off() {
-            const OTHER: u32 = 2;
+            const OTHER: Dev = Dev::Controller(crate::ids::Ctl(2));
             let p = flat();
             let (mut g, mut k, mut f) = world(p);
             point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
@@ -2858,7 +2858,7 @@ mod tests {
             assert_eq!(f.pulses.len(), 1, "only once");
             g.end_by(HAND, &k);
             g.settle(&mut k, &mut f);
-            assert!(matches!(g.docked[0], Some((Dock::Hand(OTHER), _, None))), "{:?}", g.docked[0].map(|d| d.0));
+            assert!(matches!(g.docked[0], Some((Dock::Hand(c), _, None)) if Dev::Controller(c) == OTHER), "{:?}", g.docked[0].map(|d| d.0));
             // the other hand moves 30 cm left: the panel goes with it, the same way round
             let was = k.place[0];
             let mut m = f.devices[&OTHER];
@@ -2877,7 +2877,7 @@ mod tests {
 
         #[test]
         fn a_hand_out_of_sight_when_the_carry_starts_can_still_take_the_dock() {
-            const OTHER: u32 = 2;
+            const OTHER: Dev = Dev::Controller(crate::ids::Ctl(2));
             let p = flat();
             let (mut g, mut k, mut f) = world(p);
             point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
@@ -2891,12 +2891,12 @@ mod tests {
             g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
             g.end_by(HAND, &k);
             g.settle(&mut k, &mut f);
-            assert!(matches!(g.docked[0], Some((Dock::Hand(OTHER), _, None))));
+            assert!(matches!(g.docked[0], Some((Dock::Hand(c), _, None)) if Dev::Controller(c) == OTHER));
         }
 
         #[test]
         fn a_carry_that_only_passes_a_target_or_has_docking_off_stays_in_the_world() {
-            const OTHER: u32 = 2;
+            const OTHER: Dev = Dev::Controller(crate::ids::Ctl(2));
             for (docking, dwell) in [(true, DOCK_DWELL / 2), (false, DOCK_DWELL * 2)] {
                 let p = flat();
                 let (mut g, mut k, mut f) = world(p);
@@ -2917,7 +2917,7 @@ mod tests {
         fn docked_on_other(p: Placement, hand: V3) -> (Grab, Kvm, Fake) {
             let (mut g, mut k, mut f) = world(p);
             point(&mut f, HAND, hand, p.c);
-            point(&mut f, 2, [hand[0] + 0.05, hand[1], hand[2]], p.c);
+            point(&mut f, TWO, [hand[0] + 0.05, hand[1], hand[2]], p.c);
             g.docking = true;
             g.start(0, Part::Bar, HAND, &k, &f);
             let t0 = Instant::now();
@@ -2925,7 +2925,7 @@ mod tests {
             g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
             g.end_by(HAND, &k);
             g.settle(&mut k, &mut f);
-            assert!(matches!(g.docked[0], Some((Dock::Hand(2), _, None))));
+            assert!(matches!(g.docked[0], Some((Dock::Hand(crate::ids::Ctl(2)), _, None))));
             (g, k, f)
         }
 
@@ -2933,7 +2933,7 @@ mod tests {
         fn a_hand_dock_pulls_a_far_panel_in_to_its_reach() {
             let p = Placement { c: [0.0, 1.5, -3.0], ..flat() };
             let (_, k, f) = docked_on_other(p, [0.3, 1.2, -0.4]);
-            let hand = f.devices[&2];
+            let hand = f.devices[&TWO];
             let d = far(&k.place[0].c, &[hand[0][3] as f64, hand[1][3] as f64, hand[2][3] as f64]);
             assert!((d - DOCK_REACH).abs() < 1e-5, "{d} m from the hand");
             assert!(far(&k.place[0].x, &p.x) < 1e-6 && far(&k.place[0].z, &p.z) < 1e-6, "turned the same way");
@@ -2949,7 +2949,7 @@ mod tests {
             let p = flat();
             let (mut g, mut k, mut f) = docked_on_other(p, [0.3, 1.2, -0.4]);
             let at = k.place[0].c;
-            f.devices.remove(&2); // out of tracking, still on
+            f.devices.remove(&TWO); // out of tracking, still on
             let t0 = Instant::now();
             g.carry(&mut k, &mut f, t0);
             assert!(g.docked[0].is_some(), "a blink of lost tracking isn't gone");
@@ -2957,18 +2957,18 @@ mod tests {
             assert!(g.docked[0].is_none() && k.place[0].c == at, "left where it was");
             // switched off: after OFF_DEBOUNCE, not LOST
             let (mut g, mut k, mut f) = docked_on_other(p, [0.3, 1.2, -0.4]);
-            let back = f.devices[&2];
-            f.devices.remove(&2);
-            f.off.push(2);
+            let back = f.devices[&TWO];
+            f.devices.remove(&TWO);
+            f.off.push(TWO);
             let t0 = Instant::now();
             g.carry(&mut k, &mut f, t0);
             assert!(g.docked[0].is_some(), "one frame reported off is a hiccup");
             f.off.clear();
-            f.devices.insert(2, back);
+            f.devices.insert(TWO, back);
             g.carry(&mut k, &mut f, t0 + Duration::from_millis(16));
             assert!(g.docked[0].is_some(), "back the next frame: still docked");
-            f.devices.remove(&2);
-            f.off.push(2);
+            f.devices.remove(&TWO);
+            f.off.push(TWO);
             g.carry(&mut k, &mut f, t0 + Duration::from_millis(32));
             g.carry(&mut k, &mut f, t0 + Duration::from_millis(32) + OFF_DEBOUNCE);
             assert!(g.docked[0].is_none(), "off for 100 ms: it's really off, and LOST isn't waited for");
@@ -3057,7 +3057,7 @@ mod tests {
             assert!((k.place[0].c[1] - was[1] - 0.2).abs() < 1e-5, "it rose with the head");
             g.cancel(0);
             assert!(g.docked[0].is_none(), "a recall puts it in the world");
-            assert_eq!(dock_for([0.0, 1.0, 0.0], EYE, &[(3, [0.0, 1.1, 0.0]), (4, [0.0, 1.05, 0.0])]), Some(Dock::Hand(4)), "the nearer controller");
+            assert_eq!(dock_for([0.0, 1.0, 0.0], EYE, &[(crate::ids::Ctl(3), [0.0, 1.1, 0.0]), (crate::ids::Ctl(4), [0.0, 1.05, 0.0])]), Some(Dock::Hand(crate::ids::Ctl(4))), "the nearer controller");
             assert_eq!(dock_for([0.0, 1.0, 0.0], EYE, &[]), None, "nowhere near: the world");
         }
 
@@ -3149,7 +3149,7 @@ mod tests {
         /// looking ahead. Hold the guard for the whole test.
         fn golden_world(p: Placement) -> (Grab, Kvm, OverFake, crate::vr::fake::Guard) {
             let vr = crate::trace::fake_vr();
-            put(0, Some(aimed(EYE, [0.0, 1.6, -1.0])), false);
+            put(Dev::Head, Some(aimed(EYE, [0.0, 1.6, -1.0])), false);
             let mut k = Kvm::idle();
             k.place = vec![p];
             let g = Grab::with_backdrop(1, crate::vr::Handle::NONE);
@@ -3158,7 +3158,7 @@ mod tests {
         }
 
         /// A device at `from`, its laser pointing at `at`, in the fake SteamVR.
-        fn aim(dev: u32, from: V3, at: V3) {
+        fn aim(dev: Dev, from: V3, at: V3) {
             put(dev, Some(aimed(from, at)), false);
         }
 
@@ -3178,12 +3178,17 @@ mod tests {
                         Mode::Curve { .. } => "curving",
                         Mode::Zoom { .. } => "zooming",
                     };
-                    format!("by {}, {mode}, lost {}", d.dev, d.lost.is_some())
+                    format!("by {}, {mode}, lost {}", vr::index(d.dev), d.lost.is_some())
                 }
                 None => "none".into(),
             };
             log.line(format!("drag {drag}"));
-            log.line(format!("docked {:?}", g.docked[0].as_ref().map(|d| d.0)));
+            // the controller by OpenVR's index, as the fixtures have always written it
+            let docked = g.docked[0].as_ref().map(|d| match d.0 {
+                Dock::Hand(c) => format!("Hand({})", c.0),
+                Dock::Head => "Head".into(),
+            });
+            log.line(format!("docked {}", docked.map_or("None".into(), |d| format!("Some({d})"))));
             let pl = &k.place[0];
             log.line(format!("panel {} wide, curve {}, {}", num(pl.width), num(pl.curve), mat(&pl.matrix())));
         }
@@ -3247,7 +3252,7 @@ mod tests {
         /// docks, then that hand moves and the panel rides along.
         #[test]
         fn golden_dock() {
-            const OTHER: u32 = 2;
+            const OTHER: Dev = Dev::Controller(crate::ids::Ctl(2));
             let p = flat();
             let (mut g, mut k, mut s, _vr) = golden_world(p);
             let mut log = crate::golden::Log::default();
@@ -3308,7 +3313,7 @@ mod tests {
         /// late Up arrives. What happens today is what's pinned.
         #[test]
         fn golden_device_lost_mid_drag() {
-            const NEW: u32 = 5; // the controller back on, under another index
+            const NEW: Dev = Dev::Controller(crate::ids::Ctl(5)); // the controller back on, under another index
             let p = flat();
             let (mut g, mut k, mut s, _vr) = golden_world(p);
             let mut log = crate::golden::Log::default();
@@ -3356,11 +3361,12 @@ mod tests {
         #[test]
         fn golden_roles_swap_mid_drag() {
             use openvr_sys as sys;
-            const LEFT: u32 = 1;
-            const RIGHT: u32 = 2;
-            let roles = |l: u32, r: u32| {
+            const LEFT: Dev = Dev::Controller(crate::ids::Ctl(1));
+            const RIGHT: Dev = Dev::Controller(crate::ids::Ctl(2));
+            let roles = |l: Dev, r: Dev| {
                 let mut s = crate::vr::fake::SCRIPT.lock().unwrap();
-                s.get_or_insert_with(Default::default).roles = vec![(sys::ETrackedControllerRole_TrackedControllerRole_LeftHand, l), (sys::ETrackedControllerRole_TrackedControllerRole_RightHand, r)];
+                s.get_or_insert_with(Default::default).roles =
+                    vec![(sys::ETrackedControllerRole_TrackedControllerRole_LeftHand, vr::index(l)), (sys::ETrackedControllerRole_TrackedControllerRole_RightHand, vr::index(r))];
             };
             let p = flat();
             let (mut g, mut k, mut s, _vr) = golden_world(p);
@@ -3401,10 +3407,10 @@ mod tests {
             let bar_v = spec.bar_box().0;
             g.drawn[0] = Some(Drawn { spec, dims: [0; 3], card_at: Instant::now(), placed: None, tag: 0, theme: 0 });
             // the mouse's ray points at the grab bar
-            point(&mut f, MOUSE, EYE, surface_point(&p, 0.0, bar_v));
+            point(&mut f, Dev::Mouse, EYE, surface_point(&p, 0.0, bar_v));
             k.card_mouse = vec![(0, true)];
             g.poll_mouse(&mut k, &mut f);
-            assert!(matches!(g.drags[0], Some(Drag { dev: MOUSE, mode: Mode::Move { .. }, .. })), "the bar, held by the mouse");
+            assert!(matches!(g.drags[0], Some(Drag { dev: Dev::Mouse, mode: Mode::Move { .. }, .. })), "the bar, held by the mouse");
             let d0 = far(&k.place[0].c, &f.head);
             k.card_wheel = 1.0;
             g.poll_mouse(&mut k, &mut f);
@@ -3439,7 +3445,16 @@ mod tests {
             apply(&mut w, crate::vr::Handle(7), &card_place(&pl, &spec));
             let at = pl.on_surface(0.0, (top - bottom) / 2.0, -0.002);
             let (tw, th) = (spec.size.0 as f64, spec.size.1 as f64);
-            assert_eq!(w.0, vec![Call::Width(crate::vr::Handle(7), fw as f32), Call::Texel(crate::vr::Handle(7), (fw * th / (fh * tw)) as f32), Call::Curvature(crate::vr::Handle(7), 0.0), Call::MouseScale(crate::vr::Handle(7), [fw as f32, fh as f32]), Call::Room(crate::vr::Handle(7), at),]);
+            assert_eq!(
+                w.0,
+                vec![
+                    Call::Width(crate::vr::Handle(7), fw as f32),
+                    Call::Texel(crate::vr::Handle(7), (fw * th / (fh * tw)) as f32),
+                    Call::Curvature(crate::vr::Handle(7), 0.0),
+                    Call::MouseScale(crate::vr::Handle(7), [fw as f32, fh as f32]),
+                    Call::Room(crate::vr::Handle(7), at),
+                ]
+            );
         }
 
         #[test]

@@ -7,6 +7,7 @@
 //! `Stage` is `Overlays` (overlay.rs, the writes) plus these reads. Anything that moves a panel
 //! takes one.
 use crate::geometry::{Mat, V3};
+use crate::ids::{Ctl, Dev};
 use crate::overlay::{Handle, Live, Overlays};
 use crate::vr;
 
@@ -21,20 +22,20 @@ pub struct PanelFacts {
 }
 
 pub trait Stage: Overlays {
-    /// A device's pose in standing space. `grab::MOUSE` is the mouse's ray. None when it isn't tracked.
-    fn device(&self, dev: u32) -> Option<Mat>;
+    /// A device's pose in standing space. `Dev::Mouse` is the mouse's ray. None when it isn't tracked.
+    fn device(&self, dev: Dev) -> Option<Mat>;
     /// A device's laser: its pose moved to the controller's tip (vr::laser_pose). The laser points along -z.
-    fn laser(&self, dev: u32) -> Option<Mat>;
+    fn laser(&self, dev: Dev) -> Option<Mat>;
     /// Where the head is (or was last tracked).
     fn head(&self) -> V3;
     /// The head's pose right now, if it's tracked.
     fn head_pose(&self) -> Option<Mat>;
     /// The real controllers SteamVR tracks (not the mouse's pointer device), for docking (grab.rs).
-    fn controllers(&self) -> Vec<u32>;
+    fn controllers(&self) -> Vec<Ctl>;
     /// A short buzz in the hand whose laser last worked overlay h (a dock target arming, grab.rs).
     fn pulse(&mut self, h: Handle);
     /// Whether device dev is connected (switched on), tracked or not.
-    fn connected(&self, dev: u32) -> bool;
+    fn connected(&self, dev: Dev) -> bool;
     /// Slot i's overlay facts.
     fn panel(&self, i: usize) -> PanelFacts;
     /// Sends panel i's machine (or window) a pointer move to pixel (x, y).
@@ -42,11 +43,11 @@ pub trait Stage: Overlays {
 }
 
 impl Stage for Live {
-    fn device(&self, dev: u32) -> Option<Mat> {
+    fn device(&self, dev: Dev) -> Option<Mat> {
         crate::grab::pose_of(dev)
     }
 
-    fn laser(&self, dev: u32) -> Option<Mat> {
+    fn laser(&self, dev: Dev) -> Option<Mat> {
         crate::grab::laser_of(dev)
     }
 
@@ -62,15 +63,15 @@ impl Stage for Live {
         crate::call!(ov, TriggerLaserMouseHapticVibration, h.0, 0.05, 160.0, 0.6);
     }
 
-    fn connected(&self, dev: u32) -> bool {
+    fn connected(&self, dev: Dev) -> bool {
         crate::grab::connected(dev)
     }
 
-    fn controllers(&self) -> Vec<u32> {
+    fn controllers(&self) -> Vec<Ctl> {
         // connected, tracked or not: a hand that's out of the cameras' sight right now can still be a
         // target later in the carry (arm() reads its pose each frame)
         let poses = crate::grab::poses(); // once, not per device
-        (1..openvr_sys::k_unMaxTrackedDeviceCount as u32).filter(|&d| poses.get(d as usize).is_some_and(|p| p.bDeviceIsConnected) && vr::is_real_controller(d)).collect()
+        (1..openvr_sys::k_unMaxTrackedDeviceCount as u32).filter(|&d| poses.get(d as usize).is_some_and(|p| p.bDeviceIsConnected) && vr::is_real_controller(d)).map(Ctl).collect()
     }
 
     fn panel(&self, i: usize) -> PanelFacts {
@@ -93,8 +94,8 @@ pub mod fake {
     #[derive(Default)]
     pub struct Fake {
         pub writes: Writes,
-        pub devices: HashMap<u32, Mat>,
-        pub lasers: HashMap<u32, Mat>,
+        pub devices: HashMap<Dev, Mat>,
+        pub lasers: HashMap<Dev, Mat>,
         pub head: V3,
         /// The head's pose, when it's tracked; None is an untracked headset.
         pub head_pose: Option<Mat>,
@@ -102,9 +103,9 @@ pub mod fake {
         /// The haptic pulses, by overlay.
         pub pulses: Vec<Handle>,
         /// Devices switched off (not just untracked).
-        pub off: Vec<u32>,
+        pub off: Vec<Dev>,
         /// Controllers that are on but untracked right now (no pose in `devices`).
-        pub hidden: Vec<u32>,
+        pub hidden: Vec<Dev>,
         /// The pointer moves sent, as (panel, x, y).
         pub moves: Vec<(usize, f64, f64)>,
     }
@@ -158,17 +159,17 @@ pub mod fake {
             self.writes.place_room(h, m);
         }
 
-        fn place_device(&mut self, h: Handle, dev: u32, m: &Mat) {
+        fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat) {
             self.writes.place_device(h, dev, m);
         }
     }
 
     impl Stage for Fake {
-        fn device(&self, dev: u32) -> Option<Mat> {
+        fn device(&self, dev: Dev) -> Option<Mat> {
             self.devices.get(&dev).copied()
         }
 
-        fn laser(&self, dev: u32) -> Option<Mat> {
+        fn laser(&self, dev: Dev) -> Option<Mat> {
             self.lasers.get(&dev).copied().or_else(|| self.device(dev))
         }
 
@@ -184,12 +185,12 @@ pub mod fake {
             self.pulses.push(h);
         }
 
-        fn connected(&self, dev: u32) -> bool {
+        fn connected(&self, dev: Dev) -> bool {
             !self.off.contains(&dev)
         }
 
-        fn controllers(&self) -> Vec<u32> {
-            let mut c: Vec<u32> = self.devices.keys().chain(&self.hidden).copied().filter(|&d| d != 0 && d != crate::grab::MOUSE && !self.off.contains(&d)).collect();
+        fn controllers(&self) -> Vec<Ctl> {
+            let mut c: Vec<Ctl> = self.devices.keys().chain(&self.hidden).copied().filter(|d| !self.off.contains(d)).filter_map(|d| if let Dev::Controller(c) = d { Some(c) } else { None }).collect();
             c.sort();
             c.dedup();
             c
@@ -223,7 +224,8 @@ pub mod fake {
 
     /// Device `dev` in the fake's script: tracked at `m`, on but untracked (`None`), or switched
     /// off (`off`).
-    pub fn put(dev: u32, m: Option<Mat>, off: bool) {
+    pub fn put(dev: Dev, m: Option<Mat>, off: bool) {
+        let dev = crate::vr::index(dev); // the fake is SteamVR: it knows devices by index
         let mut s = crate::vr::fake::SCRIPT.lock().unwrap();
         let s = s.get_or_insert_with(Default::default);
         s.poses.retain(|p| p.0 != dev);
@@ -260,17 +262,17 @@ pub mod fake {
             Live.place_room(h, m)
         }
 
-        fn place_device(&mut self, h: Handle, dev: u32, m: &Mat) {
+        fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat) {
             Live.place_device(h, dev, m)
         }
     }
 
     impl Stage for OverFake {
-        fn device(&self, dev: u32) -> Option<Mat> {
+        fn device(&self, dev: Dev) -> Option<Mat> {
             Live.device(dev)
         }
 
-        fn laser(&self, dev: u32) -> Option<Mat> {
+        fn laser(&self, dev: Dev) -> Option<Mat> {
             Live.laser(dev)
         }
 
@@ -286,11 +288,11 @@ pub mod fake {
             Live.pulse(h)
         }
 
-        fn connected(&self, dev: u32) -> bool {
+        fn connected(&self, dev: Dev) -> bool {
             Live.connected(dev)
         }
 
-        fn controllers(&self) -> Vec<u32> {
+        fn controllers(&self) -> Vec<Ctl> {
             Live.controllers()
         }
 

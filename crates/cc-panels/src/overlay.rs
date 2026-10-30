@@ -13,6 +13,7 @@
 //! round to millimetres, Kvm::set_place doesn't compare at all). Moving that here would change when
 //! SteamVR gets called.
 use crate::geometry::{Mat, bend};
+use crate::ids::Dev;
 use crate::{call, vr};
 use openvr_sys as sys;
 
@@ -23,13 +24,16 @@ pub type Handle = vr::Handle;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum At {
     Room(Mat),
-    Device(u32, Mat),
+    Device(Dev, Mat),
 }
 
 impl At {
-    /// `dev` as the taskbar keeps it: u32::MAX means the room, anything else a tracked device.
-    pub fn on(dev: u32, m: Mat) -> At {
-        if dev == u32::MAX { At::Room(m) } else { At::Device(dev, m) }
+    /// `dev` as the taskbar keeps it: None is the room, anything else a tracked device.
+    pub fn on(dev: Option<Dev>, m: Mat) -> At {
+        match dev {
+            None => At::Room(m),
+            Some(d) => At::Device(d, m),
+        }
     }
 }
 
@@ -80,7 +84,7 @@ pub trait Overlays {
     fn bounds(&mut self, h: Handle, b: [f32; 4]);
     fn mouse_scale(&mut self, h: Handle, s: [f32; 2]);
     fn place_room(&mut self, h: Handle, m: &Mat);
-    fn place_device(&mut self, h: Handle, dev: u32, m: &Mat);
+    fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat);
 }
 
 /// Sets overlay `h` to `p`: the texture bounds, width, picture stretch, curvature and mouse scale
@@ -135,9 +139,9 @@ impl Overlays for Live {
         vr::place(h, m);
     }
 
-    fn place_device(&mut self, h: Handle, dev: u32, m: &Mat) {
+    fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat) {
         let mut t = sys::HmdMatrix34_t { m: *m };
-        call!(ov, SetOverlayTransformTrackedDeviceRelative, h.0, dev, &mut t);
+        call!(ov, SetOverlayTransformTrackedDeviceRelative, h.0, vr::index(dev), &mut t);
     }
 }
 
@@ -216,8 +220,8 @@ pub mod fake {
             self.0.push(Call::Room(h, *m));
         }
 
-        fn place_device(&mut self, h: Handle, dev: u32, m: &Mat) {
-            self.0.push(Call::Device(h, dev, *m));
+        fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat) {
+            self.0.push(Call::Device(h, vr::index(dev), *m)); // OpenVR's index, as SteamVR gets it
         }
     }
 }
@@ -239,11 +243,18 @@ mod tests {
     #[test]
     fn everything_given_is_written_in_the_same_order_every_time() {
         let mut w = Writes::default();
-        let p = Place::new(At::Device(0, M), 0.8).curve(1.0).texel(1.5).bounds([0.1, 0.2, 0.9, 0.8]).mouse_scale([800.0, 600.0]);
+        let p = Place::new(At::Device(Dev::Head, M), 0.8).curve(1.0).texel(1.5).bounds([0.1, 0.2, 0.9, 0.8]).mouse_scale([800.0, 600.0]);
         apply(&mut w, crate::vr::Handle(3), &p);
         assert_eq!(
             w.0,
-            vec![Call::Bounds(crate::vr::Handle(3), [0.1, 0.2, 0.9, 0.8]), Call::Width(crate::vr::Handle(3), 0.8), Call::Texel(crate::vr::Handle(3), 1.5), Call::Curvature(crate::vr::Handle(3), bend(0.8, 1.0)), Call::MouseScale(crate::vr::Handle(3), [800.0, 600.0]), Call::Device(crate::vr::Handle(3), 0, M),]
+            vec![
+                Call::Bounds(crate::vr::Handle(3), [0.1, 0.2, 0.9, 0.8]),
+                Call::Width(crate::vr::Handle(3), 0.8),
+                Call::Texel(crate::vr::Handle(3), 1.5),
+                Call::Curvature(crate::vr::Handle(3), bend(0.8, 1.0)),
+                Call::MouseScale(crate::vr::Handle(3), [800.0, 600.0]),
+                Call::Device(crate::vr::Handle(3), 0, M),
+            ]
         );
     }
 
@@ -260,10 +271,11 @@ mod tests {
 
     #[test]
     fn the_taskbars_device_number_picks_the_room_or_a_device() {
-        assert_eq!(At::on(u32::MAX, M), At::Room(M));
-        assert_eq!(At::on(5, M), At::Device(5, M));
+        let five = Dev::Controller(crate::ids::Ctl(5));
+        assert_eq!(At::on(None, M), At::Room(M));
+        assert_eq!(At::on(Some(five), M), At::Device(five, M));
         let mut w = Writes::default();
-        apply(&mut w, crate::vr::Handle(9), &Place::new(At::on(5, M), 0.4));
+        apply(&mut w, crate::vr::Handle(9), &Place::new(At::on(Some(five), M), 0.4));
         assert_eq!(w.of(crate::vr::Handle(9)).last(), Some(&Call::Device(crate::vr::Handle(9), 5, M)));
         assert_eq!(w.room_of(crate::vr::Handle(9)), None);
     }

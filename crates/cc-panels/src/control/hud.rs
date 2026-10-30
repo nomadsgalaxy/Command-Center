@@ -49,7 +49,7 @@ fn create(kind: Kind) -> Result<vr::Handle, String> {
     };
     call!(ov, SetOverlayAlpha, h.0, 1.0); // the picture carries its own transparency
     if kind == Kind::Status {
-        apply(&mut Live, h, &Place::new(At::Device(sys::k_unTrackedDeviceIndex_Hmd as u32, status_pose().m), 0.5));
+        apply(&mut Live, h, &Place::new(At::Device(crate::ids::Dev::Head, status_pose().m), 0.5));
         call!(ov, SetOverlaySortOrder, h.0, 196); // over the mark, under the cursor (200)
         // clickable like the cards (grab.rs create), so a laser click can skip the scan's step
         call!(ov, SetOverlayInputMethod, h.0, sys::VROverlayInputMethod_Mouse);

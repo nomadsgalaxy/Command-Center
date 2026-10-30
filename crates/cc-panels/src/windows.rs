@@ -953,7 +953,7 @@ impl Windows {
     }
 
     /// Devices whose button came up on Plasma's bar since the last call (taskbar.rs).
-    pub fn plasma_released(&mut self) -> Vec<u32> {
+    pub fn plasma_released(&mut self) -> Vec<crate::ids::Dev> {
         std::mem::take(&mut self.plasma.released)
     }
 
@@ -968,7 +968,7 @@ impl Windows {
     }
 
     /// Plasma's taskbar this frame, in the taskbar's frame (plasmabar.rs `tick`).
-    pub fn tick_plasma(&mut self, at: Option<(Mat, Mat, u32)>, up: f64, mpp: f64, curve: f64) {
+    pub fn tick_plasma(&mut self, at: Option<(Mat, Mat, Option<crate::ids::Dev>)>, up: f64, mpp: f64, curve: f64) {
         self.plasma.tick(self.session.as_ref(), &self.cap, at, up, mpp, curve);
     }
 

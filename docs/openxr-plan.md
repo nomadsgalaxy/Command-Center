@@ -504,7 +504,9 @@ cc-panels.
    section 3, the device inventory, and the golden-test list below.
 3. (2 d) The `SurfaceId` and `Dev` newtypes, and the mechanical replacement of `u32` device indices
    and `vr::Handle`, with `Dev::Controller(Ctl)` keeping the index. `At::on` stays as the room or
-   device switch.
+   device switch, taking `Option<Dev>` (None is the room). Done: they live in `ids.rs` (built into
+   cc-win-spike too), `vr::dev` and `vr::index` map OpenVR's indices (0 the headset, 64 the mouse),
+   and the event loops convert at the edge. Logs and fixtures print devices by index, unchanged.
 4. (2 d) The neutral `PointerEvent` and `SessionEvent`, which the OpenVR backend translates to.
    The ten `PollNextOverlayEvent` loops (listed in 2.4) match the neutral enum.
 5. (2 d) The `Textures`, `Keyboard`, `Shell` and `Input` traits with OpenVR implementations. Code

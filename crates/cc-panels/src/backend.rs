@@ -11,34 +11,7 @@ use std::os::fd::BorrowedFd;
 
 use crate::geometry::{Mat, V3};
 
-pub use crate::ids::SurfaceId;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Hand {
-    Left,
-    Right,
-}
-
-/// A controller, as the backend knows it. On OpenVR it's the tracked-device index; on OpenXR it's
-/// one per hand path. It stays opaque because today's code tells controllers apart by index, not
-/// by hand: a laser event carries an index, a drag keeps the index it started with, docking takes
-/// "the other controllers" as a set, and a controller can have no hand role at all (Invalid or
-/// OptOut) or share one. `Stage::hand` says which hand it is right now, if any.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Ctl(pub u32);
-
-/// What can point, be tracked or hold a surface. The room isn't one: a surface in the room is
-/// `At::Room` (overlay.rs), and the taskbar's u32::MAX for it becomes `Option<Dev>` = None.
-/// Trackers, base stations and our own virtual pointer (cc-pointer) aren't `Dev`s either, because
-/// nothing uses them as one: `vr::is_real_controller` filters them out today, and the virtual
-/// pointer stays inside the OpenVR backend (laser.rs).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Dev {
-    Head,
-    Controller(Ctl),
-    /// The mouse's ray (grab::MOUSE today): a pointer with a pose but no device behind it.
-    Mouse,
-}
+pub use crate::ids::{Ctl, Dev, Hand, SurfaceId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {

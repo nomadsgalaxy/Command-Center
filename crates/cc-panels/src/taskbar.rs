@@ -48,6 +48,7 @@
 //! ponytail: no file watch; hand edits to settings.json apply on restart.
 use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, direction, dot, from_top, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
 use crate::grab::{self, Look, TagImg, average, line, over, rbox, tint};
+use crate::ids::Dev;
 use crate::laser::{self, Hand};
 use crate::limits::{BAR_SCALE, CURVE_NOTCH};
 use crate::overlay::{At, Live, Overlays, Place, apply};
@@ -218,13 +219,13 @@ fn anchor_of(mode: Mode) -> crate::surface::Anchor {
     }
 }
 
-/// What the frame was last placed as: its matrix, the device it's on (MAX means the room), and its
+/// What the frame was last placed as: its matrix, the device it's on (None is the room), and its
 /// width and curve radius in millimetres, which is how far it has to move to count as changed.
-type Placed = Option<(Mat, u32, u32, u32)>;
+type Placed = Option<(Mat, Option<Dev>, u32, u32)>;
 
-/// Places overlay `ov` as a frame `width` wide bent to radius `r` at `local` on device `dev` (MAX
+/// Places overlay `ov` as a frame `width` wide bent to radius `r` at `local` on device `dev` (None
 /// for the room), unless it's already placed that way to the millimetre.
-fn put_frame(o: &mut impl Overlays, ov: vr::Handle, placed: &mut Placed, width: f64, r: f64, local: &Mat, dev: u32) {
+fn put_frame(o: &mut impl Overlays, ov: vr::Handle, placed: &mut Placed, width: f64, r: f64, local: &Mat, dev: Option<Dev>) {
     let now = Some((*local, dev, (width * 1000.0).round() as u32, (r * 1000.0).round() as u32));
     if *placed != now {
         *placed = now;
@@ -682,7 +683,7 @@ fn facing(m: &Mat, eye: &V3) -> bool {
 /// A press held on the frame: which device, and what it's doing. `lost` is when that device
 /// went untracked; it lets go after grab::LOST.
 struct Hold {
-    dev: u32,
+    dev: Dev,
     kind: Kind,
     lost: Option<Instant>,
 }
@@ -889,7 +890,7 @@ impl Taskbar {
         if !grab.released.is_empty() {
             windows.plasma_release();
         }
-        let released: Vec<u32> = grab.released.drain(..).chain(windows.plasma_released()).collect();
+        let released: Vec<crate::ids::Dev> = grab.released.drain(..).chain(windows.plasma_released()).collect();
         if self.hold.as_ref().is_some_and(|h| released.contains(&h.dev)) {
             self.let_go();
         }
@@ -1007,7 +1008,7 @@ impl Taskbar {
                         Some(Part::Chip(c)) => self.click(c, grab, windows),
                         Some(p) if self.hold.is_none() => {
                             if let Some(t) = hold_for(p, self.mode) {
-                                self.take(t, dev);
+                                self.take(t, vr::dev(dev));
                             }
                         }
                         _ => {}
@@ -1017,8 +1018,8 @@ impl Taskbar {
                 // press on Plasma's bar or a panel that's let go over the frame ends here too
                 sys::EVREventType_VREvent_MouseButtonUp => {
                     windows.plasma_release();
-                    grab.end_by(dev, &crate::kvm::lock());
-                    if self.hold.as_ref().is_some_and(|h| h.dev == dev) {
+                    grab.end_by(vr::dev(dev), &crate::kvm::lock());
+                    if self.hold.as_ref().is_some_and(|h| h.dev == vr::dev(dev)) {
                         self.let_go();
                     }
                 }
@@ -1075,7 +1076,7 @@ impl Taskbar {
     }
 
     /// A press on an edge, a corner or the knob by a device's laser: held from now.
-    fn take(&mut self, t: Take, dev: u32) {
+    fn take(&mut self, t: Take, dev: Dev) {
         let Some(pl) = crate::kvm::lock().bar else { return };
         let kind = match t {
             Take::Carry => {
@@ -1093,7 +1094,7 @@ impl Taskbar {
                 Kind::Curve { local, z0, from }
             }
         };
-        eprintln!("taskbar: {t:?} by device {dev}");
+        eprintln!("taskbar: {t:?} by device {}", vr::index(dev));
         self.hold = Some(Hold { dev, kind, lost: None });
     }
 
@@ -1270,14 +1271,14 @@ impl Taskbar {
     /// Where the frame goes this frame: its matrix in the room, its matrix on the device it's on,
     /// and that device (MAX for the room). None means it isn't shown now (the wrist is out of
     /// sight, or untracked).
-    fn place_now(&mut self, dt: f64, mouse_on: bool) -> Option<(Mat, Mat, u32)> {
+    fn place_now(&mut self, dt: f64, mouse_on: bool) -> Option<(Mat, Mat, Option<Dev>)> {
         Some(match self.mode {
             Mode::Fixed => {
                 if self.pose.is_none() {
                     self.refix();
                 }
                 let m = self.pose?;
-                (m, m, u32::MAX)
+                (m, m, None)
             }
             Mode::Follow => {
                 self.mpp = MPP * self.scale;
@@ -1287,7 +1288,7 @@ impl Taskbar {
                 let held = self.hover.is_some() || self.hold.is_some() || mouse_on;
                 let (yaw, pitch, at) = self.follow.step(yaw, pitch, [h[0][3] as f64, h[1][3] as f64, h[2][3] as f64], dt, held);
                 let m = panel_matrix(&follow_pose(yaw, pitch, &at));
-                (m, m, u32::MAX)
+                (m, m, None)
             }
             Mode::Wrist => {
                 self.mpp = (WRIST_W / self.frame.w).max(WRIST_MPP); // its own size, not the fixed bar's corner scale
@@ -1306,7 +1307,7 @@ impl Taskbar {
                     };
                 }
                 let local = self.wrist[(hand == Hand::Right) as usize];
-                let world = real.then(|| grab::pose_of(dev)).flatten().map(|d| mul(&d, &local));
+                let world = real.then(|| grab::pose_of(vr::dev(dev))).flatten().map(|d| mul(&d, &local));
                 let facing = world.is_some_and(|m| facing(&m, &vr::head_position()));
                 let alpha = (self.alpha + if facing { 0.15 } else { -0.08 }).clamp(0.0, 1.0);
                 if alpha != self.alpha {
@@ -1317,7 +1318,7 @@ impl Taskbar {
                 if alpha <= 0.0 {
                     return None;
                 }
-                (world?, local, dev)
+                (world?, local, Some(vr::dev(dev)))
             }
         })
     }
@@ -1330,8 +1331,8 @@ impl Taskbar {
         self.wrist_dev.and_then(|w| w.1)
     }
 
-    /// Puts the frame at `local` on device `dev` (MAX for the room), only when that changed.
-    fn put(&mut self, local: &Mat, dev: u32) {
+    /// Puts the frame at `local` on device `dev` (None for the room), only when that changed.
+    fn put(&mut self, local: &Mat, dev: Option<Dev>) {
         let (width, r) = (self.frame.w * self.mpp, self.radius());
         put_frame(&mut Live, self.ov, &mut self.placed, width, r, local, dev);
     }
@@ -1961,30 +1962,30 @@ mod tests {
         #[test]
         fn the_frame_is_written_once_in_the_room_and_not_again_until_something_moves_a_millimetre() {
             let (mut w, mut placed) = (Writes::default(), None);
-            put_frame(&mut w, OV, &mut placed, 1.2341, 2.0, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2341, 2.0, &at(0.0), None);
             assert_eq!(w.0, vec![Call::Width(OV, 1.2341), Call::Curvature(OV, bend(1.2341, 2.0)), Call::Room(OV, at(0.0))]);
             let n = w.0.len();
-            put_frame(&mut w, OV, &mut placed, 1.2341, 2.0, &at(0.0), u32::MAX);
-            put_frame(&mut w, OV, &mut placed, 1.2343, 2.0, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2341, 2.0, &at(0.0), None);
+            put_frame(&mut w, OV, &mut placed, 1.2343, 2.0, &at(0.0), None);
             assert_eq!(w.0.len(), n, "the same, and the same to the millimetre: nothing");
-            put_frame(&mut w, OV, &mut placed, 1.2360, 2.0, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2360, 2.0, &at(0.0), None);
             assert_eq!(w.0.len(), 2 * n, "2 mm wider: written");
-            put_frame(&mut w, OV, &mut placed, 1.2360, 2.0004, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2360, 2.0004, &at(0.0), None);
             assert_eq!(w.0.len(), 2 * n, "a curve within a millimetre: nothing");
-            put_frame(&mut w, OV, &mut placed, 1.2360, 2.01, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2360, 2.01, &at(0.0), None);
             assert_eq!(w.0.len(), 3 * n, "a curve 1 cm different: written");
-            put_frame(&mut w, OV, &mut placed, 1.2360, 2.01, &at(0.1), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2360, 2.01, &at(0.1), None);
             assert_eq!(w.0.len(), 4 * n, "moved: written");
         }
 
         #[test]
         fn a_frame_on_the_wrist_is_placed_on_the_controller_not_in_the_room() {
             let (mut w, mut placed) = (Writes::default(), None);
-            put_frame(&mut w, OV, &mut placed, 0.4, 0.0, &at(0.0), 3);
+            put_frame(&mut w, OV, &mut placed, 0.4, 0.0, &at(0.0), Some(Dev::Controller(crate::ids::Ctl(3))));
             assert_eq!(w.0.last(), Some(&Call::Device(OV, 3, at(0.0))));
             assert_eq!(w.room_of(OV), None);
             assert_eq!(w.curvature_of(OV), Some(0.0), "flat");
-            put_frame(&mut w, OV, &mut placed, 0.4, 0.0, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 0.4, 0.0, &at(0.0), None);
             assert_eq!(w.room_of(OV), Some(at(0.0)), "the same matrix on the room is a different place");
         }
     }
