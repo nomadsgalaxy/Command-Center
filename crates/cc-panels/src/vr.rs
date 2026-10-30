@@ -146,14 +146,16 @@ pub fn head() -> Option<Mat> {
 /// How far ahead of now this frame's picture reaches your eyes: the rest of this frame, plus the
 /// display's vsync-to-photons delay. Poses read at that time line up with what's shown, so a
 /// carried or docked panel doesn't trail behind the hand (the scan wants poses at now, `head`).
+/// The display's rate and delay, as `to_photons` last read them and when. They're read again about
+/// once a second (a refresh-rate change in SteamVR's settings shows up within that), not on every
+/// pose read. The fake clears it, so a test sees its own script's rate.
+static DISPLAY: std::sync::Mutex<Option<(std::time::Instant, f32, f32)>> = std::sync::Mutex::new(None);
+
 pub fn to_photons() -> f32 {
     let (mut since, mut frame) = (0f32, 0u64);
     if !call!(sys, GetTimeSinceLastVsync, &mut since, &mut frame) {
         return 0.0;
     }
-    // the display's rate and delay, read again about once a second (a refresh-rate change in
-    // SteamVR's settings shows up within that), not on every pose read
-    static DISPLAY: std::sync::Mutex<Option<(std::time::Instant, f32, f32)>> = std::sync::Mutex::new(None);
     let mut d = DISPLAY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (hz, v2p) = match *d {
         Some((at, hz, v2p)) if at.elapsed() < std::time::Duration::from_secs(1) => (hz, v2p),
@@ -543,6 +545,7 @@ pub mod fake {
             notes: None,
         });
         *SCRIPT.lock().unwrap() = Some(s);
+        *DISPLAY.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None; // the last test's display rate
         guard
     }
 }
