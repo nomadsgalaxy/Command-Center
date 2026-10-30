@@ -190,13 +190,32 @@ fetched in `vr.rs:41-63` (`ov`, `sys`, `ipc`, `input`, `rm`, `apps`, `notes`).
 | `UnrefResource` (4) | gpu.rs, capture.rs | Destroy the VkImage and its memory, after the GPU work that uses them has finished |
 | `SetOverlayRaw` (5) and `ClearOverlayTexture` | UI cards drawn on the CPU (`grab.rs:791`, `back.rs:200`, `capture.rs:461`, `laser.rs:387`, 4x4 pixels) | Write the pixels into a staging buffer and copy them to the swapchain image. SetOverlayRaw's blink (it blanks the overlay until SteamVR takes the new picture) doesn't happen on OpenXR, since swapchains are double-buffered anyway |
 
-Before estimating the Vulkan slice, I'll write down its contract:
+How textures are owned today, on OpenVR (gpu.rs, capture.rs, back.rs). This is what the
+`Textures` trait has to keep in phase 0; it isn't a design for the Vulkan side:
 
-- **Buffer lifetime:** who owns each dmabuf and VkImage, and when each is freed.
-- **Sync:** how the producer (PipeWire, FreeRDP, our GBM buffers) and the copy into the swapchain
-  wait for each other.
-- **A failed import:** falls back to the staging upload, and says so once.
-- **Release:** only after the GPU work that uses the buffer has finished.
+- **Import doesn't take the caller's fd.** `ImportDmabuf` gives back a handle, and SteamVR holds
+  its own reference to the buffer behind it. gpu.rs closes the GBM buffer's fd straight after the
+  import. capture.rs imports with its own dup of PipeWire's fd (PipeWire closes its copy when it
+  removes the buffer), and drops that dup with the frame. The handle lives until `UnrefResource`.
+- **When the core may write a buffer again:** a tick after `SetOverlayTexture` replaced it on
+  screen. SteamVR never says when it's done reading; the core assumes it's done by its next frame.
+  gpu.rs keeps two buffers per panel and holds the replaced one for a tick (`held`), and the RDP
+  thread doesn't write it until then. capture.rs holds the buffer on screen and the one before it
+  back from PipeWire, and gives older ones back. A refused `SetOverlayTexture` leaves the old one
+  showing (`unflip`).
+- **Who says the producer is ready:** for a PipeWire dmabuf, the core polls the fd for its
+  implicit fence (POLLIN) and doesn't present until it's readable; it keeps the frame for the next
+  tick otherwise. Our own GBM buffers are written on the CPU between map and unmap, so they're
+  ready when the copy returns. There's no explicit fence anywhere.
+- **How the core learns a release is complete:** it doesn't. `UnrefResource` returns at once, and
+  the core destroys the GBM buffer right after. A UI overlay's resize keeps the old pair one tick
+  longer (`raw_tick`). A panel's resize frees both buffers at once, the one on screen included.
+  That's how it is today, and if it ever shows as a blank frame, the fix is its own branch.
+- **A handle can be on two overlays:** a panel's back shows the panel's handle (`back::shown`).
+
+The Vulkan side gets its own contract after this one is pinned, covering the same five points
+(lifetime, reuse, readiness, release, sharing), plus a failed import falling back to a staging
+upload and saying so once.
 
 The spike's exit test is repeated acquire, present and release, then a resize, a reconnect and a
 teardown, on each target GPU and runtime. The slice is estimated after that spike, not up front.

@@ -201,12 +201,28 @@ pub struct Dmabuf<'a> {
     pub stride: u32,
 }
 
-/// An imported picture. OpenVR: the IPC resource handle. It's released with `Textures::release`,
-/// and the backend only frees it once the runtime is done with it.
+/// An imported picture: the IPC resource handle on OpenVR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TexHandle(pub u64);
 
 /// Pictures (gpu.rs, capture.rs). The GBM buffers and their stale tracking stay in the core.
+///
+/// Who owns what, as OpenVR works today (docs/openxr-plan.md, 2.3, has the details):
+///
+/// - **`import` doesn't take the fd.** The runtime takes its own reference, so the caller can close
+///   its fd straight after (gpu.rs does; capture.rs drops its dup with the frame). The picture
+///   stays alive until `release`.
+/// - **The core may write a buffer again once a tick has passed since `present` replaced it** on
+///   screen. Nothing from the runtime says it's done reading: the core assumes it has finished by
+///   its next frame. gpu.rs double-buffers and holds the replaced one for a tick (`held`); capture.rs
+///   holds the shown buffer and the one before it back from PipeWire.
+/// - **The producer says when it's ready, before `present`.** For a PipeWire dmabuf the core polls
+///   the fd for its implicit fence and doesn't present until it's readable. For our own GBM
+///   buffers the copy is done on the CPU, mapped and unmapped, so it's ready when the copy returns.
+/// - **`release` returns at once, with no signal when the runtime has let go.** The core frees the
+///   GBM buffer right after it. Only a UI overlay's resize keeps the old pair a tick longer
+///   (gpu.rs `raw_tick`); a panel's resize frees both at once, the shown one included.
+/// - **One handle can be on two surfaces:** a panel's back shows the panel's handle (back.rs).
 pub trait Textures {
     fn import(&mut self, buf: &Dmabuf) -> Result<TexHandle, String>;
     fn present(&mut self, s: SurfaceId, t: TexHandle);
