@@ -25,7 +25,6 @@ impl fmt::Debug for SurfaceId {
     }
 }
 
-#[allow(dead_code)] // which hand is the boundary's (backend.rs Stage::hand); nothing asks yet
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Hand {
     Left,

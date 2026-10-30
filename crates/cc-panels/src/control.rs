@@ -65,6 +65,7 @@ const HUD_USAGE: &str = "error usage: hud <rgba file> <w> <h> [skip=x0,y0,x1,y1]
 
 use crate::geometry::{Pose, panel_matrix};
 use crate::overlay::Surfaces;
+use crate::stage::Stage;
 use crate::surface;
 use crate::{HIDDEN, Source, panels, taskbar};
 use std::os::linux::net::SocketAddrExt;
@@ -395,7 +396,7 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
             None => "error no such Frame controller tracked".into(),
         },
         Some("devices") => format!("ok\n{}", crate::vr::devices().join("\n")),
-        Some("head") => match crate::vr::head() {
+        Some("head") => match crate::stage::Live.head_now() {
             Some(m) => head_line(&m, START.get_or_init(Instant::now).elapsed().as_millis()),
             None => "error head untracked".into(),
         },

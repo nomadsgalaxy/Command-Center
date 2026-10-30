@@ -55,6 +55,7 @@ use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, line, over, tint};
 use crate::keyboard::{self, Keyboard, KeyboardMode};
 use crate::overlay::{Flag, InputMode, Surfaces};
+use crate::stage::Stage;
 use crate::taskbar::{Taskbar, tex_scale};
 use crate::texture::Refused;
 use crate::windows::Windows;
@@ -1372,7 +1373,7 @@ impl Machines {
                 S::Pointer(PointerEvent { kind: P::Move, .. }) => self.hover = at,
                 S::Pointer(PointerEvent { kind: P::Leave, .. }) => self.hover = None,
                 S::Pointer(PointerEvent { kind: P::Down(Button::Left), from, .. }) => {
-                    if vr::is_real_controller(vr::index(from)) {
+                    if crate::stage::Live.is_controller(from) {
                         let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed is primary (R-2)

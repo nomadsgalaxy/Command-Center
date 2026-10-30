@@ -28,19 +28,13 @@ const WHOLE: &[(&str, &str)] = &[
 /// `vr::` items that aren't OpenVR: waking the main loop and timing a call.
 const NEUTRAL: &[&str] = &["wake", "timed", "WOKEN", "MAIN", "Handle", "fake"];
 
-const STAGE: &str = "Stage: poses, roles and OpenVR's device numbering, kept for logs and R-2 (6c)";
-const SESSION: &str = "Session: the display's rate, the universe, the scene app, start and stop (6d)";
+const SESSION: &str = "Session: the display's rate, the universe, the scene app, whether it's worn at start, start and stop (6d)";
 const FAKES: &str = "tests: SteamVR's events and roles, built for vr::fake";
 
 /// Each file's OpenVR names today, in groups by the step that takes them away.
 const ALLOWED: &[(&str, &str, &[&str])] = &[
-    ("control.rs", STAGE, &["vr::devices", "vr::head", "vr::tip"]),
-    ("control/machines.rs", STAGE, &["vr::index", "vr::is_real_controller"]),
-    ("control/prefs.rs", STAGE, &["vr::index", "vr::is_real_controller"]),
-    ("control/ui.rs", STAGE, &["vr::head"]),
-    ("control/workspace.rs", STAGE, &["vr::head", "vr::index", "vr::is_real_controller"]),
-    ("gather.rs", STAGE, &["vr::head"]),
-    ("grab.rs", STAGE, &["vr::index", "vr::is_real_controller"]),
+    ("control.rs", "the control socket's SteamVR inspection (its devices, roles and laser tips), OpenVR on purpose", &["vr::devices", "vr::tip"]),
+    ("grab.rs", "tests: the golden's \"by {index}\" line and the roles vr::fake answers, by OpenVR's numbers", &["vr::index"]),
     ("grab.rs", FAKES, &["sys::ETrackedControllerRole_TrackedControllerRole_LeftHand", "sys::ETrackedControllerRole_TrackedControllerRole_RightHand"]),
     (
         "laser.rs",
@@ -64,11 +58,11 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "vr::place",
         ],
     ),
-    ("main.rs", STAGE, &["vr::head", "vr::head_worn"]),
     (
         "main.rs",
         SESSION,
         &[
+            "vr::head_worn",
             "GetFloatTrackedDeviceProperty",
             "GetUint64TrackedDeviceProperty",
             "sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64",
@@ -95,11 +89,11 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
         ],
     ),
     ("osk.rs", "tests: SteamVR's keyboard bytes, decoded as vr.rs does", &["vr::typed"]),
-    ("plasmabar.rs", STAGE, &["vr::index", "vr::is_real_controller", "vr::laser_pose", "vr::openvr_type"]),
+    ("plasmabar.rs", "plasma-debug's line, by SteamVR's own event type: a diagnostic", &["vr::openvr_type"]),
     (
         "plasmabar.rs",
         "Plasma's raw loop: a non-pointer event still moves its last point (events.rs, 5a's two readers)",
-        &["sys::EVREventType_VREvent_MouseMove", "trace::poll", "vr::VREvent_t", "vr::dev", "vr::surface_event"],
+        &["sys::EVREventType_VREvent_MouseMove", "trace::poll", "vr::VREvent_t", "vr::dev", "vr::laser_pose", "vr::surface_event"],
     ),
     (
         "plasmabar.rs",
@@ -111,20 +105,6 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "sys::EVREventType_VREvent_MouseButtonUp",
             "sys::EVRMouseButton_VRMouseButton_Left",
             "sys::VREvent_Mouse_t",
-        ],
-    ),
-    (
-        "taskbar.rs",
-        STAGE,
-        &[
-            "GetTrackedDeviceIndexForControllerRole",
-            "sys::ETrackedControllerRole_TrackedControllerRole_LeftHand",
-            "sys::ETrackedControllerRole_TrackedControllerRole_RightHand",
-            "sys::k_unTrackedDeviceIndexInvalid",
-            "vr::dev",
-            "vr::head",
-            "vr::index",
-            "vr::is_real_controller",
         ],
     ),
     ("taskbar.rs", SESSION, &["GetCurrentSceneProcessId"]),
@@ -140,7 +120,6 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "vr::VREvent_t",
         ],
     ),
-    ("windows.rs", STAGE, &["vr::head"]),
 ];
 
 /// The OpenVR names in a file's code (comments left out): what it `call!`s, its `openvr_sys`

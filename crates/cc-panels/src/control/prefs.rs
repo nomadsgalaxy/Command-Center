@@ -16,6 +16,7 @@ use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, over, tint};
 use crate::laser::{self, Hand};
 use crate::overlay::{Flag, InputMode, Surfaces};
+use crate::stage::Stage;
 use crate::taskbar::{Mode, Taskbar, tex_scale};
 use crate::windows::Windows;
 use crate::{HIDDEN, config, theme, vr};
@@ -335,7 +336,7 @@ impl Prefs {
                 P::Move => self.hover = at,
                 P::Leave => self.hover = None,
                 P::Down(Button::Left) => {
-                    if vr::is_real_controller(vr::index(pe.from)) {
+                    if crate::stage::Live.is_controller(pe.from) {
                         let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed becomes primary (R-2)

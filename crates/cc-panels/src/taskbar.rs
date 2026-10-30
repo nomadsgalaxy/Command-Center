@@ -57,6 +57,7 @@ use crate::stage::Stage;
 use crate::theme::{self, Accent, Tokens};
 use crate::windows::Windows;
 use crate::{HIDDEN, Source, call, config, panel, panels, vr};
+#[cfg(test)]
 use openvr_sys as sys;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -713,8 +714,8 @@ pub struct Taskbar {
     mpp: f64,                                                         // metres per unit right now
     pose: Option<Mat>,                                                // fixed: where it is in the room (None until placed)
     follow: Follow,
-    wrist: [Mat; 2],                        // on the left hand, then the right (wrist_local)
-    wrist_dev: Option<(Hand, Option<u32>)>, // the controller it's on, as last logged
+    wrist: [Mat; 2],                                    // on the left hand, then the right (wrist_local)
+    wrist_dev: Option<(Hand, Option<crate::ids::Ctl>)>, // the controller it's on, as last logged
     hold: Option<Hold>,
     scale: f64,          // the user's size for both rows (settings.json taskbar_scale)
     curve: f64,          // the rows' curve radius in metres, 0 for flat (taskbar_curve)
@@ -841,7 +842,7 @@ impl Taskbar {
         let pose = match under(&rdp, &eye) {
             Some(p) => p,
             None => {
-                let Some(h) = vr::head() else { return }; // no headset pose yet: place_now asks again
+                let Some(h) = crate::stage::Live.head_now() else { return }; // no headset pose yet: place_now asks again
                 follow_pose(yaw_of(&h), 0.0, &eye)
             }
         };
@@ -959,7 +960,6 @@ impl Taskbar {
         while let Some(ev) = crate::trace::Traced("taskbar").next(self.ov) {
             // only a pointer does anything on the frame: anything else went through and matched nothing
             let SurfaceEvent::Pointer(pe) = ev else { continue };
-            let dev = vr::index(pe.from); // SteamVR's number, for its own lookups
             let y = from_top(self.frame.h, pe.y as f64); // its units, from the top
             let mut part = part_at(&self.frame, pe.x as f64, y);
             // Plasma's bar is 2 mm in front of us (FRONT), so a slanted laser goes through it a
@@ -998,7 +998,7 @@ impl Taskbar {
                     }
                 }
                 PointerKind::Down(Button::Left) => {
-                    if vr::is_real_controller(dev) {
+                    if crate::stage::Live.is_controller(pe.from) {
                         let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed is primary (R-2)
@@ -1097,7 +1097,7 @@ impl Taskbar {
                 Kind::Curve { local, z0, from }
             }
         };
-        eprintln!("taskbar: {t:?} by device {}", vr::index(dev));
+        eprintln!("taskbar: {t:?} by device {}", crate::stage::Live.label(dev));
         self.hold = Some(Hold { dev, kind, lost: None });
     }
 
@@ -1284,7 +1284,7 @@ impl Taskbar {
             }
             Mode::Follow => {
                 self.mpp = MPP * self.scale;
-                let h = vr::head()?;
+                let h = crate::stage::Live.head_now()?;
                 let (yaw, pitch) = gaze(&h);
                 // also hold still under the mouse's cursor, since chips sliding under it would each repaint
                 let held = self.hover.is_some() || self.hold.is_some() || mouse_on;
@@ -1296,20 +1296,17 @@ impl Taskbar {
                 self.mpp = (WRIST_W / self.frame.w).max(WRIST_MPP); // its own size, not the fixed bar's corner scale
                 // the off hand (laser::dominant, which Preferences changes live)
                 let hand = off_hand(laser::dominant());
-                let role = if hand == Hand::Left { sys::ETrackedControllerRole_TrackedControllerRole_LeftHand } else { sys::ETrackedControllerRole_TrackedControllerRole_RightHand };
-                let dev = call!(sys, GetTrackedDeviceIndexForControllerRole, role);
-                // (not our cc_pointer, which takes that hand's role while the mouse borrows it)
-                let real = dev != sys::k_unTrackedDeviceIndexInvalid as u32 && vr::is_real_controller(dev);
-                if self.wrist_dev != Some((hand, real.then_some(dev))) {
-                    self.wrist_dev = Some((hand, real.then_some(dev)));
-                    if real {
-                        eprintln!("taskbar: wrist on device {dev} ({hand:?} hand)")
+                let ctl = crate::stage::Live.in_hand(if hand == Hand::Left { crate::ids::Hand::Left } else { crate::ids::Hand::Right });
+                if self.wrist_dev != Some((hand, ctl)) {
+                    self.wrist_dev = Some((hand, ctl));
+                    if let Some(c) = ctl {
+                        eprintln!("taskbar: wrist on device {} ({hand:?} hand)", crate::stage::Live.label(Dev::Controller(c)))
                     } else {
                         eprintln!("taskbar: wrist: no {hand:?} controller")
                     };
                 }
                 let local = self.wrist[(hand == Hand::Right) as usize];
-                let world = real.then(|| crate::stage::Live.device(vr::dev(dev))).flatten().map(|d| mul(&d, &local));
+                let world = ctl.and_then(|c| crate::stage::Live.device(Dev::Controller(c))).map(|d| mul(&d, &local));
                 let facing = world.is_some_and(|m| facing(&m, &crate::stage::Live.head()));
                 let alpha = (self.alpha + if facing { 0.15 } else { -0.08 }).clamp(0.0, 1.0);
                 if alpha != self.alpha {
@@ -1320,7 +1317,7 @@ impl Taskbar {
                 if alpha <= 0.0 {
                     return None;
                 }
-                (world?, local, Some(vr::dev(dev)))
+                (world?, local, ctl.map(Dev::Controller))
             }
         })
     }
@@ -1330,7 +1327,7 @@ impl Taskbar {
     pub(crate) fn wrist_frame(&mut self) -> Option<u32> {
         self.mode = Mode::Wrist;
         self.place_now(1.0 / 90.0, false);
-        self.wrist_dev.and_then(|w| w.1)
+        self.wrist_dev.and_then(|w| w.1).map(|c| c.raw())
     }
 
     /// Puts the frame at `local` on device `dev` (None for the room), only when that changed.

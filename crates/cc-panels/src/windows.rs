@@ -15,7 +15,7 @@ use crate::geometry::{Mat, Pose, STAND_IN_HEAD, ahead_of, angles, level, level_a
 use crate::overlay::Surfaces;
 use crate::session::{self, Session, StreamEvent};
 use crate::stage::Stage;
-use crate::{HIDDEN, Panel, capture, config, grab, kwin, panel, plasmabar, vr};
+use crate::{HIDDEN, Panel, capture, config, grab, kwin, panel, plasmabar};
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
@@ -1023,7 +1023,7 @@ impl Windows {
         if let Some(w) = win(p.index) {
             self.kwin.send(json!({"c": "place", "uuid": w.uuid, "w": 1600, "h": 900}));
         }
-        let m = vr::head().unwrap_or(STAND_IN_HEAD);
+        let m = crate::stage::Live.head_now().unwrap_or(STAND_IN_HEAD);
         let (eye, f) = ([0, 1, 2].map(|i| m[i][3] as f64), level_ahead(&m));
         let (yaw, pitch) = angles(&f);
         let (ahead, width, curve) = crate::limits::THEATER;
@@ -1052,7 +1052,7 @@ impl Windows {
     fn ahead(&self) -> Pose {
         let n = (0..SLOTS).filter(|&j| panel(self.first + j).live()).count() % 6;
         let c = 0.08 * n as f64;
-        crate::geometry::new_pose(&vr::head().unwrap_or(STAND_IN_HEAD), 1.0, c, c)
+        crate::geometry::new_pose(&crate::stage::Live.head_now().unwrap_or(STAND_IN_HEAD), 1.0, c, c)
     }
 
     /// Its border tag, drawn once per app by assets.rs (off the main thread) and then cached.

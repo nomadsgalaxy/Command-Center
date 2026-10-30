@@ -857,7 +857,7 @@ fn connect(p: &'static Panel, after: Duration) -> std::thread::JoinHandle<()> {
 /// machine fills one.
 pub fn place_remote(p: &Panel) -> (Pose, bool) {
     let saved = config::home_pose(&p.v.name, Some(p.v.screen));
-    let pose = saved.unwrap_or_else(|| geometry::new_pose(&vr::head().unwrap_or(geometry::STAND_IN_HEAD), 1.2, 0.0, 0.0));
+    let pose = saved.unwrap_or_else(|| geometry::new_pose(&crate::stage::Live.head_now().unwrap_or(geometry::STAND_IN_HEAD), 1.2, 0.0, 0.0));
     p.set_vert(pose.vert); // curved top to bottom means turned (kvm.rs set_place)
     crate::kvm::lock().set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve);
     (pose, saved.is_some())
@@ -1161,7 +1161,7 @@ fn run() -> Result<(), String> {
         power::want(!on_head); // the headset's off: nobody's using the Desktop (power.rs)
         power::game(bar.game() || handoff::flat_game());
         let now = Instant::now();
-        let head = vr::head().map(|m| ([0, 1, 2].map(|r| m[r][3] as f64), [0, 1, 2].map(|r| -m[r][2] as f64)));
+        let head = crate::stage::Live.head_now().map(|m| ([0, 1, 2].map(|r| m[r][3] as f64), [0, 1, 2].map(|r| -m[r][2] as f64)));
         let gaze_ray = gaze_seen.filter(|g| now - g.2 < kvm::GAZE_STALE).map(|g| (g.0, g.1));
         // A game, VR or 2D, is Command Center's cue to step aside (handoff.rs). The dashboard tab can take it back.
         hand.step(bar.game(), handoff::flat_game(), dashtab.selected());

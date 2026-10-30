@@ -32,6 +32,7 @@ use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, line, over, tint};
 use crate::keyboard::{self, Keyboard, KeyboardMode};
 use crate::overlay::{Flag, InputMode, Surfaces};
+use crate::stage::Stage;
 use crate::taskbar::{Taskbar, tex_scale};
 use crate::texture::Refused;
 use crate::windows::Windows;
@@ -596,7 +597,7 @@ impl Workspace {
                 S::Pointer(PointerEvent { kind: P::Move, .. }) => self.hover = at,
                 S::Pointer(PointerEvent { kind: P::Leave, .. }) => self.hover = None,
                 S::Pointer(PointerEvent { kind: P::Down(Button::Left), from, .. }) => {
-                    if vr::is_real_controller(vr::index(from)) {
+                    if crate::stage::Live.is_controller(from) {
                         let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed is primary (R-2)
@@ -868,7 +869,7 @@ impl Workspace {
 
 /// Where the head is and which way it faces (yaw 0 looks down -z). If that's unknown, the room's origin.
 fn head_pose() -> ([f64; 3], f64) {
-    let m = vr::head().unwrap_or(crate::geometry::STAND_IN_HEAD);
+    let m = crate::stage::Live.head_now().unwrap_or(crate::geometry::STAND_IN_HEAD);
     ([m[0][3] as f64, m[1][3] as f64, m[2][3] as f64], (m[0][2] as f64).atan2(m[2][2] as f64).to_degrees())
 }
 

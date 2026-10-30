@@ -1373,10 +1373,9 @@ impl Grab {
                             self.hover[i] = None;
                         }
                         P::Down(Button::Left) => {
-                            let index = vr::index(pe.from); // SteamVR's number, as it's always been logged
-                            eprintln!("{}: card pressed by device {index} on {part:?}", p.name);
+                            eprintln!("{}: card pressed by device {} on {part:?}", p.name, crate::stage::Live.label(pe.from));
                             crate::windows::shell_outside(); // a click outside Plasma's open popup
-                            if vr::is_real_controller(index) && k.awake {
+                            if crate::stage::Live.is_controller(pe.from) && k.awake {
                                 k.set_awake(false); // whichever device was pressed last is primary (R-2)
                             }
                             self.press(i, part, pe.from, k, s);
@@ -1466,7 +1465,7 @@ impl Grab {
         // a controller's carry can dock: its targets are the other controllers, looked up once here
         let others = if self.docking && matches!(mode, Mode::Move { .. }) && dev != Dev::Mouse { s.controllers().into_iter().filter(|&c| Dev::Controller(c) != dev).collect() } else { Vec::new() };
         self.drags[i] = Some(Drag { dev, mode, lost: None, streak: None, since: Instant::now(), bent0: sagitta(pl.width, pl.curve), others, arm: None });
-        eprintln!("{}: {what} by device {}", self.owner(i).map_or("", |o| o.name), vr::index(dev));
+        eprintln!("{}: {what} by device {}", self.owner(i).map_or("", |o| o.name), crate::stage::Live.label(dev));
     }
 
     /// Letting go: the panel stays where it is and its new place is saved into "home".

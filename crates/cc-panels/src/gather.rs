@@ -13,6 +13,7 @@
 //! The taskbar's chip, the dashboard tab's button, Right Ctrl + B, the control socket's `gather`
 //! and `cc-home gather` all end here.
 use crate::geometry::{Mat, Placement, Pose, V3, angles, panel_matrix, sagitta};
+use crate::stage::Stage;
 use crate::{Source, grab, panels, vr, windows::Windows};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -176,7 +177,7 @@ fn put(grab: &mut grab::Grab, item: Item, m: &Mat, pl: &Placement) {
 /// says so. Popups aren't moved: they follow their window (windows.rs). The fixed taskbar is the
 /// caller's to put back under them (`Taskbar::refix`), as after a spot is applied.
 pub fn gather(grab: &mut grab::Grab, windows: &mut Windows) -> Result<usize, String> {
-    let head = vr::head().ok_or("the headset isn't tracked, so nothing moved")?;
+    let head = crate::stage::Live.head_now().ok_or("the headset isn't tracked, so nothing moved")?;
     crate::control::summon(grab, windows);
     let mut items: Vec<(Item, Placement)> = Vec::new();
     {

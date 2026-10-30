@@ -29,6 +29,7 @@ use crate::events::{Button, PointerEvent, PointerKind, SurfaceEvent};
 use crate::geometry::{Mat, Placement, V3, norm};
 use crate::overlay::{At, Flag, InputMode, Live, Overlays, Place, Surfaces, apply};
 use crate::session::{Output, Session, StreamEvent};
+use crate::stage::Stage;
 use crate::{capture, session, taskbar, vr, windows};
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
 use openvr_sys as sys;
@@ -623,7 +624,7 @@ impl Plasma {
             return;
         }
         let mut k = crate::kvm::lock();
-        if matches!(kind, Some(PointerKind::Down(_))) && vr::is_real_controller(vr::index(from)) && k.awake {
+        if matches!(kind, Some(PointerKind::Down(_))) && crate::stage::Live.is_controller(from) && k.awake {
             k.set_awake(false); // the last device pressed is primary (R-2)
         }
         if k.awake {

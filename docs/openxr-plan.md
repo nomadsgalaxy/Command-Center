@@ -581,6 +581,18 @@ cc-panels.
    reading (every device's pose at the predicted time, connected or not, a laser's tip) moves into
    stage.rs's `Live`, which asks grab only for the mouse's ray; the head's position comes from
    `Stage::head`, `trace::laser_pose` takes a `Dev`, and osk.rs places through `place_room`.
+   Then four calls on `Stage`, each one OpenVR call (or the same few) it was:
+   - `head_now`: the head's pose now, not predicted (vr::head), for placing new things;
+     `head_pose` stays the predicted one. Moving placement to the predicted pose would be a
+     change of its own.
+   - `is_controller(Dev)`: a real controller, not the mouse or our cc_pointer device, so R-2
+     (whichever device was pressed last is primary) reads a `Dev`.
+   - `in_hand(Hand) -> Option<Ctl>`: the real controller in a hand, for the wrist taskbar.
+   - `label(Dev)`: how a device is named in the logs, OpenVR's index on OpenVR, so "by device 3"
+     reads as before.
+   What's left of OpenVR's numbering outside the OpenVR side is tests, Plasma's raw loop and its
+   debug line, and the control socket's SteamVR inspection (`tip`, `devices`), which is OpenVR on
+   purpose. Whether the headset is worn at start went with the session reads to 6d.
 7. (1 d) Tests and a pass in the headset.
 
 Each step is its own small branch, and has to pass the same checks before and after:

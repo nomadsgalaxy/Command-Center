@@ -7,7 +7,7 @@
 //! `Stage` is `Overlays` (overlay.rs, the writes) plus these reads. Anything that moves a panel
 //! takes one.
 use crate::geometry::{Mat, V3};
-use crate::ids::{Ctl, Dev};
+use crate::ids::{Ctl, Dev, Hand};
 pub use crate::overlay::Live;
 use crate::overlay::{Handle, Overlays};
 use crate::vr;
@@ -32,6 +32,17 @@ pub trait Stage: Overlays {
     fn head(&self) -> V3;
     /// The head's pose right now, if it's tracked.
     fn head_pose(&self) -> Option<Mat>;
+    /// The head's pose as it is now, not predicted to the frame, if it's tracked: what new things
+    /// are placed in front of (vr::head). Using the predicted pose there would be a change of its own.
+    fn head_now(&self) -> Option<Mat>;
+    /// Whether d is a real controller: not the mouse, and not our cc_pointer device, which SteamVR
+    /// tracks as a controller. A press from one makes it the primary device (R-2).
+    fn is_controller(&self, d: Dev) -> bool;
+    /// The real controller in hand h, if there is one (the wrist taskbar's).
+    fn in_hand(&self, h: Hand) -> Option<Ctl>;
+    /// How a device is named in the logs: OpenVR's index, so "by device 3" reads as it always did
+    /// (0 the headset, 64 the mouse). Another runtime gives its own names.
+    fn label(&self, d: Dev) -> String;
     /// The real controllers SteamVR tracks (not the mouse's pointer device), for docking (grab.rs).
     fn controllers(&self) -> Vec<Ctl>;
     /// A short buzz in the hand whose laser last worked overlay h (a dock target arming, grab.rs).
@@ -54,6 +65,25 @@ fn poses() -> Vec<sys::TrackedDevicePose_t> {
 }
 
 impl Stage for Live {
+    fn head_now(&self) -> Option<Mat> {
+        vr::head()
+    }
+
+    fn is_controller(&self, d: Dev) -> bool {
+        vr::is_real_controller(vr::index(d))
+    }
+
+    fn in_hand(&self, h: Hand) -> Option<Ctl> {
+        let role = if h == Hand::Left { sys::ETrackedControllerRole_TrackedControllerRole_LeftHand } else { sys::ETrackedControllerRole_TrackedControllerRole_RightHand };
+        let dev = crate::call!(sys, GetTrackedDeviceIndexForControllerRole, role);
+        // (not our cc_pointer, which takes that hand's role while the mouse borrows it)
+        (dev != sys::k_unTrackedDeviceIndexInvalid as u32 && vr::is_real_controller(dev)).then(|| Ctl::new(dev))
+    }
+
+    fn label(&self, d: Dev) -> String {
+        vr::index(d).to_string()
+    }
+
     fn device(&self, dev: Dev) -> Option<Mat> {
         if dev == Dev::Mouse {
             return crate::grab::mouse_ray();
@@ -190,6 +220,24 @@ pub mod fake {
     }
 
     impl Stage for Fake {
+        fn head_now(&self) -> Option<Mat> {
+            self.head_pose
+        }
+
+        /// Every controller is real here; the mouse isn't.
+        fn is_controller(&self, d: Dev) -> bool {
+            matches!(d, Dev::Controller(_))
+        }
+
+        /// No hands here.
+        fn in_hand(&self, _: Hand) -> Option<Ctl> {
+            None
+        }
+
+        fn label(&self, d: Dev) -> String {
+            Live.label(d)
+        }
+
         fn device(&self, dev: Dev) -> Option<Mat> {
             self.devices.get(&dev).copied()
         }
@@ -301,6 +349,22 @@ pub mod fake {
     }
 
     impl Stage for OverFake {
+        fn head_now(&self) -> Option<Mat> {
+            Live.head_now()
+        }
+
+        fn is_controller(&self, d: Dev) -> bool {
+            Live.is_controller(d)
+        }
+
+        fn in_hand(&self, h: Hand) -> Option<Ctl> {
+            Live.in_hand(h)
+        }
+
+        fn label(&self, d: Dev) -> String {
+            Live.label(d)
+        }
+
         fn device(&self, dev: Dev) -> Option<Mat> {
             Live.device(dev)
         }
@@ -336,5 +400,20 @@ pub mod fake {
         fn move_pointer(&mut self, i: usize, x: f64, y: f64) {
             self.moves.push((i, x, y));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The logs name devices by OpenVR's index, as they did before Stage::label: the headset 0, the
+    /// mouse 64, a controller its own number.
+    #[test]
+    fn a_device_is_labelled_by_its_openvr_index() {
+        assert_eq!(Live.label(Dev::Head), "0");
+        assert_eq!(Live.label(Dev::Mouse), "64");
+        assert_eq!(Live.label(Dev::Controller(Ctl::new(3))), "3");
+        assert_eq!(fake::Fake::default().label(Dev::Mouse), "64", "the stand-in names them the same");
     }
 }

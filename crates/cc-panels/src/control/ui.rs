@@ -7,6 +7,7 @@ use crate::geometry::{Pose, STAND_IN_HEAD};
 use crate::grab::{self, Look, Paint, TagImg, average, line, over, rbox, tint};
 use crate::overlay::Overlays;
 use crate::poll::Pointing;
+use crate::stage::Stage;
 use crate::taskbar::{self, LABEL, TAG_ROOM, TAG_TEXT, text_pixel};
 use crate::{config, vr};
 use std::sync::mpsc;
@@ -211,7 +212,7 @@ pub fn patch(buf: &mut [u8], tw: usize, th: usize, s: f64, (x0, y0, x1, y1): Rec
 /// Where a window `name` w metres wide opens: where it was last put down in this room
 /// (spots.home.<name> of this room's workspace), else in front of you (`fresh`).
 pub fn spot(name: &str, w: f64) -> Pose {
-    config::home_pose(name, None).unwrap_or_else(|| fresh(&vr::head().unwrap_or(STAND_IN_HEAD), w))
+    config::home_pose(name, None).unwrap_or_else(|| fresh(&crate::stage::Live.head_now().unwrap_or(STAND_IN_HEAD), w))
 }
 
 /// Where every new surface opens (geometry.rs `new_pose`: 1.4 m ahead, level, facing you), w metres wide.
