@@ -136,6 +136,7 @@ const LOOK: f64 = 0.6; // wrist: shown while dot(its front, toward the eyes) is 
 enum Chip {
     Panel(usize), // a remote machine's (cyan) or a Frame window's (violet) panel, by index
     More(usize),  // windows waiting for a slot
+    Gather,       // "Bring all here": every panel in front of you (gather.rs)
     Workspace,    // the Workspace window (and its Machines page): lit while either's open
     Prefs,        // the Preferences window's gear: lit while it's open
     Power,        // Close Desktop: lit (magenta, "Close?") while armed
@@ -407,7 +408,7 @@ fn chip_pixel(it: &Item, t: &Tokens, acc: &Accent, glyphs: Option<&TagImg>, x: f
         Chip::Panel(_) if s.lit => cw,
         Chip::Panel(_) => 0.4 * cw,
         Chip::Workspace | Chip::Prefs | Chip::Power if s.lit => cw,
-        Chip::More(_) | Chip::Workspace | Chip::Prefs | Chip::Power => 0.0,
+        Chip::More(_) | Chip::Gather | Chip::Workspace | Chip::Prefs | Chip::Power => 0.0,
     };
     let ind = if iw > 0.0 { (0.5 - rbox(x - cw / 2.0, y - (ROW + TILE) / 2.0 + 1.5, iw / 2.0, 1.5, 1.5)).clamp(0.0, 1.0) * inside } else { 0.0 };
     let ink = if s.dim && !s.hover { t.wdim } else { t.wtext }; // on the panel's surface, so Window's colours
@@ -417,6 +418,7 @@ fn chip_pixel(it: &Item, t: &Tokens, acc: &Accent, glyphs: Option<&TagImg>, x: f
             _ if s.chip == Chip::Power && !(s.lit && it.label.is_some()) => ([255.0, 0.0, 0.0], power(x - cw / 2.0, y - ROW / 2.0)),
             Some(img) => label_pixel(img, x, y, cw),
             None if s.chip == Chip::Prefs => ([255.0, 0.0, 0.0], gear(x - cw / 2.0, y - ROW / 2.0)), // a tag's text colour
+            None if s.chip == Chip::Gather => ([255.0, 0.0, 0.0], gather(x - cw / 2.0, y - ROW / 2.0)),
             None => text_pixel(glyphs, GLYPHS, &it.text, x, y, cw),
         },
         ink,
@@ -431,6 +433,22 @@ fn gear(x: f64, y: f64) -> f64 {
     let r = x.hypot(y);
     let outer = 6.5 + 3.0 * (8.0 * y.atan2(x)).cos().clamp(-0.5, 0.5); // 5 in a gap, 8 on a tooth
     (outer - r + 0.5).clamp(0.0, 1.0) * (r - 2.5 + 0.5).clamp(0.0, 1.0)
+}
+
+/// "Bring all here"'s glyph at (x, y) units from its centre: a small panel's outline, with four
+/// arrows coming in at it from the corners, the way gather pulls everything in.
+fn gather(x: f64, y: f64) -> f64 {
+    let panel = line(rbox(x, y, 3.2, 2.4, 0.8), 0.7);
+    let (ax, ay) = (x.abs(), y.abs()); // the four corners are one corner, mirrored
+    // a stroke from (8.5, 7.5) in to (5, 4.5), and its head: two short strokes back from its tip
+    let seg = |(x0, y0): (f64, f64), (x1, y1): (f64, f64)| {
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let t = (((ax - x0) * dx + (ay - y0) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        line((ax - x0 - t * dx).hypot(ay - y0 - t * dy), 0.7)
+    };
+    let tip = (5.0, 4.5);
+    let arrow = seg((8.5, 7.5), tip).max(seg(tip, (7.6, 4.6))).max(seg(tip, (5.1, 7.0)));
+    panel.max(arrow)
 }
 
 /// The power glyph's coverage at (x, y) units from its centre (y down): a ring 1.6 thick
@@ -533,7 +551,7 @@ fn widths(items: &[Item], glyphs: Option<&TagImg>) -> Vec<(Chip, f64)> {
             let w = match it.s.chip {
                 Chip::Panel(_) | Chip::Workspace => it.label.as_ref().map_or(120.0, |l| (l.0 as f64 - TAG_ROOM) * LABEL + 2.0 * CHIP_PAD).min(MAX_CHIP),
                 Chip::More(_) => it.text.len() as f64 * cell + 2.0 * CHIP_PAD,
-                Chip::Prefs => GEAR,
+                Chip::Prefs | Chip::Gather => GEAR,
                 // same width armed or not, so arming moves no chip (or what was under the laser) and only repaints this one
                 Chip::Power => it.label.as_ref().map_or(GEAR, |l| ((l.0 as f64 - TAG_ROOM) * LABEL + 2.0 * CHIP_PAD).max(GEAR)),
             };
@@ -1031,6 +1049,10 @@ impl Taskbar {
         if c == Chip::Prefs {
             crate::control::show(&crate::control::prefs::OPEN, !crate::control::prefs::OPEN.load(Relaxed));
         }
+        if c == Chip::Gather {
+            crate::gather::gather(grab, windows);
+            self.refix(); // fixed, it goes back under them, as after a spot
+        }
         if c == Chip::Power {
             let quit;
             (self.armed, quit) = press_power(self.armed, Instant::now());
@@ -1146,6 +1168,7 @@ impl Taskbar {
         if windows.waiting() > 0 {
             chips.push(Chip::More(windows.waiting()));
         }
+        chips.push(Chip::Gather);
         chips.push(Chip::Workspace);
         chips.push(Chip::Prefs);
         chips.push(Chip::Power);
@@ -1162,7 +1185,7 @@ impl Taskbar {
                         let p = panel(i);
                         (p.tag().0, p.away() || !p.live(), engaged && kbd == i && p.live() && !p.away())
                     }
-                    Chip::More(_) => (0, false, false),
+                    Chip::More(_) | Chip::Gather => (0, false, false),
                     Chip::Workspace => (0, false, crate::control::machines::OPEN.load(Relaxed) || crate::control::workspace::OPEN.load(Relaxed)),
                     Chip::Prefs => (0, false, crate::control::prefs::OPEN.load(Relaxed)),
                     Chip::Power => (0, false, armed),
@@ -1201,7 +1224,7 @@ impl Taskbar {
                     }
                     Chip::More(n) => (grab::VIOLET, None, format!("+{n}")),
                     Chip::Workspace => (grab::REMOTE, self.machines.clone(), String::new()),
-                    Chip::Prefs => (grab::VIOLET, None, String::new()),
+                    Chip::Prefs | Chip::Gather => (grab::VIOLET, None, String::new()),
                     Chip::Power => (if s.lit { theme::get().alert } else { grab::VIOLET }, self.close.clone(), String::new()),
                 };
                 Item { s, accent, label, text }
