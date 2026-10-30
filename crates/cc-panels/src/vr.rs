@@ -145,7 +145,7 @@ pub fn dev(i: u32) -> crate::ids::Dev {
     match i {
         0 => Dev::Head,
         i if i == sys::k_unMaxTrackedDeviceCount as u32 => Dev::Mouse,
-        i => Dev::Controller(Ctl(i)),
+        i => Dev::Controller(Ctl::new(i)),
     }
 }
 
@@ -155,7 +155,11 @@ pub fn index(d: crate::ids::Dev) -> u32 {
     match d {
         Dev::Head => 0,
         Dev::Mouse => sys::k_unMaxTrackedDeviceCount as u32,
-        Dev::Controller(c) => c.0,
+        Dev::Controller(c) => {
+            // made only by `dev`, so never the headset's or the mouse's number: those come back as Head or Mouse
+            debug_assert!(c.raw() != 0 && c.raw() != sys::k_unMaxTrackedDeviceCount as u32, "controller {} is the headset's or the mouse's number", c.raw());
+            c.raw()
+        }
     }
 }
 
@@ -610,7 +614,26 @@ mod tests {
         }
         assert_eq!(super::dev(0), Dev::Head);
         assert_eq!(super::dev(64), Dev::Mouse);
-        assert_eq!(super::dev(invalid), Dev::Controller(Ctl(invalid)), "not the room, not the head: a lookup that finds nothing");
+        assert_eq!(super::dev(invalid), Dev::Controller(Ctl::new(invalid)), "not the room, not the head: a lookup that finds nothing");
+    }
+
+    /// The other way round, a Dev comes back as itself when it's canonical, which every Dev the
+    /// code makes is (from `dev`, or Head and Mouse by name).
+    #[test]
+    fn a_canonical_dev_round_trips_through_its_index() {
+        use crate::ids::{Ctl, Dev};
+        for d in [Dev::Head, Dev::Mouse, Dev::Controller(Ctl::new(1)), Dev::Controller(Ctl::new(63)), Dev::Controller(Ctl::new(u32::MAX))] {
+            assert_eq!(super::dev(super::index(d)), d, "{d:?}");
+        }
+    }
+
+    /// A controller numbered like the headset isn't one: it would come back as the headset, so
+    /// `index` refuses it (in a debug build, which the tests are).
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "the headset's or the mouse's number")]
+    fn a_controller_numbered_0_is_refused() {
+        super::index(crate::ids::Dev::Controller(crate::ids::Ctl::new(0)));
     }
 
     /// A NUL in an overlay's name or a picture's path is an error, not a panic.

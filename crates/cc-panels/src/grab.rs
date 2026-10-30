@@ -2698,8 +2698,8 @@ mod tests {
         use crate::stage::fake::{Fake, OverFake, aimed, apart, put};
         use std::time::Duration;
 
-        const HAND: Dev = Dev::Controller(crate::ids::Ctl(1));
-        const TWO: Dev = Dev::Controller(crate::ids::Ctl(2)); // another controller
+        const HAND: Dev = Dev::Controller(crate::ids::Ctl::new(1));
+        const TWO: Dev = Dev::Controller(crate::ids::Ctl::new(2)); // another controller
         const EYE: V3 = [0.0, 1.6, 0.0]; // where Fake::with_panels puts the head
 
         fn flat() -> Placement {
@@ -2841,7 +2841,7 @@ mod tests {
 
         #[test]
         fn let_go_by_the_other_hand_it_docks_there_and_rides_along_until_torn_off() {
-            const OTHER: Dev = Dev::Controller(crate::ids::Ctl(2));
+            const OTHER: Dev = Dev::Controller(crate::ids::Ctl::new(2));
             let p = flat();
             let (mut g, mut k, mut f) = world(p);
             point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
@@ -2877,7 +2877,7 @@ mod tests {
 
         #[test]
         fn a_hand_out_of_sight_when_the_carry_starts_can_still_take_the_dock() {
-            const OTHER: Dev = Dev::Controller(crate::ids::Ctl(2));
+            const OTHER: Dev = Dev::Controller(crate::ids::Ctl::new(2));
             let p = flat();
             let (mut g, mut k, mut f) = world(p);
             point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
@@ -2896,7 +2896,7 @@ mod tests {
 
         #[test]
         fn a_carry_that_only_passes_a_target_or_has_docking_off_stays_in_the_world() {
-            const OTHER: Dev = Dev::Controller(crate::ids::Ctl(2));
+            const OTHER: Dev = Dev::Controller(crate::ids::Ctl::new(2));
             for (docking, dwell) in [(true, DOCK_DWELL / 2), (false, DOCK_DWELL * 2)] {
                 let p = flat();
                 let (mut g, mut k, mut f) = world(p);
@@ -2925,7 +2925,7 @@ mod tests {
             g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
             g.end_by(HAND, &k);
             g.settle(&mut k, &mut f);
-            assert!(matches!(g.docked[0], Some((Dock::Hand(crate::ids::Ctl(2)), _, None))));
+            assert!(matches!(g.docked[0], Some((Dock::Hand(c), _, None)) if c == crate::ids::Ctl::new(2)));
             (g, k, f)
         }
 
@@ -3057,7 +3057,11 @@ mod tests {
             assert!((k.place[0].c[1] - was[1] - 0.2).abs() < 1e-5, "it rose with the head");
             g.cancel(0);
             assert!(g.docked[0].is_none(), "a recall puts it in the world");
-            assert_eq!(dock_for([0.0, 1.0, 0.0], EYE, &[(crate::ids::Ctl(3), [0.0, 1.1, 0.0]), (crate::ids::Ctl(4), [0.0, 1.05, 0.0])]), Some(Dock::Hand(crate::ids::Ctl(4))), "the nearer controller");
+            assert_eq!(
+                dock_for([0.0, 1.0, 0.0], EYE, &[(crate::ids::Ctl::new(3), [0.0, 1.1, 0.0]), (crate::ids::Ctl::new(4), [0.0, 1.05, 0.0])]),
+                Some(Dock::Hand(crate::ids::Ctl::new(4))),
+                "the nearer controller"
+            );
             assert_eq!(dock_for([0.0, 1.0, 0.0], EYE, &[]), None, "nowhere near: the world");
         }
 
@@ -3185,7 +3189,7 @@ mod tests {
             log.line(format!("drag {drag}"));
             // the controller by OpenVR's index, as the fixtures have always written it
             let docked = g.docked[0].as_ref().map(|d| match d.0 {
-                Dock::Hand(c) => format!("Hand({})", c.0),
+                Dock::Hand(c) => format!("Hand({})", c.raw()),
                 Dock::Head => "Head".into(),
             });
             log.line(format!("docked {}", docked.map_or("None".into(), |d| format!("Some({d})"))));
@@ -3252,7 +3256,7 @@ mod tests {
         /// docks, then that hand moves and the panel rides along.
         #[test]
         fn golden_dock() {
-            const OTHER: Dev = Dev::Controller(crate::ids::Ctl(2));
+            const OTHER: Dev = Dev::Controller(crate::ids::Ctl::new(2));
             let p = flat();
             let (mut g, mut k, mut s, _vr) = golden_world(p);
             let mut log = crate::golden::Log::default();
@@ -3313,7 +3317,7 @@ mod tests {
         /// late Up arrives. What happens today is what's pinned.
         #[test]
         fn golden_device_lost_mid_drag() {
-            const NEW: Dev = Dev::Controller(crate::ids::Ctl(5)); // the controller back on, under another index
+            const NEW: Dev = Dev::Controller(crate::ids::Ctl::new(5)); // the controller back on, under another index
             let p = flat();
             let (mut g, mut k, mut s, _vr) = golden_world(p);
             let mut log = crate::golden::Log::default();
@@ -3361,8 +3365,8 @@ mod tests {
         #[test]
         fn golden_roles_swap_mid_drag() {
             use openvr_sys as sys;
-            const LEFT: Dev = Dev::Controller(crate::ids::Ctl(1));
-            const RIGHT: Dev = Dev::Controller(crate::ids::Ctl(2));
+            const LEFT: Dev = Dev::Controller(crate::ids::Ctl::new(1));
+            const RIGHT: Dev = Dev::Controller(crate::ids::Ctl::new(2));
             let roles = |l: Dev, r: Dev| {
                 let mut s = crate::vr::fake::SCRIPT.lock().unwrap();
                 s.get_or_insert_with(Default::default).roles =

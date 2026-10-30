@@ -37,8 +37,23 @@ pub enum Hand {
 /// by hand: a laser event carries an index, a drag keeps the index it started with, docking takes
 /// "the other controllers" as a set, and a controller can have no hand role at all (Invalid or
 /// OptOut) or share one. `Stage::hand` says which hand it is right now, if any.
+///
+/// Only a backend's conversion makes one (`vr::dev`, and the tests' fakes), so its id is always one
+/// the backend gave out: `Ctl::new` is crate-private and the id is read with `raw`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Ctl(pub u32);
+pub struct Ctl(u32);
+
+impl Ctl {
+    /// The backend's controller `id`. On OpenVR that's a tracked-device index, never 0 (the
+    /// headset) or 64 (the mouse): those are `Dev::Head` and `Dev::Mouse`, and `vr::index` checks.
+    pub(crate) const fn new(id: u32) -> Ctl {
+        Ctl(id)
+    }
+
+    pub fn raw(self) -> u32 {
+        self.0
+    }
+}
 
 /// What can point, be tracked or hold a surface. The room isn't one: a surface in the room is
 /// `At::Room` (overlay.rs), and where something can be on a device or in the room it's
@@ -46,6 +61,10 @@ pub struct Ctl(pub u32);
 /// Trackers, base stations and our own virtual pointer (cc-pointer) aren't `Dev`s either, because
 /// nothing uses them as one: `vr::is_real_controller` filters them out today, and the virtual
 /// pointer stays inside the OpenVR backend (laser.rs).
+///
+/// On OpenVR every index converts to a Dev and back to itself (`vr::dev`, `vr::index`), but a Dev
+/// only comes back as itself if it's canonical: the headset is `Head` and the mouse `Mouse`, never
+/// a controller numbered 0 or 64, which would come back as `Head` or `Mouse`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dev {
     Head,

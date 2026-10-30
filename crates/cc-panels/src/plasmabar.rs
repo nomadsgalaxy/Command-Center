@@ -1195,7 +1195,7 @@ mod tests {
         crate::overlay::apply(&mut w, crate::vr::Handle(4), &place_for(&m, None, 0.89, 2.0, b0, Some(b0)));
         assert!(!w.0.iter().any(|c| matches!(c, Call::Bounds(..))), "the same crop again: not resent");
         let mut w = Writes::default();
-        crate::overlay::apply(&mut w, crate::vr::Handle(4), &place_for(&m, Some(crate::ids::Dev::Controller(crate::ids::Ctl(2))), 0.89, 0.0, b1, Some(b0)));
+        crate::overlay::apply(&mut w, crate::vr::Handle(4), &place_for(&m, Some(crate::ids::Dev::Controller(crate::ids::Ctl::new(2))), 0.89, 0.0, b1, Some(b0)));
         assert!(w.0.contains(&Call::Bounds(crate::vr::Handle(4), b1)), "a new crop is");
         assert_eq!(w.0.last(), Some(&Call::Device(crate::vr::Handle(4), 2, m)), "on a controller when the frame is on one");
     }

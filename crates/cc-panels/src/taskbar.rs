@@ -1981,7 +1981,7 @@ mod tests {
         #[test]
         fn a_frame_on_the_wrist_is_placed_on_the_controller_not_in_the_room() {
             let (mut w, mut placed) = (Writes::default(), None);
-            put_frame(&mut w, OV, &mut placed, 0.4, 0.0, &at(0.0), Some(Dev::Controller(crate::ids::Ctl(3))));
+            put_frame(&mut w, OV, &mut placed, 0.4, 0.0, &at(0.0), Some(Dev::Controller(crate::ids::Ctl::new(3))));
             assert_eq!(w.0.last(), Some(&Call::Device(OV, 3, at(0.0))));
             assert_eq!(w.room_of(OV), None);
             assert_eq!(w.curvature_of(OV), Some(0.0), "flat");

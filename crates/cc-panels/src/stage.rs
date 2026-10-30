@@ -71,7 +71,7 @@ impl Stage for Live {
         // connected, tracked or not: a hand that's out of the cameras' sight right now can still be a
         // target later in the carry (arm() reads its pose each frame)
         let poses = crate::grab::poses(); // once, not per device
-        (1..openvr_sys::k_unMaxTrackedDeviceCount as u32).filter(|&d| poses.get(d as usize).is_some_and(|p| p.bDeviceIsConnected) && vr::is_real_controller(d)).map(Ctl).collect()
+        (1..openvr_sys::k_unMaxTrackedDeviceCount as u32).filter(|&d| poses.get(d as usize).is_some_and(|p| p.bDeviceIsConnected) && vr::is_real_controller(d)).map(Ctl::new).collect()
     }
 
     fn panel(&self, i: usize) -> PanelFacts {

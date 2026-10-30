@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn the_taskbars_device_number_picks_the_room_or_a_device() {
-        let five = Dev::Controller(crate::ids::Ctl(5));
+        let five = Dev::Controller(crate::ids::Ctl::new(5));
         assert_eq!(At::on(None, M), At::Room(M));
         assert_eq!(At::on(Some(five), M), At::Device(five, M));
         let mut w = Writes::default();
