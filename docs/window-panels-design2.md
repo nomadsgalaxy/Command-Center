@@ -401,7 +401,7 @@ arrived 300 ms after `created`, the script nudges the window (a 1 px resize and 
 |---|---|
 | `fixed` (default) | Locked in the world, 0.25 m below the lowest krdp panel at its home spot, centred under their span.<br>Recomputed when a spot is applied or a panel is dropped, never during a drag.<br>Carrying it by an edge saves `spots.home.taskbar`, which wins from then on.<br>With no krdp panels, it takes the `follow` pose once at startup and freezes there. |
 | `follow` | 0.7 m out, 0.45 m below eye height, tilted 25° toward you, yaw only.<br>When your head yaw is more than 35° off for over 0.6 s, or you've walked more than 0.5 m, it eases over about 0.4 s (critically damped) to face you again. |
-| `wrist` | `SetOverlayTransformTrackedDeviceRelative` on the non-dominant controller (`laser.rs::dominant_hand()`), 0.22 m wide, over the back of the wrist.<br>Fades in when `dot(wrist normal, toward head) > 0.6`. |
+| `wrist` | `SetOverlayTransformTrackedDeviceRelative` on the non-dominant controller (`config.rs::dominant()`), 0.22 m wide, over the back of the wrist.<br>Fades in when `dot(wrist normal, toward head) > 0.6`. |
 
 - **Reading the setting:** at startup.
 - **Switching:** `taskbar fixed|follow|wrist` on `@controlcenter` switches live and writes

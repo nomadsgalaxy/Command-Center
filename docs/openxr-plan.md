@@ -607,6 +607,12 @@ cc-panels.
    vr.rs's re-read of the universe on a relocalization (`session_event`, to tell RoomChanged
    from Relocalized) stays a direct property read on the OpenVR side, with its error ignored as
    before; giving it `Session::universe_id`'s rule is phase 1's.
+   6e moves laser.rs to the OpenVR side, in three parts. First, what isn't the laser's: its
+   `Hand` was the same as `ids::Hand`, so it goes, and the taskbar's wrist asks `in_hand` without
+   a conversion. The dominant-hand preference (settings.json's `dominant_hand`, which Preferences
+   sets live) moves to config.rs, and `aim_basis`, which kvm's ray uses too, to geometry.rs. The
+   preference's first load stays in `Beam::new`, so nothing changes on OpenVR, and a runtime
+   with no `Beam` never loads it and points with the right hand.
 7. (1 d) Tests and a pass in the headset.
 
 Each step is its own small branch, and has to pass the same checks before and after:
@@ -709,6 +715,7 @@ Behaviour changes phase 0 put off, each its own branch with its own test:
 - `last_event` gets names of its own, not OpenVR's numbers (5f).
 - Before a `Stage` is injected: the fake's `head_pose` and `head_now` give different fixtures,
   so swapping them fails a test, and the registry scan learns generic callers (6b).
+- The dominant hand loads at start on any runtime, not in the OpenVR laser's `Beam::new` (6e).
 
 What counts as "works":
 

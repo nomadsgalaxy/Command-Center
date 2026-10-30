@@ -2,6 +2,7 @@
 //! home.json (saved spots), settings.json and password (plus passwords/<machine> and
 //! trusted-hosts/ once a machine is paired).
 use crate::geometry::Pose;
+use crate::ids::Hand;
 use cc_proto::conf::{self, Json};
 
 // Where the files are, by HOME (cc_proto::paths, shared with cc-home).
@@ -333,6 +334,33 @@ pub fn set_setting(key: &str, value: serde_json::Value) -> Result<(), String> {
 /// settings.json (`taskbar`, `window_px_per_m`, ...), or {} when there isn't one.
 pub fn settings() -> serde_json::Value {
     std::fs::read_to_string(config("settings.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}))
+}
+
+/// True if the dominant hand is the left (settings.json's `dominant_hand`). Beam::new loads it
+/// and Preferences sets it live; until then it's the right.
+static DOMINANT_LEFT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The hand you point with. The mouse's laser and the wrist taskbar take the other one.
+pub fn dominant() -> Hand {
+    if DOMINANT_LEFT.load(std::sync::atomic::Ordering::Relaxed) { Hand::Left } else { Hand::Right }
+}
+
+pub fn set_dominant(h: Hand) {
+    DOMINANT_LEFT.store(h == Hand::Left, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// settings.json's `dominant_hand`: "left" or "right", and right when it's missing or neither.
+pub fn dominant_hand() -> Hand {
+    let text = std::fs::read_to_string(config("settings.json")).unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    match v["dominant_hand"].as_str() {
+        None | Some("right") => Hand::Right,
+        Some("left") => Hand::Left,
+        Some(other) => {
+            eprintln!("settings.json: dominant_hand {other:?} isn't left or right; using right");
+            Hand::Right
+        }
+    }
 }
 
 /// The krdp password for a viewer of `machine`: passwords/<machine> from pairing, else the

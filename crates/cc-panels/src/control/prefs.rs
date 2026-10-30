@@ -14,7 +14,7 @@
 use super::ui::{self, BTN_H, GAP, MPP, PAD, Px, ROW, Rect, SCALE, SORT, TITLE, text, typed, typed_w};
 use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, over, tint};
-use crate::laser::{self, Hand};
+use crate::ids::Hand;
 use crate::overlay::{Flag, InputMode, Surfaces};
 use crate::stage::Stage;
 use crate::taskbar::{Mode, Taskbar, tex_scale};
@@ -357,7 +357,7 @@ impl Prefs {
     fn act(&mut self, a: Hit, windows: &mut Windows, bar: &mut Taskbar) {
         let same = match a {
             Hit::Taskbar(k) => MODES[k] == bar.mode(), // skip it, since set_mode would restart its placement
-            Hit::Hand(k) => (k == 0) == (laser::dominant() == Hand::Left),
+            Hit::Hand(k) => (k == 0) == (config::dominant() == Hand::Left),
             Hit::Align(k) => (k == 1) == self.precise,
             Hit::Minus | Hit::Plus => false,
         };
@@ -377,7 +377,7 @@ impl Prefs {
             Hit::Hand(k) => {
                 let h = [Hand::Left, Hand::Right][k];
                 eprintln!("prefs: pointing hand {h:?}");
-                laser::set_dominant(h);
+                config::set_dominant(h);
                 config::set_setting("dominant_hand", serde_json::json!(["left", "right"][k]))
             }
             Hit::Align(k) => {
@@ -395,7 +395,7 @@ impl Prefs {
         let key = Key {
             taskbar: MODES.iter().position(|&m| m == bar.mode()).unwrap_or(0),
             pct: pct_of(windows.px_per_m()),
-            left: laser::dominant() == Hand::Left,
+            left: config::dominant() == Hand::Left,
             precise: self.precise,
             hover: self.hover,
             status: self.status.clone(),

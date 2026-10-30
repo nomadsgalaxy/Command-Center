@@ -33,6 +33,20 @@ pub fn norm(v: &V3) -> f64 {
     dot(v, v).sqrt()
 }
 
+/// v as a unit vector, or ahead (-z) when it's too short to have a direction.
+pub fn unit(v: &V3) -> V3 {
+    let n = norm(v);
+    if n > 1e-9 { v.map(|x| x / n) } else { [0.0, 0.0, -1.0] }
+}
+
+/// A device basis pointing along aim with no roll: -z along aim, x horizontal (AimBasis).
+/// aim can't be vertical, and kvm's pitch limit makes sure it isn't.
+pub fn aim_basis(aim: &V3) -> (V3, V3, V3) {
+    let z = unit(&aim.map(|v| -v));
+    let x = unit(&cross(&[0.0, 1.0, 0.0], &z));
+    (x, cross(&z, &x), z)
+}
+
 /// Rotates v about a unit axis by an angle in radians (Rodrigues' formula).
 pub fn rotate(v: &V3, a: &V3, angle: f64) -> V3 {
     let (c, s, d) = (angle.cos(), angle.sin(), dot(a, v));

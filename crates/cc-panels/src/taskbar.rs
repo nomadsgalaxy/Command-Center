@@ -49,8 +49,7 @@
 use crate::events::{Button, PointerKind, SurfaceEvent};
 use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, direction, dot, from_top, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
 use crate::grab::{self, Look, TagImg, average, line, over, rbox, tint};
-use crate::ids::Dev;
-use crate::laser::{self, Hand};
+use crate::ids::{Dev, Hand};
 use crate::limits::{BAR_SCALE, CURVE_NOTCH};
 use crate::overlay::{At, Flag, InputMode, Live, Overlays, Place, Surfaces, apply};
 use crate::poll::Session;
@@ -1296,9 +1295,9 @@ impl Taskbar {
             }
             Mode::Wrist => {
                 self.mpp = (WRIST_W / self.frame.w).max(WRIST_MPP); // its own size, not the fixed bar's corner scale
-                // the off hand (laser::dominant, which Preferences changes live)
-                let hand = off_hand(laser::dominant());
-                let ctl = crate::stage::Live.in_hand(if hand == Hand::Left { crate::ids::Hand::Left } else { crate::ids::Hand::Right });
+                // the off hand (config::dominant, which Preferences changes live)
+                let hand = off_hand(config::dominant());
+                let ctl = crate::stage::Live.in_hand(hand);
                 if self.wrist_dev != Some((hand, ctl)) {
                     self.wrist_dev = Some((hand, ctl));
                     if let Some(c) = ctl {

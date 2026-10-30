@@ -680,7 +680,7 @@ impl Kvm {
     /// The ray as a device pose (origin at the anchor, -z along it, no roll), so grab.rs can
     /// carry cards on it (MOUSE).
     pub fn ray(&self) -> crate::geometry::Mat {
-        let (x, y, z) = laser::aim_basis(&direction(self.yaw, self.pitch));
+        let (x, y, z) = geometry::aim_basis(&direction(self.yaw, self.pitch));
         [0, 1, 2].map(|r| [x[r] as f32, y[r] as f32, z[r] as f32, self.anchor[r] as f32])
     }
 

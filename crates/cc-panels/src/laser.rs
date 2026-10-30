@@ -3,7 +3,8 @@
 //! UI we don't own. These are the pure parts: raw-space poses, the lease protocol, which hand to
 //! take, and the claim state machine. They're all driven by explicit inputs so the tests don't
 //! need VR.
-use crate::geometry::{Mat, V3, cross, norm};
+use crate::geometry::{Mat, V3, aim_basis, norm, unit};
+use crate::ids::Hand;
 use std::time::{Duration, Instant};
 
 /// Lease button bits, the way the cc_pointer driver (crates/cc-pointer) reads them. trigger / b / x are the
@@ -18,12 +19,6 @@ pub const JOYSTICK: u32 = 32;
 
 /// Hide now, so the driver disconnects without waiting for its 300 ms watchdog.
 pub const HIDE: &str = "H";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Hand {
-    Left,
-    Right,
-}
 
 /// One lease datagram. It carries the full state, so a lost packet strands nothing. Pose is in raw space.
 pub fn lease(seq: u32, hand: Hand, p: &V3, q: &[f64; 4], buttons: u32, scroll: (f64, f64)) -> String {
@@ -48,11 +43,6 @@ fn rot(m: &Mat, v: &V3) -> V3 {
 
 fn rot_inv(m: &Mat, v: &V3) -> V3 {
     [0, 1, 2].map(|j| (0..3).map(|i| m[i][j] as f64 * v[i]).sum())
-}
-
-fn unit(v: &V3) -> V3 {
-    let n = norm(v);
-    if n > 1e-9 { v.map(|x| x / n) } else { [0.0, 0.0, -1.0] }
 }
 
 /// Takes a standing-space direction into raw space using the HMD's pose in both (S standing,
@@ -85,14 +75,6 @@ pub fn basis_quat(x: &V3, y: &V3, z: &V3) -> [f64; 4] {
         let s = 2.0 * (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt();
         [(m[1][0] - m[0][1]) / s, (m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, 0.25 * s]
     }
-}
-
-/// A device basis pointing along aim with no roll: -z along aim, x horizontal (AimBasis).
-/// aim can't be vertical, and kvm's pitch limit makes sure it isn't.
-pub fn aim_basis(aim: &V3) -> (V3, V3, V3) {
-    let z = unit(&aim.map(|v| -v));
-    let x = unit(&cross(&[0.0, 1.0, 0.0], &z));
-    (x, cross(&z, &x), z)
 }
 
 /// The leased pose in raw space for a laser from origin along aim (both standing). The basis
@@ -324,30 +306,6 @@ pub struct Beam {
     lasermode: vr::Handle,
 }
 
-/// True if the dominant hand is the left (settings.json's `dominant_hand`, read by Beam::new; Preferences sets it live).
-static DOMINANT_LEFT: AtomicBool = AtomicBool::new(false);
-
-pub fn dominant() -> Hand {
-    if DOMINANT_LEFT.load(Relaxed) { Hand::Left } else { Hand::Right }
-}
-
-pub fn set_dominant(h: Hand) {
-    DOMINANT_LEFT.store(h == Hand::Left, Relaxed);
-}
-
-fn dominant_hand() -> Hand {
-    let text = std::fs::read_to_string(crate::config::config("settings.json")).unwrap_or_default();
-    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-    match v["dominant_hand"].as_str() {
-        None | Some("right") => Hand::Right,
-        Some("left") => Hand::Left,
-        Some(other) => {
-            eprintln!("settings.json: dominant_hand {other:?} isn't left or right; using right");
-            Hand::Right
-        }
-    }
-}
-
 fn vrserver_pid() -> u32 {
     std::fs::read_dir("/proc")
         .into_iter()
@@ -387,8 +345,10 @@ impl Beam {
         let _ = crate::texture::Live.present_pixels(lasermode, &[0u8; 4 * 4 * 4], 4, 4);
         call!(ov, SetOverlayWidthInMeters, lasermode.0, 0.001);
         call!(ov, SetOverlayFlag, lasermode.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        set_dominant(dominant_hand());
-        eprintln!("laser: dominant hand {:?}, the mouse's laser uses the other one while it's free", dominant());
+        // the dominant hand's first load stays here, so a runtime with no Beam never loads it
+        // and keeps the right (docs/openxr-plan.md, phase 1)
+        crate::config::set_dominant(crate::config::dominant_hand());
+        eprintln!("laser: dominant hand {:?}, the mouse's laser uses the other one while it's free", crate::config::dominant());
         Beam { laser: Laser::new(Instant::now()), ours: None, pid: 0, refreshed: None, lasermode }
     }
 
@@ -410,7 +370,7 @@ impl Beam {
         }
         let Some(ours) = self.ours else { return Dot::Normal };
         let (head, raw) = (vr::head(), vr::head_raw());
-        let dominant = dominant();
+        let dominant = crate::config::dominant();
         let other = if dominant == Hand::Right { sys::ETrackedControllerRole_TrackedControllerRole_LeftHand } else { sys::ETrackedControllerRole_TrackedControllerRole_RightHand };
         let holder = call!(sys, GetTrackedDeviceIndexForControllerRole, other);
         let free = holder == sys::k_unTrackedDeviceIndexInvalid as u32 || holder == ours;
@@ -475,6 +435,7 @@ fn eye_z(h: Option<Mat>) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::cross;
 
     fn close(a: &V3, b: &V3) -> bool {
         (0..3).all(|i| (a[i] - b[i]).abs() < 1e-5)
