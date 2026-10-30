@@ -597,11 +597,13 @@ cc-panels.
    `display_hz` (Hz, not the design's period, so Pace gets the same float), `universe_id`,
    `scene_app_running` and `worn`, the headset's state at start. `Session` no longer extends
    `SessionEvents`; `Backend` asks for both, and the design's frame calls are their own `Frames`.
-   Live gives None for the rate and the universe when OpenVR's error is set, where openvr.h says
-   it gives 0 for a bad index or type (other errors it doesn't document); the callers fall back to
-   0.0 (Pace's 90 Hz), 0 ("no room yet") and false ("no game"), so every value they act on is the
-   one they got before, as long as OpenVR does give 0 there. vr::fake can fail a property now, to
-   test that path. SteamVR's start and stop stay listed until the core holds a backend object.
+   On OpenVR, Live returns the rate and the universe as OpenVR does, its error ignored, as main.rs
+   did, so it never says None for them: what OpenVR returns with its error set is only documented
+   for a bad index or type (0), and phase 0 doesn't change behaviour on an undocumented one. The
+   callers' fallbacks, 0.0 (Pace's 90 Hz), 0 ("no room yet") and false ("no game"), are for a
+   runtime that can't tell. vr::fake can set a property's error apart from its value (synthetic
+   fixtures), so a test pins both: a value with the error set comes back as itself, and the
+   documented 0 as 0. SteamVR's start and stop stay listed until the core holds a backend object.
    vr.rs's re-read of the universe on a relocalization (`session_event`, to tell RoomChanged
    from Relocalized) stays a direct property read on the OpenVR side, with its error ignored as
    before; giving it `Session::universe_id`'s rule is phase 1's.
@@ -695,6 +697,18 @@ it. The session state machine (running, visible and focused from the events, sho
 frame, all kept apart from worn) is part of the MVP, not phase 2. Taking `mouse_scale` out of
 `Overlays` belongs here too, once the ray casting gives pixels directly. What an idle session costs in power, submitting empty frames, gets
 measured, not assumed.
+
+Behaviour changes phase 0 put off, each its own branch with its own test:
+
+- OpenVR's property errors (the display rate, the universe) read as `Session`'s None instead of
+  whatever value came back (6d), and vr.rs's re-read of the universe follows the same rule.
+- New things placed in front of the predicted head pose instead of the unpredicted one (6c's
+  `head_now`).
+- The two readers of a pointer's x and y on kinds where they aren't a position (5a): a card's
+  hover on Enter, and Plasma's last point.
+- `last_event` gets names of its own, not OpenVR's numbers (5f).
+- Before a `Stage` is injected: the fake's `head_pose` and `head_now` give different fixtures,
+  so swapping them fails a test, and the registry scan learns generic callers (6b).
 
 What counts as "works":
 

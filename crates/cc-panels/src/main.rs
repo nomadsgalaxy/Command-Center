@@ -964,8 +964,9 @@ fn run() -> Result<(), String> {
     power::start("desktop");
     let dev = gpu::device().ok_or("no GPU buffers (GBM on renderD128)")?;
     // The workspace for this room (its SteamVR tracking universe). Its spots place the panels.
-    // 0, the fallback on any runtime, is "no room yet": choose_workspace logs it and lets the
-    // workspace hint decide, as OpenVR's error (which gives 0) did before
+    // 0, the fallback for a runtime that can't tell, is "no room yet": choose_workspace logs it and
+    // lets the workspace hint decide. (OpenVR always tells: its own 0, for a bad index or type, is
+    // the same "no room yet".)
     let mut universe = poll::Live.universe_id().unwrap_or(0);
     let (workspace, new) = config::choose_workspace(universe);
     eprintln!("workspace: {workspace}{}", if new { " (made for this room: the Workspace window's Save as workspace keeps it)" } else { "" });
@@ -1083,8 +1084,8 @@ fn run() -> Result<(), String> {
     let mut att: Vec<attention::Attention> = panels().iter().map(|_| Default::default()).collect();
     let mut on_head = poll::Live.worn().unwrap_or(true); // as SteamVR says at start, else worn; VREvent 103/104 keep it up to date
     let mut gaze_seen: Option<([f64; 3], [f64; 3], Instant)> = None; // the last valid gaze sample
-    // 0.0, the fallback on any runtime, is "no rate": Pace runs at 90 Hz then (its test), as
-    // OpenVR's error (which gives 0) did before
+    // 0.0, the fallback for a runtime that can't tell, is "no rate": Pace runs at 90 Hz then (its
+    // test). (OpenVR always tells: its own 0, for a bad index or type, is the same.)
     let display_hz = || poll::Live.display_hz().unwrap_or(0.0);
     let mut pace = Pace::new(display_hz(), Instant::now());
     let _ = vr::MAIN.set(std::thread::current()); // vr::wake ends the wait between ticks

@@ -428,7 +428,7 @@ pub mod fake {
         pub pose_times: Vec<f32>,                           // the predicted times poses were asked for, in order
         pub sys_events: VecDeque<sys::VREvent_t>,           // SteamVR's own queue (PollNextEvent), apart from the overlays'
         pub universe: u64,                                  // Prop_CurrentUniverseId_Uint64
-        pub prop_error: Option<sys::ETrackedPropertyError>, // every float and uint64 property fails with it, and gives 0 (openvr.h)
+        pub prop_error: Option<sys::ETrackedPropertyError>, // synthetic: every float and uint64 property sets it, and still gives its value above
         pub scene_pid: u32,                                 // GetCurrentSceneProcessId; 0 is no game
         pub activity: Option<sys::EDeviceActivityLevel>,    // the headset's; none is Unknown
     }
@@ -499,7 +499,6 @@ pub mod fake {
     unsafe extern "C" fn u64_prop(_d: u32, p: sys::ETrackedDeviceProperty, e: *mut sys::ETrackedPropertyError) -> u64 {
         if let Some(err) = script(|s| s.prop_error) {
             unsafe { *e = err };
-            return 0;
         }
         if p == sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64 { script(|s| s.universe) } else { 0 }
     }
@@ -553,7 +552,6 @@ pub mod fake {
     unsafe extern "C" fn float_prop(_d: u32, p: sys::ETrackedDeviceProperty, e: *mut sys::ETrackedPropertyError) -> f32 {
         if let Some(err) = script(|s| s.prop_error) {
             unsafe { *e = err };
-            return 0.0;
         }
         let (_, hz, v2p) = script(|s| s.vsync).unwrap_or_default();
         if p == sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float {
