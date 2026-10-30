@@ -402,7 +402,7 @@ fn open(core: &pw::core::CoreRc, node: u32, name: &str, feed: Arc<Feed>, fps: u3
                 unsafe { s.queue_raw_buffer(b) };
                 Pixels::Mem(rgba)
             } else if data.type_ == spa::sys::SPA_DATA_DmaBuf
-                && let Ok(fd) = unsafe { BorrowedFd::borrow_raw(data.fd as i32) }.try_clone_to_owned()
+                && let Some(fd) = dup_fd(data.fd)
             {
                 Pixels::Dmabuf { fd, offset: chunk.offset, stride, modifier: d.modifier.unwrap_or(LINEAR as u64) }
             } else {
@@ -423,6 +423,13 @@ fn open(core: &pw::core::CoreRc, node: u32, name: &str, feed: Arc<Feed>, fps: u3
     let mut p: Vec<&Pod> = params.iter_mut().map(|b| Pod::from_bytes(b).unwrap()).collect();
     stream.connect(spa::utils::Direction::Input, Some(node), pw::stream::StreamFlags::AUTOCONNECT, &mut p)?;
     Ok(Live { stream, _listener: listener, feed, fps })
+}
+
+/// Our own copy of a buffer's fd, which PipeWire closes on remove_buffer. None for one that isn't an
+/// fd (a BorrowedFd can't hold -1) or that won't dup, and the frame goes back unshown either way.
+fn dup_fd(fd: i64) -> Option<OwnedFd> {
+    let fd = i32::try_from(fd).ok().filter(|&fd| fd >= 0)?;
+    unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned().ok()
 }
 
 /// Whether h rows of w BGRx pixels, `stride` bytes apart from `chunk` into the data at `off`, all
@@ -550,6 +557,17 @@ fn import(fd: i32, w: u32, h: u32, offset: u32, stride: u32, modifier: u64) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A buffer whose fd isn't one (-1, or past what an fd can be) is skipped without touching it;
+    /// a real one is copied, and the copy is its own.
+    #[test]
+    fn only_a_real_fd_is_copied() {
+        assert!(dup_fd(-1).is_none());
+        assert!(dup_fd(i64::from(i32::MAX) + 1).is_none());
+        let f = std::fs::File::open("/dev/null").unwrap();
+        let copy = dup_fd(std::os::fd::AsRawFd::as_raw_fd(&f) as i64).expect("a real fd is copied");
+        assert_ne!(std::os::fd::AsRawFd::as_raw_fd(&copy), std::os::fd::AsRawFd::as_raw_fd(&f));
+    }
 
     /// A compositor's chunk that would read past the mapping, or wrap while working that out, is
     /// refused; one that fits exactly is taken.
