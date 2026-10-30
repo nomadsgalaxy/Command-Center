@@ -517,17 +517,18 @@ written by the code before the move, and an ordinary run never writes them, a mi
 included: only `CC_GOLDEN_WRITE=1` does, for a change in behaviour that's meant, and the fixture's
 diff goes in with that change (`golden.rs`).
 
-The three that are in pin the endings: `golden_focus_lost_with_a_button_held` and
-`golden_surface_gone_with_a_press_outstanding` go through Plasma's bar's real event loop and
-`vr::fake`, and `golden_device_lost_mid_drag` goes through grab.rs's carry with `stage::fake`.
-That last one pins grab's writes and drag state, but not `overlay::Live` and `stage::Live`
-themselves, so before those move, grab's scripts get a `vr::fake` path too. The scripts:
+Plasma's bar's scripts go through its real event loop and `vr::fake`. grab.rs's go through
+`stage::fake::OverFake`: today's `overlay::Live` and `stage::Live` over `vr::fake`, with only the
+panel list (`panel`, `move_pointer`, the core's) answered by the test. So the code phase 0 moves is
+inside what the fixtures pin, not stood in for. The scripts, with the ones that are in marked:
 
-1. **Carry:** grab a panel's bar with a controller, move it through three poses, push it away
-   with the stick, let go.
-2. **Resize:** grab the bottom-right corner, drag it out and back in, let go.
-3. **Dock:** carry a panel to the other controller until it arms (the pulse), let go, then move
-   that controller and check the panel follows it.
+1. **Carry** (in, `golden_carry`): the bar taken with a controller, carried through three poses,
+   pushed away a notch and pulled back two, then let go.
+2. **Resize** (in, `golden_resize`): the bottom-right corner dragged out, back in past where it
+   started, and let go.
+3. **Dock** (in, `golden_dock`): a carry held at the other hand through the dwell until it arms
+   (the buzz, at its one fixed strength), let go there so it docks, then that hand moves 30 cm and
+   the panel goes with it.
 4. **Focus lost with a button held** (in, on Plasma's bar): press, then FocusLeave with no Up,
    an empty pass, Enter and a move, then the Up. Today the session gets a leave and the press
    stays held until the Up. Recorded isn't blessed: the fixture flags it (a `FLAG:` line), since if
@@ -544,11 +545,16 @@ themselves, so before those move, grab's scripts get a `vr::fake` path too. The 
    then the left and right roles swap. The wrist taskbar asks for the off hand's controller every
    frame, so it moves to the other controller, while the drag keeps the index it started with
    and only that index's Up ends it.
-8. **The mouse and a controller:** the mouse working a panel, then a controller's click taking
-   over (`controller_pressed`), including a ButtonPress from our virtual pointer, which doesn't
-   count.
+8. **The mouse and a controller** (in, on Plasma's bar,
+   `golden_the_mouse_then_a_controller`): the mouse has the pointer, so a laser's move is dropped.
+   A press from our virtual pointer (cc_pointer) doesn't take over; a real controller's does, and
+   goes through. A panel's version (main.rs `laser`, `controller_pressed`) needs a panel in a
+   test, which there's no way to make yet.
 9. **Session:** Quit, the dashboard opening and closing, a relocalization in the same universe
-   and a change of universe, the headset off and on.
+   and a change of universe, the headset off and on. Not in yet: the handling is inline in
+   main.rs's main loop, so a test can't drive it without pulling it out into a function first.
+   That's a code move, so it waits for the design to clear, and goes in as phase 0's first step
+   with this golden written against the code before the move.
 10. **Recorded traces:** each trace from the headset (docs/vr-harness.md), replayed, including the
    session recorded with Plasma's debug log on, once it's in.
 
