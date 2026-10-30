@@ -1,0 +1,53 @@
+== SteamVR quits
+  close_desktop("SteamVR quit it")
+  events 1, last 700, universe 7, room 0, on head true
+  engaged true, mouse has the pointer true, dashboard open false
+  machines relocalized 0, grab's stale places 0
+== the dashboard opens
+  events 1, last 502, universe 7, room 0, on head true
+  engaged false, mouse has the pointer true, dashboard open true
+  machines relocalized 0, grab's stale places 0
+== the dashboard closes
+  events 1, last 503, universe 7, room 0, on head true
+  engaged false, mouse has the pointer true, dashboard open false
+  machines relocalized 0, grab's stale places 0
+== our virtual pointer's button
+  events 1, last 200, universe 7, room 0, on head true
+  engaged false, mouse has the pointer true, dashboard open false
+  machines relocalized 0, grab's stale places 0
+== a real controller's button
+  events 1, last 200, universe 7, room 0, on head true
+  engaged false, mouse has the pointer false, dashboard open false
+  machines relocalized 0, grab's stale places 0
+== relocalized, same universe
+  events 1, last 808, universe 7, room 0, on head true
+  engaged false, mouse has the pointer false, dashboard open false
+  machines relocalized 1, grab's stale places 2
+== relocalized into universe 8
+  events 1, last 808, universe 8, room 8, on head true
+  engaged false, mouse has the pointer false, dashboard open false
+  machines relocalized 1, grab's stale places 2
+== the headset comes off
+  events 1, last 104, universe 8, room 8, on head false
+  engaged false, mouse has the pointer false, dashboard open false
+  machines relocalized 1, grab's stale places 2
+== a controller's interaction ends
+  events 1, last 104, universe 8, room 8, on head false
+  engaged false, mouse has the pointer false, dashboard open false
+  machines relocalized 1, grab's stale places 2
+== a controller's interaction starts, the headset still off
+  events 1, last 103, universe 8, room 8, on head false
+  engaged false, mouse has the pointer false, dashboard open false
+  machines relocalized 1, grab's stale places 2
+== a pass with nothing
+  events 0, last 103, universe 8, room 8, on head false
+  engaged false, mouse has the pointer false, dashboard open false
+  machines relocalized 1, grab's stale places 2
+== the headset goes back on
+  events 1, last 103, universe 8, room 8, on head true
+  engaged false, mouse has the pointer false, dashboard open false
+  machines relocalized 1, grab's stale places 2
+== one pass: the dashboard opens and the headset comes off
+  events 2, last 104, universe 8, room 8, on head false
+  engaged false, mouse has the pointer false, dashboard open true
+  machines relocalized 1, grab's stale places 2

@@ -1174,6 +1174,12 @@ impl Machines {
         self.status = "tracking relocalized: align a monitor, move all with it".into(); // shown when it opens
     }
 
+    /// How many relocalizations it's seen (the golden tests).
+    #[cfg(test)]
+    pub fn relocs(&self) -> usize {
+        self.relocs
+    }
+
     /// Under a laser, so the loop keeps the display's rate.
     pub fn moving(&self) -> bool {
         self.hover.is_some()

@@ -65,6 +65,12 @@ pub fn dashboard(open: bool) {
     OPEN.store(open, Relaxed);
 }
 
+/// Whether SteamVR's dashboard is open, as `dashboard` was last told (the golden tests).
+#[cfg(test)]
+pub fn dashboard_open() -> bool {
+    OPEN.load(Relaxed)
+}
+
 const W: f64 = 600.0; // in units (the taskbar's: a Breeze logical pixel)
 const ROWS: usize = 4; // Desktop, Mouse and keyboard, what that choice does, and Panels' Bring all here
 const GATHER: usize = 3; // the row with Bring all here (gather.rs)

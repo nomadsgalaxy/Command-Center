@@ -313,6 +313,8 @@ pub mod fake {
         pub types: Vec<(u32, String)>,                      // a device's controller type (cc_pointer's ends in _pointer); none is ""
         pub vsync: Option<(f32, f32, f32)>,                 // seconds since vsync, display Hz, vsync to photons; none is no vsync, so to_photons is 0
         pub pose_times: Vec<f32>,                           // the predicted times poses were asked for, in order
+        pub sys_events: VecDeque<sys::VREvent_t>,           // SteamVR's own queue (PollNextEvent), apart from the overlays'
+        pub universe: u64,                                  // Prop_CurrentUniverseId_Uint64
     }
 
     pub static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -374,6 +376,12 @@ pub mod fake {
 
     unsafe extern "C" fn poll(_h: Handle, e: *mut sys::VREvent_t, _size: u32) -> bool {
         script(|s| s.events.pop_front()).map(|ev| unsafe { *e = ev }).is_some()
+    }
+    unsafe extern "C" fn poll_sys(e: *mut sys::VREvent_t, _size: u32) -> bool {
+        script(|s| s.sys_events.pop_front()).map(|ev| unsafe { *e = ev }).is_some()
+    }
+    unsafe extern "C" fn u64_prop(_d: u32, p: sys::ETrackedDeviceProperty, _e: *mut sys::ETrackedPropertyError) -> u64 {
+        if p == sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64 { script(|s| s.universe) } else { 0 }
     }
     unsafe extern "C" fn create(_k: *mut std::os::raw::c_char, _n: *mut std::os::raw::c_char, h: *mut Handle) -> sys::EVROverlayError {
         let n = script(|s| {
@@ -545,6 +553,8 @@ pub mod fake {
                 GetTrackedDeviceIndexForControllerRole: Some(role_index),
                 GetTimeSinceLastVsync: Some(vsync),
                 GetFloatTrackedDeviceProperty: Some(float_prop),
+                GetUint64TrackedDeviceProperty: Some(u64_prop),
+                PollNextEvent: Some(poll_sys),
                 ..Default::default()
             }),
             ipc: leak(Default::default()),
