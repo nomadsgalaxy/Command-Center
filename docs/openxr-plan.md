@@ -393,6 +393,14 @@ The reviewed design (`backend.rs`) changed these from the sketch above it, on pu
   with no SteamVR call in either, so they aren't the runtime's.
 - **`SessionState` has no `should_render`,** and `to_photons` is `Frame::predicted` (above).
 
+Some of today's behaviour the golden tests show isn't in any trait, and phase 1 mustn't change it
+without saying so:
+
+- **The bottom-right corner stretches about the centre.** A drag on it is `Mode::Stretch` (the
+  fixture logs "stretching"), and only the width changes: the panel's matrix stays where it was,
+  so the panel grows and shrinks around its middle (`golden_resize`). OpenXR's own ray casting
+  has to keep that, not anchor the opposite corner.
+
 ### Device inventory (what `Dev` has to cover)
 
 From reading the code on 2026-10-29. Nothing in cc-panels handles a device turning on or off, or
