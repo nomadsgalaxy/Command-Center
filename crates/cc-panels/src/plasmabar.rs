@@ -142,6 +142,59 @@ pub(crate) fn panel_at(pl: &Placement, crop: Rect, panel: Rect, from: &V3, to: &
     ((0.0..=1.0).contains(&fx) && (0.0..=1.0).contains(&fy)).then_some((fx, fy))
 }
 
+/// Where a ray from `o` along unit `d` crosses the overlay as kvm.rs places it (`pl`, showing
+/// `crop`), in the session, clamped to its edges. It's the mouse's mapping (kvm.rs), and a laser
+/// on this overlay goes by it too, so both land on what's drawn there now, whatever crop or
+/// bounds SteamVR had when it made the event.
+pub(crate) fn ray_at(pl: &Placement, crop: Rect, o: &V3, d: &V3) -> Option<(f64, f64)> {
+    let (_, u, v) = pl.hit(o, d)?;
+    let (cu, cv) = pl.clamped(u, v);
+    let (fx, fy) = pl.fraction(cu, cv);
+    Some(global(crop, fx, fy))
+}
+
+/// Where laser event `t` lands in the session, and whether that was the fallback; None drops the
+/// event. With a pose (`ray`, origin and unit direction) it's the ray through the overlay as placed
+/// (`pl`, showing `crop`). Only a device with no pose falls back to SteamVR's point (x, y), put
+/// through the bounds `b` it was made with. A ray that misses (it points away) is the careful case:
+///   - a move stays at that device's `last` point,
+///   - a press is dropped, so it never clicks whatever was last under the laser,
+///   - a release goes where the pointer is (None), and laser() always sends it for a held press.
+fn laser_point(t: u32, pl: Option<Placement>, crop: Option<Rect>, ray: Option<(V3, V3)>, last: Option<(f64, f64)>, (b, x, y): ([f32; 4], f64, f64)) -> Option<(Option<(f64, f64)>, bool)> {
+    let Some((o, d)) = ray else {
+        let (fx, fy) = in_bounds(b, x, y);
+        return Some((crop.map(|c| global(c, fx, fy)), true));
+    };
+    match pl.zip(crop).and_then(|(pl, c)| ray_at(&pl, c, &o, &d)) {
+        Some(p) => Some((Some(p), false)),
+        None if t == sys::EVREventType_VREvent_MouseButtonDown => None,
+        None if t == sys::EVREventType_VREvent_MouseButtonUp => Some((None, false)),
+        None => Some((last, false)),
+    }
+}
+
+/// Each laser's last point in the session, for a ray that misses. They're only good for the crop
+/// they were made in, so a different crop (a menu opening or closing) forgets them all.
+#[derive(Default)]
+struct Lasts {
+    crop: Option<Rect>,
+    at: Vec<(u32, (f64, f64))>,
+}
+
+impl Lasts {
+    fn get(&mut self, dev: u32, crop: Option<Rect>) -> Option<(f64, f64)> {
+        if crop != self.crop {
+            (self.crop, self.at) = (crop, Vec::new());
+        }
+        self.at.iter().find(|l| l.0 == dev).map(|l| l.1)
+    }
+
+    fn set(&mut self, dev: u32, p: (f64, f64)) {
+        self.at.retain(|l| l.0 != dev);
+        self.at.push((dev, p));
+    }
+}
+
 /// `panel_at` for a laser from `from` that hit the taskbar's frame at `to`: Some(None) if it
 /// passes Plasma's bar by, None while the bar isn't showing.
 pub fn laser_on_panel(from: &V3, to: &V3) -> Option<Option<(f64, f64)>> {
@@ -244,6 +297,7 @@ pub struct Plasma {
     held: u32,                                            // laser buttons down on it, in RDP's flags
     pub moving: bool,                                     // a laser on it this frame (events or a held press), which sets the main loop's pace
     pub released: Vec<u32>,                               // devices whose button came up on it, ending a hold on the taskbar's frame
+    last: Lasts,                                          // each laser's last point in the session, for a ray that misses
 }
 
 impl Plasma {
@@ -275,6 +329,7 @@ impl Plasma {
             held: 0,
             moving: false,
             released: Vec::new(),
+            last: Lasts::default(),
         }
     }
 
@@ -455,23 +510,64 @@ impl Plasma {
     fn events(&mut self) {
         let mut e: vr::VREvent_t = Default::default();
         self.moving = self.held != 0;
-        // SteamVR reports overlay mouse events in the whole texture's coordinates, not the part
-        // the bounds show. While a popup is open the texture is the whole output and we show a
-        // crop of it, so the laser moved the pointer ~2.5x too fast. Back to fractions of the crop.
+        // A laser goes where its ray crosses the overlay as placed now (ray_at), the way the
+        // mouse does. SteamVR's own point is only the fallback, for a device with no pose: it's
+        // in the whole texture's coordinates (c937884), so with a popup open, and the texture the
+        // whole output, it's turned into fractions of the crop. That point depends on which
+        // texture and bounds SteamVR had when it made the event, and right after a menu opens
+        // that isn't always what's drawn. In the headset on Oct 29, SteamVR's point (through
+        // in_bounds) was right across the open menu but pulled toward its middle up and down, one
+        // or two items low at the top. The ray fixes that if SteamVR's hit quad isn't the picture
+        // as drawn; it doesn't if the crop to the session's coordinates (global) is what's off.
+        // Copies, taken once: no lock is held while the loop asks OpenVR for poses.
         let b = self.placed.map_or([0.0, 0.0, 1.0, 1.0], |q| q.4);
+        let (pl, crop) = (crate::kvm::lock().plasma, CROP.lock().unwrap().map(|c| c.0));
+        let mut lasers: Vec<(u32, Option<crate::geometry::Mat>)> = Vec::new(); // each device's laser, once a batch
         crate::trace::tick("plasma");
         while crate::trace::poll("plasma", self.ov, &mut e) {
-            let m = unsafe { e.data.mouse };
-            let (fx, fy) = in_bounds(b, m.x as f64, m.y as f64);
-            if debug() && e.eventType != sys::EVREventType_VREvent_MouseMove {
-                eprintln!("plasma-debug: overlay event {} at {:.3},{:.3} (crop {fx:.3},{fy:.3}) -> {:?} crop {:?}", e.eventType, m.x, m.y, at(fx, fy), *CROP.lock().unwrap());
-            }
-            // while a trace runs, the laser SteamVR hit-tested for this event, so its point can be
-            // checked against where that ray meets the overlay (docs/vr-harness.md)
+            let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
+            let laser = match lasers.iter().find(|r| r.0 == dev) {
+                Some(r) => r.1,
+                None => {
+                    let l = vr::laser_pose(dev);
+                    lasers.push((dev, l));
+                    l
+                }
+            };
+            // while a trace runs, the laser this event was mapped by, after the event's own line
+            // (trace::poll wrote it), so a replay or a check of SteamVR's point has the same ray
             if crate::trace::on() && matches!(e.eventType, sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp) {
-                crate::trace::laser_pose(e.trackedDeviceIndex);
+                crate::trace::pose(dev, laser.as_ref());
             }
-            self.laser(&e, at(fx, fy));
+            let ray: Option<(V3, V3)> = laser.map(|l| ([l[0][3], l[1][3], l[2][3]].map(f64::from), [-l[0][2], -l[1][2], -l[2][2]].map(f64::from)));
+            let last = self.last.get(dev, crop);
+            let Some((spot, fell_back)) = laser_point(e.eventType, pl, crop, ray, last, (b, m.x as f64, m.y as f64)) else {
+                if debug() {
+                    eprintln!("plasma-debug: a press with the laser's ray off the overlay, dropped");
+                }
+                continue;
+            };
+            if let Some(p) = spot {
+                self.last.set(dev, p);
+            }
+            if debug() {
+                // how often the fallback fires, for the log: per run, counted on every event
+                static EVENTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                static FALLBACKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let n = EVENTS.fetch_add(1, Relaxed) + 1;
+                let f = FALLBACKS.fetch_add(u32::from(fell_back), Relaxed) + u32::from(fell_back);
+                if e.eventType != sys::EVREventType_VREvent_MouseMove {
+                    let (fx, fy) = in_bounds(b, m.x as f64, m.y as f64);
+                    eprintln!(
+                        "plasma-debug: overlay event {} at {:.3},{:.3} (crop {fx:.3},{fy:.3}) -> {spot:?}{}, crop {crop:?}; fallback {f} of {n} events this run (poses and placement both standing)",
+                        e.eventType,
+                        m.x,
+                        m.y,
+                        if fell_back { " (fallback, no pose)" } else { " by its ray" }
+                    );
+                }
+            }
+            self.laser(&e, spot);
         }
     }
 
@@ -538,6 +634,7 @@ impl Plasma {
     fn hide(&mut self) {
         call!(ov, HideOverlay, self.ov);
         (self.visible, self.placed) = (false, None);
+        self.last = Lasts::default(); // a crop from before it hid means nothing now
         *CROP.lock().unwrap() = None;
         crate::kvm::lock().plasma = None;
         self.release_held();
@@ -839,6 +936,200 @@ mod tests {
 
     const WL0: Rect = [0, 740, 1920, 1080];
     const BAR: Rect = [514, 1770, 891, 50]; // Plasma's floating panel, centred at the bottom of WL-0
+
+    /// The overlay as tick() places it for `crop`, in a frame at `m`: shifted so the bar stays put.
+    fn placed_for(m: &Mat, crop: Rect, mpp: f64, curve: f64) -> Placement {
+        let (dx, dy) = shift(BAR, crop, mpp);
+        let world = taskbar::in_well(m, curve, dx, 0.1 + dy);
+        Placement::from_matrix(&world, crop[2] as f64 * mpp, crop[3] as f64 / crop[2] as f64, curve)
+    }
+
+    /// A laser 0.6 m back from where session point `p` is drawn on `pl` (showing `crop`), aimed
+    /// at it a little from below, the way a hand holds it: its origin and direction.
+    fn laser_at(pl: &Placement, crop: Rect, p: (f64, f64)) -> (V3, V3) {
+        let fx = (p.0 - crop[0] as f64) / (crop[2] - 1) as f64;
+        let fy = 1.0 - (p.1 - crop[1] as f64) / (crop[3] - 1) as f64;
+        let t = pl.on_surface((fx - 0.5) * pl.width, (fy - 0.5) * pl.height, 0.0);
+        let to = [t[0][3], t[1][3], t[2][3]].map(f64::from);
+        let n = [t[0][2], t[1][2], t[2][2]].map(f64::from); // out of the surface
+        let from = [to[0] + n[0] * 0.6, to[1] + n[1] * 0.6 - 0.2, to[2] + n[2] * 0.6];
+        let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+        let l = norm(&d);
+        (from, d.map(|x| x / l))
+    }
+
+    #[test]
+    fn a_laser_lands_on_the_start_menu_where_its_drawn_as_it_opens() {
+        use crate::geometry::{Pose, panel_matrix};
+        let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let (mpp, kickoff) = (0.0006, [514, 1100, 650, 660]);
+        let grown = crop(BAR, &[kickoff], WL0).unwrap();
+        let item = (600.0, 1200.0); // an app in Kickoff's list, near its top left
+        let close = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1.5 && (a.1 - b.1).abs() < 1.5;
+        for curve in [0.0, 2.0] {
+            // 1. the bar alone, from the window's stream: the launcher on the bar
+            let bar = placed_for(&m, BAR, mpp, curve);
+            let (o, d) = laser_at(&bar, BAR, (540.0, 1795.0));
+            assert!(close(ray_at(&bar, BAR, &o, &d).unwrap(), (540.0, 1795.0)), "curve {curve}");
+            // 2. Kickoff's open, but the output's stream has no frame yet: the overlay still
+            //    shows only the bar, and a laser on it still lands on the bar
+            let (o, d) = laser_at(&bar, BAR, (900.0, 1780.0));
+            assert!(close(ray_at(&bar, BAR, &o, &d).unwrap(), (900.0, 1780.0)));
+            // 3. the output's frame is up and the crop has grown: the menu's item, where it's drawn
+            let pl = placed_for(&m, grown, mpp, curve);
+            let (o, d) = laser_at(&pl, grown, item);
+            assert!(close(ray_at(&pl, grown, &o, &d).unwrap(), item), "curve {curve}: {:?}", ray_at(&pl, grown, &o, &d));
+            // and the bar is where it was, so the launcher's still under the same laser
+            let (o, d) = laser_at(&bar, BAR, (540.0, 1795.0));
+            assert!(close(ray_at(&pl, grown, &o, &d).unwrap(), (540.0, 1795.0)), "curve {curve}");
+        }
+        // SteamVR's own point for that item, in the whole texture's coordinates (y up)
+        let b = bounds(grown, WL0);
+        let tex = ((item.0 - WL0[0] as f64) / 1920.0, 1.0 - (item.1 - WL0[1] as f64) / 1080.0);
+        let (fx, fy) = in_bounds(b, tex.0, tex.1);
+        assert!(close(global(grown, fx, fy), item), "mapped with the bounds on screen, it's right");
+        // with the bounds from the frame before the switch (the bar's window, [0,0,1,1]), the
+        // first events after the menu opens land off it
+        let (fx, fy) = in_bounds([0.0, 0.0, 1.0, 1.0], tex.0, tex.1);
+        let stale = global(grown, fx, fy);
+        assert!((stale.0 - item.0).abs() > 50.0 || (stale.1 - item.1).abs() > 50.0, "{stale:?}");
+        // and if SteamVR's point were already of the part shown, in_bounds maps it twice
+        let shown = ((item.0 - grown[0] as f64) / (grown[2] - 1) as f64, 1.0 - (item.1 - grown[1] as f64) / (grown[3] - 1) as f64);
+        let (fx, fy) = in_bounds(b, shown.0, shown.1);
+        let twice = global(grown, fx, fy);
+        assert!((twice.0 - item.0).abs() > 50.0 || (twice.1 - item.1).abs() > 50.0, "{twice:?}");
+    }
+
+    #[test]
+    fn with_no_pose_a_laser_still_maps_by_steamvrs_point() {
+        let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
+        let b = bounds(grown, WL0);
+        let item = (600.0, 1200.0);
+        let tex = ((item.0 - WL0[0] as f64) / 1920.0, 1.0 - (item.1 - WL0[1] as f64) / 1080.0);
+        let (at, fell_back) = laser_point(MOVE, None, Some(grown), None, None, (b, tex.0, tex.1)).unwrap();
+        let at = at.unwrap();
+        assert!(fell_back && (at.0 - item.0).abs() < 1.5 && (at.1 - item.1).abs() < 1.5, "{at:?}");
+        assert_eq!(laser_point(MOVE, None, None, None, None, (b, tex.0, tex.1)), Some((None, true)), "hidden: nowhere");
+        assert_eq!(laser_point(UP, None, Some(grown), None, None, (b, tex.0, tex.1)).map(|r| r.1), Some(true), "tracking lost: a release still goes in");
+        // with a ray, the ray wins
+        use crate::geometry::{Pose, panel_matrix};
+        let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let pl = placed_for(&m, grown, 0.0006, 0.0);
+        let (o, d) = laser_at(&pl, grown, (900.0, 1500.0));
+        let (at, fell_back) = laser_point(MOVE, Some(pl), Some(grown), Some((o, d)), None, (b, tex.0, tex.1)).unwrap();
+        assert!(!fell_back && (at.unwrap().0 - 900.0).abs() < 1.5);
+        // a pose whose ray points away from the overlay: that laser's last point, never the fallback
+        let away = (o, d.map(|x| -x));
+        assert_eq!(laser_point(MOVE, Some(pl), Some(grown), Some(away), Some((901.0, 1501.0)), (b, tex.0, tex.1)), Some((Some((901.0, 1501.0)), false)));
+        assert_eq!(laser_point(MOVE, Some(pl), Some(grown), Some(away), None, (b, tex.0, tex.1)), Some((None, false)), "no last point: nowhere, not SteamVR's");
+    }
+
+    const MOVE: u32 = sys::EVREventType_VREvent_MouseMove;
+    const DOWN: u32 = sys::EVREventType_VREvent_MouseButtonDown;
+    const UP: u32 = sys::EVREventType_VREvent_MouseButtonUp;
+
+    #[test]
+    fn a_press_with_the_ray_off_the_overlay_clicks_nothing_and_a_release_still_goes() {
+        use crate::geometry::{Pose, panel_matrix};
+        let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
+        let pl = placed_for(&m, grown, 0.0006, 0.0);
+        let item = (600.0, 1200.0);
+        let (o, d) = laser_at(&pl, grown, item);
+        let mut lasts = Lasts::default();
+        // on the item: it's the laser's last point
+        let (at, _) = laser_point(MOVE, Some(pl), Some(grown), Some((o, d)), lasts.get(3, Some(grown)), ([0.0; 4], 0.0, 0.0)).unwrap();
+        lasts.set(3, at.unwrap());
+        // the ray goes off the overlay, then a press and a release
+        let away = Some((o, d.map(|x| -x)));
+        let last = lasts.get(3, Some(grown));
+        assert_eq!(laser_point(MOVE, Some(pl), Some(grown), away, last, ([0.0; 4], 0.0, 0.0)), Some((last, false)), "a move stays put");
+        assert_eq!(laser_point(DOWN, Some(pl), Some(grown), away, last, ([0.0; 4], 0.0, 0.0)), None, "the press is dropped: the item isn't clicked");
+        assert_eq!(laser_point(UP, Some(pl), Some(grown), away, last, ([0.0; 4], 0.0, 0.0)), Some((None, false)), "the release goes in, where the pointer is");
+    }
+
+    /// Replayed through the event loop: a laser presses on Kickoff's item by its ray, then loses
+    /// tracking, and its release still lets the press go in the session. A pass with no events
+    /// in between sends nothing and changes nothing.
+    #[test]
+    fn a_release_after_the_laser_loses_tracking_still_lets_go() {
+        use crate::geometry::Pose;
+        let _vr = crate::trace::fake_vr();
+        let mut p = Plasma::new();
+        let (placed, ev) = kickoff(); // the bar with Kickoff open, at kickoff's world below
+        p.replay(&placed);
+        let world = crate::geometry::panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
+        let pl = Placement::from_matrix(&world, 0.6, grown[3] as f64 / grown[2] as f64, 0.0);
+        let item = (600.0, 1200.0);
+        let (o, d) = laser_at(&pl, grown, item);
+        let aim = crate::stage::fake::aimed(o, [o[0] + d[0], o[1] + d[1], o[2] + d[2]]);
+        let pose = |m: Option<crate::geometry::Mat>| crate::trace::pose_line(3, m.as_ref()).to_string();
+        p.replay(&[pose(Some(aim)), "{\"tick\":\"plasma\"}".into(), ev(sys::EVREventType_VREvent_MouseButtonDown)].join("\n"));
+        let sent = std::mem::take(&mut *windows::SHELL_SENT.lock().unwrap());
+        assert_eq!(sent.len(), 1, "the press: {sent:?}");
+        let at = sent[0].1.unwrap();
+        assert!((at.0 - item.0).abs() < 2.0 && (at.1 - item.1).abs() < 2.0, "by its ray, on the item: {at:?}");
+        assert_eq!(p.held, PTR_FLAGS_BUTTON1);
+        pass(&mut p, &[]);
+        assert!(windows::SHELL_SENT.lock().unwrap().is_empty() && p.held == PTR_FLAGS_BUTTON1, "an empty pass: nothing sent, still held");
+        p.replay(&[pose(None), "{\"tick\":\"plasma\"}".into(), ev(sys::EVREventType_VREvent_MouseButtonUp)].join("\n"));
+        let sent = std::mem::take(&mut *windows::SHELL_SENT.lock().unwrap());
+        assert_eq!(sent.iter().map(|s| s.0).collect::<Vec<_>>(), [PTR_FLAGS_BUTTON1], "the release went in with no pose: {sent:?}");
+        assert_eq!(p.held, 0, "nothing left held");
+    }
+
+    #[test]
+    fn a_new_crop_forgets_the_lasers_last_points() {
+        let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
+        let mut lasts = Lasts::default();
+        assert_eq!(lasts.get(3, Some(grown)), None);
+        lasts.set(3, (600.0, 1200.0));
+        assert_eq!(lasts.get(3, Some(grown)), Some((600.0, 1200.0)), "same crop: kept");
+        assert_eq!(lasts.get(3, Some(BAR)), None, "the menu closed: gone");
+        lasts.set(3, (540.0, 1795.0));
+        assert_eq!(lasts.get(3, Some(grown)), None, "and it opened again: gone again");
+        assert_eq!(lasts.get(3, None), None, "hidden");
+    }
+
+    #[test]
+    fn a_ray_just_past_a_curved_edge_lands_on_the_edge() {
+        use crate::geometry::{Pose, panel_matrix};
+        let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
+        let pl = placed_for(&m, grown, 0.0006, 2.0);
+        // aimed at a point 2 cm past the right edge, along the arc, from in front of it
+        let t = pl.on_surface(pl.width / 2.0 + 0.02, 0.0, 0.0);
+        let to = [t[0][3], t[1][3], t[2][3]].map(f64::from);
+        let n = [t[0][2], t[1][2], t[2][2]].map(f64::from);
+        let from = [to[0] + n[0] * 0.6, to[1] + n[1] * 0.6, to[2] + n[2] * 0.6];
+        let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+        let l = norm(&d);
+        let (at, fell_back) = laser_point(MOVE, Some(pl), Some(grown), Some((from, d.map(|x| x / l))), None, ([0.0, 0.0, 1.0, 1.0], 0.5, 0.5)).unwrap();
+        let right = (grown[0] + grown[2] - 1) as f64;
+        assert!(!fell_back && (at.unwrap().0 - right).abs() < 0.5, "{at:?}, the right edge is {right}");
+    }
+
+    #[test]
+    fn closing_the_start_menu_brings_the_laser_back_to_the_bar() {
+        use crate::geometry::{Pose, panel_matrix};
+        let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let mpp = 0.0006;
+        let grown = crop(BAR, &[[514, 1100, 650, 660]], WL0).unwrap();
+        for curve in [0.0, 2.0] {
+            let (open, shut) = (placed_for(&m, grown, mpp, curve), placed_for(&m, BAR, mpp, curve));
+            // a laser on a task on the bar while the menu's open, then the menu closes under it
+            let task = (1100.0, 1795.0);
+            let (o, d) = laser_at(&open, grown, task);
+            let on = |pl: &Placement, c: Rect| ray_at(pl, c, &o, &d).unwrap();
+            let close = |a: (f64, f64)| (a.0 - task.0).abs() < 1.5 && (a.1 - task.1).abs() < 1.5;
+            assert!(close(on(&open, grown)) && close(on(&shut, BAR)), "curve {curve}: same task before and after");
+            // where the menu was is off the bar now, so it's clamped to the bar's top edge
+            let (o, d) = laser_at(&open, grown, (600.0, 1200.0));
+            let y = ray_at(&shut, BAR, &o, &d).unwrap().1;
+            assert!((y - BAR[1] as f64).abs() < 1.5, "curve {curve}: {y}");
+        }
+    }
 
     #[test]
     fn the_crop_grows_with_open_popups_on_the_output_only() {
