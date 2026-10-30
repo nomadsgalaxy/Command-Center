@@ -1,6 +1,6 @@
 # Phase 0: the headset pass
 
-This is revision 4 of the checklist.
+This is revision 5 of the checklist.
 
 Phase 0 of the OpenXR plan ([openxr-plan.md](openxr-plan.md)) moved Command Center's OpenVR calls
 behind interfaces. It was meant to change nothing, apart from a few fixes made on purpose: a
@@ -13,6 +13,7 @@ takes about 15 minutes in one sitting. If a step fails, write down what you saw 
 With the results, write down:
 
 - the checklist's revision (above);
+- the run's own start marker, trace and pid, from step 5 (`~/cc-run-ids.txt`);
 - the commit the build was made from, as whoever built it reports it (for the first pass,
   49db50d, built at 14:21 on 2026-10-30), next to the binary's time, which
   `stat -L -c %y /proc/$(pgrep -xn cc-panels)/exe` gives while the Desktop runs. The time only
@@ -49,8 +50,22 @@ you go by what you see.
    echo "$(wc -l < ~/.cache/control-center/cc-panels.log) $(stat -c '%i-%W' ~/.cache/control-center/cc-panels.log)" > ~/cc-log-start.txt
    ```
 
-5. Install the phase 0 build and open the Desktop. Once it's up, save its pid, which names its
-   trace: `pgrep -xn cc-panels > ~/cc-pid.txt`.
+5. Install the phase 0 build and open the Desktop. Right after it's up, write down this run's
+   start marker, trace and pid, putting the commit its builder reports in for `<commit>`:
+
+   ```sh
+   cd ~/.cache/control-center
+   pid=$(pgrep -xn cc-panels)
+   { echo "start marker: $(grep '^=== cc-panels ' cc-panels.log | tail -n 1)"
+     echo "trace: $(ls vr-trace-*-"$pid".jsonl vr-trace-*-"$pid"-*.jsonl 2>/dev/null)"
+     echo "pid: $pid"
+     echo "build: <commit> (cc-panels built $(stat -L -c %y /proc/"$pid"/exe | cut -d. -f1))"
+     echo "checklist: revision 5"; } > ~/cc-run-ids.txt
+   cat ~/cc-run-ids.txt
+   ```
+
+   The trace line has to name exactly one file. If it names none, or more than one, write that
+   down: the trace checks afterwards are incomplete.
 
 ## Two checks from the last build (3 minutes)
 
@@ -155,19 +170,24 @@ Point the mouse at SteamVR's own UI, outside our panels.
     tail -n +$((n + 1)) cc-panels.log
   elif [ "$(stat -c '%i-%W' cc-panels.log.1)" = "$id" ]; then  # it moved when the Desktop started
     tail -n +$((n + 1)) cc-panels.log.1; cat cc-panels.log
-  else  # it moved twice, so the Desktop started again during the pass
+  else  # the saved file is gone, so where the count was can't be told
     cat cc-panels.log.1 cc-panels.log
   fi > ~/cc-run.log
+  marker=$(sed -n 's/^start marker: //p' ~/cc-run-ids.txt)
+  start=$(grep -nxF -- "$marker" ~/cc-run.log | head -n 1 | cut -d: -f1)
+  if [ -n "$marker" ] && [ -n "$start" ]; then echo "log: complete from line $start"; else echo "log: INCOMPLETE"; fi
   grep -n '^=== cc-panels ' ~/cc-run.log
   ```
 
-  Each start writes `=== cc-panels <date> <time> ===` first, and this run begins at the first one
-  at or after the time you opened the Desktop. Lines above it are the old Desktop shutting down.
-  A second one later means the Desktop started again during the pass: write that down as a
-  restart. Then search from your run's line, putting its number in for `<line>`:
+  The log checks count only if this says `complete`: the run's own start marker, from step 5,
+  is in the log you put together. If it says `INCOMPLETE`, or a `stat`, `tail` or `cat` printed
+  an error, mark the log checks incomplete, keep what's there, and don't call the pass clean.
+  Lines above the marker are the old Desktop shutting down. A `=== cc-panels` line after it
+  means the Desktop started again during the pass: write that down as a restart. Then search
+  from the marker on:
 
   ```sh
-  sed -n '<line>,$p' ~/cc-run.log |
+  sed -n "${start:-1},\$p" ~/cc-run.log |
     grep -nF -e panicked -e 'import fail' -e "won't import" -e "laser: SteamVR didn't" \
       -e 'binding loads' -e 'no cc_pointer driver' -e 'toast failed' \
       -e 'no SteamVR keyboard' -e "couldn't be typed" -e 'taskbar: wrist: no'
@@ -182,9 +202,9 @@ Point the mouse at SteamVR's own UI, outside our panels.
   - `toast failed`: 11;
   - `no SteamVR keyboard` and `couldn't be typed`: 10;
   - `taskbar: wrist: no`: 9.
-- In this run's trace, `~/.cache/control-center/vr-trace-*-$(cat ~/cc-pid.txt).jsonl`, picked
-  by the pid you saved rather than by which is newest. A restart during the pass writes another
-  trace under a new pid: keep it, and note it with the restart.
+- In this run's trace, the one file `~/cc-run-ids.txt` names (in
+  `~/.cache/control-center/`), rather than whichever is newest. A restart during the pass
+  writes another trace under a new pid: keep it, and note it with the restart.
   - `grep -c '"ev"'` isn't 0: the lasers' events were read and recorded;
   - `grep -c '"pose"'` isn't 0, and `grep -c '"m":null'` (a laser that wasn't tracked) is small;
   - for the start menu, the `"plasma"` lines say where Plasma's overlay was, and each Plasma
@@ -197,5 +217,15 @@ Point the mouse at SteamVR's own UI, outside our panels.
   if you moved things.
 - When you're done, stop new traces: `rm ~/.cache/control-center/vr-trace`. If the pass was
   clean, also delete the traces (except any you keep as a replay), the two surfaces files,
-  `~/cc-log-start.txt`, `~/cc-pid.txt` and `~/cc-run.log`. If anything failed or wasn't clear,
-  keep them all until it's been looked into.
+  `~/cc-log-start.txt`, `~/cc-run-ids.txt`, `~/cc-run.log` and any `.pre-pass` copies. If
+  anything failed, wasn't clear or was incomplete, keep them all until it's been looked into.
+- To run the pass again, first copy the logs aside, because the next start can move
+  `cc-panels.log` over `cc-panels.log.1`:
+
+  ```sh
+  cd ~/.cache/control-center
+  cp cc-panels.log.1 cc-panels.log.1.pre-pass; cp cc-panels.log cc-panels.log.pre-pass
+  ```
+
+  Then start again from "Before you start", with a new `~/cc-log-start.txt` and
+  `~/cc-run-ids.txt`.
