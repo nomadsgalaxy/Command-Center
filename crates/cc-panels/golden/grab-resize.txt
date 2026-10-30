@@ -1,0 +1,25 @@
+== the bottom-right corner taken
+  drag by 1, stretching, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+== dragged out
+  vr SetOverlayWidthInMeters 100 2.61602
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+  drag by 1, stretching, lost false
+  docked None
+  panel 2.61602 wide, curve 0.00000, [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+== dragged back in, smaller than it started
+  vr SetOverlayWidthInMeters 100 1.01602
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+  drag by 1, stretching, lost false
+  docked None
+  panel 1.01602 wide, curve 0.00000, [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+== let go
+  ended any: true
+  drag none
+  docked None
+  panel 1.01602 wide, curve 0.00000, [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]

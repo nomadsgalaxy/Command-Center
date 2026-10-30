@@ -3172,6 +3172,92 @@ mod tests {
             log.line(format!("panel {} wide, curve {}, {}", num(pl.width), num(pl.curve), mat(&pl.matrix())));
         }
 
+        /// Golden (golden.rs): the bar carried through three poses, pushed away a notch and pulled
+        /// back two, then let go.
+        #[test]
+        fn golden_carry() {
+            let p = flat();
+            let (mut g, mut k, mut s, _vr) = golden_world(p);
+            let mut log = crate::golden::Log::default();
+            log.step("the right hand takes the bar");
+            aim(HAND, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            for (n, from) in [[0.35, 1.25, -0.4], [0.2, 1.3, -0.35], [0.1, 1.2, -0.5]].iter().enumerate() {
+                log.step(&format!("carried, pose {}", n + 1));
+                aim(HAND, *from, [0.0, 1.4, -1.5]);
+                g.carry(&mut k, &mut s, Instant::now());
+                golden_observe(&mut log, &g, &k, &mut s);
+            }
+            log.step("pushed away a notch");
+            g.scroll(0, 1.0, &mut k, &mut s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("pulled back two");
+            g.scroll(0, -2.0, &mut k, &mut s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("let go");
+            log.line(format!("ended any: {}", g.end_by(HAND, &k)));
+            g.settle(&mut k, &mut s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            crate::golden::check("grab-carry", &log.0);
+        }
+
+        /// Golden: the bottom-right corner dragged out, back in past where it started, and let go.
+        #[test]
+        fn golden_resize() {
+            let p = flat();
+            let (mut g, mut k, mut s, _vr) = golden_world(p);
+            let mut log = crate::golden::Log::default();
+            log.step("the bottom-right corner taken");
+            aim(HAND, EYE, surface_point(&p, 0.8, -0.45));
+            g.start(0, Part::Corner(BOTTOM_RIGHT), HAND, &k, &s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("dragged out");
+            aim(HAND, EYE, surface_point(&p, 1.3, -0.75));
+            g.carry(&mut k, &mut s, Instant::now());
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("dragged back in, smaller than it started");
+            aim(HAND, EYE, surface_point(&p, 0.5, -0.3));
+            g.carry(&mut k, &mut s, Instant::now());
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("let go");
+            log.line(format!("ended any: {}", g.end_by(HAND, &k)));
+            g.settle(&mut k, &mut s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            crate::golden::check("grab-resize", &log.0);
+        }
+
+        /// Golden: a carry held at the other hand until it arms (the buzz), let go there so it
+        /// docks, then that hand moves and the panel rides along.
+        #[test]
+        fn golden_dock() {
+            const OTHER: u32 = 2;
+            let p = flat();
+            let (mut g, mut k, mut s, _vr) = golden_world(p);
+            let mut log = crate::golden::Log::default();
+            g.docking = true;
+            log.step("the right hand takes the bar, the other hand 8 cm away");
+            aim(HAND, [0.3, 1.2, -0.4], p.c);
+            aim(OTHER, [0.38, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            let t0 = Instant::now();
+            for (what, at) in [("held there, not armed yet", t0), ("half the dwell", t0 + DOCK_DWELL / 2), ("the whole dwell: it arms", t0 + DOCK_DWELL), ("twice the dwell", t0 + DOCK_DWELL * 2)] {
+                log.step(what);
+                g.carry(&mut k, &mut s, at);
+                golden_observe(&mut log, &g, &k, &mut s);
+            }
+            log.step("let go: it docks on the other hand");
+            log.line(format!("ended any: {}", g.end_by(HAND, &k)));
+            g.settle(&mut k, &mut s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("the other hand moves 30 cm left");
+            aim(OTHER, [0.08, 1.2, -0.4], [-0.3, 1.4, -1.5]);
+            g.carry(&mut k, &mut s, Instant::now());
+            golden_observe(&mut log, &g, &k, &mut s);
+            crate::golden::check("grab-dock", &log.0);
+        }
+
         /// Golden: a carry whose controller goes untracked, blinks back, then goes for good,
         /// after which a controller with another index picks the panel up and the old one's
         /// late Up arrives. What happens today is what's pinned.
