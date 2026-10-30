@@ -23,8 +23,8 @@ mod capture;
 mod clipboard;
 mod config;
 mod control;
-mod ffi;
 mod events;
+mod ffi;
 mod gather;
 mod gaze;
 mod geometry;
@@ -499,11 +499,7 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
                 let down = if matches!(pe.kind, P::Down(_)) { PTR_FLAGS_DOWN } else { 0 };
                 p.mouse(b | down, x, y);
             }
-            P::Scroll { dy, .. } => {
-                if dy != 0.0 {
-                    p.wheel(false, dy as f64);
-                }
-            }
+            P::Scroll { dy, .. } if dy != 0.0 => p.wheel(false, dy as f64),
             _ => {}
         }
     }

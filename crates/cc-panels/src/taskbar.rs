@@ -46,8 +46,8 @@
 //! wrist still show, since they're nearer than the backdrop; fixed hides because the Frame
 //! draws by depth, not sort order.
 //! ponytail: no file watch; hand edits to settings.json apply on restart.
-use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, direction, dot, from_top, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
 use crate::events::{Button, PointerKind, SurfaceEvent};
+use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, direction, dot, from_top, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
 use crate::grab::{self, Look, TagImg, average, line, over, rbox, tint};
 use crate::ids::Dev;
 use crate::laser::{self, Hand};

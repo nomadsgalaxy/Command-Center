@@ -55,9 +55,16 @@ pub struct PointerEvent {
 pub enum KeyboardEvent {
     /// What was typed since the last one, as UTF-8 (up to 8 bytes on SteamVR). None when SteamVR's
     /// bytes weren't text, or were empty (osk.rs says so).
-    Char { user: u64, text: Option<String> },
-    Done { user: u64 },
-    Closed { user: u64 },
+    Char {
+        user: u64,
+        text: Option<String>,
+    },
+    Done {
+        user: u64,
+    },
+    Closed {
+        user: u64,
+    },
 }
 
 /// What one surface's queue gives (the `PollNextOverlayEvent` loops).

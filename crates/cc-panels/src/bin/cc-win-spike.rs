@@ -13,11 +13,11 @@
 mod back; // capture.rs tells it what went up, so it has to be here
 #[path = "../capture.rs"]
 mod capture;
-#[path = "../geometry.rs"]
-mod geometry;
 #[path = "../events.rs"]
 #[allow(dead_code)] // the spike only reads a laser's
 mod events;
+#[path = "../geometry.rs"]
+mod geometry;
 #[path = "../ids.rs"]
 mod ids;
 #[path = "../limits.rs"]

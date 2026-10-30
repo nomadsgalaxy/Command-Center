@@ -317,8 +317,6 @@ impl Keys {
     }
 }
 
-/// The text in a keyboard event: up to 8 bytes of UTF-8, ended by a 0 if it's shorter.
-
 #[cfg(test)]
 mod tests {
     use super::*;

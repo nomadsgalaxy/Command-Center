@@ -746,11 +746,14 @@ mod tests {
         assert_eq!(super::surface_event(&mouse(sys::EVREventType_VREvent_FocusLeave, 0)), at(P::Leave));
         let mut s = mouse(sys::EVREventType_VREvent_ScrollDiscrete, 0);
         s.data.scroll = sys::VREvent_Scroll_t { xdelta: 0.0, ydelta: -1.0, unused: 0, viewportscale: 1.0, cursorIndex: 0 };
-        assert_eq!(super::surface_event(&s), S::Pointer(PointerEvent { kind: P::Scroll { dx: 0.0, dy: -1.0, smooth: false }, x: 0.0, y: -1.0, from: Dev::Controller(Ctl::new(3)), age: 0.25 }), "a scroll's x and y are its deltas");
+        assert_eq!(
+            super::surface_event(&s),
+            S::Pointer(PointerEvent { kind: P::Scroll { dx: 0.0, dy: -1.0, smooth: false }, x: 0.0, y: -1.0, from: Dev::Controller(Ctl::new(3)), age: 0.25 }),
+            "a scroll's x and y are its deltas"
+        );
         s.eventType = sys::EVREventType_VREvent_ScrollSmooth;
         assert!(matches!(super::surface_event(&s), S::Pointer(PointerEvent { kind: P::Scroll { smooth: true, .. }, .. })));
-        let mut k: super::VREvent_t = Default::default();
-        k.eventType = sys::EVREventType_VREvent_KeyboardCharInput;
+        let mut k = super::VREvent_t { eventType: sys::EVREventType_VREvent_KeyboardCharInput, ..Default::default() };
         k.data.keyboard.uUserValue = 7;
         for (i, c) in b"ab".iter().enumerate() {
             unsafe { k.data.keyboard.cNewInput[i] = *c as std::ffi::c_char };

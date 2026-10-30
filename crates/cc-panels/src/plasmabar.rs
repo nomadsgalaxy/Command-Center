@@ -165,7 +165,14 @@ pub(crate) fn ray_at(pl: &Placement, crop: Rect, o: &V3, d: &V3) -> Option<(f64,
 ///   - a move stays at that device's `last` point,
 ///   - a press is dropped, so it never clicks whatever was last under the laser,
 ///   - a release goes where the pointer is (None), and laser() always sends it for a held press.
-fn laser_point(kind: Option<PointerKind>, pl: Option<Placement>, crop: Option<Rect>, ray: Option<(V3, V3)>, last: Option<(f64, f64)>, (b, x, y): ([f32; 4], f64, f64)) -> Option<(Option<(f64, f64)>, bool)> {
+fn laser_point(
+    kind: Option<PointerKind>,
+    pl: Option<Placement>,
+    crop: Option<Rect>,
+    ray: Option<(V3, V3)>,
+    last: Option<(f64, f64)>,
+    (b, x, y): ([f32; 4], f64, f64),
+) -> Option<(Option<(f64, f64)>, bool)> {
     let Some((o, d)) = ray else {
         let (fx, fy) = in_bounds(b, x, y);
         return Some((crop.map(|c| global(c, fx, fy)), true));
@@ -634,11 +641,7 @@ impl Plasma {
                 TIP.store(false, Relaxed);
                 windows::leave();
             }
-            Some(PointerKind::Scroll { dy, .. }) => {
-                if dy != 0.0 {
-                    windows::wheel(false, dy as f64);
-                }
-            }
+            Some(PointerKind::Scroll { dy, .. }) if dy != 0.0 => windows::wheel(false, dy as f64),
             _ => {}
         }
     }
