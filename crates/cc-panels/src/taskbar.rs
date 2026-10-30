@@ -1297,6 +1297,14 @@ impl Taskbar {
         })
     }
 
+    /// One wrist frame's placement, for a test: which controller it's on now (golden.rs).
+    #[cfg(test)]
+    pub(crate) fn wrist_frame(&mut self) -> Option<u32> {
+        self.mode = Mode::Wrist;
+        self.place_now(1.0 / 90.0, false);
+        self.wrist_dev.and_then(|w| w.1)
+    }
+
     /// Puts the frame at `local` on device `dev` (MAX for the room), only when that changed.
     fn put(&mut self, local: &Mat, dev: u32) {
         let (width, r) = (self.frame.w * self.mpp, self.radius());

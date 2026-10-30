@@ -3189,6 +3189,55 @@ mod tests {
             crate::golden::check("grab-device-lost-mid-drag", &log.0);
         }
 
+        /// Golden: the left and right controllers swap roles mid-carry. The wrist taskbar asks
+        /// for the off hand's controller each frame, so it moves to the other one, while the
+        /// drag keeps the index it started with.
+        #[test]
+        fn golden_roles_swap_mid_drag() {
+            use crate::golden::{Log, mat};
+            use openvr_sys as sys;
+            const LEFT: u32 = 1;
+            const RIGHT: u32 = 2;
+            let set_roles = |l: u32, r: u32| {
+                let mut s = crate::vr::fake::SCRIPT.lock().unwrap();
+                let s = s.get_or_insert_with(Default::default);
+                s.roles = vec![(sys::ETrackedControllerRole_TrackedControllerRole_LeftHand, l), (sys::ETrackedControllerRole_TrackedControllerRole_RightHand, r)];
+                s.poses = vec![(0, aimed([0.0, 1.6, 0.0], [0.0, 1.0, -1.0])), (LEFT, aimed([-0.2, 1.1, -0.3], [0.0, 1.6, 0.0])), (RIGHT, aimed([0.2, 1.1, -0.3], [0.0, 1.6, 0.0]))];
+            };
+            let _vr = crate::trace::fake_vr();
+            let dir = std::env::temp_dir().join(format!("cc-golden-roles-{}", std::process::id()));
+            let mut bar = crate::taskbar::Taskbar::new(dir.to_str().unwrap());
+            crate::vr::fake::take_calls(); // the taskbar's set-up isn't what this pins
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            let mut log = Log::default();
+            let observe = |log: &mut Log, g: &Grab, wrist: Option<u32>| {
+                log.vr_calls();
+                log.line(format!("wrist on {wrist:?}"));
+                log.line(format!("drag {}", g.drags[0].as_ref().map_or("none".into(), |d| format!("by {}", d.dev))));
+            };
+            log.step("roles left 1, right 2; the right hand picks the bar up");
+            set_roles(LEFT, RIGHT);
+            point(&mut f, RIGHT, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, RIGHT, &k, &f);
+            g.carry(&mut k, &mut f, Instant::now());
+            let w = bar.wrist_frame();
+            observe(&mut log, &g, w);
+            log.step("the roles swap: left 2, right 1");
+            set_roles(RIGHT, LEFT);
+            g.carry(&mut k, &mut f, Instant::now());
+            let w = bar.wrist_frame();
+            observe(&mut log, &g, w);
+            log.line(format!("panel {}", mat(&k.place[0].matrix())));
+            log.step("device 1, the right-hand role now, lets go");
+            log.line(format!("ended any: {}", g.end_by(LEFT, &k)));
+            observe(&mut log, &g, bar.wrist_frame());
+            log.step("device 2 lets go");
+            log.line(format!("ended any: {}", g.end_by(RIGHT, &k)));
+            observe(&mut log, &g, bar.wrist_frame());
+            crate::golden::check("grab-roles-swap-mid-drag", &log.0);
+        }
+
         #[test]
         fn the_mouse_picks_up_a_card_when_there_is_no_laser_and_the_wheel_pushes_it() {
             let p = flat();

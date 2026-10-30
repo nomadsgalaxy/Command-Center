@@ -1,0 +1,19 @@
+== roles left 1, right 2; the right hand picks the bar up
+  vr SetOverlayAlpha 1 0.92000
+  wrist on Some(1)
+  drag by 2
+== the roles swap: left 2, right 1
+  vr SetOverlayAlpha 1 0.84000
+  wrist on Some(2)
+  drag by 2
+  panel [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+== device 1, the right-hand role now, lets go
+  ended any: false
+  vr SetOverlayAlpha 1 0.76000
+  wrist on Some(2)
+  drag by 2
+== device 2 lets go
+  ended any: true
+  vr SetOverlayAlpha 1 0.68000
+  wrist on Some(2)
+  drag none
