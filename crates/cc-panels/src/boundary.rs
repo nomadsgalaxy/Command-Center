@@ -34,7 +34,7 @@ const FAKES: &str = "tests: SteamVR's events and roles, built for vr::fake";
 /// Each file's OpenVR names today, in groups by the step that takes them away.
 const ALLOWED: &[(&str, &str, &[&str])] = &[
     ("control.rs", "the control socket's SteamVR inspection (its devices, roles and laser tips), OpenVR on purpose", &["vr::devices", "vr::tip"]),
-    ("grab.rs", "tests: the golden's \"by {index}\" line and the roles vr::fake answers, by OpenVR's numbers", &["vr::index"]),
+    ("grab.rs", "tests: the golden's \"by {index}\" line and the roles vr::fake answers, by OpenVR's numbers (file-wide, so a production use would pass too)", &["vr::index"]),
     ("grab.rs", FAKES, &["sys::ETrackedControllerRole_TrackedControllerRole_LeftHand", "sys::ETrackedControllerRole_TrackedControllerRole_RightHand"]),
     (
         "laser.rs",
