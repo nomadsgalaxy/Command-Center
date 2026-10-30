@@ -39,6 +39,7 @@ use crate::ids::Dev;
 use crate::kvm::Kvm;
 use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, PUSH_ACCEL, PUSH_RATE, PUSH_STREAK, ZOOM, ZOOM_NOTCH};
 use crate::overlay::{At, Live, Overlays, Place, apply};
+use crate::poll::Pointing;
 use crate::stage::Stage;
 use crate::texture::Textures;
 use crate::theme::{self, Accent, Rgb, Theme, Tokens};
@@ -1378,13 +1379,12 @@ impl Grab {
 
     /// The lasers' part of `poll`: SteamVR's events on each card.
     fn poll_cards(&mut self, k: &mut Kvm, s: &mut impl Stage) {
-        let mut e: vr::VREvent_t = Default::default();
         for i in 0..self.drags.len() {
             let Some(p) = self.owner(i) else { continue };
             {
-                while call!(ov, PollNextOverlayEvent, p.card.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
+                while let Some(ev) = crate::poll::Live.next(p.card) {
                     use crate::events::{Button, PointerKind as P, SurfaceEvent as S};
-                    let S::Pointer(pe) = vr::surface_event(&e) else { continue };
+                    let S::Pointer(pe) = ev else { continue };
                     let part = self.card_part(i, (pe.x, pe.y), k);
                     match pe.kind {
                         P::Move | P::Enter => {

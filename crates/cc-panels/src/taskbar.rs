@@ -953,11 +953,11 @@ impl Taskbar {
 
     /// Laser events on it: hovering, clicking a chip, taking an edge, a corner or the knob.
     fn events(&mut self, grab: &mut grab::Grab, windows: &mut Windows) {
-        let mut e: vr::VREvent_t = Default::default();
+        use crate::poll::Pointing;
         crate::trace::tick("taskbar");
-        while crate::trace::poll("taskbar", self.ov, &mut e) {
+        while let Some(ev) = crate::trace::Traced("taskbar").next(self.ov) {
             // only a pointer does anything on the frame: anything else went through and matched nothing
-            let SurfaceEvent::Pointer(pe) = vr::surface_event(&e) else { continue };
+            let SurfaceEvent::Pointer(pe) = ev else { continue };
             let dev = vr::index(pe.from); // SteamVR's number, for its own lookups
             let y = from_top(self.frame.h, pe.y as f64); // its units, from the top
             let mut part = part_at(&self.frame, pe.x as f64, y);

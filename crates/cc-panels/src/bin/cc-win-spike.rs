@@ -24,6 +24,8 @@ mod ids;
 mod limits; // geometry.rs's numbers
 #[path = "../overlay.rs"]
 mod overlay; // back.rs places its sheets through it
+#[path = "../poll.rs"]
+mod poll; // its laser comes through it
 #[path = "../session.rs"]
 mod session;
 #[path = "../surface.rs"]
@@ -34,6 +36,7 @@ mod texture; // capture.rs and back.rs show their pictures through it
 mod vr;
 
 use openvr_sys as sys;
+use poll::Pointing;
 use session::{Session, StreamEvent};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, mpsc};
@@ -293,10 +296,9 @@ fn ahead(d: f64) -> geometry::Mat {
 /// Passes laser moves and clicks on the overlay through to the streamed thing's place in the
 /// session.
 fn mouse(overlay: vr::Handle, src: &Src, s: &Session, h: f64) {
-    let mut e: vr::VREvent_t = Default::default();
-    while call!(ov, PollNextOverlayEvent, overlay.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
+    while let Some(ev) = crate::poll::Live.next(overlay) {
         use events::{Button, PointerKind as P, SurfaceEvent as S};
-        let S::Pointer(pe) = vr::surface_event(&e) else { continue }; // only a laser does anything here
+        let S::Pointer(pe) = ev else { continue }; // only a laser does anything here
         let Some((origin, px)) = src.origin(s) else { continue };
         let (x, y) = session::to_global(origin, px, h, pe.x as f64, pe.y as f64);
         let button = match pe.kind {

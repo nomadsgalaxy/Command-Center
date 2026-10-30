@@ -538,10 +538,18 @@ cc-panels.
      `NoteRefused`, since notification errors aren't numbered like overlay errors.
    - `Input` has `pause`, for while a VR game runs (not `release`, which `Textures` has).
 
-   The polling (`Pointing` and `Session`, the event loops) is its own branch after this one.
-   `SessionEvent` gains `Other(u32)` there, so an ignored event (which still sets main.rs's
-   `last_event`) differs from an empty queue. `last_event` is an OpenVR-numbered diagnostic;
-   phase 1 gets its own.
+   The polling came on its own branch after that (5f), in `poll.rs`: `Pointing` and
+   `SessionEvents`, the queue split off `Session` (whose frames, universe and scene app haven't
+   moved), with `Live` (the overlays' queues) and `Queue` (SteamVR's own) on the OpenVR side.
+   - `SessionEvent` gains `Other(u32)`, the backend's own number for an event nothing acts on, so
+     it differs from an empty queue (None). Nothing matches on its value. main.rs's drain counts
+     every event and keeps the last one's type (`last_event`, an OpenVR-numbered diagnostic;
+     phase 1 gets its own), and does nothing else with `Other`. No match on `SessionEvent` has a
+     wildcard.
+   - The overlay loops call `poll::Live.next(surface)`, and the taskbar's `trace::Traced`, which
+     writes the trace as before. Plasma's loop still reads SteamVR's raw event, since an event
+     that isn't a pointer still moves its last point (the two readers above); it moves with that
+     fix. tab.rs's loop, which runs before any backend, and cc-win-spike's own queue stay raw too.
 6. (1 d) The source-scan test that nothing outside `vr/openvr` touches OpenVR, and the cargo
    features.
 7. (1 d) Tests and a pass in the headset.

@@ -18,6 +18,7 @@ use crate::control::ui::{self, BTN_H, GAP, MPP, PAD, Px, SORT};
 use crate::events::{KeyboardEvent, PointerEvent, PointerKind, SurfaceEvent};
 use crate::grab::{Look, Paint, TagImg, line, over, rbox, tint};
 use crate::keyboard::{self, Keyboard, KeyboardMode};
+use crate::poll::Pointing;
 use crate::{Panel, call, panel, theme, vr};
 use openvr_sys as sys;
 use std::sync::{Arc, Mutex};
@@ -275,9 +276,8 @@ impl Keys {
     }
 
     fn events(&mut self, h: vr::Handle, i: usize) {
-        let mut e: vr::VREvent_t = Default::default();
-        while call!(ov, PollNextOverlayEvent, h.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
-            let SurfaceEvent::Pointer(pe) = vr::surface_event(&e) else { continue }; // nothing else does anything on the strip
+        while let Some(ev) = crate::poll::Live.next(h) {
+            let SurfaceEvent::Pointer(pe) = ev else { continue }; // nothing else does anything on the strip
             let at = hit(pe.x as f64, crate::geometry::from_top(H, pe.y as f64)); // events count from the bottom left
             match pe.kind {
                 PointerKind::Move => self.hover = at,

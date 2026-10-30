@@ -540,7 +540,8 @@ impl Plasma {
             let dev = e.trackedDeviceIndex;
             // a pointer's kind and its point; anything else still goes through below as it always
             // has (it counts as a laser this frame and can move its device's last point), with what
-            // its mouse data holds. Phase 1 drops that.
+            // its mouse data holds. Phase 1 drops that. So this is the one overlay loop that still
+            // reads SteamVR's raw event, not Pointing: it moves behind it with that fix (events.rs).
             let (kind, x, y, from) = match vr::surface_event(&e) {
                 SurfaceEvent::Pointer(pe) => (Some(pe.kind), pe.x, pe.y, pe.from),
                 _ => {

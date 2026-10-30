@@ -9,6 +9,7 @@
 //! died). The next `hud` makes them again.
 use crate::geometry::from_top;
 use crate::overlay::{At, Live, Place, apply};
+use crate::poll::Pointing;
 use crate::{call, vr};
 use openvr_sys as sys;
 use std::sync::Mutex;
@@ -148,11 +149,10 @@ fn on_button(r: &[f32; 4], x: f32, y: f32) -> bool {
 pub fn tick() {
     let mut huds = HUDS.lock().unwrap();
     if let Some(h) = &huds[Kind::Status as usize] {
-        let mut e: vr::VREvent_t = Default::default();
-        while call!(ov, PollNextOverlayEvent, h.overlay.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
+        while let Some(ev) = crate::poll::Live.next(h.overlay) {
             use crate::events::{PointerEvent, PointerKind, SurfaceEvent};
             // pixels from the bottom left
-            if let SurfaceEvent::Pointer(PointerEvent { kind: PointerKind::Down(_), x, y, .. }) = vr::surface_event(&e)
+            if let SurfaceEvent::Pointer(PointerEvent { kind: PointerKind::Down(_), x, y, .. }) = ev
                 && h.skip.is_some_and(|r| on_button(&r, x, from_top(h.height, y)))
             {
                 SKIP.store(true, Relaxed);

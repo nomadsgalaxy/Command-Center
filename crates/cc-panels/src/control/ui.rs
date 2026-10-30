@@ -5,6 +5,7 @@
 //! It's free functions, not a framework. Each window keeps its own hits, key and rows.
 use crate::geometry::{Pose, STAND_IN_HEAD};
 use crate::grab::{self, Look, Paint, TagImg, average, line, over, rbox, tint};
+use crate::poll::Pointing;
 use crate::taskbar::{self, LABEL, TAG_ROOM, TAG_TEXT, text_pixel};
 use crate::{call, config, vr};
 use openvr_sys as sys;
@@ -312,9 +313,8 @@ pub fn next_event(h: vr::Handle) -> Option<crate::events::SurfaceEvent> {
     use crate::events::{Button, PointerEvent, PointerKind, SurfaceEvent};
     use std::sync::Mutex;
     static SENT: Mutex<Option<(f32, f32)>> = Mutex::new(None); // the point we last moved to
-    let mut e: vr::VREvent_t = Default::default();
-    if call!(ov, PollNextOverlayEvent, h.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
-        return Some(vr::surface_event(&e));
+    if let Some(ev) = crate::poll::Live.next(h) {
+        return Some(ev);
     }
     let mut sent = SENT.lock().unwrap();
     if crate::laser::HEALTHY.load(std::sync::atomic::Ordering::Relaxed) {

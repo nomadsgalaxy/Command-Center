@@ -65,6 +65,7 @@ use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_F
 use gaze::Input;
 use geometry::{Pose, panel_matrix};
 use openvr_sys as sys;
+use poll::Pointing;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering::*;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize};
@@ -457,10 +458,9 @@ impl Panel {
 /// D-045's input).
 fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, bool) {
     use events::{Button, PointerKind as P, SurfaceEvent as S};
-    let (mut e, mut n, mut worked): (vr::VREvent_t, u32, bool) = (Default::default(), 0, false);
-    while call!(ov, PollNextOverlayEvent, p.overlay.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
-        n += 1;
-        let ev = vr::surface_event(&e);
+    let (mut n, mut worked) = (0u32, false);
+    while let Some(ev) = crate::poll::Live.next(p.overlay) {
+        n += 1; // every event, Other too: the count is the tick's, as before
         if osk::event(p, &ev) {
             continue; // typed on SteamVR's keyboard, for this panel
         }
@@ -549,7 +549,7 @@ fn steamvr_events(machines: &mut control::machines::Machines, grab: &mut grab::G
                 *on_head = on;
                 eprintln!("headset: {}", if on { "on" } else { "off" });
             }
-            S::Worn(_) => {} // it already was
+            S::Worn(_) => {}  // it already was
             S::State(_) => {} // OpenXR's; an OpenVR overlay app is always running
             S::Other(_) => {} // counted and kept as the last event above, and nothing else
         }

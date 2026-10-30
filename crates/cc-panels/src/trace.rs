@@ -191,6 +191,18 @@ pub fn poll(who: &str, h: crate::vr::Handle, e: &mut sys::VREvent_t) -> bool {
     got
 }
 
+/// The `Pointing` side for a loop that's traced: each event goes to the trace as `.0`'s, as `poll`
+/// writes it, before it's translated. The taskbar's (Plasma's still reads the raw event: see its
+/// events()).
+pub struct Traced(pub &'static str);
+
+impl crate::poll::Pointing for Traced {
+    fn next(&mut self, s: crate::ids::SurfaceId) -> Option<crate::events::SurfaceEvent> {
+        let mut e: sys::VREvent_t = Default::default();
+        poll(self.0, s, &mut e).then(|| crate::vr::surface_event(&e))
+    }
+}
+
 /// A device's laser (vr::laser_pose), written to the trace.
 pub fn laser_pose(dev: u32) -> Option<Mat> {
     let m = crate::vr::laser_pose(dev);

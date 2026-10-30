@@ -23,6 +23,7 @@
 //! left backwards and turn it round. The card is one-sided too, so it's no use from behind.
 use crate::geometry::{Mat, Placement, V3, chord, dot, norm};
 use crate::overlay::{At, Live, Place, apply};
+use crate::poll::Pointing;
 use crate::texture::{self, TexHandle, Textures};
 use crate::{call, vr};
 use openvr_sys as sys;
@@ -228,11 +229,10 @@ impl Backs {
     /// Laser presses and releases on the backs, as (slot, device, pressed).
     pub fn events(&self) -> Vec<(usize, crate::ids::Dev, bool)> {
         use crate::events::{Button, PointerEvent, PointerKind as P, SurfaceEvent as S};
-        let mut e: vr::VREvent_t = Default::default();
         let mut out = Vec::new();
         for b in &self.pool {
-            while call!(ov, PollNextOverlayEvent, b.h.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
-                match vr::surface_event(&e) {
+            while let Some(ev) = crate::poll::Live.next(b.h) {
+                match ev {
                     S::Pointer(PointerEvent { kind: P::Down(Button::Left), from, .. }) => out.push((b.i, from, true)),
                     S::Pointer(PointerEvent { kind: P::Up(_), from, .. }) => out.push((b.i, from, false)),
                     _ => {}

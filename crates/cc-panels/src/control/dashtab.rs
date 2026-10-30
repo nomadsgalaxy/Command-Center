@@ -32,6 +32,7 @@ use super::ui::{self, BTN_H, PAD, Px, ROW, Rect, SCALE, TITLE, text, typed, type
 use crate::geometry::from_top;
 use crate::grab::{Paint, TagImg, over, tint};
 use crate::handoff::Handoff;
+use crate::poll::Pointing;
 use crate::shell::{self, Shell};
 use crate::taskbar::tex_scale;
 use crate::{HIDDEN, call, theme, vr};
@@ -306,11 +307,9 @@ impl Dashtab {
 
     /// Laser events: hovering, and presses on a choice.
     fn events(&mut self, h: vr::Handle, hand: &mut Handoff) {
-        let mut e: vr::VREvent_t = Default::default();
         let mut again = false;
-        while call!(ov, PollNextOverlayEvent, h.0, &mut e, size_of::<vr::VREvent_t>() as u32) {
+        while let Some(ev) = crate::poll::Live.next(h) {
             use crate::events::{Button, PointerEvent, PointerKind as P, SurfaceEvent as S};
-            let ev = vr::surface_event(&e);
             // page units; events count from the bottom left
             let at = if let S::Pointer(pe) = &ev { hit(pe.x as f64, from_top(H, pe.y as f64)) } else { None };
             let kind = if let S::Pointer(PointerEvent { kind, .. }) = &ev { Some(*kind) } else { None };
