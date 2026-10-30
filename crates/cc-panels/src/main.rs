@@ -513,6 +513,58 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
     (n, worked)
 }
 
+/// SteamVR's own events since the last tick (PollNextEvent): it quitting, the dashboard opening
+/// or closing, a real controller's button, a relocalization or a new universe, and the headset
+/// coming off or going on. `universe`, `on_head` and `last_event` are the main loop's, kept up to
+/// date here. Returns how many events there were.
+fn steamvr_events(machines: &mut control::machines::Machines, grab: &mut grab::Grab, universe: &mut u64, on_head: &mut bool, last_event: &mut u32) -> i32 {
+    let mut err = 0;
+    let mut e: vr::VREvent_t = Default::default();
+    let mut events = 0;
+    while call!(sys, PollNextEvent, &mut e, size_of::<vr::VREvent_t>() as u32) {
+        (events, *last_event) = (events + 1, e.eventType);
+        if e.eventType == sys::EVREventType_VREvent_Quit {
+            close_desktop("SteamVR quit it"); // e.g. a game launched over the Desktop
+        }
+        if e.eventType == sys::EVREventType_VREvent_DashboardActivated {
+            crate::kvm::lock().set_engaged(false, "dashboard opened"); // click to type: typing goes to it
+            control::dashtab::dashboard(true);
+        }
+        if e.eventType == sys::EVREventType_VREvent_DashboardDeactivated {
+            control::dashtab::dashboard(false);
+        }
+        if e.eventType == sys::EVREventType_VREvent_ButtonPress && vr::is_real_controller(e.trackedDeviceIndex) {
+            controller_pressed(); // anywhere, not only on our panels
+        }
+        // the Frame relocalized (vrserver.txt: "Standing origin changed. Sending reset standing zero pose event")
+        // (a new universe, like the dummy one's first localization at start, doesn't move any saved spot)
+        if e.eventType == sys::EVREventType_VREvent_StandingZeroPoseReset {
+            let now = call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
+            if now == *universe {
+                machines.relocalized();
+                grab.relocalized(); // aligned monitors' snap buttons switch to align
+            } else {
+                eprintln!("tracking: universe {universe} -> {now}");
+                *universe = now;
+                // ponytail: the workspace is picked at start. A room change mid-session shows
+                // on the Workspace page (Use / Load there) instead of switching under you
+                config::UNIVERSE.store(cc_proto::conf::room(now), Relaxed);
+            }
+        }
+        // the headset's (device 0) proximity sensor: off the head, every stream pauses
+        let worn = match e.eventType {
+            sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted => Some(true),
+            sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded => Some(false),
+            _ => None,
+        };
+        if let Some(on) = worn.filter(|&on| e.trackedDeviceIndex == 0 && on != *on_head) {
+            *on_head = on;
+            eprintln!("headset: {}", if on { "on" } else { "off" });
+        }
+    }
+    events
+}
+
 /// A real controller's button was pressed, so it's the primary device now.
 fn controller_pressed() {
     let mut k = crate::kvm::lock();
@@ -1111,49 +1163,7 @@ fn run() -> Result<(), String> {
             );
         }
         laps.lap("status");
-        let mut e: vr::VREvent_t = Default::default();
-        let mut events = 0;
-        while call!(sys, PollNextEvent, &mut e, size_of::<vr::VREvent_t>() as u32) {
-            (events, last_event) = (events + 1, e.eventType);
-            if e.eventType == sys::EVREventType_VREvent_Quit {
-                close_desktop("SteamVR quit it"); // e.g. a game launched over the Desktop
-            }
-            if e.eventType == sys::EVREventType_VREvent_DashboardActivated {
-                crate::kvm::lock().set_engaged(false, "dashboard opened"); // click to type: typing goes to it
-                control::dashtab::dashboard(true);
-            }
-            if e.eventType == sys::EVREventType_VREvent_DashboardDeactivated {
-                control::dashtab::dashboard(false);
-            }
-            if e.eventType == sys::EVREventType_VREvent_ButtonPress && vr::is_real_controller(e.trackedDeviceIndex) {
-                controller_pressed(); // anywhere, not only on our panels
-            }
-            // the Frame relocalized (vrserver.txt: "Standing origin changed. Sending reset standing zero pose event")
-            // (a new universe, like the dummy one's first localization at start, doesn't move any saved spot)
-            if e.eventType == sys::EVREventType_VREvent_StandingZeroPoseReset {
-                let now = call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
-                if now == universe {
-                    machines.relocalized();
-                    grab.relocalized(); // aligned monitors' snap buttons switch to align
-                } else {
-                    eprintln!("tracking: universe {universe} -> {now}");
-                    universe = now;
-                    // ponytail: the workspace is picked at start. A room change mid-session shows
-                    // on the Workspace page (Use / Load there) instead of switching under you
-                    config::UNIVERSE.store(cc_proto::conf::room(now), Relaxed);
-                }
-            }
-            // the headset's (device 0) proximity sensor: off the head, every stream pauses
-            let worn = match e.eventType {
-                sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted => Some(true),
-                sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded => Some(false),
-                _ => None,
-            };
-            if let Some(on) = worn.filter(|&on| e.trackedDeviceIndex == 0 && on != on_head) {
-                on_head = on;
-                eprintln!("headset: {}", if on { "on" } else { "off" });
-            }
-        }
+        let events = steamvr_events(&mut machines, &mut grab, &mut universe, &mut on_head, &mut last_event);
         laps.lap("events");
         power::want(!on_head); // the headset's off: nobody's using the Desktop (power.rs)
         power::game(bar.game() || handoff::flat_game());
@@ -1418,12 +1428,28 @@ mod tests {
         (universe, on_head, last_event, events)
     }
 
+    /// The handling a golden run drives: the old loop, or `steamvr_events`. Given the state before
+    /// the event (universe, on head), it gives the state after and the loop's count and last type.
+    type Handle = fn(&mut control::machines::Machines, &mut grab::Grab, u64, bool) -> (u64, bool, u32, i32);
+
+    fn extracted(machines: &mut control::machines::Machines, grab: &mut grab::Grab, mut universe: u64, mut on_head: bool) -> (u64, bool, u32, i32) {
+        let mut last_event = 0;
+        let events = steamvr_events(machines, grab, &mut universe, &mut on_head, &mut last_event);
+        (universe, on_head, last_event, events)
+    }
+
     /// Golden (golden.rs): SteamVR's own events, one at a time, through main's handling of them:
     /// Quit, the dashboard opening and closing, a button on a real controller and on our virtual
     /// pointer, a relocalization in the same universe and a change of universe, and the headset off
-    /// and on (and another device's interaction, which doesn't count).
+    /// and on (and another device's interaction, which doesn't count). The copy of the loop as it
+    /// was and the function it became write the same fixture.
     #[test]
     fn golden_steamvr_events() {
+        steamvr_events_through(old_loop);
+        steamvr_events_through(extracted);
+    }
+
+    fn steamvr_events_through(handle: Handle) {
         use openvr_sys as sys;
         const POINTER: u32 = 9;
         let _vr = crate::trace::fake_vr();
@@ -1434,8 +1460,14 @@ mod tests {
         grab.scanned_for_test(2); // two aligned places, so a relocalization shows
         let room = config::UNIVERSE.load(Relaxed);
         config::UNIVERSE.store(0, Relaxed); // the room as start-up left it, here none
-        let was = { let k = kvm::lock(); (k.engaged, k.awake) };
-        { let mut k = kvm::lock(); (k.engaged, k.awake) = (true, true); }
+        let was = {
+            let k = kvm::lock();
+            (k.engaged, k.awake)
+        };
+        {
+            let mut k = kvm::lock();
+            (k.engaged, k.awake) = (true, true);
+        }
         crate::vr::fake::take_calls();
         let (mut universe, mut on_head) = (7u64, true);
         let mut log = crate::golden::Log::default();
@@ -1463,7 +1495,7 @@ mod tests {
                 let s = s.get_or_insert_with(Default::default);
                 (s.universe, s.sys_events) = (now, [e].into());
             }
-            let (u, on, last, n) = old_loop(&mut machines, &mut grab, universe, on_head);
+            let (u, on, last, n) = handle(&mut machines, &mut grab, universe, on_head);
             (universe, on_head) = (u, on);
             log.vr_calls();
             for c in std::mem::take(&mut *CLOSED.lock().unwrap()) {
