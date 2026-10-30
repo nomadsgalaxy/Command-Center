@@ -210,6 +210,28 @@ pub fn typed(input: &[std::ffi::c_char; 8]) -> Option<String> {
     String::from_utf8(bytes[..n].to_vec()).ok().filter(|s| !s.is_empty())
 }
 
+/// One of SteamVR's own events (PollNextEvent), as the neutral event the core reads (events.rs),
+/// or None for one main.rs doesn't act on. A relocalization reads the universe now, as main.rs
+/// did, to tell the same room (`Relocalized`) from a new one (`RoomChanged`) against `universe`.
+/// A button counts only on a real controller, and wearing only on the headset.
+pub fn session_event(e: &VREvent_t, universe: u64) -> Option<crate::events::SessionEvent> {
+    use crate::events::SessionEvent as S;
+    Some(match e.eventType {
+        sys::EVREventType_VREvent_Quit => S::Quit,
+        sys::EVREventType_VREvent_DashboardActivated => S::DashboardShown(true),
+        sys::EVREventType_VREvent_DashboardDeactivated => S::DashboardShown(false),
+        sys::EVREventType_VREvent_ButtonPress if is_real_controller(e.trackedDeviceIndex) => S::ControllerUsed(crate::ids::Ctl::new(e.trackedDeviceIndex)),
+        sys::EVREventType_VREvent_StandingZeroPoseReset => {
+            let mut err = 0;
+            let now = crate::call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
+            if now == universe { S::Relocalized } else { S::RoomChanged(now) }
+        }
+        sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted if e.trackedDeviceIndex == 0 => S::Worn(true),
+        sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded if e.trackedDeviceIndex == 0 => S::Worn(false),
+        _ => return None,
+    })
+}
+
 /// OpenVR's tracked-device index for `d` (the inverse of `dev`).
 pub fn index(d: crate::ids::Dev) -> u32 {
     use crate::ids::Dev;

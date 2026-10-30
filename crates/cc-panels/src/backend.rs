@@ -14,18 +14,7 @@ use crate::geometry::{Mat, V3};
 pub use crate::ids::{Ctl, Dev, Hand, SurfaceId};
 
 #[allow(unused_imports)] // the design names them; the core takes them from events.rs
-pub use crate::events::{Button, KeyboardEvent, PointerEvent, PointerKind, SurfaceEvent};
-
-/// What the runtime says about our session, from its events. On OpenVR an overlay app is always
-/// running, visible and focused, so this only changes on OpenXR. It isn't whether the headset is
-/// worn: that's `SessionEvent::Worn`, and the two are never folded together. Whether to draw this
-/// frame isn't here either: it comes with each frame (`Frame`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SessionState {
-    pub running: bool,
-    pub visible: bool,
-    pub focused: bool,
-}
+pub use crate::events::{Button, KeyboardEvent, PointerEvent, PointerKind, SessionEvent, SessionState, SurfaceEvent};
 
 /// One frame, as `begin_frame` starts it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -35,24 +24,6 @@ pub struct Frame {
     /// Seconds from now until this frame's picture reaches the eyes: when poses are read for
     /// (vr::to_photons on OpenVR, predictedDisplayTime on OpenXR).
     pub predicted: f32,
-}
-
-/// What the runtime's own queue gives (main.rs's `PollNextEvent` loop).
-#[derive(Clone, Debug, PartialEq)]
-pub enum SessionEvent {
-    /// The runtime wants us gone (VREvent_Quit, or OpenXR's EXITING or loss pending).
-    Quit,
-    State(SessionState),
-    /// The headset's proximity sensor, or `XR_EXT_user_presence`.
-    Worn(bool),
-    /// The tracking origin moved inside the same room (StandingZeroPoseReset, same universe).
-    Relocalized,
-    /// A different room: the new universe id. OpenVR compares universes itself and sends one of
-    /// these two, as main.rs does now.
-    RoomChanged(u64),
-    DashboardShown(bool),
-    /// A real controller's button, anywhere (VREvent_ButtonPress): it's the primary device now.
-    ControllerUsed(Ctl),
 }
 
 /// What a surface asks of the runtime. Each is a SteamVR overlay flag today. OpenXR does without

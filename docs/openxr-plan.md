@@ -509,6 +509,13 @@ cc-panels.
    and the event loops convert at the edge. Logs and fixtures print devices by index, unchanged.
 4. (2 d) The neutral `PointerEvent` and `SessionEvent`, which the OpenVR backend translates to.
    The ten `PollNextOverlayEvent` loops (listed in 2.4) match the neutral enum.
+   Done: they live in `events.rs` (built into cc-win-spike too). `vr::surface_event` turns each
+   overlay event into one `SurfaceEvent`, and `vr::session_event` turns SteamVR's own events into
+   `SessionEvent`s, reading the universe on a relocalization as main.rs did. The loops still poll
+   OpenVR themselves (the traits come in step 5), but they translate first and match only the
+   neutral kinds. The Extra windows get theirs from `ui::next_event`, the desktop mouse's too.
+   Nothing is made up or clamped: events a loop ignored before are still skipped, the logs still
+   print devices by index, and every golden fixture is unchanged.
 5. (2 d) The `Textures`, `Keyboard`, `Shell` and `Input` traits with OpenVR implementations. Code
    moves; it isn't rewritten.
 6. (1 d) The source-scan test that nothing outside `vr/openvr` touches OpenVR, and the cargo

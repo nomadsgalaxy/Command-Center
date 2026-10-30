@@ -515,48 +515,38 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
 /// coming off or going on. `universe`, `on_head` and `last_event` are the main loop's, kept up to
 /// date here. Returns how many events there were.
 fn steamvr_events(machines: &mut control::machines::Machines, grab: &mut grab::Grab, universe: &mut u64, on_head: &mut bool, last_event: &mut u32) -> i32 {
-    let mut err = 0;
     let mut e: vr::VREvent_t = Default::default();
     let mut events = 0;
     while call!(sys, PollNextEvent, &mut e, size_of::<vr::VREvent_t>() as u32) {
+        use crate::events::SessionEvent as S;
         (events, *last_event) = (events + 1, e.eventType);
-        if e.eventType == sys::EVREventType_VREvent_Quit {
-            close_desktop("SteamVR quit it"); // e.g. a game launched over the Desktop
-        }
-        if e.eventType == sys::EVREventType_VREvent_DashboardActivated {
-            crate::kvm::lock().set_engaged(false, "dashboard opened"); // click to type: typing goes to it
-            control::dashtab::dashboard(true);
-        }
-        if e.eventType == sys::EVREventType_VREvent_DashboardDeactivated {
-            control::dashtab::dashboard(false);
-        }
-        if e.eventType == sys::EVREventType_VREvent_ButtonPress && vr::is_real_controller(e.trackedDeviceIndex) {
-            controller_pressed(); // anywhere, not only on our panels
-        }
-        // the Frame relocalized (vrserver.txt: "Standing origin changed. Sending reset standing zero pose event")
-        // (a new universe, like the dummy one's first localization at start, doesn't move any saved spot)
-        if e.eventType == sys::EVREventType_VREvent_StandingZeroPoseReset {
-            let now = call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
-            if now == *universe {
+        match vr::session_event(&e, *universe) {
+            Some(S::Quit) => close_desktop("SteamVR quit it"), // e.g. a game launched over the Desktop
+            Some(S::DashboardShown(true)) => {
+                crate::kvm::lock().set_engaged(false, "dashboard opened"); // click to type: typing goes to it
+                control::dashtab::dashboard(true);
+            }
+            Some(S::DashboardShown(false)) => control::dashtab::dashboard(false),
+            Some(S::ControllerUsed(_)) => controller_pressed(), // anywhere, not only on our panels
+            // the Frame relocalized (vrserver.txt: "Standing origin changed. Sending reset standing zero pose event")
+            Some(S::Relocalized) => {
                 machines.relocalized();
                 grab.relocalized(); // aligned monitors' snap buttons switch to align
-            } else {
+            }
+            // a new universe, like the dummy one's first localization at start, doesn't move any saved spot
+            Some(S::RoomChanged(now)) => {
                 eprintln!("tracking: universe {universe} -> {now}");
                 *universe = now;
                 // ponytail: the workspace is picked at start. A room change mid-session shows
                 // on the Workspace page (Use / Load there) instead of switching under you
                 config::UNIVERSE.store(cc_proto::conf::room(now), Relaxed);
             }
-        }
-        // the headset's (device 0) proximity sensor: off the head, every stream pauses
-        let worn = match e.eventType {
-            sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted => Some(true),
-            sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded => Some(false),
-            _ => None,
-        };
-        if let Some(on) = worn.filter(|&on| e.trackedDeviceIndex == 0 && on != *on_head) {
-            *on_head = on;
-            eprintln!("headset: {}", if on { "on" } else { "off" });
+            // the headset's proximity sensor: off the head, every stream pauses
+            Some(S::Worn(on)) if on != *on_head => {
+                *on_head = on;
+                eprintln!("headset: {}", if on { "on" } else { "off" });
+            }
+            _ => {}
         }
     }
     events

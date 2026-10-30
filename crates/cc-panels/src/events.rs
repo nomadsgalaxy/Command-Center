@@ -70,3 +70,33 @@ pub enum SurfaceEvent {
     /// Anything else, by the runtime's own number, so a loop that counts its events counts the same.
     Other(u32),
 }
+
+/// What the runtime says about our session, from its events. On OpenVR an overlay app is always
+/// running, visible and focused, so this only changes on OpenXR. It isn't whether the headset is
+/// worn: that's `SessionEvent::Worn`, and the two are never folded together. Whether to draw this
+/// frame isn't here either: it comes with each frame (`Frame`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionState {
+    pub running: bool,
+    pub visible: bool,
+    pub focused: bool,
+}
+
+/// What the runtime's own queue gives (main.rs's `PollNextEvent` loop).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionEvent {
+    /// The runtime wants us gone (VREvent_Quit, or OpenXR's EXITING or loss pending).
+    Quit,
+    #[allow(dead_code)] // OpenXR's (phase 1): an OpenVR overlay app is always running and focused
+    State(SessionState),
+    /// The headset's proximity sensor, or `XR_EXT_user_presence`.
+    Worn(bool),
+    /// The tracking origin moved inside the same room (StandingZeroPoseReset, same universe).
+    Relocalized,
+    /// A different room: the new universe id. OpenVR compares universes itself and sends one of
+    /// these two, as main.rs does now.
+    RoomChanged(u64),
+    DashboardShown(bool),
+    /// A real controller's button, anywhere (VREvent_ButtonPress): it's the primary device now.
+    ControllerUsed(crate::ids::Ctl),
+}
