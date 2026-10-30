@@ -227,6 +227,16 @@ pub fn session_event(e: &VREvent_t, universe: u64) -> crate::events::SessionEven
             let now = crate::call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
             if now == universe { S::Relocalized } else { S::RoomChanged(now) }
         }
+        // A new universe with no relocalization: the Frame makes one each time it tracks again
+        // without finding its saved map (vrserver.txt, "Switching to a new universe ... without a
+        // universe relocalization"), and sends no StandingZeroPoseReset for it. Logged only, so
+        // the next runs show how often; the workspace doesn't follow it yet.
+        sys::EVREventType_VREvent_ChaperoneUniverseHasChanged => {
+            let mut err = 0;
+            let now = crate::call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
+            eprintln!("tracking: SteamVR's universe changed to {now} (property error {err}), the room's still {universe}");
+            S::Other(e.eventType)
+        }
         sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted if e.trackedDeviceIndex == 0 => S::Worn(true),
         sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded if e.trackedDeviceIndex == 0 => S::Worn(false),
         t => S::Other(t),

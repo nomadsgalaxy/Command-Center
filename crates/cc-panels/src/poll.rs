@@ -59,6 +59,16 @@ pub trait Session {
 /// SteamVR's overlay queues and session, for real.
 pub struct Live;
 
+impl Live {
+    /// The universe with OpenVR's error code beside it (0 is none), for main.rs's log at start:
+    /// what it said, before any fallback. universe_id is its value.
+    pub fn universe_read(&self) -> (u64, u32) {
+        let mut err = 0;
+        let u = call!(sys, GetUint64TrackedDeviceProperty, 0, openvr_sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
+        (u, err as u32)
+    }
+}
+
 /// SteamVR's own queue, for real. `universe` is the one the session's in, which a relocalization
 /// is compared with (vr::session_event); it follows each RoomChanged it hands out.
 pub struct Queue {
@@ -99,8 +109,7 @@ impl Session for Live {
     }
 
     fn universe_id(&self) -> Option<u64> {
-        let mut err = 0;
-        Some(call!(sys, GetUint64TrackedDeviceProperty, 0, openvr_sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err))
+        Some(self.universe_read().0)
     }
 
     /// GetCurrentSceneProcessId has no error to read, so OpenVR always tells.
@@ -152,6 +161,7 @@ mod tests {
             vr::fake::Script { vsync: Some((0.0, 90.0, 0.011)), universe: 7, prop_error: unknown, activity: Some(sys::EDeviceActivityLevel_k_EDeviceActivityLevel_Idle), ..Default::default() };
         let _vr = vr::fake::install(failed);
         assert_eq!((Live.display_hz(), Live.universe_id()), (Some(90.0), Some(7)), "the error ignored: its value, as main.rs read it");
+        assert_eq!(Live.universe_read(), (7, unknown.unwrap() as u32), "and the log at start has the error");
         assert_eq!((Live.scene_app_running(), Live.worn()), (Some(false), Some(false)), "no game, and off the head");
         drop(_vr);
 
@@ -176,7 +186,8 @@ mod tests {
         };
         let (reset, ended) = (sys::EVREventType_VREvent_StandingZeroPoseReset, sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded);
         // a controller's interaction ending isn't the headset coming off: only device 0 is worn
-        let events = [ev(sys::EVREventType_VREvent_TrackedDeviceActivated, 3), ev(ended, 3), ev(ended, 0), ev(reset, 0), ev(reset, 0)];
+        let changed = sys::EVREventType_VREvent_ChaperoneUniverseHasChanged; // logged, and only that for now
+        let events = [ev(sys::EVREventType_VREvent_TrackedDeviceActivated, 3), ev(ended, 3), ev(ended, 0), ev(changed, 0), ev(reset, 0), ev(reset, 0)];
         let _vr = vr::fake::install(vr::fake::Script { universe: 8, sys_events: events.into(), ..Default::default() });
         let mut q = Queue::new(7);
         let mut got = vec![];
@@ -189,6 +200,7 @@ mod tests {
                 (SessionEvent::Other(sys::EVREventType_VREvent_TrackedDeviceActivated), sys::EVREventType_VREvent_TrackedDeviceActivated),
                 (SessionEvent::Other(ended), ended),
                 (SessionEvent::Worn(false), ended),
+                (SessionEvent::Other(changed), changed),
                 (SessionEvent::RoomChanged(8), reset),
                 (SessionEvent::Relocalized, reset),
             ]

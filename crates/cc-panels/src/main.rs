@@ -969,7 +969,10 @@ fn run() -> Result<(), String> {
     // 0, the fallback for a runtime that can't tell, is "no room yet": choose_workspace logs it and
     // lets the workspace hint decide. (OpenVR always tells: its own 0, for a bad index or type, is
     // the same "no room yet".)
-    let mut universe = poll::Live.universe_id().unwrap_or(0);
+    // What SteamVR said, error and all, before any fallback (the Frame makes a new universe each
+    // time it tracks again without finding its saved map, so this is the room's only record)
+    let (mut universe, err) = poll::Live.universe_read();
+    eprintln!("room: SteamVR's universe at start {universe} (property error {err}), room {}", cc_proto::conf::room(universe));
     let (workspace, new) = config::choose_workspace(universe);
     eprintln!("workspace: {workspace}{}", if new { " (made for this room: the Workspace window's Save as workspace keeps it)" } else { "" });
     let mut list = Vec::new();
