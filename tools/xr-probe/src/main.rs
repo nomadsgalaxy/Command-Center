@@ -3,7 +3,8 @@
 //!   xr-probe [--loader PATH] [MANIFEST...]
 //!
 //! With no manifests it finds them: the active runtime, every manifest in the OpenXR config dirs,
-//! and SteamVR's for this CPU. Each runtime is asked in its own process, with XR_RUNTIME_JSON
+//! and SteamVR's for this CPU. It doesn't look in Flatpak Steam's paths (~/.var/app/...): pass
+//! that manifest by hand. Each runtime is asked in its own process, with XR_RUNTIME_JSON
 //! pointing at it, because the loader can remember the first runtime it found.
 //!
 //! It only calls xrEnumerateInstanceExtensionProperties. It never creates an instance or a session,
