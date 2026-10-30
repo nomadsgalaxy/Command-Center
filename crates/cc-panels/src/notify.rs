@@ -167,15 +167,13 @@ pub fn tick(dash: Option<crate::vr::Handle>) {
 
 /// SteamVR's own toast, straight away (the main loop only).
 pub fn toast(text: &str) {
+    use crate::shell::Shell;
     let h = DASH.load(Relaxed);
-    let (true, Some(n)) = (h != 0, crate::vr::vr().notes) else {
-        return eprintln!("notify: no dashboard tab or IVRNotifications, so it's only logged: {text}");
-    };
-    let c = std::ffi::CString::new(text.replace('\0', "")).unwrap_or_default();
-    let mut id = 0;
-    let e = unsafe { (n.CreateNotification.unwrap())(h, 0, openvr_sys::EVRNotificationType_Transient, c.as_ptr() as *mut _, openvr_sys::EVRNotificationStyle_None, std::ptr::null_mut(), &mut id) };
-    if e != 0 {
-        eprintln!("notify: SteamVR's toast failed ({e}): {text}");
+    let shown = if h == 0 { Err(None) } else { crate::shell::Live.toast(crate::ids::SurfaceId(h), text) };
+    match shown {
+        Ok(()) => {}
+        Err(None) => eprintln!("notify: no dashboard tab or IVRNotifications, so it's only logged: {text}"),
+        Err(Some(e)) => eprintln!("notify: SteamVR's toast failed ({}): {text}", e.0),
     }
 }
 

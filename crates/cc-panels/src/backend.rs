@@ -12,6 +12,8 @@ use crate::geometry::{Mat, V3};
 pub use crate::ids::{Ctl, Dev, Hand, SurfaceId};
 #[allow(unused_imports)] // the design names them; the core takes them from keyboard.rs
 pub use crate::keyboard::{Keyboard, KeyboardMode};
+#[allow(unused_imports)] // and shell.rs
+pub use crate::shell::Shell;
 #[allow(unused_imports)] // and texture.rs
 pub use crate::texture::{Dmabuf, Refused, TexHandle, Textures};
 
@@ -148,16 +150,6 @@ pub trait Session {
     /// the drawing.
     fn begin_frame(&mut self) -> Frame;
     fn end_frame(&mut self, layers: &[SurfaceId]);
-}
-
-/// What only some runtimes have.
-pub trait Shell {
-    fn has_dashboard(&self) -> bool;
-    fn dashboard_visible(&self) -> bool;
-    /// Whether our tab is the one showing.
-    fn our_tab_active(&self, main: SurfaceId) -> bool;
-    /// SteamVR's toast, the fallback when D-Bus notifications aren't there. False if it wasn't shown.
-    fn toast(&mut self, text: &str) -> bool;
 }
 
 /// Controller input that isn't pointing.

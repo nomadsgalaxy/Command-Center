@@ -32,6 +32,7 @@ use super::ui::{self, BTN_H, PAD, Px, ROW, Rect, SCALE, TITLE, text, typed, type
 use crate::geometry::from_top;
 use crate::grab::{Paint, TagImg, over, tint};
 use crate::handoff::Handoff;
+use crate::shell::{self, Shell};
 use crate::taskbar::tex_scale;
 use crate::{HIDDEN, call, theme, vr};
 use openvr_sys as sys;
@@ -249,7 +250,7 @@ impl Dashtab {
 
     /// Our tab is the dashboard's active one: the dashboard is open and this is the page showing.
     pub fn selected(&self) -> bool {
-        OPEN.load(Relaxed) && self.ov.is_some_and(|(h, _)| call!(ov, IsActiveDashboardOverlay, h.0))
+        OPEN.load(Relaxed) && self.ov.is_some_and(|(h, _)| shell::Live.our_tab_active(h))
     }
 
     /// The tab's page overlay, once it's made (notify.rs hangs SteamVR's toasts off it).
@@ -266,7 +267,7 @@ impl Dashtab {
         let Some((h, _)) = self.ov else { return };
         // asked every frame, not only told by the Activated event: the Desktop is usually started
         // from the dashboard, so it's already open when we start, and that event never comes
-        OPEN.store(call!(ov, IsDashboardVisible), Relaxed);
+        OPEN.store(shell::Live.dashboard_visible(), Relaxed);
         self.events(h, hand);
         // drawn once at the start, and after that only while the dashboard is open
         if self.painter.drawn().is_none() || OPEN.load(Relaxed) {
@@ -319,7 +320,7 @@ impl Dashtab {
                 // SteamVR's close on the tab quits Command Center, the way it quits any overlay app.
                 // Only when you could have pressed it: the dashboard showing, on our tab. Any other
                 // close (a dashboard restart, say) makes the tab again and leaves the Desktop be.
-                (S::Closed, _) if !(call!(ov, IsDashboardVisible) && call!(ov, IsActiveDashboardOverlay, h.0)) => {
+                (S::Closed, _) if !(shell::Live.dashboard_visible() && shell::Live.our_tab_active(h)) => {
                     eprintln!("dashboard tab: SteamVR closed it while it wasn't showing, so it's made again");
                     again = true;
                 }

@@ -48,6 +48,7 @@ mod power;
 mod rdp;
 #[allow(dead_code)] // virtual outputs for desktop mode aren't wired up yet; the spike uses them
 mod session;
+mod shell;
 mod stage;
 mod surface;
 mod tab;
