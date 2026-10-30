@@ -19,6 +19,10 @@
   events 1, last 200, universe 7, room 0, on head true
   engaged false, mouse has the pointer false, dashboard open false
   machines relocalized 0, grab's stale places 0
+== a device turns on
+  events 1, last 100, universe 7, room 0, on head true
+  engaged false, mouse has the pointer false, dashboard open false
+  machines relocalized 0, grab's stale places 0
 == relocalized, same universe
   events 1, last 808, universe 7, room 0, on head true
   engaged false, mouse has the pointer false, dashboard open false

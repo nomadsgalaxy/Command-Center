@@ -39,6 +39,12 @@ pub enum PointerKind {
 /// On OpenVR, x and y are the event's mouse data whatever its kind, as the code read them before:
 /// for a scroll that's SteamVR's x and y deltas (its scroll data shares the space), and for focus
 /// coming or going whatever SteamVR left there.
+///
+/// So x and y are a position only for Move, Down and Up. Two readers take them on other kinds, as
+/// they did before phase 0: a card's hover on Enter (grab.rs, `card_part`), and Plasma's last point
+/// for a device with no laser pose (plasmabar.rs, `laser_point`'s fallback), which a scroll or a
+/// focus change sets too. Moving x and y into those three kinds would change both, so it waits for
+/// its own branch.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PointerEvent {
     pub kind: PointerKind,

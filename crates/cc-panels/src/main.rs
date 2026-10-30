@@ -1479,6 +1479,8 @@ mod tests {
             ("the dashboard closes", vec![ev(sys::EVREventType_VREvent_DashboardDeactivated, 0)], 7),
             ("our virtual pointer's button", vec![ev(sys::EVREventType_VREvent_ButtonPress, POINTER)], 7),
             ("a real controller's button", vec![ev(sys::EVREventType_VREvent_ButtonPress, 3)], 7),
+            // one main.rs has no arm for: still counted, and still the last type
+            ("a device turns on", vec![ev(sys::EVREventType_VREvent_TrackedDeviceActivated, 3)], 7),
             ("relocalized, same universe", vec![ev(sys::EVREventType_VREvent_StandingZeroPoseReset, 0)], 7),
             ("relocalized into universe 8", vec![ev(sys::EVREventType_VREvent_StandingZeroPoseReset, 0)], 8),
             ("the headset comes off", vec![ev(ended, 0)], 8),

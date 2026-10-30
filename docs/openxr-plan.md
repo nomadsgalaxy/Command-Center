@@ -516,6 +516,11 @@ cc-panels.
    neutral kinds. The Extra windows get theirs from `ui::next_event`, the desktop mouse's too.
    Nothing is made up or clamped: events a loop ignored before are still skipped, the logs still
    print devices by index, and every golden fixture is unchanged.
+   Two readers take a pointer's x and y on kinds where they aren't a position, as they did
+   before: a card's hover on Enter (grab.rs `card_part`) and Plasma's last point for a device
+   with no laser pose (plasmabar.rs `laser_point`'s fallback), which a scroll or a focus change
+   sets too. Both are candidates for a behaviour branch of their own; until then x and y stay on
+   `PointerEvent` for every kind (events.rs says so).
 5. (2 d) The `Textures`, `Keyboard`, `Shell` and `Input` traits with OpenVR implementations. Code
    moves; it isn't rewritten.
 6. (1 d) The source-scan test that nothing outside `vr/openvr` touches OpenVR, and the cargo
