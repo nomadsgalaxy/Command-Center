@@ -1,6 +1,6 @@
 # Phase 0: the headset pass
 
-This is revision 6 of the checklist.
+This is revision 7 of the checklist.
 
 Phase 0 of the OpenXR plan ([openxr-plan.md](openxr-plan.md)) moved Command Center's OpenVR calls
 behind interfaces. It was meant to change nothing, apart from a few fixes made on purpose: a
@@ -231,7 +231,15 @@ Point the mouse at SteamVR's own UI, outside our panels.
     for f in cc-panels.log cc-panels.log.1 ~/cc-log-start.txt ~/cc-run-ids.txt ~/cc-run.log \
              ~/cc-surfaces-before.txt ~/cc-surfaces-after.txt; do
       [ -e "$f" ] || continue
-      cp -p "$f" "$dir/" && cmp "$f" "$dir/${f##*/}" || ok=no
+      n=$(stat -c %s "$f"); c=$dir/${f##*/}
+      cp -p "$f" "$dir/" || { ok=no; continue; }
+      if [ "$f" = cc-panels.log ]; then  # the Desktop is still writing it, so the copy has to be
+        # at least as long as it was, and the same as its start
+        [ "$(stat -c %s "$c")" -ge "$n" ] || { echo "$c came out short"; ok=no; }
+        cmp -n "$(stat -c %s "$c")" "$f" "$c" || ok=no
+      else
+        cmp "$f" "$c" || ok=no
+      fi
     done
   else
     ok=no
@@ -239,6 +247,7 @@ Point the mouse at SteamVR's own UI, outside our panels.
   [ "$ok" = yes ] && echo "saved in $dir" || echo "STOP: not everything was saved, so don't restart"
   ```
 
-  If it says STOP, don't restart. The Desktop may have written to its log between the copy and
-  the check, so run it again: the new directory gets a new name. Once it's saved, start again
-  from "Before you start", with a new `~/cc-log-start.txt` and `~/cc-run-ids.txt`.
+  The running Desktop keeps adding to `cc-panels.log`, so that copy only has to match the
+  original's start and be at least as long as the log was before the copy. If it says STOP,
+  don't restart: look at what `cp` or `cmp` printed. Once it's saved, start again from "Before
+  you start", with a new `~/cc-log-start.txt` and `~/cc-run-ids.txt`.
