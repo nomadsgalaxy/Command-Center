@@ -360,7 +360,15 @@ mod tests {
         let _vr = crate::trace::fake_vr(); // the global Kvm, and next_event's SENT: one test at a time
         crate::vr::fake::SCRIPT.lock().unwrap().as_mut().unwrap().mouse_scale = [500.0, 600.0];
         let (h, laser) = (crate::ids::SurfaceId(1), crate::laser::fake::StandIn::leak(false));
-        let saved = std::mem::replace(&mut *crate::kvm::lock(), crate::kvm::Kvm::idle());
+        // the global Kvm goes back however the test ends, a failed assert too (before _vr lets
+        // the next fake-SteamVR test in, since it's dropped first)
+        struct Restore(Option<crate::kvm::Kvm>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                *crate::kvm::lock() = self.0.take().unwrap();
+            }
+        }
+        let _saved = Restore(Some(std::mem::replace(&mut *crate::kvm::lock(), crate::kvm::Kvm::idle())));
         // the mouse's ray (an idle Kvm's: from the origin, straight ahead) at the middle of an Extra
         // window 0.6 m out
         let on = |yes: bool| {
@@ -393,7 +401,6 @@ mod tests {
         assert_eq!(next_event(h), None, "nothing stale replayed");
         on(true);
         assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0), "and the next point is a move again");
-        *crate::kvm::lock() = saved;
     }
 
     #[test]
