@@ -187,9 +187,19 @@ fn report(found: &Found, loader: Option<&Path>) {
     }
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        let what = if out.status.code() == Some(RUNTIME_FAILED) { "couldn't load this runtime (manifest or library broken?)" } else { "failed" };
-        println!("   {what}: {}", err.trim());
-        if found.why == OVERRIDE && out.status.code() == Some(RUNTIME_FAILED) {
+        use std::os::unix::process::ExitStatusExt;
+        // a crash loading it (killed by a signal, so no code) is the runtime not loading too
+        let broken = out.status.code() == Some(RUNTIME_FAILED) || out.status.code().is_none();
+        let what = match out.status.signal() {
+            Some(sig) => format!("couldn't load this runtime: the probe died loading it (signal {sig})"),
+            None if broken => "couldn't load this runtime (manifest or library broken?)".into(),
+            None => "failed".into(),
+        };
+        match err.trim() {
+            "" => println!("   {what}"),
+            e => println!("   {what}: {e}"),
+        }
+        if found.why == OVERRIDE && broken {
             // the loader doesn't fall back to the active runtime when the override is set
             println!("   so apps get no OpenXR runtime: the override wins, and it doesn't load");
         }
