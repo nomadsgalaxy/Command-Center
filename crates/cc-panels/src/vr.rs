@@ -303,9 +303,10 @@ pub mod fake {
     #[derive(Default)]
     pub struct Script {
         pub events: VecDeque<sys::VREvent_t>,
-        pub poses: Vec<(u32, Mat)>, // each device's pose; a device not here isn't tracked
-        pub next: u64,              // the last overlay handle handed out
-        pub calls: Vec<String>,     // every write made to it, in order (golden.rs)
+        pub poses: Vec<(u32, Mat)>,                         // each device's pose; a device not here isn't tracked
+        pub next: u64,                                      // the last overlay handle handed out
+        pub calls: Vec<String>,                             // every write made to it, in order (golden.rs)
+        pub roles: Vec<(sys::ETrackedControllerRole, u32)>, // which device has which hand role; none is Invalid
     }
 
     pub static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -375,7 +376,7 @@ pub mod fake {
     }
     unsafe extern "C" fn mouse_scale(h: Handle, s: *mut sys::HmdVector2_t) -> sys::EVROverlayError {
         let v = unsafe { (*s).v };
-        log(format!("SetOverlayMouseScale {h} {:.4} {:.4}", v[0], v[1])); // not golden::num: cc-win-spike builds this file too
+        log(format!("SetOverlayMouseScale {h} {:.5} {:.5}", v[0], v[1])); // not golden::num: cc-win-spike builds this file too
         0
     }
     unsafe extern "C" fn input_method(h: Handle, m: sys::VROverlayInputMethod) -> sys::EVROverlayError {
@@ -385,6 +386,17 @@ pub mod fake {
     unsafe extern "C" fn show(h: Handle) -> sys::EVROverlayError {
         log(format!("ShowOverlay {h}"));
         0
+    }
+    unsafe extern "C" fn alpha(h: Handle, a: f32) -> sys::EVROverlayError {
+        log(format!("SetOverlayAlpha {h} {a:.5}"));
+        0
+    }
+    unsafe extern "C" fn role_index(r: sys::ETrackedControllerRole) -> u32 {
+        script(|s| s.roles.iter().find(|x| x.0 == r).map_or(sys::k_unTrackedDeviceIndexInvalid as u32, |x| x.1))
+    }
+    // no vsync: to_photons is 0, so poses are read at now and a replay doesn't depend on the clock
+    unsafe extern "C" fn vsync(_since: *mut f32, _frame: *mut u64) -> bool {
+        false
     }
     unsafe extern "C" fn hide(h: Handle) -> sys::EVROverlayError {
         log(format!("HideOverlay {h}"));
@@ -437,12 +449,15 @@ pub mod fake {
                 SetOverlayInputMethod: Some(input_method),
                 ShowOverlay: Some(show),
                 HideOverlay: Some(hide),
+                SetOverlayAlpha: Some(alpha),
                 ..Default::default()
             }),
             sys: leak(sys::VR_IVRSystem_FnTable {
                 GetDeviceToAbsoluteTrackingPose: Some(poses),
                 GetStringTrackedDeviceProperty: Some(string_prop),
                 GetTrackedDeviceClass: Some(class),
+                GetTrackedDeviceIndexForControllerRole: Some(role_index),
+                GetTimeSinceLastVsync: Some(vsync),
                 ..Default::default()
             }),
             ipc: leak(Default::default()),

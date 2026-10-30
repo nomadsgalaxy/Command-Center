@@ -4,11 +4,11 @@
   vr SetOverlayFlag 1 64 true
   vr SetOverlayFlag 1 4194304 true
   vr SetOverlaySortOrder 1 191
-  vr SetOverlayMouseScale 1 1.0000 1.0000
+  vr SetOverlayMouseScale 1 1.00000 1.00000
   held 0x0, visible true
 == a laser moves onto an item and presses
-  session pointer 0x800 at 599.9035 1199.8611
-  session pointer 0x9000 at 599.9035 1199.8611
+  session pointer 0x800 at 599.90348 1199.86109
+  session pointer 0x9000 at 599.90348 1199.86109
   held 0x1000, visible true
 == the bar goes away with the press still in
   session pointer 0x1000 at where it is

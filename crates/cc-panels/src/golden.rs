@@ -41,10 +41,10 @@ pub fn check(name: &str, got: &str) {
     );
 }
 
-/// A number as the fixtures write it: 4 decimals, and no -0, so the last bits of a float (which
+/// A number as the fixtures write it: 5 decimals, and no -0, so the last bits of a float (which
 /// can differ between x86_64 and aarch64) don't count.
 pub fn num(x: f64) -> String {
-    let s = format!("{x:.4}");
+    let s = format!("{x:.5}");
     if s.trim_start_matches('-').chars().all(|c| c == '0' || c == '.') { s.trim_start_matches('-').to_string() } else { s }
 }
 
@@ -76,7 +76,8 @@ pub fn overlay_call(c: &crate::overlay::fake::Call) -> String {
     }
 }
 
-/// A transcript, one step at a time.
+/// A transcript, one step at a time. Anything written from an unordered collection (a HashMap,
+/// a set) is sorted first, so a run's order can't change it.
 #[derive(Default)]
 pub struct Log(pub String);
 
@@ -103,9 +104,9 @@ mod tests {
 
     #[test]
     fn numbers_are_written_the_same_whichever_way_they_round() {
-        assert_eq!(num(-0.00001), "0.0000");
-        assert_eq!(num(0.0), "0.0000");
-        assert_eq!(num(-1.23456), "-1.2346");
-        assert_eq!(num(2.5), "2.5000");
+        assert_eq!(num(-0.000001), "0.00000");
+        assert_eq!(num(0.0), "0.00000");
+        assert_eq!(num(-1.234567), "-1.23457");
+        assert_eq!(num(2.5), "2.50000");
     }
 }

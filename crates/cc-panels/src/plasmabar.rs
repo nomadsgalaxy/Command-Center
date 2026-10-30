@@ -693,7 +693,8 @@ mod tests {
     }
 
     /// Golden (golden.rs): a laser presses on Kickoff, then leaves the bar with the button still
-    /// down, comes back, and lets go. What happens today is what's pinned, whatever it is.
+    /// down, comes back, and lets go. What happens today is what's pinned, which isn't the same as
+    /// right: a FLAG line marks what may be a bug, for its own branch.
     #[test]
     fn golden_focus_lost_with_a_button_held() {
         let _vr = crate::trace::fake_vr();
@@ -709,6 +710,11 @@ mod tests {
         log.step("it leaves the bar with the button still down: FocusLeave, no Up");
         pass(&mut p, &[ev(sys::EVREventType_VREvent_FocusLeave)]);
         observe(&mut log, &p);
+        if p.held != 0 {
+            // recorded, not blessed: if SteamVR never sends this Up, the computer keeps the button
+            // down. Whether it does is what the press, look away, release trace will show.
+            log.line("FLAG: the session still holds the button after FocusLeave (docs/openxr-plan.md, golden test 4)");
+        }
         log.step("a pass with nothing");
         pass(&mut p, &[]);
         observe(&mut log, &p);

@@ -132,8 +132,12 @@ meant, rewrite them on purpose and commit the diff with the change:
 CC_GOLDEN_WRITE=1 cargo test -p cc-panels golden
 ```
 
-Numbers are written to 4 decimals with no `-0`, so the last bits of a float, which can differ
-between x86_64 and aarch64, don't count.
+Numbers are written to 5 decimals with no `-0`, so the last bits of a float, which can differ
+between x86_64 and aarch64, don't count, and anything from an unordered collection is sorted
+before it's written. The stand-in has no vsync, so `to_photons` is 0 and poses are read at now.
+
+Recorded isn't blessed. A fixture pins what the code does today, and where that may be a bug, the
+test writes a `FLAG:` line into it, so the fixture says so and a fix shows as that line going.
 
 ## Not done yet
 
