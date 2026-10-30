@@ -143,14 +143,14 @@ pub fn head() -> Option<Mat> {
     pose.bPoseIsValid.then_some(pose.mDeviceToAbsoluteTracking.m)
 }
 
-/// How far ahead of now this frame's picture reaches your eyes: the rest of this frame, plus the
-/// display's vsync-to-photons delay. Poses read at that time line up with what's shown, so a
-/// carried or docked panel doesn't trail behind the hand (the scan wants poses at now, `head`).
 /// The display's rate and delay, as `to_photons` last read them and when. They're read again about
 /// once a second (a refresh-rate change in SteamVR's settings shows up within that), not on every
 /// pose read. The fake clears it, so a test sees its own script's rate.
 static DISPLAY: std::sync::Mutex<Option<(std::time::Instant, f32, f32)>> = std::sync::Mutex::new(None);
 
+/// How far ahead of now this frame's picture reaches your eyes: the rest of this frame, plus the
+/// display's vsync-to-photons delay. Poses read at that time line up with what's shown, so a
+/// carried or docked panel doesn't trail behind the hand (the scan wants poses at now, `head`).
 pub fn to_photons() -> f32 {
     let (mut since, mut frame) = (0f32, 0u64);
     if !call!(sys, GetTimeSinceLastVsync, &mut since, &mut frame) {
