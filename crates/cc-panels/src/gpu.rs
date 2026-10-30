@@ -183,18 +183,8 @@ impl Buffers {
                 return false;
             }
             let (modifier, offset, stride, fd) = unsafe { (gbm_bo_get_modifier(s.bo[k]), gbm_bo_get_offset(s.bo[k], 0), gbm_bo_get_stride(s.bo[k]), gbm_bo_get_fd(s.bo[k])) };
-            let buf = Dmabuf {
-                fd: unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }, // closed just below; the runtime keeps its own
-                width: w as u32,
-                height: h as u32,
-                fourcc: format, // XRGB8888 for panels, since they're always opaque
-                modifier,
-                offset,
-                stride,
-            };
-            let got = vr::timed(|| format!("{name}: ImportDmabuf {w}x{h}"), || texture::Live.import(&buf));
-            unsafe { libc::close(fd) };
-            let Some(got) = got else {
+            // XRGB8888 for panels, since they're always opaque
+            let Some(got) = import_fd(name, (w as u32, h as u32), fd, format, modifier, offset, stride) else {
                 self.handle[k] = 0; // nothing was imported, so free() has nothing of SteamVR's to let go of
                 eprintln!("{name}: SteamVR won't import a {w}x{h} buffer");
                 return false;
@@ -258,6 +248,19 @@ impl Buffers {
             }
         }
     }
+}
+
+/// Imports a GBM buffer's exported fd and closes it (the runtime keeps its own). None if the export
+/// failed (fd -1) or the runtime wouldn't import it, the way a failed import always went. A failed
+/// export used to reach ImportDmabuf, which refused it; a BorrowedFd can't hold -1, so it stops here.
+fn import_fd(name: &str, (w, h): (u32, u32), fd: std::os::fd::RawFd, fourcc: u32, modifier: u64, offset: u32, stride: u32) -> Option<TexHandle> {
+    if fd < 0 {
+        return None;
+    }
+    let buf = Dmabuf { fd: unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }, width: w, height: h, fourcc, modifier, offset, stride };
+    let got = vr::timed(|| format!("{name}: ImportDmabuf {w}x{h}"), || texture::Live.import(&buf));
+    unsafe { libc::close(fd) };
+    got
 }
 
 /// A UI overlay's two buffers (Command Center's windows, cards, taskbar, HUD). They're shown
@@ -456,6 +459,12 @@ mod tests {
             unsafe { super::copy_rect(src.as_ptr(), w * 4, dst.as_mut_ptr(), h * 4, w, h, true) };
             eprintln!("turned {w}x{h}: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
         }
+    }
+
+    #[test]
+    fn a_failed_export_imports_nothing_and_asks_steamvr_nothing() {
+        // no vr::fake here, so reaching SteamVR at all would panic
+        assert_eq!(super::import_fd("test", (64, 64), -1, super::XRGB8888, 0, 0, 256), None);
     }
 
     #[test]
