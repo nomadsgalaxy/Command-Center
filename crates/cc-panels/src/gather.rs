@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn three_panels_sit_side_by_side_in_front_facing_you() {
-        let sizes = [(0.8, 0.45), (1.2, 0.68), (0.5, 0.4)];
+        let sizes = [(0.6, 0.34), (0.9, 0.5), (0.5, 0.4)]; // 24° + 36° + 20° and two gaps: one row
         for yaw in [0.0, 70.0, -150.0] {
             let poses = layout(&head(yaw), &sizes);
             let s = spans(&poses, &sizes);
@@ -194,7 +194,7 @@ mod tests {
             let off = |y: f64| (y - yaw + 540.0).rem_euclid(360.0) - 180.0;
             assert!(off(poses[0].yaw) > off(poses[1].yaw) && off(poses[1].yaw) > off(poses[2].yaw), "in order, from the left");
             let (l, r) = (off(s[0].0.1), off(s[2].0.0));
-            assert!((l + r).abs() < 1e-6 && l < SPAN / 2.0, "centred: {l} and {r}");
+            assert!((l + r).abs() < 1e-4 && l < SPAN / 2.0, "centred (to the f32 head matrix): {l} and {r}");
         }
     }
 
@@ -214,11 +214,12 @@ mod tests {
         let mut rows: Vec<f64> = ys.clone();
         rows.sort_by(f64::total_cmp);
         rows.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-        assert_eq!(rows.len(), 3, "7 one-metre panels make three rows: {ys:?}");
-        assert!(ys[0] == eye_y(), "the first row is at eye height");
-        let second = ys.iter().find(|&&y| y != eye_y()).unwrap();
-        assert!(*second > eye_y(), "the next row goes above");
-        assert!(ys.iter().any(|&y| y < eye_y()), "and the one after below");
+        // a metre is 39° at 1.4 m, so two fit in 100° and seven make four rows
+        assert_eq!(rows.len(), 4, "7 one-metre panels make four rows: {ys:?}");
+        assert!(ys[0] == eye_y() && ys[1] == eye_y(), "the first row is at eye height");
+        assert!(ys[2] > eye_y() && ys[2] == ys[3], "the next row goes above");
+        assert!(ys[4] < eye_y() && ys[4] == ys[5], "the one after below");
+        assert!(ys[6] > ys[2], "and the fourth above the second");
         for p in &poses {
             let d = [p.centre[0], p.centre[1] - eye_y(), p.centre[2]];
             let (y, pt) = angles(&d);
