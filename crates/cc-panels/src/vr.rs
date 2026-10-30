@@ -596,6 +596,23 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
+    /// Every OpenVR index comes back from a Dev as itself, so a pose lookup, a release or a
+    /// comparison made with a Dev sees the same number it did with the bare index. That includes
+    /// the invalid index (u32::MAX) some events carry: a controller, whose pose lookup finds nothing,
+    /// as before. Only 0 is the headset and only 64 (one past SteamVR's) is the mouse.
+    #[test]
+    fn a_device_index_round_trips_through_dev() {
+        use crate::ids::{Ctl, Dev};
+        use openvr_sys as sys;
+        let invalid = sys::k_unTrackedDeviceIndexInvalid as u32;
+        for i in [0, 1, 2, 63, sys::k_unMaxTrackedDeviceCount as u32, 65, invalid] {
+            assert_eq!(super::index(super::dev(i)), i, "{i}");
+        }
+        assert_eq!(super::dev(0), Dev::Head);
+        assert_eq!(super::dev(64), Dev::Mouse);
+        assert_eq!(super::dev(invalid), Dev::Controller(Ctl(invalid)), "not the room, not the head: a lookup that finds nothing");
+    }
+
     /// A NUL in an overlay's name or a picture's path is an error, not a panic.
     #[test]
     fn a_nul_is_an_error() {
