@@ -765,8 +765,9 @@ Behaviour changes phase 0 put off, each its own branch with its own test:
   (kvm's `extra_mouse`), so a press queued just before it started working comes out the next
   time it stops. Drop them when it starts working instead (6e). Done: ui.rs's `next_event`
   clears the queue whenever the laser works. A press whose Down it already sent is let go once,
-  with an Up at its last point, so the window isn't left holding it, and that press's own late
-  Up, once the laser stops again, is dropped as stale rather than sent a second time.
+  with an Up at the Down's own point (the ray may have left since), so the window isn't left
+  holding it, and that press's own late Up, once the laser stops again, is dropped as stale
+  rather than sent a second time.
 
 What counts as "works":
 
