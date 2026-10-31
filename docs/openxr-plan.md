@@ -750,7 +750,9 @@ Behaviour changes phase 0 put off, each its own branch with its own test:
   number, and says so ("other (the backend's 200)"). main.rs keeps the last name for the loop's
   status line, and `poll::Queue` no longer keeps OpenVR's type. So a press from our virtual
   pointer, or a controller's interaction, which main.rs doesn't act on, now reads as `Other`
-  rather than as the same number a real press or the headset gives.
+  rather than as the same number a real press or the headset gives. Later, once OpenXR logs
+  exist, Other's name could say which backend's number it is ("other (OpenVR's 103)"), so logs
+  from the two runtimes can't be read as the same event; not done yet.
 - Before a `Stage` is injected: the fake's `head_pose` and `head_now` give different fixtures,
   so swapping them fails a test, and the registry scan learns generic callers (6b).
 - The dominant hand loads at start on any runtime, not in the OpenVR laser's `Beam::new` (6e).
