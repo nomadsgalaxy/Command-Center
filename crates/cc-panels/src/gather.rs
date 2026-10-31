@@ -311,10 +311,14 @@ fn stack_on(from: &Pose, j: usize, (w, h, c): (f64, f64, f64), eye: &V3, yaw0: f
     // facing up at you from below the eyes)
     let over = centre[1] + y[1] * h / 2.0 + sagitta(w, c) * z[1] - eye[1] - ceiling;
     if over > 0.0 {
-        // `from` faces the eyes from its row, tipped well under 60° unless the rows are taller than
-        // the view; tipped further, a step down its face would hardly lower it
-        debug_assert!(y[1] > 0.5, "stack_on: {from:?} is tipped too far to move down its face");
-        // and a release build moves it no further than that tip would need, so it can't fly off
+        // y[1] is the cosine of `from`'s pitch, and `from` faces the eyes from its row (its pitch
+        // the angle up or down to it, under 90° either way), so it's positive. It's under 0.5,
+        // tipped past 60°, only for rows taller than the view (rows of 3 m tall windows): then a
+        // step down its face hardly lowers it, so it moves no further than 60° would need, and
+        // its top can stay over the ceiling (a_window_on_rows_taller_than_the_view_still_stacks)
+        if y[1] < 0.5 {
+            eprintln!("gather: a stacked window's row is tipped {:.0}°, too far to move it all the way under the eye-level row", from.pitch);
+        }
         move_by(&mut centre, &y, -over / y[1].max(0.5));
     }
     // its corners inside `half_arc` on its side: none past the upright plane through the eyes at
@@ -323,12 +327,15 @@ fn stack_on(from: &Pose, j: usize, (w, h, c): (f64, f64, f64), eye: &V3, yaw0: f
     let inward = |v: &V3| v[0] * n[0] + v[2] * n[2];
     let half = if c > 0.0 { c * (w / (2.0 * c)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
     let least = inward(&[centre[0] - eye[0], 0.0, centre[2] - eye[2]]) + sagitta(w, c) * inward(&z) - half * inward(&x).abs() - h / 2.0 * inward(&y).abs();
-    // a step across can't help when its face is (nearly) square to `n`, but then `from` faces the
-    // eyes from (nearly) straight along `n`, about the arc's radius inside the bound, so nothing's
-    // past it to move; a release build skips the push there rather than divide by almost nothing
-    debug_assert!(least >= 0.0 || inward(&x).abs() > 0.1, "stack_on: {centre:?} is past the arc, and across hardly moves it in");
+    // a step across can't help when its face is (nearly) square to `n`: then `from` faces the
+    // eyes from (nearly) straight along `n`, about the arc's radius inside the bound, and only a
+    // window curved round past the eyes (its sagitta more than that) has a corner past it. That
+    // one stays where its step put it, and says so, rather than divide by almost nothing
+    // (a_window_curved_round_past_the_eyes_stacks_where_its_step_puts_it)
     if least < 0.0 && inward(&x).abs() > 0.1 {
         move_by(&mut centre, &x, -least / inward(&x));
+    } else if least < 0.0 {
+        eprintln!("gather: a stacked {w:.1} m window curves round past the arc's side, and moving it across wouldn't bring it in");
     }
     Pose { centre, width: w, curve: c, ..*from }
 }
@@ -822,6 +829,45 @@ mod tests {
             let (a, b) = (at(j), at(j + 25));
             assert!((a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9 && b[2] > a[2] + 1e-9, "{} on {j}'s spot, nearer: {a:?} {b:?}", j + 25);
         }
+    }
+
+    /// A window curved round past the eyes (4.8 m on a 1.5 m radius, so its edges come 1.5 m toward
+    /// you) stacked on one 3° off the gaze at start, where BESIDE's bound is the eyes' own side to
+    /// side line: moving it across hardly brings its edges in (it would take metres), so it stays
+    /// on its plain step.
+    #[test]
+    fn a_window_curved_round_past_the_eyes_stacks_where_its_step_puts_it() {
+        let h = head(0.0);
+        let from = layout(&h, &[(1.0, 0.6, 0.0)])[0];
+        let eye: V3 = [0, 1, 2].map(|i| h[i][3] as f64);
+        let p = stack_on(&from, 0, (4.8, 0.6, 1.5), &eye, 3.0, 10.0, BESIDE);
+        let d = facing(&from, &p);
+        assert!((d[0].abs() - STEP).abs() < 1e-9 && (d[1] + STEP).abs() < 1e-9 && (d[2] - NEARER).abs() < 1e-9, "its plain step: {d:?}");
+    }
+
+    /// Rows of 3 m tall windows put the bottom row's middle 65° below the eyes, and an 8 m tall one
+    /// stacks on it: it's moved down its face, as far as 60° would need and no further, and nothing
+    /// is lost.
+    #[test]
+    fn a_window_on_rows_taller_than_the_view_still_stacks() {
+        let mut sizes = vec![(1.0, 3.0, 0.0); 30];
+        sizes.push((1.0, 8.0, 0.0));
+        let poses = layout(&head(0.0), &sizes);
+        assert!(poses.iter().all(|p| p.centre.iter().all(|v| v.is_finite())), "{poses:?}");
+        let rows = rows_for(&sizes, span_for(&sizes));
+        let from = poses[*rows[ROWS - 1].0.last().unwrap()];
+        assert!(from.pitch < -60.0, "the bottom row tipped past 60°: {}", from.pitch);
+        let j = sizes.len() - 1 - rows[..ROWS].iter().map(|(r, _)| r.len()).sum::<usize>();
+        let d = facing(&from, &poses[30]);
+        let down = STEP * (1 + j % 5) as f64;
+        // how far its plain step's top is over the ceiling, by its real corners
+        let (x, y, z) = axes(&from);
+        let round = STEP / 5.0 * (j / 5 % 5) as f64;
+        let plain = Pose { centre: [0, 1, 2].map(|k| from.centre[k] + (down + round) * x[k] - down * y[k] + NEARER * (j + 1) as f64 * z[k]), ..poses[30] };
+        let ceiling = -rows[0].0.iter().map(|&i| sizes[i].1).fold(0.0, f64::max) / 2.0 - GAP;
+        let over = corner_spans(&[plain], &[sizes[30]])[0].1.1 - eye_y() - ceiling;
+        assert!(over > 0.0, "its plain step's top is over the ceiling: {over}");
+        assert!((d[1] + down + over / 0.5).abs() < 1e-6, "moved down its face by over / 0.5, as 60° would need: {d:?} {over}");
     }
 
     #[test]
