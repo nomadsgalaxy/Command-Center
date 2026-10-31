@@ -234,7 +234,8 @@ pub fn side_by_side(head: &Mat, first_dy: f64, sizes: &[(f64, f64, f64)]) -> Vec
             let mut centre: V3 = [0, 1, 2].map(|i| from.centre[i] + s * (down + round) * x[i] - down * y[i] + NEARER * stacked as f64 * z[i]);
             let move_by = |centre: &mut V3, v: &V3, d: f64| (0..3).for_each(|i| centre[i] += d * v[i]);
             // its top under the eye-level row, as the row below's are
-            let over = centre[1] + y[1] * h / 2.0 - eye[1] - (level_bottom - GAP);
+            // (a curved one's top corners come toward you by its sagitta, and up, facing up at you)
+            let over = centre[1] + y[1] * h / 2.0 + sagitta(w, c) * z[1] - eye[1] - (level_bottom - GAP);
             if over > 0.0 {
                 move_by(&mut centre, &y, -over / y[1]);
             }
@@ -399,13 +400,16 @@ mod tests {
         [x, y, z].map(|v| d[0] * v[0] + d[1] * v[1] + d[2] * v[2])
     }
 
-    /// Whether every corner of flat `p`, `h` high, is within BESIDE of a gaze at `yaw` from the
-    /// eyes (0, eye_y(), 0): none behind the eyes' side to side line.
+    /// Whether every corner of `p`, `h` high, is within BESIDE of a gaze at `yaw` from the eyes
+    /// (0, eye_y(), 0): none behind the eyes' side to side line. A curved one's corners are its
+    /// chord's ends, brought toward you by its sagitta, as in `corner_spans`.
     fn inside_beside(p: &Pose, h: f64, yaw: f64) -> bool {
-        let (x, y, _) = axes(p);
+        let (x, y, z) = axes(p);
+        let (w, c) = (p.width, p.curve);
+        let half = if c > 0.0 { c * (w / (2.0 * c)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
         let fwd = [-yaw.to_radians().sin(), 0.0, -yaw.to_radians().cos()];
         [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)].iter().all(|&(sx, sy)| {
-            let c = [0, 1, 2].map(|i| p.centre[i] + sx * p.width / 2.0 * x[i] + sy * h / 2.0 * y[i]);
+            let c = [0, 1, 2].map(|i| p.centre[i] + sx * half * x[i] + sy * h / 2.0 * y[i] + sagitta(w, c) * z[i]);
             c[0] * fwd[0] + c[2] * fwd[2] >= -1e-6 // the head is f32
         })
     }
@@ -575,38 +579,41 @@ mod tests {
     }
 
     /// Small windows fill the rows out to the sides, so the stack starts on a small one near the
-    /// edge; then a late one much taller and wider than it stacks. Its real corners stay inside
+    /// edge; then a late one much taller and wider than it stacks, flat and then curved (whose
+    /// corners come toward you, and up off the up-tilted bottom row). Its real corners stay inside
     /// 90°, its top under the eye-level row, it's still the nearest, and the one after it goes
     /// back to the plain step.
     #[test]
     fn a_big_late_window_on_the_stack_keeps_inside_the_bounds() {
         let small = (0.15, 0.1, 0.0);
-        for yaw in [0.0, 120.0] {
+        for (yaw, curve) in [(0.0, 0.0), (120.0, 0.0), (0.0, 1.2), (120.0, 1.2)] {
             let k = side_by_side(&head(yaw), 0.0, &[small; 120]).iter().position(|p| (norm(&[p.centre[0], 0.0, p.centre[2]]) - crate::limits::NEW_AHEAD).abs() > 1e-9).expect("some stacked");
             let mut sizes = vec![small; k + 4];
-            sizes[k + 2] = (1.2, 0.9, 0.0);
+            let big_size = (1.2, 0.9, curve);
+            sizes[k + 2] = big_size;
             let poses = side_by_side(&head(yaw), 0.0, &sizes);
             let (from, big) = (poses[k - 1], poses[k + 2]);
             let off = (from.yaw - yaw + 540.0).rem_euclid(360.0) - 180.0;
             assert!(off.abs() > 75.0, "the stack starts near the edge: {off}");
             // the eye-level row's bottom: its windows are the ones level with the eyes, the first too
             let level_bottom = poses[..k].iter().filter(|p| p.centre[1] == poses[0].centre[1]).map(|p| p.centre[1] - eye_y() - small.1 / 2.0).fold(0.0, f64::min);
-            assert!(inside_beside(&big, 0.9, yaw), "its corners inside 90°");
+            // its real top, from its corners (a curved one's come up toward you by its sagitta)
+            let top = |p: &Pose| corner_spans(&[*p], &[big_size])[0].1.1 - eye_y();
+            assert!(inside_beside(&big, 0.9, yaw), "curve {curve}: its corners inside 90°");
             // where the plain third step would put it: past 90° and over the eye-level row
             let (x, y, z) = axes(&from);
             let s = facing(&from, &poses[k])[0].signum();
             let plain = Pose { centre: [0, 1, 2].map(|i| from.centre[i] + s * 3.0 * STEP * x[i] - 3.0 * STEP * y[i] + 3.0 * NEARER * z[i]), ..big };
-            assert!(!inside_beside(&plain, 0.9, yaw), "the plain step would put it past 90°");
-            assert!(plain.centre[1] + y[1] * 0.9 / 2.0 - eye_y() > level_bottom - GAP, "and over the eye-level row");
+            assert!(!inside_beside(&plain, 0.9, yaw), "curve {curve}: the plain step would put it past 90°");
+            assert!(top(&plain) > level_bottom - GAP, "curve {curve}: and over the eye-level row");
             let d = facing(&from, &big);
-            assert!(d[1] < -3.0 * STEP - 0.05 && d[0] * s > 3.0 * STEP + 0.05, "so it's moved further down and in, toward the gaze: {d:?}");
-            let top = big.centre[1] + y[1] * 0.9 / 2.0 - eye_y();
-            assert!((top - (level_bottom - GAP)).abs() < 1e-9, "its top just under the eye-level row: {top} {level_bottom}");
-            assert!((d[2] - 3.0 * NEARER).abs() < 1e-9, "still the nearest: {d:?}");
+            assert!(d[1] < -3.0 * STEP - 0.05 && d[0] * s > 3.0 * STEP + 0.05, "curve {curve}: so it's moved further down and in, toward the gaze: {d:?}");
+            assert!((top(&big) - (level_bottom - GAP)).abs() < 1e-9, "curve {curve}: its top just under the eye-level row: {} {level_bottom}", top(&big));
+            assert!((d[2] - 3.0 * NEARER).abs() < 1e-9, "curve {curve}: still the nearest: {d:?}");
             let (step, after) = (STEP * 4.0, facing(&from, &poses[k + 3]));
-            assert!((after[0].abs() - step).abs() < 1e-9 && (after[1] + step).abs() < 1e-9, "the next back to the plain step: {after:?}");
+            assert!((after[0].abs() - step).abs() < 1e-9 && (after[1] + step).abs() < 1e-9, "curve {curve}: the next back to the plain step: {after:?}");
             for i in k..sizes.len() {
-                assert!(inside_beside(&poses[i], sizes[i].1, yaw), "{i} past the sides");
+                assert!(inside_beside(&poses[i], sizes[i].1, yaw), "curve {curve}: {i} past the sides");
             }
         }
     }
