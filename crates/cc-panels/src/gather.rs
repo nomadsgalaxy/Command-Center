@@ -200,6 +200,12 @@ const STEP: f64 = 0.08;
 /// draws by depth, not sort order, and this is the taskbar's FRONT for Plasma's overlay.
 const NEARER: f64 = 0.002;
 
+/// How many stacked windows keep coming NEARER: 10 cm in front of the one they stack on at most,
+/// however many open. Plain steps repeat their spots every 25 (five down, five rounds across), so
+/// up to 50 a window back on an earlier one's spot is still nearer than it. Past 50 the rest share
+/// the nearest depth, and where two of those overlap the Frame can flicker between them.
+const NEAREST: usize = 50;
+
 /// Where each of `sizes` goes when they open one after another (windows.rs `ahead`, the windows
 /// KWin reports at start): the first in the middle of the gaze, `first_dy` metres above the eyes
 /// (below if negative: ahead's cascade drops it), then each next one beside what's there, right,
@@ -288,7 +294,8 @@ pub fn side_by_side(head: &Mat, first_dy: f64, sizes: &[(f64, f64, f64)]) -> Vec
 /// `eye` looking level at `yaw0`: turned the way `from` is, STEP further down its face and across
 /// it toward the gaze for each (one to five steps, then round again a fifth of a step further
 /// across), and NEARER closer than the one before, so the newest is drawn on top (the Frame draws
-/// by depth). One too tall or wide for that spot is moved down its face until its top is
+/// by depth). Past 25 the spots repeat, each one nearer than the last time, and past NEAREST the
+/// rest stop coming nearer. One too tall or wide for that spot is moved down its face until its top is
 /// `ceiling` metres above the eyes, and across until none of its corners is more than `half_arc`
 /// degrees round from the gaze. A curved one's corners are its chord's ends, brought toward you
 /// by its sagitta.
@@ -298,12 +305,15 @@ fn stack_on(from: &Pose, j: usize, (w, h, c): (f64, f64, f64), eye: &V3, yaw0: f
     let off = |p: &V3| (angles(&[p[0] - eye[0], 0.0, p[2] - eye[2]]).0 - yaw0 + 540.0).rem_euclid(360.0) - 180.0;
     // across toward the gaze: right, unless it's right of the gaze already (a bigger yaw is further left)
     let s = if off(&from.centre) > -1e-9 { 1.0 } else { -1.0 };
-    let mut centre: V3 = [0, 1, 2].map(|i| from.centre[i] + s * (down + round) * x[i] - down * y[i] + NEARER * (j + 1) as f64 * z[i]);
+    let mut centre: V3 = [0, 1, 2].map(|i| from.centre[i] + s * (down + round) * x[i] - down * y[i] + NEARER * (j.min(NEAREST - 1) + 1) as f64 * z[i]);
     let move_by = |centre: &mut V3, v: &V3, d: f64| (0..3).for_each(|i| centre[i] += d * v[i]);
     // its top under `ceiling` (a curved one's top corners come toward you by its sagitta, and up,
     // facing up at you from below the eyes)
     let over = centre[1] + y[1] * h / 2.0 + sagitta(w, c) * z[1] - eye[1] - ceiling;
     if over > 0.0 {
+        // `from` faces the eyes from its row, tipped well under 60° unless the rows are taller than
+        // the view; tipped further, a step down its face would hardly lower it
+        debug_assert!(y[1] > 0.5, "stack_on: {from:?} is tipped too far to move down its face");
         move_by(&mut centre, &y, -over / y[1]);
     }
     // its corners inside `half_arc` on its side: none past the upright plane through the eyes at
@@ -718,6 +728,8 @@ mod tests {
     #[test]
     fn past_the_widest_arc_the_rest_stack_on_the_last() {
         for (big, tall) in [(false, false), (true, false), (false, true), (true, true)] {
+            // 30 leaves fewer than 25 stacked, on purpose: past 25 stack_on's plain steps repeat
+            // their spots, and the "on l's spot" check below would fail (asserted below)
             let mut sizes = vec![(1.0, 0.6, 0.0); 30];
             if big {
                 sizes[29] = (2.6, 1.4, 1.5);
@@ -741,6 +753,7 @@ mod tests {
             assert!(!tall || rows[0].0.contains(&2), "the tall one is in the eye-level row");
             let row_of = |i: usize| rows[..ROWS].iter().position(|(row, _)| row.contains(&i));
             let stacked: Vec<usize> = (0..sizes.len()).filter(|&i| row_of(i).is_none()).collect();
+            assert!(stacked.len() < 25, "fewer than 25 stacked: {}", stacked.len());
             assert_eq!(stacked, (rows[..ROWS].iter().map(|(row, _)| row.len()).sum::<usize>()..sizes.len()).collect::<Vec<_>>(), "the rest, in order, stack");
             let from = poses[*rows[ROWS - 1].0.last().unwrap()];
             let ceiling = -rows[0].0.iter().map(|&i| sizes[i].1).fold(0.0, f64::max) / 2.0 - GAP;
@@ -782,6 +795,27 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// However many stack, none comes more than NEAREST times NEARER in front of the one it stacks
+    /// on. Back on an earlier one's spot after 25, it's still nearer than that one, up to NEAREST.
+    #[test]
+    fn past_nearest_the_stack_stops_coming_nearer() {
+        let h = head(0.0);
+        let from = layout(&h, &[(1.0, 0.6, 0.0)])[0];
+        let eye: V3 = [0, 1, 2].map(|i| h[i][3] as f64);
+        // small, with room above and beside, so plain steps only
+        let at = |j: usize| facing(&from, &stack_on(&from, j, (0.4, 0.3, 0.0), &eye, 0.0, 10.0, 90.0));
+        for j in 0..NEAREST {
+            assert!((at(j)[2] - NEARER * (j + 1) as f64).abs() < 1e-9, "{j} nearer than the one before: {:?}", at(j));
+        }
+        for j in [NEAREST, NEAREST + 1, 200, 1000] {
+            assert!((at(j)[2] - NEARER * NEAREST as f64).abs() < 1e-9, "{j} no nearer than the {NEAREST}th: {:?}", at(j));
+        }
+        for j in 0..NEAREST - 25 {
+            let (a, b) = (at(j), at(j + 25));
+            assert!((a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9 && b[2] > a[2] + 1e-9, "{} on {j}'s spot, nearer: {a:?} {b:?}", j + 25);
         }
     }
 
