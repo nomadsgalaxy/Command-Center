@@ -43,6 +43,9 @@ const OUTPUT: (u32, u32) = (2560, 1440); // Virtual-1, where the windows live (s
 const PARK: &str = "Virtual-2"; // an output no window is put on (session/cc-desktop): the pointer rests there when it's off our panels
 const SHELL: usize = usize::MAX; // Input.hover: on Plasma's bar (plasmabar.rs)
 const DRAGGED: Duration = Duration::from_secs(3); // a window made this soon after a window drag (a torn-off tab) goes where it was
+/// Calibration knob: windows that go `ahead` this soon after the last one (KWin reports what's open
+/// at start one window at a time) are one run, side by side instead of on top of each other.
+const AHEAD_RUN: Duration = Duration::from_secs(3);
 const LIFT: f64 = 0.02; // a popup's panel sits this far in front of its parent's, so it's nearer for the pointer and painted over it
 const POPUP_AFTER: Duration = Duration::from_secs(3); // a popup this soon after a click, a key or another popup is a menu; later, a tooltip
 
@@ -461,10 +464,15 @@ fn stuck_after(level: Level, fps: u32) -> Duration {
     STUCK.max(interval * 6)
 }
 
+/// A run of windows gone `ahead`: when the last went, the head the run's laid out for, and their
+/// sizes (width, height, curve), in order.
+type AheadRun = (Instant, Mat, Vec<(f64, f64, f64)>);
+
 pub struct Windows {
     first: usize, // panel index of slot 0
     slots: Vec<Slot>,
     unslotted: Vec<Win>, // oldest first
+    ahead_run: Option<AheadRun>,
     session: Option<Arc<Session>>,
     sessions: mpsc::Receiver<Arc<Session>>,
     kwin: kwin::Kwin,
@@ -554,6 +562,7 @@ impl Windows {
             first,
             slots: (0..SLOTS).map(|_| Slot::default()).collect(),
             unslotted: Vec::new(),
+            ahead_run: None,
             session: None,
             sessions,
             kwin,
@@ -577,6 +586,7 @@ impl Windows {
             first,
             slots: (0..SLOTS).map(|_| Slot::default()).collect(),
             unslotted: Vec::new(),
+            ahead_run: None,
             session: None,
             sessions,
             kwin: kwin::Kwin::idle(),
@@ -823,7 +833,10 @@ impl Windows {
                 Some(pose) => (pose, config::home_zoom(&w.key), "its spot"),
                 None => match crate::kvm::lock().window_drag.filter(|d| d.1.elapsed() < DRAGGED) {
                     Some((p, _)) => (at_cursor(p), None, "where the drag was"),
-                    None => (self.ahead(), None, "ahead"),
+                    None => {
+                        let w = cw as f64 / self.density(p);
+                        (self.ahead(w, w * ch as f64 / cw as f64), None, "ahead")
+                    }
                 },
             },
         };
@@ -1048,11 +1061,28 @@ impl Windows {
         self.density / p.zoom()
     }
 
-    /// Where every new surface opens (geometry.rs `new_pose`), each new one 8 cm right and down from the last.
-    fn ahead(&self) -> Pose {
-        let n = (0..SLOTS).filter(|&j| panel(self.first + j).live()).count() % 6;
-        let c = 0.08 * n as f64;
-        crate::geometry::new_pose(&crate::stage::Live.head_now().unwrap_or(STAND_IN_HEAD), 1.0, c, c)
+    /// Where a new window with no place of its own opens (geometry.rs `new_pose`), `width` by
+    /// `height` metres: 8 cm right and down from the last for each live panel, so ones opened
+    /// apart don't cover each other. Ones opened within AHEAD_RUN of each other, like what's open
+    /// at start (none live yet, so they'd all get the same spot), go side by side from the first
+    /// instead (gather.rs `side_by_side`), for the head as it was at the first.
+    fn ahead(&mut self, width: f64, height: f64) -> Pose {
+        let now = Instant::now();
+        let run = self.ahead_run.take().filter(|r| now.duration_since(r.0) < AHEAD_RUN);
+        let Some((_, head, mut sizes)) = run else {
+            let head = crate::stage::Live.head_now().unwrap_or(STAND_IN_HEAD);
+            let n = (0..SLOTS).filter(|&j| panel(self.first + j).live()).count() % 6;
+            let c = 0.08 * n as f64;
+            let pose = crate::geometry::new_pose(&head, 1.0, c, c);
+            // the run goes on from where this one is, so the next sits beside it, not over it
+            let eye = [0, 1, 2].map(|i| head[i][3] as f64);
+            self.ahead_run = Some((now, panel_matrix(&Pose { centre: eye, yaw: pose.yaw, ..Default::default() }), vec![(width, height, 0.0)]));
+            return pose;
+        };
+        sizes.push((width, height, 0.0));
+        let pose = crate::gather::side_by_side(&head, &sizes).pop().unwrap_or_default();
+        self.ahead_run = Some((now, head, sizes));
+        pose
     }
 
     /// Its border tag, drawn once per app by assets.rs (off the main thread) and then cached.

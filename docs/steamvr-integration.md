@@ -121,7 +121,9 @@ no saved place 1.2 m wide, and a window panel as wide as its window's pixels mak
 ## Where things come back after a restart
 
 A panel comes back to the last place you put it in the room you're in now. If you've never put
-it anywhere in this room, it opens in front of you instead, to place yourself. A room with its
+it anywhere in this room, it opens in front of you instead, to place yourself. Several windows at
+once, like what's open when the Desktop starts, go side by side from the middle of your view
+rather than on top of each other. A room with its
 own workspace keeps its places, and never gets another room's. Temporary, the travel workspace,
 keeps each room's own places separately (for the last 8 rooms it's been used in), so going from
 one room to another and back brings each room's layout back.

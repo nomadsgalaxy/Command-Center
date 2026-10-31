@@ -154,6 +154,43 @@ fn place_rows(head: &Mat, sizes: &[(f64, f64, f64)], rows: &[Vec<usize>]) -> Vec
     out
 }
 
+/// Where each of `sizes` goes when they open one after another (windows.rs `ahead`, the windows
+/// KWin reports at start): the first in the middle of the gaze, then each next one beside what's
+/// there, right, left, right, ..., on the eye-level row of `layout`'s arc. Unlike `layout`, an
+/// earlier one never moves for a later one, so each can be placed as it comes.
+pub fn side_by_side(head: &Mat, sizes: &[(f64, f64, f64)]) -> Vec<Pose> {
+    let r = crate::limits::NEW_AHEAD;
+    let eye: V3 = [0, 1, 2].map(|i| head[i][3] as f64);
+    let (yaw0, _) = angles(&forward(head));
+    let gap = across(GAP, 0.0);
+    let (mut left, mut right) = (0.0, 0.0); // the row's edges, in degrees left and right of the gaze
+    sizes
+        .iter()
+        .enumerate()
+        .map(|(n, &(w, _, c))| {
+            let a = across(w, c);
+            let off = match n {
+                0 => {
+                    (left, right) = (a / 2.0, a / 2.0);
+                    0.0
+                }
+                n if n % 2 == 1 => {
+                    right += gap + a;
+                    -(right - a / 2.0) // a bigger yaw is further left
+                }
+                _ => {
+                    left += gap + a;
+                    left - a / 2.0
+                }
+            };
+            let yaw = (yaw0 + off).to_radians();
+            let centre = [eye[0] - r * yaw.sin(), eye[1], eye[2] - r * yaw.cos()];
+            let (y, p) = angles(&[centre[0] - eye[0], 0.0, centre[2] - eye[2]]);
+            Pose { centre, yaw: y, pitch: p, width: w, curve: c, ..Default::default() }
+        })
+        .collect()
+}
+
 /// Puts panel or Extra `item` at `pl` (its size and curve kept from `pl`).
 fn put(grab: &mut grab::Grab, item: Item, m: &Mat, pl: &Placement) {
     match item {
@@ -276,6 +313,33 @@ mod tests {
             assert!(off(poses[0].yaw) > off(poses[1].yaw) && off(poses[1].yaw) > off(poses[2].yaw), "in order, from the left");
             let (l, r) = (off(s[0].0.1), off(s[2].0.0));
             assert!((l + r).abs() < 1e-4 && l < SPAN / 2.0, "centred (to the f32 head matrix): {l} and {r}");
+        }
+    }
+
+    /// Opened one after another, the first is in the middle of the gaze and the rest go beside
+    /// it, right then left, none overlapping, each on the arc facing you, and adding one more
+    /// never moves the ones before.
+    #[test]
+    fn one_after_another_they_go_beside_each_other_from_the_middle() {
+        let sizes = [(0.6, 0.34, 0.0), (0.9, 0.5, 0.0), (0.5, 0.4, 0.0), (0.4, 0.3, 1.0)];
+        for yaw in [0.0, 70.0, -150.0] {
+            let poses = side_by_side(&head(yaw), &sizes);
+            let s = spans(&poses, &sizes);
+            let off = |y: f64| (y - yaw + 540.0).rem_euclid(360.0) - 180.0;
+            assert!(off(poses[0].yaw).abs() < 1e-4, "the first in the middle: {}", off(poses[0].yaw));
+            assert!(off(poses[1].yaw) < 0.0 && off(poses[2].yaw) > 0.0 && off(poses[3].yaw) < off(poses[1].yaw), "then right, left, right");
+            for i in 0..4 {
+                for j in i + 1..4 {
+                    assert!(apart(s[i].0, s[j].0), "{i} and {j} overlap: {s:?}");
+                }
+                let d = [poses[i].centre[0], poses[i].centre[1] - eye_y(), poses[i].centre[2]];
+                assert!((norm(&[d[0], 0.0, d[2]]) - crate::limits::NEW_AHEAD).abs() < 1e-9 && d[1] == 0.0, "on the arc, level");
+                assert!((angles(&d).0 - poses[i].yaw).abs() < 1e-9 && poses[i].pitch.abs() < 1e-9, "facing the eye");
+                assert_eq!((poses[i].width, poses[i].curve), (sizes[i].0, sizes[i].2));
+            }
+            for n in 1..4 {
+                assert_eq!(side_by_side(&head(yaw), &sizes[..n]), poses[..n], "one more doesn't move the others");
+            }
         }
     }
 

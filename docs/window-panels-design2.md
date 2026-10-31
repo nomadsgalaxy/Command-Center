@@ -278,7 +278,10 @@ Instead, a press only goes through once its window is known to be on top:
 2. cc-panels takes a slot and starts the stream.
 3. The overlay is shown on the **first imported frame**, so there's no black flash.
 4. The pose comes from the first of these that exists: the grace map, `win-poses.json`, the
-   `app:` spot, or 1.4 m ahead of the head (geometry.rs `new_pose`) with an 8 cm cascade.
+   `app:` spot, or 1.4 m ahead of the head (geometry.rs `new_pose`) with an 8 cm cascade. Windows
+   that go ahead within 3 s of each other (windows.rs `AHEAD_RUN`; at start KWin reports each open
+   window in turn) go side by side on that arc instead, right, left, right of the first (gather.rs
+   `side_by_side`), and none moves for a later one.
 5. The tag is fetched (§9).
 
 **Idle windows**
