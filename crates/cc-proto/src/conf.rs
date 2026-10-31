@@ -1626,6 +1626,27 @@ mod tests {
         assert_eq!(data.at("workspaces").at("home").at("spots").dumps(), home(TWO).at("workspaces").at("home").at("spots").dumps());
     }
 
+    /// A start while the Frame's lost its world (the dummy universe, room 0) doesn't lay Temporary
+    /// out anywhere: nothing goes under room 0 or a dummy id, laid_out_in stays the last real room,
+    /// and the next real new room still carries that room's places.
+    #[test]
+    fn a_dummy_universe_start_leaves_temporarys_rooms_alone() {
+        let mut data = home(TWO);
+        let placed = r#"{"home": {"app:tv.plex.plex-bin": {"centre": [0.4, 1.5, -1.3], "yaw": 0.0, "pitch": 0.0, "roll": 0.0, "width": 0.8}}}"#;
+        choose_workspace(&mut data, 333, None);
+        data.setdefault("workspaces", Json::obj()).setdefault(TEMPORARY, Json::obj()).set("spots", home(placed));
+        let before = data.at("workspaces").at(TEMPORARY).dumps();
+        for dummy in [0, 424242, 525252] {
+            assert_eq!(choose_workspace(&mut data, dummy, None), (TEMPORARY.into(), false), "the active one, Temporary");
+            assert_eq!(data.at("workspaces").at(TEMPORARY).dumps(), before, "untouched by {dummy}");
+        }
+        assert_eq!(choose_workspace(&mut data, 444, None), (TEMPORARY.into(), false));
+        let t = data.at("workspaces").at(TEMPORARY);
+        assert_eq!(t.at("spots").dumps(), home(placed).dumps(), "the real room's places carried");
+        let rooms: Vec<String> = t.at(ROOMS).items().iter().map(|(k, _)| k.clone()).collect();
+        assert_eq!(rooms, ["333"], "no room 0 or dummy under rooms");
+    }
+
     #[test]
     fn temporary_keeps_the_most_recent_rooms_layouts_only() {
         let mut t = Json::obj();
