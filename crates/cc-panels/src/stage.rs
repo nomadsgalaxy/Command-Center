@@ -431,6 +431,10 @@ mod tests {
         let t = std::mem::take(&mut vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).pose_times);
         assert_eq!(t, [vr::to_photons()], "asked for at the predicted time");
         assert!((t[0] - (1.0 / 90.0 + 0.011)).abs() < 1e-6, "{t:?}");
+        drop(_vr);
+        // untracked, it's None, as vr::head's was: both go by the pose's bPoseIsValid
+        let _vr = vr::fake::install(vr::fake::Script { vsync: Some((0.0, 90.0, 0.011)), ..Default::default() });
+        assert_eq!(Live.head_now(), None, "no head pose: nothing to place in front of");
     }
 
     /// The mouse is never a controller, and Live says so without asking SteamVR: no vr::fake is
