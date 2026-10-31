@@ -584,7 +584,7 @@ cc-panels.
    Then four calls on `Stage`, each one OpenVR call (or the same few) it was:
    - `head_now`: the head's pose now, not predicted (vr::head), for placing new things;
      `head_pose` stays the predicted one. Moving placement to the predicted pose would be a
-     change of its own.
+     change of its own (phase 1 has since made it).
    - `is_controller(Dev)`: a real controller, not the mouse or our cc_pointer device, so R-2
      (whichever device was pressed last is primary) reads a `Dev`.
    - `in_hand(Hand) -> Option<Ctl>`: the real controller in a hand, for the wrist taskbar.
@@ -736,7 +736,10 @@ Behaviour changes phase 0 put off, each its own branch with its own test:
   error's 0 was a change to no room, and every later save went roomless, which room-carry can't
   undo. The rate `to_photons` reads for its prediction is unchanged: it isn't a `Session` read.
 - New things placed in front of the predicted head pose instead of the unpredicted one (6c's
-  `head_now`).
+  `head_now`). Done: on OpenVR, `Stage::head_now` reads `vr::head_predicted`, the pose at
+  `vr::to_photons` that `head_pose` reads, so a new window, card or gather lands where the head is
+  when its first picture reaches the eyes, not 20 ms or so behind. `vr::head`, at time 0, stays
+  for the laser's standing-to-raw check and cc-win-spike.
 - The two readers of a pointer's x and y on kinds where they aren't a position (5a): a card's
   hover on Enter, and Plasma's last point.
 - `last_event` gets names of its own, not OpenVR's numbers (5f).

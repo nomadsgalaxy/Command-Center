@@ -33,8 +33,8 @@ pub trait Stage: Overlays {
     /// The head's pose predicted to when this frame's picture reaches the eyes (vr::head_predicted,
     /// at vr::to_photons), if it's tracked: for what has to keep up with the head this frame.
     fn head_pose(&self) -> Option<Mat>;
-    /// The head's pose as it is now, unpredicted (vr::head, at time 0), if it's tracked: what new
-    /// things are placed in front of. Using the predicted pose there would be a change of its own.
+    /// The head's pose for placing new things in front of, if it's tracked: on OpenVR the predicted
+    /// one, as `head_pose` reads it, so a new thing lands where the head is when it's first seen.
     fn head_now(&self) -> Option<Mat>;
     /// Whether d is a real controller: not the mouse, and not our cc_pointer device, which SteamVR
     /// tracks as a controller. A press from one makes it the primary device (R-2).
@@ -67,7 +67,7 @@ fn poses() -> Vec<sys::TrackedDevicePose_t> {
 
 impl Stage for Live {
     fn head_now(&self) -> Option<Mat> {
-        vr::head()
+        vr::head_predicted()
     }
 
     fn is_controller(&self, d: Dev) -> bool {
@@ -419,6 +419,18 @@ mod tests {
         assert_eq!(Live.label(Dev::Mouse), "64");
         assert_eq!(Live.label(Dev::Controller(Ctl::new(3))), "3");
         assert_eq!(fake::Fake::default().label(Dev::Mouse), "64", "the stand-in names them the same");
+    }
+
+    /// What new things are placed in front of is the head as it'll be when the picture reaches the
+    /// eyes (vr::to_photons, 22 ms here: a frame at 90 Hz plus 11 ms to photons), not as it is now.
+    #[test]
+    fn new_things_go_in_front_of_the_predicted_head() {
+        let head = crate::geometry::STAND_IN_HEAD;
+        let _vr = vr::fake::install(vr::fake::Script { vsync: Some((0.0, 90.0, 0.011)), poses: vec![(0, head)], ..Default::default() });
+        assert_eq!(Live.head_now(), Some(head));
+        let t = std::mem::take(&mut vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).pose_times);
+        assert_eq!(t, [vr::to_photons()], "asked for at the predicted time");
+        assert!((t[0] - (1.0 / 90.0 + 0.011)).abs() < 1e-6, "{t:?}");
     }
 
     /// The mouse is never a controller, and Live says so without asking SteamVR: no vr::fake is
