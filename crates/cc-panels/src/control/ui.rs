@@ -317,14 +317,13 @@ pub fn next_event(h: vr::Handle) -> Option<crate::events::SurfaceEvent> {
     // inside their loops over these events): the locks below would never return on a thread that
     // held it, and the fallback's did that before 6e too. So nothing takes them the other way
     // round. KVM can still wait here on another thread's hold of it, as any lock of it can.
-    static SENT: Mutex<Option<(f32, f32)>> = Mutex::new(None); // the point we last moved to
-    // where a Down this sent went, while its Up hasn't (taken only with SENT held, so after it)
-    static DOWN: Mutex<Option<(f32, f32)>> = Mutex::new(None);
+    // the point we last moved to, and where a Down this sent went while its Up hasn't
+    static SENT: Mutex<(Option<(f32, f32)>, Option<(f32, f32)>)> = Mutex::new((None, None));
     if let Some(ev) = crate::poll::Live.next(h) {
         return Some(ev);
     }
-    let mut sent = SENT.lock().unwrap();
-    let mut down_at = DOWN.lock().unwrap();
+    let mut guard = SENT.lock().unwrap();
+    let (sent, down_at) = &mut *guard;
     let laser = crate::kvm::lock().laser; // KVM only for this statement
     if laser.working() {
         // The laser sends its own events now. Presses queued for this are dropped, not sent the
@@ -407,7 +406,7 @@ mod tests {
         on(true);
         assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0));
         laser.working.store(true, std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(next_event(h), None);
+        assert_eq!(next_event(h), None, "no second Up for the press the fallback already let go");
         // it stops working with the ray already gone: no leave for a point from before
         on(false);
         laser.working.store(false, std::sync::atomic::Ordering::Relaxed);
