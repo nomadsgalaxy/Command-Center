@@ -66,15 +66,20 @@ pub fn angles(d: &V3) -> (f64, f64) {
     ((-d[0]).atan2(-d[2]).to_degrees(), (d[1] / n).clamp(-1.0, 1.0).asin().to_degrees())
 }
 
-/// A panel's matrix from a saved pose.
-pub fn panel_matrix(p: &Pose) -> Mat {
-    let (yw, pt, rl) = (p.yaw.to_radians(), p.pitch.to_radians(), p.roll.to_radians());
+/// A pose's right, up and front (toward whoever it faces) before its roll, as unit vectors.
+pub fn axes(p: &Pose) -> (V3, V3, V3) {
+    let (yw, pt) = (p.yaw.to_radians(), p.pitch.to_radians());
     let f = [-yw.sin() * pt.cos(), pt.sin(), -yw.cos() * pt.cos()];
     let z = [-f[0], -f[1], -f[2]]; // the front
     let n = (z[2] * z[2] + z[0] * z[0]).sqrt() + 1e-12;
     let x0 = [z[2] / n, 0.0, -z[0] / n]; // horizontal right
-    let y0 = cross(&z, &x0);
-    let (c, s) = (rl.cos(), rl.sin());
+    (x0, cross(&z, &x0), z)
+}
+
+/// A panel's matrix from a saved pose.
+pub fn panel_matrix(p: &Pose) -> Mat {
+    let (x0, y0, z) = axes(p);
+    let (c, s) = (p.roll.to_radians().cos(), p.roll.to_radians().sin());
     let mut m = [[0f32; 4]; 3];
     for i in 0..3 {
         m[i][0] = (x0[i] * c + y0[i] * s) as f32;
