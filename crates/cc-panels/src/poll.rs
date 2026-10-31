@@ -85,17 +85,15 @@ impl Pointing for Live {
     }
 }
 
-/// The rate and the universe are what OpenVR returns, with its error ignored, as main.rs did:
-/// phase 0 moves code, and what OpenVR returns on an error is only documented for a bad index or
-/// type, 0 (openvr.h, IVRSystem_022). So Live never says None for them; the trait's None is for a
-/// runtime that can't tell, and turning OpenVR's error into it is a change for later (the plan's
-/// phase 1 list). The properties are
-/// spelled `openvr_sys::` in full: this file has no `sys` alias outside its tests (in `call!`,
+/// The rate and the universe are None when OpenVR sets the property's error, whatever value came
+/// with it (`vr::prop`): that value is only documented for a bad index or type, 0 (openvr.h,
+/// IVRSystem_022). The callers' fallbacks then apply, 0.0 (Pace's 90 Hz) and 0 ("no room yet").
+/// The properties are spelled `openvr_sys::` in full: this file has no `sys` alias outside its tests (in `call!`,
 /// `sys` is the table's name), and the two uses don't earn one.
 impl Session for Live {
     fn display_hz(&self) -> Option<f32> {
         let mut err = 0;
-        Some(call!(sys, GetFloatTrackedDeviceProperty, 0, openvr_sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &mut err))
+        vr::prop(call!(sys, GetFloatTrackedDeviceProperty, 0, openvr_sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &mut err), err)
     }
 
     /// It logs what SteamVR said, error and all, before any fallback: main.rs asks once, at
@@ -105,7 +103,7 @@ impl Session for Live {
         let mut err = 0;
         let u = call!(sys, GetUint64TrackedDeviceProperty, 0, openvr_sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
         eprintln!("room: SteamVR's universe {u} (property error {err})");
-        Some(u)
+        vr::prop(u, err)
     }
 
     /// GetCurrentSceneProcessId has no error to read, so OpenVR always tells.
@@ -138,12 +136,12 @@ mod tests {
     use super::*;
     use openvr_sys as sys;
 
-    /// The session's reads through Live against vr::fake: what SteamVR returns, its error set or
-    /// not (the error is ignored, as main.rs did), and the scene app and worn state. The error
+    /// The session's reads through Live against vr::fake: what SteamVR returns, None for the rate
+    /// and the universe when it sets their error, and the scene app and worn state. The error
     /// fixtures are synthetic: what SteamVR returns with its error set is only documented for a
     /// bad index or type (0, openvr.h).
     #[test]
-    fn the_session_reads_are_what_steamvr_returns_its_error_ignored() {
+    fn the_session_reads_are_what_steamvr_returns_or_none_on_its_error() {
         let ok =
             vr::fake::Script { vsync: Some((0.0, 90.0, 0.011)), universe: 7, scene_pid: 4242, activity: Some(sys::EDeviceActivityLevel_k_EDeviceActivityLevel_UserInteraction), ..Default::default() };
         let _vr = vr::fake::install(ok);
@@ -152,17 +150,17 @@ mod tests {
         drop(_vr);
 
         let unknown = Some(sys::ETrackedPropertyError_TrackedProp_UnknownProperty);
-        // synthetic: a value with the error set (undocumented), passed through as before
+        // synthetic: a value with the error set (undocumented), not trusted
         let failed =
             vr::fake::Script { vsync: Some((0.0, 90.0, 0.011)), universe: 7, prop_error: unknown, activity: Some(sys::EDeviceActivityLevel_k_EDeviceActivityLevel_Idle), ..Default::default() };
         let _vr = vr::fake::install(failed);
-        assert_eq!((Live.display_hz(), Live.universe_id()), (Some(90.0), Some(7)), "the error ignored: its value, as main.rs read it");
+        assert_eq!((Live.display_hz(), Live.universe_id()), (None, None), "the error set: can't tell, whatever the value");
         assert_eq!((Live.scene_app_running(), Live.worn()), (Some(false), Some(false)), "no game, and off the head");
         drop(_vr);
 
         // the documented case: 0 with the error set (a bad index or type)
         let _vr = vr::fake::install(vr::fake::Script { vsync: Some((0.0, 0.0, 0.0)), universe: 0, prop_error: Some(sys::ETrackedPropertyError_TrackedProp_WrongDataType), ..Default::default() });
-        assert_eq!((Live.display_hz(), Live.universe_id()), (Some(0.0), Some(0)), "0, as OpenVR gives it");
+        assert_eq!((Live.display_hz(), Live.universe_id()), (None, None), "can't tell, not 0");
         drop(_vr);
 
         let _vr = vr::fake::install(vr::fake::Script::default()); // the activity level Unknown
@@ -201,5 +199,18 @@ mod tests {
             ]
         );
         assert_eq!((q.next_event(), q.last_type(), q.universe), (None, reset, 8), "an empty poll changes nothing");
+    }
+
+    /// A relocalization's re-read of the universe follows `Session::universe_id`'s rule: with its
+    /// error set, whatever its value, it's 0, "no room yet", as main.rs's start takes it. So in a
+    /// room it's a change to no room, and with no room yet it's only a relocalization.
+    #[test]
+    fn a_relocalization_with_the_universe_unreadable_is_no_room() {
+        let e = vr::VREvent_t { eventType: sys::EVREventType_VREvent_StandingZeroPoseReset, ..Default::default() };
+        let unknown = Some(sys::ETrackedPropertyError_TrackedProp_UnknownProperty);
+        let _vr = vr::fake::install(vr::fake::Script { universe: 8, prop_error: unknown, sys_events: [e, e].into(), ..Default::default() });
+        let mut q = Queue::new(7);
+        assert_eq!((q.next_event(), q.universe), (Some(SessionEvent::RoomChanged(0)), 0), "not room 8: can't tell");
+        assert_eq!((q.next_event(), q.universe), (Some(SessionEvent::Relocalized), 0), "still no room");
     }
 }
