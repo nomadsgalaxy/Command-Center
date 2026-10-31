@@ -3057,6 +3057,9 @@ mod tests {
             let was = k.place[0].c;
             g.carry(&mut k, &mut f, Instant::now());
             assert!((k.place[0].c[1] - was[1] - 0.2).abs() < 1e-5, "it rose with the head");
+            // and moved nothing else: docked by the head's pose and kept by it, not by head_now's,
+            // which the fake puts 5 cm to the side
+            assert!((k.place[0].c[0] - was[0]).abs() < 1e-5 && (k.place[0].c[2] - was[2]).abs() < 1e-5, "only up: {:?} from {was:?}", k.place[0].c);
             g.cancel(0);
             assert!(g.docked[0].is_none(), "a recall puts it in the world");
             assert_eq!(

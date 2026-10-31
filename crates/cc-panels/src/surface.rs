@@ -410,27 +410,53 @@ mod tests {
         assert!(!entries().iter().any(|e| e.overlay == crate::vr::Handle(a) || e.overlay == crate::vr::Handle(b)));
     }
 
-    /// The registry only lists what goes through it, so no other code may make an overlay itself.
-    /// This reads the sources: a new `vr::create_overlay` or `Live.create` call anywhere but here
-    /// (and overlay.rs's Live, which makes them for it) is a bug.
-    #[test]
-    fn every_overlay_is_made_through_the_registry() {
-        fn visit(dir: &std::path::Path, bad: &mut Vec<String>) {
+    /// Whether a file takes overlays generically: a `Surfaces` or a `Backend` (which is one) as a
+    /// bound or a `dyn`, by any path (`impl crate::overlay::Surfaces`), so a method call on what
+    /// it takes can make or destroy one. Naming the trait to call Live's methods isn't taking one.
+    fn generic(file: &str) -> bool {
+        let file = ["crate::", "super::", "overlay::", "backend::"].iter().fold(file.to_string(), |f, path| f.replace(path, ""));
+        ["impl Surfaces", ": Surfaces", "dyn Surfaces", "+ Surfaces", "Surfaces +", "impl Backend", ": Backend", "dyn Backend", "+ Backend"].iter().any(|p| file.contains(p))
+    }
+
+    /// Whether a line of code makes an overlay (or with `destroy`, destroys one) itself, not
+    /// through surface::create and destroy: OpenVR's own calls, overlay::Live's by name, a
+    /// generic call by the trait's name (`Surfaces::create(&mut s, ..)`), and, in a `generic`
+    /// file, a method call on whatever it takes (`s.create(..)`).
+    fn bypasses(code: &str, generic: bool, destroy: bool) -> bool {
+        // vr's made from two pieces, so this search isn't itself a use for boundary.rs's scan
+        let vr_create = ["vr", "::create_overlay"].concat();
+        let made = [
+            vr_create.as_str(),
+            "create_dashboard_overlay",
+            "CreateOverlay,",
+            "CreateDashboardOverlay,",
+            "Live.create(",
+            "Live.create_dashboard(",
+            "Surfaces::create(",
+            "Surfaces::create_dashboard(",
+            "Backend::create(",
+            "Backend::create_dashboard(",
+        ];
+        let gone = ["DestroyOverlay", "Live.destroy(", "Surfaces::destroy(", "Backend::destroy("];
+        let (named, method): (&[&str], &[&str]) = if destroy { (&gone, &[".destroy("]) } else { (&made, &[".create(", ".create_dashboard("]) };
+        named.iter().any(|p| code.contains(p)) || (generic && method.iter().any(|p| code.contains(p)))
+    }
+
+    /// Every line in src (not src/bin, the window spike, a separate program with an overlay of
+    /// its own) outside `skip` that `bypasses` says makes or destroys an overlay itself.
+    fn bypassing(skip: &[&str], destroy: bool) -> Vec<String> {
+        fn visit(dir: &std::path::Path, skip: &[&str], destroy: bool, bad: &mut Vec<String>) {
             for e in std::fs::read_dir(dir).unwrap().flatten() {
                 let p = e.path();
                 if p.is_dir() {
-                    // src/bin is the window spike, a separate program with an overlay of its own
                     if p.file_name().is_some_and(|n| n != "bin") {
-                        visit(&p, bad);
+                        visit(&p, skip, destroy, bad);
                     }
-                // (boundary.rs only lists these names, for the OpenVR ratchet)
-                } else if p.extension().is_some_and(|x| x == "rs") && !matches!(p.file_name().and_then(|n| n.to_str()), Some("vr.rs" | "overlay.rs" | "surface.rs" | "boundary.rs")) {
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.file_name().and_then(|n| n.to_str()).is_some_and(|n| skip.contains(&n)) {
                     let s = std::fs::read_to_string(&p).unwrap();
+                    let generic = generic(&s);
                     for (n, l) in s.lines().enumerate() {
-                        let code = l.split("//").next().unwrap_or("");
-                        // vr's made from two pieces, so this search isn't itself a use for boundary.rs's scan
-                        let vr_create = ["vr", "::create_overlay"].concat();
-                        if [vr_create.as_str(), "create_dashboard_overlay", "CreateOverlay,", "CreateDashboardOverlay,", "Live.create(", "Live.create_dashboard("].iter().any(|p| code.contains(p)) {
+                        if bypasses(l.split("//").next().unwrap_or(""), generic, destroy) {
                             bad.push(format!("{}:{}: {}", p.display(), n + 1, l.trim()));
                         }
                     }
@@ -438,34 +464,48 @@ mod tests {
             }
         }
         let mut bad = Vec::new();
-        visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut bad);
+        visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), skip, destroy, &mut bad);
+        bad
+    }
+
+    /// The registry only lists what goes through it, so no other code may make an overlay itself.
+    /// This reads the sources: a new `vr::create_overlay` or `Live.create` call, or a generic one,
+    /// anywhere but here (and overlay.rs's Live, which makes them for it) is a bug. (boundary.rs
+    /// only lists these names, for the OpenVR ratchet.)
+    #[test]
+    fn every_overlay_is_made_through_the_registry() {
+        let bad = bypassing(&["vr.rs", "overlay.rs", "surface.rs", "boundary.rs"], false);
         assert!(bad.is_empty(), "overlays made outside surface::create:\n{}", bad.join("\n"));
     }
 
     /// ...and none destroyed without coming off the list.
     #[test]
     fn every_overlay_is_destroyed_through_the_registry() {
-        fn visit(dir: &std::path::Path, bad: &mut Vec<String>) {
-            for e in std::fs::read_dir(dir).unwrap().flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    // src/bin is the window spike, a separate program with an overlay of its own
-                    if p.file_name().is_some_and(|n| n != "bin") {
-                        visit(&p, bad);
-                    }
-                } else if p.extension().is_some_and(|x| x == "rs") && !matches!(p.file_name().and_then(|n| n.to_str()), Some("overlay.rs" | "surface.rs" | "boundary.rs")) {
-                    let s = std::fs::read_to_string(&p).unwrap();
-                    for (n, l) in s.lines().enumerate() {
-                        let code = l.split("//").next().unwrap_or("");
-                        if code.contains("DestroyOverlay") || code.contains("Live.destroy(") {
-                            bad.push(format!("{}:{}: {}", p.display(), n + 1, l.trim()));
-                        }
-                    }
-                }
-            }
-        }
-        let mut bad = Vec::new();
-        visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut bad);
+        let bad = bypassing(&["overlay.rs", "surface.rs", "boundary.rs"], true);
         assert!(bad.is_empty(), "overlays destroyed outside surface::destroy:\n{}", bad.join("\n"));
+    }
+
+    /// The scan catches a generic caller as well as Live by name: by the trait's name anywhere,
+    /// and by a method call in a file that takes a Surfaces or a Backend, but not a method call
+    /// named create in a file that takes neither.
+    #[test]
+    fn the_registry_scan_catches_generic_callers() {
+        let (plain, takes) = ("fn f(c: &mut Capture) {}", "fn place(s: &mut impl Surfaces) {}");
+        assert!(!generic(plain) && generic(takes) && generic("fn run<B: Backend>(b: &mut B) {}") && generic("fn f(s: &mut dyn Surfaces) {}"));
+        assert!(generic("fn f(s: &mut impl crate::overlay::Surfaces) {}") && generic("fn f<S: super::overlay::Surfaces>(s: S) {}"), "by any path");
+        assert!(!generic("use overlay::{Flag, Overlays, Surfaces};"), "an import to call Live's methods isn't taking one");
+        for (code, file, made, destroyed) in [
+            ("let h = crate::overlay::Live.create(key, name)?;", plain, true, false),
+            ("let h = Surfaces::create(&mut Live, key, name)?;", plain, true, false),
+            ("let h = Backend::create_dashboard(b, key, name);", plain, true, false),
+            ("Surfaces::destroy(&mut s, h);", plain, false, true),
+            ("let h = s.create(key, name)?;", takes, true, false),
+            ("let h = s.create_dashboard(key, name);", takes, true, false),
+            ("s.destroy(h);", takes, false, true),
+            ("let c = Capture::new(); c.create(key, name);", plain, false, false),
+            ("buf.destroy(h);", plain, false, false),
+        ] {
+            assert_eq!((bypasses(code, generic(file), false), bypasses(code, generic(file), true)), (made, destroyed), "{code} in {file}");
+        }
     }
 }

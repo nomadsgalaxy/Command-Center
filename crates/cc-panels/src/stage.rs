@@ -224,8 +224,13 @@ pub mod fake {
     }
 
     impl Stage for Fake {
+        /// head_pose's pose, 5 cm to its left: a fixture of its own, so code that reads one of
+        /// the two where it means the other fails a test.
         fn head_now(&self) -> Option<Mat> {
-            self.head_pose
+            self.head_pose.map(|mut m| {
+                m[0][3] -= 0.05;
+                m
+            })
         }
 
         /// Every controller is real here; the mouse isn't.

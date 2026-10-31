@@ -577,7 +577,7 @@ cc-panels.
    `surface::create` and `destroy`, reads text too: it looks for `Live.create(`, `Live.destroy(`
    and OpenVR's own calls, so a generic caller (`impl Surfaces`, `Surfaces::create(&mut Live, ..)`)
    gets past it. That's fine while the core calls `overlay::Live` by name; revisit it when the
-   core goes generic over a backend.
+   core goes generic over a backend. (Phase 1 has since taught it generic callers.)
    6c moves `Stage`'s OpenVR parts behind it. First, what needs no new call: grab.rs's pose
    reading (every device's pose at the predicted time, connected or not, a laser's tip) moves into
    stage.rs's `Live`, which asks grab only for the mouse's ray; the head's position comes from
@@ -761,7 +761,15 @@ Behaviour changes phase 0 put off, each its own branch with its own test:
   exist, Other's name could say which backend's number it is ("other (OpenVR's 103)"), so logs
   from the two runtimes can't be read as the same event; not done yet.
 - Before a `Stage` is injected: the fake's `head_pose` and `head_now` give different fixtures,
-  so swapping them fails a test, and the registry scan learns generic callers (6b).
+  so swapping them fails a test, and the registry scan learns generic callers (6b). Done: the
+  fake's `head_now` is its `head_pose` moved 5 cm to the side, and the head-dock test checks
+  that a docked panel moves only as the head does, so reading `head_now` in any of the three
+  places that read `head_pose` (grab.rs's dock and its follow, kvm.rs's recenter) fails a test.
+  The registry scan also catches `Surfaces::create(..)` and `Backend::create(..)` by the
+  trait's name anywhere, and `.create(`, `.create_dashboard(` and `.destroy(` method calls in a
+  file that takes a `Surfaces` or a `Backend` as a bound or a `dyn`, by any path. It still
+  reads text: a method call on a generic from another file, or under another alias, gets past
+  it.
 - The dominant hand loads at start on any runtime, not in the OpenVR laser's `Beam::new` (6e).
   Done: main.rs calls `config::load_dominant` once at start, after the workspace is chosen and
   before any panel or pointer exists, and `Beam::new` no longer loads it. Its log line moved
