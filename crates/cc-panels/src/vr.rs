@@ -232,9 +232,16 @@ pub fn session_event(e: &VREvent_t, universe: u64) -> crate::events::SessionEven
         // universe relocalization"), and sends no StandingZeroPoseReset for it. Logged only, so
         // the next runs show how often; the workspace doesn't follow it yet.
         sys::EVREventType_VREvent_ChaperoneUniverseHasChanged => {
+            // the event's own payload too: reading the property again can race a second switch,
+            // and the payload is what following it would go by (the previous one is deprecated
+            // in this SDK, so it may be 0)
+            let c = unsafe { e.data.chaperone };
             let mut err = 0;
             let now = crate::call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
-            eprintln!("tracking: SteamVR's universe changed to {now} (property error {err}), the room's still {universe}");
+            eprintln!(
+                "tracking: SteamVR's universe changed: the event says {} -> {}, the property {now} (error {err}), the room's still {universe}",
+                c.m_nPreviousUniverse_deprecated, c.m_nCurrentUniverse
+            );
             S::Other(e.eventType)
         }
         sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted if e.trackedDeviceIndex == 0 => S::Worn(true),
