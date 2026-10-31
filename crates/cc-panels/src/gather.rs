@@ -12,7 +12,7 @@
 //!
 //! The taskbar's chip, the dashboard tab's button, Right Ctrl + B, the control socket's `gather`
 //! and `cc-home gather` all end here.
-use crate::geometry::{Mat, Placement, Pose, V3, angles, axes, panel_matrix, sagitta};
+use crate::geometry::{Mat, Placement, Pose, V3, angles, axes, direction, panel_matrix, sagitta};
 use crate::stage::Stage;
 use crate::{Source, grab, panels, vr, windows::Windows};
 use std::sync::Mutex;
@@ -231,28 +231,7 @@ pub fn side_by_side(head: &Mat, first_dy: f64, sizes: &[(f64, f64, f64)]) -> Vec
         if stacked > 0 || (full && row + 1 == ROWS) {
             stacked += 1;
             let from = out[n - stacked]; // the last one placed in a row
-            let j = stacked - 1;
-            let (down, round) = (STEP * (1 + j % 5) as f64, STEP / 5.0 * (j / 5 % 5) as f64);
-            let (x, y, z) = axes(&from);
-            // across toward the gaze: right, unless it's right of the gaze already (a bigger yaw is further left)
-            let s = if (from.yaw - yaw0 + 540.0).rem_euclid(360.0) - 180.0 > -1e-9 { 1.0 } else { -1.0 };
-            let mut centre: V3 = [0, 1, 2].map(|i| from.centre[i] + s * (down + round) * x[i] - down * y[i] + NEARER * stacked as f64 * z[i]);
-            let move_by = |centre: &mut V3, v: &V3, d: f64| (0..3).for_each(|i| centre[i] += d * v[i]);
-            // its top under the eye-level row, as the row below's are
-            // (a curved one's top corners come toward you by its sagitta, and up, facing up at you)
-            let over = centre[1] + y[1] * h / 2.0 + sagitta(w, c) * z[1] - eye[1] - (level_bottom - GAP);
-            if over > 0.0 {
-                move_by(&mut centre, &y, -over / y[1]);
-            }
-            // its corners inside BESIDE: none behind the eyes' side to side line
-            let fwd = forward(head);
-            let ahead = |v: &V3| v[0] * fwd[0] + v[2] * fwd[2];
-            let half = if c > 0.0 { c * (w / (2.0 * c)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
-            let least = ahead(&[centre[0] - eye[0], 0.0, centre[2] - eye[2]]) + sagitta(w, c) * ahead(&z) - half * ahead(&x).abs() - h / 2.0 * ahead(&y).abs();
-            if least < 0.0 && ahead(&x).abs() > 1e-9 {
-                move_by(&mut centre, &x, -least / ahead(&x));
-            }
-            out.push(Pose { centre, width: w, curve: c, ..from });
+            out.push(stack_on(&from, stacked - 1, (w, h, c), &eye, yaw0, level_bottom - GAP, BESIDE));
             continue;
         }
         if full {
@@ -290,6 +269,40 @@ pub fn side_by_side(head: &Mat, first_dy: f64, sizes: &[(f64, f64, f64)]) -> Vec
         out.push(Pose { centre, yaw: y, pitch: p, width: w, curve: c, ..Default::default() });
     }
     out
+}
+
+/// Where the `j`th window (from 0) to stack on `from` goes, `w` by `h` with curve `c`, for eyes at
+/// `eye` looking level at `yaw0`: turned the way `from` is, STEP further down its face and across
+/// it toward the gaze for each (one to five steps, then round again a fifth of a step further
+/// across), and NEARER closer than the one before, so the newest is drawn on top (the Frame draws
+/// by depth). One too tall or wide for that spot is moved down its face until its top is
+/// `ceiling` metres above the eyes, and across until none of its corners is more than `half_arc`
+/// degrees round from the gaze. A curved one's corners are its chord's ends, brought toward you
+/// by its sagitta.
+fn stack_on(from: &Pose, j: usize, (w, h, c): (f64, f64, f64), eye: &V3, yaw0: f64, ceiling: f64, half_arc: f64) -> Pose {
+    let (down, round) = (STEP * (1 + j % 5) as f64, STEP / 5.0 * (j / 5 % 5) as f64);
+    let (x, y, z) = axes(from);
+    let off = |p: &V3| (angles(&[p[0] - eye[0], 0.0, p[2] - eye[2]]).0 - yaw0 + 540.0).rem_euclid(360.0) - 180.0;
+    // across toward the gaze: right, unless it's right of the gaze already (a bigger yaw is further left)
+    let s = if off(&from.centre) > -1e-9 { 1.0 } else { -1.0 };
+    let mut centre: V3 = [0, 1, 2].map(|i| from.centre[i] + s * (down + round) * x[i] - down * y[i] + NEARER * (j + 1) as f64 * z[i]);
+    let move_by = |centre: &mut V3, v: &V3, d: f64| (0..3).for_each(|i| centre[i] += d * v[i]);
+    // its top under `ceiling` (a curved one's top corners come toward you by its sagitta, and up,
+    // facing up at you from below the eyes)
+    let over = centre[1] + y[1] * h / 2.0 + sagitta(w, c) * z[1] - eye[1] - ceiling;
+    if over > 0.0 {
+        move_by(&mut centre, &y, -over / y[1]);
+    }
+    // its corners inside `half_arc` on its side: none past the upright plane through the eyes at
+    // that angle, whose normal `n` points back toward the gaze
+    let n = if off(&centre) >= 0.0 { direction(yaw0 + half_arc - 90.0, 0.0) } else { direction(yaw0 - half_arc + 90.0, 0.0) };
+    let inward = |v: &V3| v[0] * n[0] + v[2] * n[2];
+    let half = if c > 0.0 { c * (w / (2.0 * c)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
+    let least = inward(&[centre[0] - eye[0], 0.0, centre[2] - eye[2]]) + sagitta(w, c) * inward(&z) - half * inward(&x).abs() - h / 2.0 * inward(&y).abs();
+    if least < 0.0 && inward(&x).abs() > 1e-9 {
+        move_by(&mut centre, &x, -least / inward(&x));
+    }
+    Pose { centre, width: w, curve: c, ..*from }
 }
 
 /// Puts panel or Extra `item` at `pl` (its size and curve kept from `pl`).
