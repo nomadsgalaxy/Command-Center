@@ -702,7 +702,7 @@ inside what the fixtures pin, not stood in for. The scripts, with the ones that 
 
 ### Phase 1: OpenXR MVP on Monado and WiVRn (about 18 days)
 
-Before it starts, three things get decided and written down: the Vulkan texture contract (2.3),
+Before it starts, three things get decided and written down (the draft is docs/phase1-decisions.md): the Vulkan texture contract (2.3),
 the layer budget, and the interim room rule.
 
 The layer budget: OpenXR only promises 16 composition layers per frame (`maxLayerCount` can be
