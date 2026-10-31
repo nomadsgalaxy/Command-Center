@@ -219,12 +219,25 @@ Two separate waits, which OpenVR let us blur together.
     doesn't call the ioctl. Whether the driver's own map is coherent for a later Vulkan read
     through the imported dmabuf is the driver's business, and I couldn't confirm it for radeonsi,
     anv or Turnip from this source (**unverified**).
-  - **Contract:** `gpu.rs`'s write path (`write_frame` and `show_raw`'s replacement, between map
-    and unmap) is bracketed by `DMA_BUF_IOCTL_SYNC` `START|WRITE` and `END|WRITE` on the buffer's
-    exported fd (`gbm_bo_get_fd`, which `Buffers::make` already has before it hands the fd over).
-    Because GBM doesn't issue it itself (above), there's no doubling up. Cost: two ioctls per
-    write, no copy. If a later Mesa starts doing it inside `gbm_bo_map`, the spike's check on item
-    2 below catches nothing wrong (a second sync is harmless), and we can drop ours then.
+  - **What the absence of the ioctl proves, and what it doesn't.** It's absent from the frontend
+    code I searched. That does not show that wrapping the exported fd in `DMA_BUF_IOCTL_SYNC`
+    covers every driver's transfer or staging-map path. `dri2_map_image` is a gallium transfer map,
+    and a driver may map the buffer through its own path (a staging copy that completes later, a
+    different cache mode, a blit on unmap). Whether `gbm_bo_unmap` has finished the write, and
+    whether the data is visible to a later device read through the imported dmabuf, are the
+    **per-driver map/unmap completion and coherency contract**. That contract is **unverified**
+    until traced in each driver we ship against (radeonsi, iris/anv, freedreno/Turnip), and the
+    spike's check below is the test of it, not a substitute for the trace.
+  - **Contract (proposed, pending that trace):** `gpu.rs`'s write path (`write_frame` and
+    `show_raw`'s replacement, between map and unmap) is bracketed by `DMA_BUF_IOCTL_SYNC`
+    `START|WRITE` and `END|WRITE` on the buffer's exported fd (`gbm_bo_get_fd`, which
+    `Buffers::make` already has before it hands the fd over). Expectations to verify, not
+    established facts: that this doesn't double up with anything GBM does (I found no sync call in
+    the code I read); that a second sync, if a later Mesa adds one inside `gbm_bo_map`, is
+    harmless (the kernel interface is a begin/end pair on the exporter, but I haven't checked how
+    each exporter treats nesting). Cost if it holds: two ioctls per write, no copy. If the trace
+    shows a driver's unmap doesn't complete the write or the ioctl isn't enough for it, the
+    fallback is to write through our own staging `VkBuffer` for that driver (1.10) instead of GBM.
   - The same ioctl is required anywhere we `mmap` a dmabuf fd ourselves: the PipeWire fallback in
     1.10 if it ever reads a dmabuf on the CPU, and the VNC and RDP staging paths if they were to
     mmap one. Staging `VkBuffer` memory we allocate through Vulkan isn't a dmabuf, so it needs
@@ -265,13 +278,31 @@ Two separate waits, which OpenVR let us blur together.
     blocking variant is the control that tells us whether a corruption seen with submit-only is a
     sync problem or something else. It is not shipped.
   - **If the spike shows a runtime needs the wait:** that runtime gets a named per-runtime mode,
-    "wait before release", with a bound (proposal: 4 ms). On a timeout the image is held, not
-    released: the copy is submitted but not known finished, so releasing would defeat the mode. The
-    layer keeps the last released image, the wait is retried next frame, and after 30 timeouts in a
-    row the surface goes the way of 1.7's wait-timeout row (destroy the swapchain, Return the
-    source, log once). Muse, #385.
-    That is an exception to "no `vkWaitForFences` in the frame path", it is written down as one,
-    and it's decided per runtime from the spike's result, not by default.
+    "wait before release", with a finite bound on `vkWaitForFences` (proposal: 4 ms). This is an
+    exception to "no `vkWaitForFences` in the frame path". It's written down as one, and it's
+    decided per runtime from the spike's result, not by default. (Muse, #385.)
+    - **What a timeout means here.** Unlike an `xrWaitSwapchainImage` timeout (1.7), where nothing
+      has been submitted, this wait is on work that **is already submitted** and may still be
+      reading the source and writing the swapchain image. `VK_TIMEOUT` is not completion
+      (`vkWaitForFences` man page: it returns `VK_TIMEOUT` when the condition isn't met in time).
+    - **On a timeout:** the image stays held (the copy is submitted but not known finished, so
+      releasing would defeat the mode), the layer keeps the last released image, and the wait is
+      retried next frame on the same fence.
+    - **After 30 timeouts in a row** (about 0.3 s at 90 Hz) the surface becomes **stalled**. It does
+      not take 1.7's wait-timeout path, because that path destroys the swapchain and Returns the
+      source, and here neither is safe without completion evidence. Stalled means: keep holding the
+      image, the source buffer, the imports the copy reads, and the swapchain the image belongs to,
+      all tied to that one outstanding submission's fence. Start no new copy on this surface. Keep
+      drawing the last released image. Log once. Poll the fence with `vkGetFenceStatus` each sweep.
+      - Fence signals: release the image now (it was waited, and the copy is complete), Return the
+        source, free what 1.7's retirement rule allows, and the surface resumes.
+      - Fence reports `VK_ERROR_DEVICE_LOST`: the device-loss row of 1.7.
+      - Fence never signals: everything stays held until process exit. A bounded leak, and the
+        cost of not knowing.
+    - The same rule covers a source, import or destination swapchain involved in that submission
+      if the surface is resized or the session stops while it's stalled: they join 1.7's
+      retirement list with this fence as their gate.
+
 
 **When a source buffer may be written again.** When the copy's fence has signalled. Not "a tick
 later" and not "a frame after it was shown". The swapchain image holds the pixels now, so the
@@ -300,11 +331,29 @@ once per frame is free. If we ever park again, a fence wait needs a wake-up (Que
 **Rules that apply everywhere:**
 
 - The frame path never blocks on the GPU. A once-per-frame sweep on the main thread polls
-  `vkGetFenceStatus` for every in-flight copy and every deferred import. `vkWaitForFences` and
-  `vkQueueWaitIdle` are allowed in teardown only (the table below), plus the per-runtime
-  wait-before-release mode if the spike makes us add one (1.6).
-- `Textures::release(t)` marks an import for destruction after its last fence. It returns at once,
-  as now.
+  `vkGetFenceStatus` for every in-flight copy and every deferred import. `vkWaitForFences` with a
+  **finite** timeout is allowed in teardown (below) and in the per-runtime wait-before-release mode
+  if the spike makes us add one (1.6).
+- **No `vkQueueWaitIdle` anywhere.** It has no timeout: the man page defines it as waiting on a
+  fence for every previous submission with an infinite timeout. Wherever this section promises a
+  deadline, the wait is `vkWaitForFences` on the specific fences, with a finite timeout.
+- **A timeout is not completion.** If a finite wait times out, the objects behind that fence are
+  neither freed nor Returned. They are **retained until process exit** (a leak, and a logged one).
+  This applies to every row below.
+- **The retirement rule.** Each of these is tied to the fence of the last submitted copy that uses
+  it, and is freed only after that fence has signalled: the source buffer (Returned), the import
+  the copy reads (`vkDestroyImage`, whose valid usage is that "all submitted commands that refer
+  to image, either directly or via a VkImageView, must have completed execution",
+  VUID-vkDestroyImage-image-01000), the swapchain the copy writes into (`xrDestroySwapchain`; the
+  OpenXR spec text on destroying a swapchain with outstanding GPU use I haven't found,
+  **unverified**, so we treat it like `vkDestroyImage`), and the command buffer, fence and any
+  semaphore. Teardown of the device itself follows the `vkDestroyDevice` page: its description
+  says `vkDeviceWaitIdle` can be used to gate destruction, and that every child object must be
+  destroyed first (VUID-vkDestroyDevice-device-05137). We gate on our fences instead, because
+  `vkDeviceWaitIdle`, like `vkQueueWaitIdle`, has no timeout I can find (**unverified**: I didn't
+  read its page).
+- `Textures::release(t)` marks an import for destruction under the retirement rule. It returns at
+  once, as now.
 - A surface holds **at most one acquired swapchain image** at a time. It never acquires a second
   until the first is released or its swapchain is destroyed.
 - A released image stays referencable (1.4), so a surface can always draw its last good picture
@@ -320,20 +369,42 @@ once per frame is free. If we ever park again, a fence wait needs a wake-up (Que
 | Case | Swapchain image | Source buffer | When each is released |
 |---|---|---|---|
 | **Normal** | `xrAcquireSwapchainImage`, `xrWaitSwapchainImage` (bounded, see next row), barrier to `TRANSFER_DST`, copy, barrier back to `COLOR_ATTACHMENT_OPTIMAL`, `vkQueueSubmit` with a fence, then `xrReleaseSwapchainImage` in the same frame. Held for the length of that sequence only. | Ours, then In flight at submit. | Image: released right after the submit succeeds. Source: Returned when the fence signals (next sweep after it does). A frame superseded before its submit is Returned at once. |
-| **`xrWaitSwapchainImage` times out** (`XR_TIMEOUT_EXPIRED`) | Acquired but not waited. It can't be released (release without a wait is `XR_ERROR_CALL_ORDER_INVALID`, `xrReleaseSwapchainImage` man page), so we keep holding it and wait again next frame. We never call acquire again meanwhile. | Stays Ours (the newest frame). A newer frame replaces it and the older one is Returned at once. | The wait is bounded, not `XR_INFINITE_DURATION` (WayVR waits forever, `swapchain.rs` `acquire_wait_image`). Proposed: 2 ms per frame. The surface keeps drawing its last released image. After 30 consecutive timeouts (about 0.3 s at 90 Hz): destroy the swapchain (this drops the held image with it), Return the source, log once, recreate on the next frame. |
-| **Submit fails** (`vkQueueSubmit` returns an error) | Acquired and waited, but not written, so releasing it would make garbage the "last released" image. We do **not** release it. The layer keeps the previously released image. | Ours (never In flight). | Retry the copy next frame, up to 3 times. After the third failure: destroy the swapchain with the image held, Return the source, log once with the `VkResult`, recreate lazily. `VK_ERROR_DEVICE_LOST` skips the retries and is treated as session loss (last row). **Unverified:** that every runtime accepts a layer that references a swapchain which currently has an acquired image. The spec text I found says a layer references the last released image, not the acquired one. |
-| **Resize** (new size from the source) | A new swapchain is created. The old swapchain keeps being submitted, at its old size, until the new one has released its first image, then the layer switches in one frame. If the old one holds an acquired image it is released only if already waited, else left to die with the swapchain. | In-flight copies on the old swapchain finish as normal. The old GBM pair or old PipeWire buffers are Returned/freed as their fences signal. | The old swapchain goes on a retirement list and is destroyed once its last fence has signalled (WayVR's `SwapchainRetirementQueue` does this with a completion marker). This replaces "frees both at once, the shown one included" (plan 2.3). Nothing is freed on resize without a fence. |
-| **`STOPPING`** (session ending, the app may restart it on `READY`) | Stop acquiring. For each surface: if an image is acquired and waited, release it (after the in-flight submit, which already happened). If acquired and not waited, leave it. Then `xrDestroySwapchain` for every swapchain. | Ours: Returned at once. In flight: Returned after the single teardown `vkQueueWaitIdle`. | Order: stop the frame loop, `vkQueueWaitIdle` (teardown only, bounded by the driver), Return all sources, destroy deferred imports and every import, destroy swapchains, then `xrEndSession`. On `READY` again, swapchains and imports are re-created lazily on the next present. The core's buffers were never touched. |
-| **`LOSS_PENDING`, `EXITING`, `InstanceLossPending`, or `VK_ERROR_DEVICE_LOST`** | Don't release anything and don't wait on the queue for longer than a bounded timeout (a lost device may never idle). Destroy the swapchains. | All sources Returned immediately, whatever their fences. In-flight copies are abandoned with the device. | Destroy imports and Vulkan objects without waiting, then the XR session and instance. The backend is dropped. A fresh backend is built when the runtime is back (plan 2.6, `Quit`), and every surface presents again from nothing. Producers aren't left holding a buffer we never gave back. |
+| **`xrWaitSwapchainImage` times out** (`XR_TIMEOUT_EXPIRED`). Nothing has been submitted for this image. | Acquired but not waited. It can't be released (release without a wait is `XR_ERROR_CALL_ORDER_INVALID`, `xrReleaseSwapchainImage` man page), so we keep holding it and wait again next frame. We never call acquire again meanwhile. | Stays Ours (the newest frame). A newer frame replaces it and the older one is Returned at once. | The wait is bounded, not `XR_INFINITE_DURATION` (WayVR waits forever, `swapchain.rs` `acquire_wait_image`). Proposed: 2 ms per frame. The surface keeps drawing its last released image. After 30 consecutive timeouts (about 0.3 s at 90 Hz): the swapchain goes on the retirement list. It's destroyed only when every fence of copies earlier submitted to its other images has signalled (those are in flight even though this wait has nothing submitted). The held image goes with it (**unverified:** that destroying a swapchain with an acquired, unwaited image is allowed; step 8 of the spike asserts it). Return the source, log once, recreate on the next frame. |
+| **Submit fails** (`vkQueueSubmit` returns an error) | Acquired and waited, but not written, so releasing it would make garbage the "last released" image. We do **not** release it. The layer keeps the previously released image. | Ours (never In flight). | `vkQueueSubmit` man page: on `VK_ERROR_OUT_OF_HOST_MEMORY` or `VK_ERROR_OUT_OF_DEVICE_MEMORY` the implementation must leave the state and contents of the referenced resources and sync objects unaffected, and where it can't guarantee that it must return `VK_ERROR_DEVICE_LOST`. So after those two errors nothing was submitted for this copy: retry next frame with the same fence (still unsignalled and unused), up to 3 times. After the third, the swapchain goes on the retirement list as in the row above (earlier copies' fences gate it), Return the source, log once with the `VkResult`, recreate lazily. `VK_ERROR_DEVICE_LOST` skips the retries and is the device-loss row. `VK_ERROR_UNKNOWN` or `VK_ERROR_VALIDATION_FAILED` give no such guarantee, so they're treated like the device-loss row. **Unverified:** that every runtime accepts a layer that references a swapchain which currently has an acquired image. The spec text I found says a layer references the last released image, not the acquired one. |
+| **Resize** (new size from the source) | A new swapchain is created. The old swapchain keeps being submitted, at its old size, until the new one has released its first image, then the layer switches in one frame. If the old one holds an acquired image it is released only if already waited, else left to die with the swapchain. | In-flight copies on the old swapchain finish as normal. The old GBM pair or old PipeWire buffers are Returned/freed as their fences signal. | The old swapchain, its imports and its sources all go on the retirement list, gated on the fences of every copy submitted to them (WayVR's `SwapchainRetirementQueue` does this with a completion marker). This replaces "frees both at once, the shown one included" (plan 2.3). Nothing is freed on resize without a signalled fence. If a fence never signals (including a stalled surface from 1.6), they are retained until exit. |
+| **`STOPPING`** (session ending, the app may restart it on `READY`) | Stop acquiring and starting copies. For each surface: if an image is acquired and waited, release it (the copy was submitted). If acquired and not waited, leave it. | Ours: Returned at once. In flight: Returned when that copy's fence signals. | Collect every outstanding fence and call `vkWaitForFences` (`waitAll`) with a finite timeout (proposal: 250 ms total). **All signalled:** Return the sources, destroy the imports (`vkDestroyImage`), `xrDestroySwapchain` each swapchain, then `xrEndSession`. **Timeout:** keep the sources, imports, swapchains and the session for the fences that didn't signal (not Returned, not destroyed, leaked until exit), do what's safe for the rest, log once. The session isn't destroyed while a swapchain with outstanding work is alive (**unverified:** whether `xrDestroySession` waits or invalidates its children safely; we don't rely on it). On `READY` again, swapchains and imports are re-created lazily. The core's buffers were never touched. |
+| **XR session loss with a healthy Vulkan device:** `LOSS_PENDING`, `EXITING`, or `InstanceLossPending` | Stop acquiring and starting copies. XR loss doesn't tell us the Vulkan device is lost, and doesn't cancel copies already submitted to it. Release an image only if it's acquired and waited. Don't call `xrEndFrame` for new layers once the session can't take them. | In flight: **retained**, not Returned early. Ours: Returned at once. | Same as `STOPPING`: finite `vkWaitForFences` on the outstanding fences. For fences that signal: Return the source, destroy the import, destroy the swapchain, then the XR session and instance. For fences that time out: retain the source, the import, **and the swapchain image the copy writes into** (the swapchain, and so the session, stay alive) until exit. `vkDestroyImage`'s rule (above) is why imports can't go early, and the swapchain gets the same treatment by analogy (**unverified** for `xrDestroySwapchain`). The backend is dropped only when nothing is retained; if something is, the process keeps it until it exits. A fresh backend is built when the runtime is back (plan 2.6, `Quit`). |
+| **Confirmed `VK_ERROR_DEVICE_LOST`** (from `vkQueueSubmit`, `vkWaitForFences`, `vkGetFenceStatus`, or any call) | Don't release or wait on anything XR-side that needs the queue. | In flight and Ours: Returned now. A lost device's submitted copies will never complete, and the producers must not be left holding buffers. This is the one case where Returning without a signalled fence is allowed, because the fence will never signal and the device can no longer read the buffer. | Destroy objects best-effort without waiting (`vkWaitForFences` returns `VK_SUCCESS` or `VK_ERROR_DEVICE_LOST` in finite time on device loss, per its man page, so one finite wait is fine to confirm). Then the XR session and instance, then the backend is dropped, and every surface presents again from nothing once a new device exists. Whether a Vulkan device is "confirmed lost" is by a returned `VK_ERROR_DEVICE_LOST`, not by an XR event. |
 
 Things this table pins that the earlier draft left loose:
 
 - "Release any acquired image" is gone. The rule is: release after a successful submit, never
   after a failed one, never before a wait, and on teardown only an image that has been waited.
-- Source buffers are Returned on fence signal, or at once on every path that never submitted. There
-  is no path where a source is held with no fence and no owner.
+- Sources are Returned on fence signal, or at once on every path that never submitted, or on a
+  confirmed device loss. There is no path that Returns or frees on a timeout. There is no
+  `vkQueueWaitIdle`.
 - Every timeout and retry count above is a proposal. The spike's resize and teardown steps (1.11)
   exercise each row.
+
+**Checked against the Vulkan and OpenXR rules.** The spike can show target behaviour. It can't
+make an API-invalid lifetime path valid because validation stays quiet, and some of these rules
+aren't things a layer checks. Row by row, what each depends on:
+
+- *Normal.* OpenXR: waited before release, one image acquired per swapchain, layout and queue
+  ownership restored (OpenXR 1.1, 12.25.4, quoted in 1.6). Vulkan: submit before release is
+  unverified as a sufficient rule (1.6).
+- *`xrWaitSwapchainImage` timeout.* OpenXR: release needs a prior wait (verified, man page). That
+  destroying an unwaited acquired image is allowed: **unverified**. If it's not allowed, the row
+  changes to "keep waiting, with a longer bound, and recreate only after the wait succeeds".
+- *Submit fails.* Vulkan: verified from the `vkQueueSubmit` man page, as written in the row. Not
+  releasing the acquired image: our choice, based on OpenXR's "last released image is the one
+  referenced". A layer referencing a swapchain that has an acquired image: **unverified**.
+- *Resize, `STOPPING`, session loss.* Vulkan: `vkDestroyImage` and `vkDestroyDevice` rules,
+  verified from their man pages. `xrDestroySwapchain` and `xrDestroySession` with outstanding GPU
+  use: **unverified**, so the rows retain rather than destroy on a timeout.
+- *Device loss.* Vulkan: `vkWaitForFences` returns in finite time on device loss (man page,
+  verified). That Returning a buffer to a producer after device loss is safe for the producer is
+  an argument, not a spec rule (the lost device is ours, the producer has its own).
 
 ### 1.8 Sharing, and a panel's back
 
@@ -443,13 +514,19 @@ for this slice can be made from it:
 7. **Teardown.** End the session mid-frame (acquired, not released) and exit. Count open fds in
    `/proc/self/fd` and device memory (`VK_EXT_memory_budget`) before and after: unchanged.
 8. **State table rows (1.7).** Inject an `xrWaitSwapchainImage` timeout, a failed submit, a
-   resize while a copy is in flight, a `STOPPING` and a device loss, and check each row of the
+   resize while a copy is in flight, a `STOPPING`, an XR session loss with the device healthy
+   (copies must be retained until their fences signal, then freed), a fence that never signals
+   (a held-back producer: the wait times out and nothing is freed or Returned), and a confirmed
+   device loss, and check each row of the
    table: nothing leaked, nothing released that shouldn't be, every source Returned. Three rows
    destroy a swapchain that still has an acquired image (the timeout, the failed submit, and
    `STOPPING`'s not-waited case). I haven't found the sentence that allows that (**unverified**,
    Muse #385), so this step asserts the destroy itself: no runtime error, and validation clean. If
    a runtime refuses it, those rows wait and release the image first (after a bounded wait), and
    the table changes to say so.
+   A clean validation run does not make a row valid: the rows are checked against the API rules
+   in the "Checked against" list at the end of 1.7, and any rule marked unverified there stays
+   unverified after the spike unless the spike's result cites a spec or runtime source for it.
 9. **Failure path.** Force an import failure (an unsupported modifier) and confirm the staging
    fallback shows the same picture, with one log line.
 10. **Where.** The Vulkan half (items 2 to 9 without the XR calls, copying into a plain
@@ -734,13 +811,36 @@ in `home.json`. A namespace in the identity is exact, and it shows up in the fil
     with no `:` is read as `openvr:<that>`. We keep writing them bare, so no stored value changes
     and an older build keeps reading the file.
   - OpenXR rooms are written prefixed: `"openxr:monado"`, `"openxr:wivrn"`.
-  - The key is a small readable name for known runtimes, matched from `runtimeName` in
-    `xrGetInstanceProperties`: contains "monado" gives `monado`, contains "wivrn" gives `wivrn`.
-    Anything else gets `x-<8 hex digits of a hash of runtimeName>`, so two unknown runtimes still
-    don't share a room, and a human can see it's a hash. **Unverified:** what `runtimeName` string
-    Monado and WiVRn actually report (WiVRn is built on Monado, so it may say "Monado"). The
-    runtime manifest's `name` field (`active_runtime.json`, which `tools/xr-probe` already reads)
-    is the fallback identity if the string isn't distinguishing.
+  - The key is derived from the runtime's identity, in this order:
+    1. Known names, matched case-insensitively on `runtimeName` from `xrGetInstanceProperties`:
+       contains "wivrn" gives `wivrn`, else contains "monado" gives `monado`. **WiVRn wins** when a
+       name contains both, because WiVRn is built on Monado's code and a name that mentions both
+       is most likely WiVRn identifying its base, while a Monado build never names WiVRn.
+       (**Unverified:** what string each reports; I haven't run either.) Two different builds of
+       one known runtime (a fork that still says "Monado") share a room by design. Their origins
+       may differ, and that's the origin-stability problem of 3.4, not an identity one.
+    2. Otherwise `x-<8 hex digits of a hash of the canonical identity>`. It's readable as "not a
+       known runtime" and is not a guarantee of uniqueness, so it's paired with the full identity
+       as below.
+  - **The canonical identity** is `runtimeName` trimmed and lowercased. If `runtimeName` is empty
+    or is one of a short list of generic strings (to be written once we've seen real ones;
+    **unverified** that any runtime does this), it is `manifest:<name field of the active runtime
+    manifest>` instead (`active_runtime.json`, which `tools/xr-probe` already reads).
+  - **The full identity is stored next to the key.** `home.json` gets a top-level `"runtimes"`
+    object mapping each OpenXR key to its canonical identity, e.g. `"x-1a2b3c4d": "acme xr
+    runtime 3.1"`. It's written the first time a key is used. Known names are recorded too, for
+    diagnostics.
+  - **Collision handling.** On start, compute the key and canonical identity, then look the key
+    up in `"runtimes"`:
+    - absent: record it and use it;
+    - present and equal: use it;
+    - present and different (a hash collision, or the manifest fallback changed): treat it as a
+      **different room**. Try `<key>-2`, `<key>-3`, and so on. Use the first suffix whose recorded
+      identity equals ours, or the first free one (record it). Stored rooms and spots under the
+      other identity are left untouched and never selected.
+    So two unknown runtimes do not silently share a room, and one that collides gets its own
+    suffixed key. This only holds if `"runtimes"` survives. If a user deletes it, the keys still
+    work, but a later collision can't be detected until it's rewritten.
   - The key identifies the runtime, nothing about the headset or the room. Question 11 (no
     `systemName`) is settled that way.
 - **Per runtime, not per backend:** SteamVR's standing space and Monado's stage space have
@@ -785,15 +885,24 @@ What has to change (no code written, this is the list):
    Compatibility with older builds: they read ids as opaque strings (`conf::rooms`'s `id` closure
    takes any non-empty string), so an OpenXR id in `universes` simply never matches a SteamVR
    universe there. An older build could, in principle, set `"universe"` to its first room from
-   such a list; it wouldn't match anything, which is the same as an unbound workspace. I haven't
-   tested an older build against such a file (**unverified**). If we later want to normalise
+   such a list; it wouldn't match anything, which is the same as an unbound workspace. The one
+   addition is the top-level `"runtimes"` object (3.3), written the first time an OpenXR key is
+   used. Whether an older build preserves an unknown top-level key when it rewrites `home.json`
+   is **unverified**, and I haven't tested an older build against such a file. If we later want to normalise
    everything to `openvr:<n>`, that's its own step with a one-way write, and I'd not do it in phase 1.
 7. **Tests:** add a fixture where the room is `openxr:monado` and check (a) a workspace bound to
    it is chosen, (b) Temporary lays out in it once and doesn't swap, (c) Save as workspace binds
    it, (d) `openvr:<n>` and `openxr:monado` never select the same dedicated workspace, even if a
    hand-edited `universes` list holds a bare `"0"` or a number; (e) bare decimals still parse as
-   OpenVR and round-trip unchanged through a load and save. The `old_loop` golden in `main.rs`
-   tests is OpenVR-only and doesn't change.
+   OpenVR and round-trip unchanged through a load and save; (f) a `runtimeName` containing both
+   "WiVRn" and "Monado" (e.g. "WiVRn (Monado)", in either case) gives `wivrn`; (g) two unknown
+   names that hash to the same 8 hex digits (a forced-collision test with a stand-in hash) get
+   different keys, the second suffixed `-2`, and each finds its own on the next start; (h) the
+   manifest fallback: with an empty `runtimeName`, the room comes from the manifest `name`, and a
+   changed manifest `name` gives a different key and leaves the old room's spots alone, while a
+   changed manifest next to a `runtimeName` that decides (known name) changes nothing; (i) a
+   missing `"runtimes"` object is recreated without changing any stored room. The `main-steamvr-events` golden in
+   `main.rs`'s tests is OpenVR-only and doesn't change.
 8. **Docs:** `docs/steamvr-integration.md`'s "Where things come back after a restart" and
    `docs/workspaces.md` get an OpenXR paragraph (every user-facing change gets its docs in the same batch), and the
    home.json format description (`conf.rs` comment near 818, `docs/workspaces.md`) gets the room id
@@ -927,4 +1036,8 @@ Numbered so you can answer by number. The first three block phase 1. Where Muse 
 - The Mesa check in 1.6 was a sparse checkout of `src/gbm` and `src/gallium/frontends/dri` at
   `b27d00d`. I did not read the per-driver (radeonsi, iris, freedreno) transfer-map code, so
   whether a driver's CPU map is coherent for a later device read is unverified.
+- No Vulkan `vkDeviceWaitIdle`, `xrDestroySwapchain` or `xrDestroySession` page was read. The
+  Vulkan pages I did read (`vkDestroyImage`, `vkDestroyDevice`, `vkQueueWaitIdle`, `vkWaitForFences`,
+  `vkQueueSubmit`) were fetched from registry.khronos.org/vulkan/specs/latest/man/html on
+  2026-10-31 (docs.vulkan.org refused the fetch tool).
 - The retry counts, timeouts and `B_MIN = 7` in 1.7 and 2.5 are proposals I haven't measured.
