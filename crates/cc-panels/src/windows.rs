@@ -464,6 +464,15 @@ fn stuck_after(level: Level, fps: u32) -> Duration {
     STUCK.max(interval * 6)
 }
 
+/// The head an `ahead` run is laid out for, from the head at its first window and where that went:
+/// at the eyes, looking level the way to it (the 8 cm cascade moves it off the gaze), so the next
+/// sits beside it, not over it.
+fn run_head(head: &Mat, first: &Pose) -> Mat {
+    let eye = [0, 1, 2].map(|i| head[i][3] as f64);
+    let (yaw, _) = angles(&[first.centre[0] - eye[0], 0.0, first.centre[2] - eye[2]]);
+    panel_matrix(&Pose { centre: eye, yaw, ..Default::default() })
+}
+
 /// A run of windows gone `ahead`: when the last went, the head the run's laid out for, and their
 /// sizes (width, height, curve), in order.
 type AheadRun = (Instant, Mat, Vec<(f64, f64, f64)>);
@@ -1073,12 +1082,8 @@ impl Windows {
             let head = crate::stage::Live.head_now().unwrap_or(STAND_IN_HEAD);
             let n = (0..SLOTS).filter(|&j| panel(self.first + j).live()).count() % 6;
             let c = 0.08 * n as f64;
-            let pose = crate::geometry::new_pose(&head, 1.0, c, c);
-            // the run goes on from the way to this one (the cascade moves it off the gaze), so the
-            // next sits beside it, not over it
-            let eye = [0, 1, 2].map(|i| head[i][3] as f64);
-            let (yaw, _) = angles(&[pose.centre[0] - eye[0], 0.0, pose.centre[2] - eye[2]]);
-            self.ahead_run = Some((now, panel_matrix(&Pose { centre: eye, yaw, ..Default::default() }), vec![(width, height, 0.0)]));
+            let pose = crate::geometry::new_pose(&head, 1.0, c, c); // 1 m wide; adopt sets the width
+            self.ahead_run = Some((now, run_head(&head, &pose), vec![(width, height, 0.0)]));
             return pose;
         };
         sizes.push((width, height, 0.0));
@@ -1439,6 +1444,37 @@ impl Windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An `ahead` run built the way ahead() builds it: the first window from new_pose (cascaded or
+    /// not), the rest from side_by_side for run_head. Each later one is in front of the eyes, the
+    /// way the head looks, 1.4 m out like the first, and clear of the first, for a head turned
+    /// any way.
+    #[test]
+    fn an_ahead_runs_next_window_is_in_front_and_beside_the_first() {
+        use crate::geometry::{level_ahead, new_pose, norm};
+        for yaw in [0.0, 70.0, -150.0] {
+            let head = panel_matrix(&Pose { centre: [0.3, 1.6, -0.2], yaw, pitch: -10.0, ..Default::default() });
+            let eye = [0, 1, 2].map(|i| head[i][3] as f64);
+            let gaze = level_ahead(&head);
+            for c in [0.0, 0.16] {
+                let first = new_pose(&head, 1.0, c, c);
+                let sizes = [(0.6, 0.4, 0.0), (0.8, 0.5, 0.0), (0.5, 0.3, 0.0)];
+                let poses = crate::gather::side_by_side(&run_head(&head, &first), &sizes);
+                let d = |p: &Pose| [p.centre[0] - eye[0], 0.0, p.centre[2] - eye[2]];
+                assert!((norm(&d(&first)) - crate::limits::NEW_AHEAD).abs() < 0.02, "the first {} m out", norm(&d(&first)));
+                for p in &poses[1..] {
+                    let v = d(p);
+                    assert!(v[0] * gaze[0] + v[2] * gaze[2] > 0.0, "yaw {yaw}, cascade {c}: in front, not behind: {p:?}");
+                    assert!((norm(&v) - crate::limits::NEW_AHEAD).abs() < 1e-6, "on the same arc");
+                }
+                // clear of the first, where it really is: their angles apart at least their half widths
+                let ang = |v: [f64; 3]| v[0].atan2(-v[2]).to_degrees();
+                let half = |w: f64| (w / 2.0 / crate::limits::NEW_AHEAD).atan().to_degrees();
+                let apart = (ang(d(&poses[1])) - ang(d(&first)) + 540.0).rem_euclid(360.0) - 180.0;
+                assert!(apart.abs() >= half(sizes[0].0) + half(sizes[1].0), "yaw {yaw}, cascade {c}: the second covers the first ({apart}°)");
+            }
+        }
+    }
 
     #[test]
     fn a_kept_window_pose_only_comes_back_in_its_own_room() {
