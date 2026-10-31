@@ -731,6 +731,14 @@ impl Pace {
         self.frame = Duration::from_secs_f64(1.0 / hz as f64);
     }
 
+    /// The rate read again mid-session: one the runtime can't tell (None) keeps the current rate,
+    /// so a passing property error doesn't drop it to 90 Hz until the next read.
+    fn follow(&mut self, hz: Option<f32>) {
+        if let Some(hz) = hz {
+            self.set_rate(hz);
+        }
+    }
+
     /// After a tick that began at `start`, sets the next one's deadline. `why` is what's moving now.
     fn plan(&mut self, start: Instant, why: Option<&'static str>) {
         if let Some(w) = why {
@@ -1086,10 +1094,9 @@ fn run() -> Result<(), String> {
     let mut att: Vec<attention::Attention> = panels().iter().map(|_| Default::default()).collect();
     let mut on_head = poll::Live.worn().unwrap_or(true); // as SteamVR says at start, else worn; VREvent 103/104 keep it up to date
     let mut gaze_seen: Option<([f64; 3], [f64; 3], Instant)> = None; // the last valid gaze sample
-    // 0.0, the fallback for a runtime that can't tell, is "no rate": Pace runs at 90 Hz then (its
-    // test). (OpenVR always tells: its own 0, for a bad index or type, is the same.)
-    let display_hz = || poll::Live.display_hz().unwrap_or(0.0);
-    let mut pace = Pace::new(display_hz(), Instant::now());
+    // at start, 0.0, the fallback for a runtime that can't tell, is "no rate": Pace runs at 90 Hz
+    // then (its test); OpenVR can't tell when it sets the property's error (poll.rs)
+    let mut pace = Pace::new(poll::Live.display_hz().unwrap_or(0.0), Instant::now());
     let _ = vr::MAIN.set(std::thread::current()); // vr::wake ends the wait between ticks
     let mut gaze_tried: Option<Instant> = None;
     let mut gaze_off = false; // a game is running, so the gaze's action set is let go
@@ -1148,7 +1155,7 @@ fn run() -> Result<(), String> {
             );
             (k.moves, k.clicks, k.keystrokes, k.wheels) = (0, 0, 0, 0);
             drop(k);
-            pace.set_rate(display_hz()); // (changed in SteamVR's settings)
+            pace.follow(poll::Live.display_hz()); // (changed in SteamVR's settings)
             let (all, fast) = std::mem::take(&mut pace.ticks);
             eprintln!(
                 "loop: {:.1} ticks/s, {}% at {:.0} Hz; last kept there by {}{}",
@@ -1552,6 +1559,19 @@ mod tests {
         l.laps = vec![("grab", ms(18)), ("taskbar", ms(33))];
         l.split("plasmabar", ms(2));
         assert_eq!(slow_tick(ms(412), &l.laps).unwrap(), "slow tick 412ms: grab 18 taskbar 31 plasmabar 2");
+    }
+
+    /// Mid-session, a rate the runtime can't tell keeps the one Pace has, 120 Hz here, rather than
+    /// dropping to 90; one it can tell, out of range or not, is set as at start.
+    #[test]
+    fn a_rate_read_again_that_cant_tell_keeps_the_current_one() {
+        let mut p = Pace::new(120.0, Instant::now());
+        p.follow(None);
+        assert_eq!(p.frame, Duration::from_secs_f64(1.0 / 120.0), "can't tell: still 120 Hz");
+        p.follow(Some(144.0));
+        assert_eq!(p.frame, Duration::from_secs_f64(1.0 / 144.0), "changed in SteamVR's settings");
+        p.follow(Some(0.0));
+        assert_eq!(p.frame, Duration::from_secs_f64(1.0 / 90.0), "a 0 it says: 90 Hz, as at start");
     }
 
     #[test]
