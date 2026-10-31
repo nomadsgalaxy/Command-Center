@@ -202,17 +202,36 @@ mod tests {
     }
 
     /// A relocalization's re-read of the universe follows `Session::universe_id`'s rule: with its
-    /// error set, whatever its value, it can't tell, and the room it's in stays. So it's only a
-    /// relocalization, in a room or with no room yet, and never a change to the value that came
-    /// with the error, or to no room.
+    /// error set, whatever its value, it can't tell, and the room it's in stays. That's a
+    /// continuity policy, not proof it's the same physical room: it only means a read that failed
+    /// doesn't move anything. A later read that works still moves the room, from a known one or
+    /// from none.
     #[test]
     fn a_relocalization_with_the_universe_unreadable_keeps_the_room() {
-        let e = vr::VREvent_t { eventType: sys::EVREventType_VREvent_StandingZeroPoseReset, ..Default::default() };
+        let reset = vr::VREvent_t { eventType: sys::EVREventType_VREvent_StandingZeroPoseReset, ..Default::default() };
         let unknown = Some(sys::ETrackedPropertyError_TrackedProp_UnknownProperty);
-        let _vr = vr::fake::install(vr::fake::Script { universe: 8, prop_error: unknown, sys_events: [e, e].into(), ..Default::default() });
+        let _vr = vr::fake::install(vr::fake::Script { universe: 8, ..Default::default() });
+        // the next reset, with the read failing or not; the fake's universe is 8 throughout
+        let next = |q: &mut Queue, failing: bool| {
+            // the script's lock let go of before the poll, which takes it again
+            if let Some(s) = vr::fake::SCRIPT.lock().unwrap().as_mut() {
+                (s.prop_error, s.sys_events) = (if failing { unknown } else { None }, [reset].into());
+            }
+            (q.next_event(), q.universe)
+        };
+        let (kept, moved) = (|| Some(SessionEvent::Relocalized), || Some(SessionEvent::RoomChanged(8)));
+        // (a) in room 7: unreadable keeps it, then a good read moves it
         let mut q = Queue::new(7);
-        assert_eq!((q.next_event(), q.universe), (Some(SessionEvent::Relocalized), 7), "not room 8, nor no room: still 7");
+        assert_eq!(next(&mut q, true), (kept(), 7), "not room 8, nor no room: still 7");
+        assert_eq!(next(&mut q, false), (moved(), 8), "a later good read still moves the room");
+        // (b) unreadable again and again: still 7 each time
+        let mut q = Queue::new(7);
+        for i in 0..3 {
+            assert_eq!(next(&mut q, true), (kept(), 7), "unreadable read {i}");
+        }
+        // (c) with no room yet: unreadable stays none, then a good read gives the room
         let mut q = Queue::new(0);
-        assert_eq!((q.next_event(), q.universe), (Some(SessionEvent::Relocalized), 0), "with no room yet, still none");
+        assert_eq!(next(&mut q, true), (kept(), 0), "with no room yet, still none");
+        assert_eq!(next(&mut q, false), (moved(), 8), "and a good read gives it");
     }
 }

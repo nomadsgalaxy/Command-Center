@@ -725,16 +725,20 @@ impl Pace {
         p
     }
 
+    /// The refresh rates Pace takes as the display's.
+    const RATES: std::ops::RangeInclusive<f32> = 30.0..=240.0;
+
     /// Sets the display's refresh rate (90 when SteamVR doesn't say).
     fn set_rate(&mut self, hz: f32) {
-        let hz = if (30.0..=240.0).contains(&hz) { hz } else { 90.0 };
+        let hz = if Self::RATES.contains(&hz) { hz } else { 90.0 };
         self.frame = Duration::from_secs_f64(1.0 / hz as f64);
     }
 
-    /// The rate read again mid-session: one the runtime can't tell (None) keeps the current rate,
-    /// so a passing property error doesn't drop it to 90 Hz until the next read.
+    /// The rate read again mid-session: one the runtime can't tell (None), or one outside RATES
+    /// (0, negative, NaN, absurdly high), keeps the current one, so a passing error doesn't drop it
+    /// to 90 Hz until the next read. 90 Hz is only the start's fallback (`new`).
     fn follow(&mut self, hz: Option<f32>) {
-        if let Some(hz) = hz {
+        if let Some(hz) = hz.filter(|hz| Self::RATES.contains(hz)) {
             self.set_rate(hz);
         }
     }
@@ -1561,8 +1565,8 @@ mod tests {
         assert_eq!(slow_tick(ms(412), &l.laps).unwrap(), "slow tick 412ms: grab 18 taskbar 31 plasmabar 2");
     }
 
-    /// Mid-session, a rate the runtime can't tell keeps the one Pace has, 120 Hz here, rather than
-    /// dropping to 90; one it can tell, out of range or not, is set as at start.
+    /// Mid-session, a rate the runtime can't tell, or one that isn't a rate, keeps the one Pace
+    /// has, 120 Hz here, rather than dropping to 90; a real one is set as at start.
     #[test]
     fn a_rate_read_again_that_cant_tell_keeps_the_current_one() {
         let mut p = Pace::new(120.0, Instant::now());
@@ -1570,8 +1574,13 @@ mod tests {
         assert_eq!(p.frame, Duration::from_secs_f64(1.0 / 120.0), "can't tell: still 120 Hz");
         p.follow(Some(144.0));
         assert_eq!(p.frame, Duration::from_secs_f64(1.0 / 144.0), "changed in SteamVR's settings");
-        p.follow(Some(0.0));
-        assert_eq!(p.frame, Duration::from_secs_f64(1.0 / 90.0), "a 0 it says: 90 Hz, as at start");
+        p.follow(None);
+        assert_eq!(p.frame, Duration::from_secs_f64(1.0 / 144.0), "can't tell: still 144 Hz");
+        p.follow(Some(120.0));
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY, 1000.0] {
+            p.follow(Some(bad));
+            assert_eq!(p.frame, Duration::from_secs_f64(1.0 / 120.0), "{bad} isn't a rate: still 120 Hz");
+        }
     }
 
     #[test]
