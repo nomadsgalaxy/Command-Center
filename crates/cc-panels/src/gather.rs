@@ -314,7 +314,8 @@ fn stack_on(from: &Pose, j: usize, (w, h, c): (f64, f64, f64), eye: &V3, yaw0: f
         // `from` faces the eyes from its row, tipped well under 60° unless the rows are taller than
         // the view; tipped further, a step down its face would hardly lower it
         debug_assert!(y[1] > 0.5, "stack_on: {from:?} is tipped too far to move down its face");
-        move_by(&mut centre, &y, -over / y[1]);
+        // and a release build moves it no further than that tip would need, so it can't fly off
+        move_by(&mut centre, &y, -over / y[1].max(0.5));
     }
     // its corners inside `half_arc` on its side: none past the upright plane through the eyes at
     // that angle, whose normal `n` points back toward the gaze
@@ -322,10 +323,11 @@ fn stack_on(from: &Pose, j: usize, (w, h, c): (f64, f64, f64), eye: &V3, yaw0: f
     let inward = |v: &V3| v[0] * n[0] + v[2] * n[2];
     let half = if c > 0.0 { c * (w / (2.0 * c)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
     let least = inward(&[centre[0] - eye[0], 0.0, centre[2] - eye[2]]) + sagitta(w, c) * inward(&z) - half * inward(&x).abs() - h / 2.0 * inward(&y).abs();
-    // a step across can't help when its face is square to `n`, but then `from` faces the eyes from
-    // straight along `n`, the arc's radius inside the bound, so nothing's past it to move
-    debug_assert!(least >= 0.0 || inward(&x).abs() > 1e-9, "stack_on: {centre:?} is past the arc, and across doesn't move it in");
-    if least < 0.0 && inward(&x).abs() > 1e-9 {
+    // a step across can't help when its face is (nearly) square to `n`, but then `from` faces the
+    // eyes from (nearly) straight along `n`, about the arc's radius inside the bound, so nothing's
+    // past it to move; a release build skips the push there rather than divide by almost nothing
+    debug_assert!(least >= 0.0 || inward(&x).abs() > 0.1, "stack_on: {centre:?} is past the arc, and across hardly moves it in");
+    if least < 0.0 && inward(&x).abs() > 0.1 {
         move_by(&mut centre, &x, -least / inward(&x));
     }
     Pose { centre, width: w, curve: c, ..*from }
