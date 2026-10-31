@@ -759,7 +759,8 @@ Behaviour changes phase 0 put off, each its own branch with its own test:
 - The dominant hand loads at start on any runtime, not in the OpenVR laser's `Beam::new` (6e).
   Done: main.rs calls `config::load_dominant` once at start, after the workspace is chosen and
   before any panel or pointer exists, and `Beam::new` no longer loads it. Its log line moved
-  with it, now "hands:" instead of "laser:".
+  with it, now "hands:" instead of "laser:". `Beam::new` also ran once, at start, so
+  settings.json is read once either way; after start only Preferences changes the hand.
 - While the laser works, the settings windows' fallback doesn't take the mouse's queued presses
   (kvm's `extra_mouse`), so a press queued just before it started working comes out the next
   time it stops. Drop them when it starts working instead (6e).

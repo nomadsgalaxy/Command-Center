@@ -443,10 +443,20 @@ pub fn save_home_pose(name: &str, screen: Option<i32>, p: &Pose, height: f64, zo
 #[cfg(test)]
 mod tests {
     /// settings.json's dominant hand is what loads, the right when it's missing or neither, with
-    /// no laser involved: main.rs loads it at start on any runtime.
+    /// no laser involved: main.rs loads it at start on any runtime. It holds the fake SteamVR's
+    /// lock while it sets the hand, since the golden wrist test reads it under that lock
+    /// (taskbar::wrist_frame), and puts the right back after.
     #[test]
     fn the_dominant_hand_loads_from_the_settings() {
         use crate::ids::Hand;
+        let _vr = crate::trace::fake_vr();
+        struct Right;
+        impl Drop for Right {
+            fn drop(&mut self) {
+                super::set_dominant(Hand::Right); // however the test ends
+            }
+        }
+        let _right = Right;
         let load = |v: serde_json::Value| {
             super::load_dominant_from(&v);
             super::dominant()
