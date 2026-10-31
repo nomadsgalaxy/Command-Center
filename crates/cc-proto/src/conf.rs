@@ -1043,9 +1043,10 @@ fn has_workspace(data: &Json, n: &str) -> bool {
 /// you're there again (Anthony's rule, docs/steamvr-integration.md). A room it hasn't seen starts
 /// from the last room's layout, not empty: on the Frame a new universe is mostly the same room,
 /// tracked again without its saved map ("Switching to a new universe ... without a universe
-/// relocalization" in vrserver.txt, a new random id each time). The active room (LAID_OUT_IN, a universe id) has its layout in
-/// "spots", which is what everything reads; the others wait under ROOMS, at most KEEP_ROOMS of
-/// them, the one seen longest ago going first ("seen", from the running count "seq").
+/// relocalization" in vrserver.txt, a new random id each time). The active room (LAID_OUT_IN, a
+/// universe id) has its layout in "spots", which is what everything reads; the others wait under
+/// ROOMS, at most KEEP_ROOMS of them, the one seen longest ago going first ("seen", from the
+/// running count "seq").
 const LAID_OUT_IN: &str = "laid_out_in";
 const ROOMS: &str = "rooms";
 const KEEP_ROOMS: usize = 8;
