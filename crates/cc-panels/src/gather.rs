@@ -711,12 +711,12 @@ mod tests {
     /// Too many for ROWS rows even on the widest arc: layout keeps WIDER's last arc and ROWS rows,
     /// and the rest stack on the last one placed, the way side_by_side's do (stack_on). Every panel
     /// stays inside the arc by its real corners; the rows don't overlap; a stacked one overlaps only
-    /// the row below and the stack, never the eye-level row or the one above. Then once more with
-    /// a big curved one last, too tall and too wide for its plain step, which is moved to fit.
+    /// the row below and the stack, never the eye-level row or the one above. It runs again with a
+    /// big curved one last, too tall and too wide for its plain step, which is moved to fit; with
+    /// one tall one among the short in the eye-level row; and with both, where the tall one lowers
+    /// the ceiling the big one is pulled under.
     #[test]
     fn past_the_widest_arc_the_rest_stack_on_the_last() {
-        // plain, a big curved one last, one tall one among the short in the eye-level row, and both:
-        // the tall one lowers the ceiling the big one is pulled under
         for (big, tall) in [(false, false), (true, false), (false, true), (true, true)] {
             let mut sizes = vec![(1.0, 0.6, 0.0); 30];
             if big {
