@@ -288,9 +288,13 @@ Instead, a press only goes through once its window is known to be on top:
    stack on the last one placed, turned the same way, 8 cm further down its face and across it
    for each (one to five steps, then round again a fifth of a step further across) toward the
    middle of your view, so 40 at start don't go a metre below your eyes or up over your head.
-   Each is 2 mm nearer than the one before, since the Frame draws by depth, so the newest is on
-   top. One too big for its spot moves down until its top is under the eye-level row, and
-   across until none of its corners is past 90°.
+   Moved only by those steps, no two of 25 in a row land on the same spot. Each is 2 mm nearer
+   than the one before, since the Frame draws by depth, so the newest is on top. One too big for
+   its spot moves down until its top is under the eye-level row, and across until none of its
+   corners is past 90°. A window moved that way can land near another one's spot, though it's
+   still drawn on top. Nothing bounds a stacked window from below, so a tall late one on a deep
+   stack can reach below the bottom row. A floor or a limit on its tilt is an option for later,
+   if that shows up in the headset.
 5. The tag is fetched (§9).
 
 **Idle windows**

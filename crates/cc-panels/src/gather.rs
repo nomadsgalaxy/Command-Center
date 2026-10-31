@@ -174,9 +174,12 @@ const NEARER: f64 = 0.002;
 /// are full, the rest stack on the last one placed, turned the same way: STEP further down its face
 /// and across it toward the gaze for each (one to five steps, then round again, each round a fifth
 /// of a step further across), and NEARER closer than the one before, so the newest is drawn on
-/// top. A stacked one too tall or wide for that spot is moved down its face until its top is under
-/// the eye-level row, and across until none of its corners is past BESIDE. Unlike `layout`, an
-/// earlier one never moves for a later one, so each can be placed as it comes.
+/// top. Moved only by those steps, no two of 25 in a row share a spot. A stacked one too tall or
+/// wide for that spot is moved down its face until its top is under the eye-level row, and across
+/// until none of its corners is past BESIDE, so it can land near another one's spot (still drawn
+/// on top). Nothing bounds one from below: a tall late one on a deep stack can reach below the
+/// bottom row. Unlike `layout`, an earlier one never moves for a later one, so each can be placed
+/// as it comes.
 pub fn side_by_side(head: &Mat, first_dy: f64, sizes: &[(f64, f64, f64)]) -> Vec<Pose> {
     let r = crate::limits::NEW_AHEAD;
     let eye: V3 = [0, 1, 2].map(|i| head[i][3] as f64);
@@ -541,7 +544,8 @@ mod tests {
                 assert!((d[2] - NEARER * (j + 1) as f64).abs() < 1e-9, "{i} nearer than the one before: {d:?}");
                 assert!(dy(p).abs() <= reach + 5.0 * STEP + 1e-9, "{i} too far down: {}", dy(p));
                 assert_eq!((p.width, p.curve, p.yaw, p.pitch), (sizes[i].0, sizes[i].2, from.yaw, from.pitch));
-                // and none on another's spot, a round later included
+                // and none on another's spot, a round later included: these all take plain steps,
+                // and one the bounds move can land near another's
                 for (l, q) in poses[k..i].iter().enumerate() {
                     let e = facing(q, p);
                     assert!(e[0].hypot(e[1]) > STEP / 5.0 - 1e-9 || j - l >= 25, "{i} on {}'s spot", k + l);
