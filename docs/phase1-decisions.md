@@ -260,7 +260,11 @@ Two separate waits, which OpenVR let us blur together.
     blocking variant is the control that tells us whether a corruption seen with submit-only is a
     sync problem or something else. It is not shipped.
   - **If the spike shows a runtime needs the wait:** that runtime gets a named per-runtime mode,
-    "wait before release", with a bound (proposal: 4 ms, then treat as a failed submit per 1.7).
+    "wait before release", with a bound (proposal: 4 ms). On a timeout the image is held, not
+    released: the copy is submitted but not known finished, so releasing would defeat the mode. The
+    layer keeps the last released image, the wait is retried next frame, and after 30 timeouts in a
+    row the surface goes the way of 1.7's wait-timeout row (destroy the swapchain, Return the
+    source, log once). Muse, #385.
     That is an exception to "no `vkWaitForFences` in the frame path", it is written down as one,
     and it's decided per runtime from the spike's result, not by default.
 
@@ -433,7 +437,12 @@ for this slice can be made from it:
    `/proc/self/fd` and device memory (`VK_EXT_memory_budget`) before and after: unchanged.
 8. **State table rows (1.7).** Inject an `xrWaitSwapchainImage` timeout, a failed submit, a
    resize while a copy is in flight, a `STOPPING` and a device loss, and check each row of the
-   table: nothing leaked, nothing released that shouldn't be, every source Returned.
+   table: nothing leaked, nothing released that shouldn't be, every source Returned. Three rows
+   destroy a swapchain that still has an acquired image (the timeout, the failed submit, and
+   `STOPPING`'s not-waited case). I haven't found the sentence that allows that (**unverified**,
+   Muse #385), so this step asserts the destroy itself: no runtime error, and validation clean. If
+   a runtime refuses it, those rows wait and release the image first (after a bounded wait), and
+   the table changes to say so.
 9. **Failure path.** Force an import failure (an unsupported modifier) and confirm the staging
    fallback shows the same picture, with one log line.
 10. **Where.** The Vulkan half (items 2 to 9 without the XR calls, copying into a plain
@@ -610,8 +619,10 @@ random grabbed or hovered panel) and `M` in 1, 2, 4, 7, 11, 16 and 64, with the 
 
 - (a) the submitted count is at most `max(B, 1)`;
 - (b) at least one layer is submitted if any surface is visible;
-- (c) whenever `B >= 11`, every member of `P` that is visible is submitted (so the cursor,
-  controls and the grabbed or hovered panel can't vanish while still interactive);
+- (c) whenever `B >= 11`, every member of `P` that is visible is drawn in the frame (its own
+  layer, or folded into its panel's with its own rectangle in the hit test, as above), so the
+  cursor, controls and the grabbed or hovered panel can't vanish while still interactive.
+  "Submitted" in (d) means the same;
 - (d) whenever `B` is below that, members leave `P` only in the step-5 order, and a surface that is
   not submitted returns nothing from the hit test (so nothing invisible takes a click);
 - (e) the same input and `M` give the same list (stable, so nothing flickers between frames).
@@ -632,6 +643,9 @@ loop:
   `xrEndFrame` may also fail when the runtime "cannot composite the layers due to resource
   constraints". Shared or not, we can't tell from the error, and the handling doesn't depend on
   which it is.
+- On a non-conforming runtime that reports `M < B_MIN`, the floor is `M` itself, and a
+  layer-limit error goes straight to the step-5 order below, never raising `B` above `M` (Muse,
+  #385). The property test's `M` of 1, 2 and 4 covers that branch.
 - On the error: `B = max(B_MIN, B / 2)`, applied from the next frame. We don't resubmit in the same
   frame (whether a failed `xrEndFrame` leaves the frame open is **unverified**), so we lose one
   frame's layers. Log once per halving.
