@@ -121,11 +121,18 @@ no saved place 1.2 m wide, and a window panel as wide as its window's pixels mak
 ## Where things come back after a restart
 
 A panel comes back to the last place you put it in the room you're in now. If you've never put
-it anywhere in this room (a new room, or travelling), it opens in front of you instead, to place
-yourself: another room's places are never carried over, since there they'd be somewhere else
-entirely. A room with its own workspace keeps its places; Temporary, the travel workspace, keeps
-each room's own places separately (for the last 8 rooms it's been used in), so going from one
-room to another and back brings each room's layout back, and a room it hasn't seen starts empty. A window
+it anywhere in this room, it opens in front of you instead, to place yourself. A room with its
+own workspace keeps its places, and never gets another room's. Temporary, the travel workspace,
+keeps each room's own places separately (for the last 8 rooms it's been used in), so going from
+one room to another and back brings each room's layout back.
+
+A room Temporary hasn't seen starts from the last room's places, not empty. That's because of how
+the Frame tracks: each time it finds its way again without recognising its saved map of the room,
+SteamVR makes up a new room id (vrserver.txt says "Switching to a new universe ... without a
+universe relocalization"), sometimes several times in a few minutes, so a "new room" is mostly the
+same room. Within one SteamVR session, the places line up, since SteamVR keeps the same origin
+across those new ids. After SteamVR restarts, its origin is wherever the headset started, so the
+places may be off until you move them; what you move is saved for that room. A window
 panel's own last place (kept while its window stays open, and the one an app reopened after the
 Desktop was closed comes back to) follows the same rule. The Machines, Preferences and Workspace
 windows too: with no place for them in this room, they open 1.4 m in front of you like
