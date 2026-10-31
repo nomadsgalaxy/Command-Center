@@ -287,7 +287,9 @@ Two separate waits, which OpenVR let us blur together.
       (`vkWaitForFences` man page: it returns `VK_TIMEOUT` when the condition isn't met in time).
     - **On a timeout:** the image stays held (the copy is submitted but not known finished, so
       releasing would defeat the mode), the layer keeps the last released image, and the wait is
-      retried next frame on the same fence.
+      retried next frame on the same fence. No new image is acquired for this surface while it's
+      held (1.7's one-acquired-image rule), so the retries can't use up a 2- or 3-image swapchain
+      (Muse, #407).
     - **After 30 timeouts in a row** (about 0.3 s at 90 Hz) the surface becomes **stalled**. It does
       not take 1.7's wait-timeout path, because that path destroys the swapchain and Returns the
       source, and here neither is safe without completion evidence. Stalled means: keep holding the
@@ -823,9 +825,12 @@ in `home.json`. A namespace in the identity is exact, and it shows up in the fil
        known runtime" and is not a guarantee of uniqueness, so it's paired with the full identity
        as below.
   - **The canonical identity** is `runtimeName` trimmed and lowercased. If `runtimeName` is empty
-    or is one of a short list of generic strings (to be written once we've seen real ones;
-    **unverified** that any runtime does this), it is `manifest:<name field of the active runtime
+    or is one of a short list of generic strings, it is `manifest:<name field of the active runtime
     manifest>` instead (`active_runtime.json`, which `tools/xr-probe` already reads).
+    The generic list starts empty, so only an empty `runtimeName` uses the manifest. A string
+    joins the list only when a real runtime is seen reporting it for more than one product (none
+    is known yet), and the list lives next to the known-name matches with that runtime named
+    (Muse, #407).
   - **The full identity is stored next to the key.** `home.json` gets a top-level `"runtimes"`
     object mapping each OpenXR key to its canonical identity, e.g. `"x-1a2b3c4d": "acme xr
     runtime 3.1"`. It's written the first time a key is used. Known names are recorded too, for
@@ -839,7 +844,10 @@ in `home.json`. A namespace in the identity is exact, and it shows up in the fil
       identity equals ours, or the first free one (record it). Stored rooms and spots under the
       other identity are left untouched and never selected.
     So two unknown runtimes do not silently share a room, and one that collides gets its own
-    suffixed key. This only holds if `"runtimes"` survives. If a user deletes it, the keys still
+    suffixed key. A consequence, by design: a runtime whose identity changes (a manifest rename
+    when the manifest is the identity, or a renamed unknown runtime) gets a new room, and the old
+    room's spots are kept but never selected again. The Workspace window can show the old room's
+    workspace by name, so a user can bind it to the new room by hand (Muse, #407). This only holds if `"runtimes"` survives. If a user deletes it, the keys still
     work, but a later collision can't be detected until it's rewritten.
   - The key identifies the runtime, nothing about the headset or the room. Question 11 (no
     `systemName`) is settled that way.
