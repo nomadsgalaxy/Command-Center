@@ -281,7 +281,8 @@ Instead, a press only goes through once its window is known to be on top:
    `app:` spot, or 1.4 m ahead of the head (geometry.rs `new_pose`) with an 8 cm cascade. Windows
    that go ahead within 3 s of each other (windows.rs `AHEAD_RUN`; at start KWin reports each open
    window in turn) go side by side on that arc instead, right, left, right of the first (gather.rs
-   `side_by_side`), and none moves for a later one. One that would go past 90° either way starts
+   `side_by_side`), and none moves for a later one. A run ends 10 s after its first window
+   (`RUN_MAX`), however steadily more come, since they're all placed for the head as it was then. One that would go past 90° either way starts
    a new row from the middle, above, then below, so a dozen at start never wrap round behind you.
    There are three rows at most (gather.rs `ROWS`): once the one below is full too, the rest
    stack on the last one placed, turned the same way, 8 cm further down its face and across it

@@ -46,6 +46,9 @@ const DRAGGED: Duration = Duration::from_secs(3); // a window made this soon aft
 /// Calibration knob: windows that go `ahead` this soon after the last one (KWin reports what's open
 /// at start one window at a time) are one run, side by side instead of on top of each other.
 const AHEAD_RUN: Duration = Duration::from_secs(3);
+/// Calibration knob: a run ends this long after its first window however steadily more come, since
+/// they're all placed for the head as it was then.
+const RUN_MAX: Duration = Duration::from_secs(10);
 const LIFT: f64 = 0.02; // a popup's panel sits this far in front of its parent's, so it's nearer for the pointer and painted over it
 const POPUP_AFTER: Duration = Duration::from_secs(3); // a popup this soon after a click, a key or another popup is a menu; later, a tooltip
 
@@ -474,9 +477,9 @@ fn run_start(head: &Mat, first: &Pose) -> (Mat, f64) {
     (panel_matrix(&Pose { centre: eye, yaw, ..Default::default() }), first.centre[1] - eye[1])
 }
 
-/// A run of windows gone `ahead`: when the last went, the head the run's laid out for and the
-/// first's height off the eyes (run_start), and their sizes (width, height, curve), in order.
-type AheadRun = (Instant, (Mat, f64), Vec<(f64, f64, f64)>);
+/// A run of windows gone `ahead`: when the last and the first went, the head the run's laid out for
+/// and the first's height off the eyes (run_start), and their sizes (width, height, curve), in order.
+type AheadRun = (Instant, Instant, (Mat, f64), Vec<(f64, f64, f64)>);
 
 pub struct Windows {
     first: usize, // panel index of slot 0
@@ -1075,7 +1078,8 @@ impl Windows {
     /// `height` metres: 8 cm right and down from the last for each live panel, so ones opened
     /// apart don't cover each other. Ones opened within AHEAD_RUN of each other, like what's open
     /// at start (none live yet, so they'd all get the same spot), go side by side from the first
-    /// instead (gather.rs `side_by_side`), for the head as it was at the first.
+    /// instead (gather.rs `side_by_side`), for the head as it was at the first, until RUN_MAX after
+    /// the first.
     fn ahead(&mut self, width: f64, height: f64) -> Pose {
         let first = self.first;
         let live = move || (0..SLOTS).filter(|&j| panel(first + j).live()).count();
@@ -1084,18 +1088,18 @@ impl Windows {
 
     /// `ahead` at `now`, for the head and the number of live panels at a run's first.
     fn ahead_at(&mut self, now: Instant, head: impl FnOnce() -> Mat, live: impl FnOnce() -> usize, width: f64, height: f64) -> Pose {
-        let run = self.ahead_run.take().filter(|r| now.duration_since(r.0) < AHEAD_RUN);
+        let run = self.ahead_run.take().filter(|r| now.duration_since(r.0) < AHEAD_RUN && now.duration_since(r.1) < RUN_MAX);
         // flat (0): a window panel opens flat, new_pose's and side_by_side's curve both
-        let Some((_, start, mut sizes)) = run else {
+        let Some((_, began, start, mut sizes)) = run else {
             let head = head();
             let c = 0.08 * (live() % 6) as f64;
             let pose = crate::geometry::new_pose(&head, 1.0, c, c); // 1 m wide; adopt sets the width
-            self.ahead_run = Some((now, run_start(&head, &pose), vec![(width, height, 0.0)]));
+            self.ahead_run = Some((now, now, run_start(&head, &pose), vec![(width, height, 0.0)]));
             return pose;
         };
         sizes.push((width, height, 0.0));
         let pose = crate::gather::side_by_side(&start.0, start.1, &sizes).pop().unwrap_or_default();
-        self.ahead_run = Some((now, start, sizes));
+        self.ahead_run = Some((now, began, start, sizes));
         pose
     }
 
@@ -1488,6 +1492,7 @@ mod tests {
                     // these are the ones in the rows
                     let k = (1..poses.len()).find(|&i| (norm(&flat(&poses[i])) - crate::limits::NEW_AHEAD).abs() > 1e-6).unwrap_or(poses.len());
                     assert!(k > 9, "both tall ones are in the rows: {k}");
+                    let (all, all_sizes) = (&poses[..], &sizes[..]);
                     let (poses, sizes) = (&poses[..k], &sizes[..k]);
                     for p in &poses[1..] {
                         let v = flat(p);
@@ -1498,9 +1503,9 @@ mod tests {
                     // each one's real bounds: the angles round the eye of its corners' left and right,
                     // and its corners' lowest and highest, from its own matrix (the first's pose as it
                     // is, the rest as side_by_side placed them)
-                    let real = std::iter::once(first).chain(poses[1..].iter().copied());
+                    let real = std::iter::once(first).chain(all[1..].iter().copied());
                     let bounds: Vec<((f64, f64), (f64, f64))> = real
-                        .zip(sizes)
+                        .zip(all_sizes)
                         .map(|(p, &(w, h, _))| {
                             let m = panel_matrix(&p);
                             let corner = |sx: f64, sy: f64| [0, 1, 2].map(|i| m[i][3] as f64 + m[i][0] as f64 * sx * w / 2.0 + m[i][1] as f64 * sy * h / 2.0);
@@ -1526,6 +1531,11 @@ mod tests {
                             assert!(across(bi.0, bj.0) || apart(bi.1, bj.1), "tall in row 0 {tall_in_row_0}, yaw {yaw}, cascade {c}: {i} and {j} overlap: {bi:?} {bj:?}");
                         }
                     }
+                    // and the first, as it really is, clear of the stacked ones too
+                    for (j, bj) in bounds.iter().enumerate().skip(k) {
+                        assert!(across(bounds[0].0, bj.0) || apart(bounds[0].1, bj.1), "tall in row 0 {tall_in_row_0}, yaw {yaw}, cascade {c}: the first and {j}, stacked, overlap");
+                    }
+                    assert!(bounds.len() > k, "some stacked: {k} of {}", bounds.len());
                     let rows: std::collections::BTreeSet<i64> = poses[1..].iter().map(|p| ((p.centre[1] - eye[1]) * 100.0).round() as i64).collect();
                     assert!(rows.iter().any(|&y| y > 0) && rows.iter().any(|&y| y < 0), "rows above and below: {rows:?}");
                 }
@@ -1548,15 +1558,36 @@ mod tests {
         assert_eq!(poses[0], new_pose(&at(0.0), 1.0, 0.16, 0.16), "the run's first from new_pose, two live: 16 cm");
         assert!(poses[1..].iter().all(|p| p.centre[1] >= 1.6 - 1.0), "none a metre below the eyes");
         assert!((out(&poses[39]) - crate::limits::NEW_AHEAD).abs() > 1e-6, "the last stacked, off the arc");
-        assert_eq!(w.ahead_run.as_ref().map(|r| r.2.len()), Some(40));
+        assert_eq!(w.ahead_run.as_ref().map(|r| r.3.len()), Some(40));
         let later = t0 + Duration::from_millis(50 * 39) + AHEAD_RUN;
         let fresh = w.ahead_at(later, || at(60.0), || 3, 0.8, 0.45);
         assert_eq!(fresh, new_pose(&at(60.0), 1.0, 0.24, 0.24), "a new run's first from new_pose again, for the head now");
-        assert_eq!(w.ahead_run.as_ref().map(|r| r.2.len()), Some(1), "a run of its own");
+        assert_eq!(w.ahead_run.as_ref().map(|r| r.3.len()), Some(1), "a run of its own");
         let next = w.ahead_at(later + Duration::from_millis(50), || unreachable!(), || unreachable!(), 0.8, 0.45);
         assert!((out(&next) - crate::limits::NEW_AHEAD).abs() < 1e-6 && (next.centre[1] - at(60.0)[1][3] as f64).abs() < 1e-9, "beside it on the arc: {next:?}");
         assert!((next.centre[0] - fresh.centre[0]).hypot(next.centre[2] - fresh.centre[2]) > 0.4, "not on top of it: {next:?}");
-        assert_eq!(w.ahead_run.as_ref().map(|r| r.2.len()), Some(2));
+        assert_eq!(w.ahead_run.as_ref().map(|r| r.3.len()), Some(2));
+    }
+
+    /// Windows coming steadily 2 s apart, each within AHEAD_RUN of the last: one run until RUN_MAX
+    /// after its first, then the next starts a run of its own, for the head then.
+    #[test]
+    fn a_run_ends_run_max_after_its_first_however_steady() {
+        use crate::geometry::new_pose;
+        let _vr = crate::trace::fake_vr(); // for_test's Plasma overlay
+        let mut w = Windows::for_test(0);
+        let at = |yaw: f64| panel_matrix(&Pose { centre: [0.3, 1.6, -0.2], yaw, ..Default::default() });
+        let t0 = Instant::now();
+        let every = Duration::from_secs(2);
+        assert!(every < AHEAD_RUN && RUN_MAX.as_secs().is_multiple_of(every.as_secs()));
+        let last = (RUN_MAX.as_secs() / every.as_secs()) as u32; // the one RUN_MAX after the first
+        for i in 0..last {
+            w.ahead_at(t0 + every * i, || at(0.0), || 0, 0.8, 0.45);
+            assert_eq!(w.ahead_run.as_ref().map(|r| (r.1, r.3.len())), Some((t0, i as usize + 1)), "{i} still the first's run");
+        }
+        let fresh = w.ahead_at(t0 + every * last, || at(60.0), || 0, 0.8, 0.45);
+        assert_eq!(fresh, new_pose(&at(60.0), 1.0, 0.0, 0.0), "a new run, for the head now");
+        assert_eq!(w.ahead_run.as_ref().map(|r| (r.1, r.3.len())), Some((t0 + every * last, 1)));
     }
 
     #[test]
