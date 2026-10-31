@@ -730,9 +730,9 @@ Behaviour changes phase 0 put off, each its own branch with its own test:
   keeps its fallbacks: 0.0 (Pace's 90 Hz) for the rate, and 0 ("no room yet") for the universe.
   Mid-session, None keeps what's there. The rate's re-read every 5 seconds keeps Pace's current
   rate (`Pace::follow`), so a passing error doesn't drop it to 90 Hz. A relocalization with the
-  universe unreadable keeps the room it's in, so it's only a relocalization. Before, a documented error's 0 was a change to no room, and every later save
-  went roomless, which room-carry can't undo. The rate `to_photons` reads for its prediction is
-  unchanged: it isn't a `Session` read.
+  universe unreadable keeps the room it's in, so it's only a relocalization. Before, a documented
+  error's 0 was a change to no room, and every later save went roomless, which room-carry can't
+  undo. The rate `to_photons` reads for its prediction is unchanged: it isn't a `Session` read.
 - New things placed in front of the predicted head pose instead of the unpredicted one (6c's
   `head_now`).
 - The two readers of a pointer's x and y on kinds where they aren't a position (5a): a card's
