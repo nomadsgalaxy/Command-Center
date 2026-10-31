@@ -22,7 +22,9 @@ Sources I read for this:
 
 1. **Texture contract.** One OpenXR swapchain per surface that owns a picture. A dmabuf is imported
    once per source buffer and cached (as `capture.rs` caches handles per `BufId` today). Each dirty
-   frame, on the main thread, we acquire the swapchain image, copy into it, submit, and release.
+   frame, on the main thread, we acquire the swapchain image, copy into it, submit, and release
+   (submit-then-release with no CPU wait is the shipped rule; a fence wait before release is a
+   spike-only control).
    The source buffer goes back to its producer when the copy's `VkFence` signals, not a tick later.
    PipeWire's implicit fence (`POLLIN`) stays as the first gate, and a `sync_file` exported from the
    dmabuf and waited on by a semaphore is the target for the GPU side. A failed import falls back
@@ -31,8 +33,11 @@ Sources I read for this:
 2. **Layer budget.** Read `maxLayerCount` once at session start. Normally one layer per visible
    surface, sorted ascending by `Surfaces::order`. Over budget: drop backs first, then fold each
    panel's card into its picture, then drop the lowest-priority surfaces, with one log line naming
-   what went.
-3. **Room rule.** `Session::universe_id()` on OpenXR returns one fixed, non-zero id per runtime. A
+   what went. A protected set (cursor, controls, the grabbed or hovered panel) is never dropped
+   first, a floor of 7 layers bounds the halving after a `LAYER_LIMIT_EXCEEDED`, and a dropped
+   surface takes no input.
+3. **Room rule.** The room becomes a namespaced id (`openxr:monado`; OpenVR's bare universe ids
+   stay as they are, so `home.json` needs no migration). `Session` returns one fixed room per runtime on OpenXR. A
    workspace is the thing that tells layouts apart. Spots then save and restore through the paths
    that already exist for a real universe.
 
@@ -188,11 +193,33 @@ Two separate waits, which OpenVR let us blur together.
   - Choose **A in the spike, B as phase 1's target** if A shows tearing or stale pixels on any
     target GPU. The spike's exit test includes a deliberately slow producer for that reason.
 - *For our own GBM buffers* (RDP and VNC): they're written by the CPU between `gbm_bo_map` and
-  `gbm_bo_unmap`, so there is no producer fence. Strictly, a CPU write to a dmabuf wants
-  `DMA_BUF_IOCTL_SYNC` start and end around it so the cache is coherent for a device read. On the
-  drivers we use (linear, write-combined maps) it appears to be fine today because SteamVR reads
-  them the same way, but I haven't checked this for Turnip or others (**unverified**). The spike
-  tests it.
+  `gbm_bo_unmap`, so there is no producer fence. **CPU coherency is a requirement of this contract,
+  not a footnote.** The kernel's rule is that CPU access through an mmap of a dmabuf has to be
+  bracketed by `DMA_BUF_IOCTL_SYNC` with `DMA_BUF_SYNC_START` and `DMA_BUF_SYNC_END`
+  (docs.kernel.org/driver-api/dma-buf.html, "CPU Access to DMA Buffer Objects"). Does GBM already
+  do it? I checked Mesa at `b27d00d` (a sparse checkout of `src/gbm` and `src/gallium/frontends/dri`):
+  - `grep -rn 'DMA_BUF_IOCTL_SYNC\|DMA_BUF_SYNC'` over both trees found nothing. Not in
+    `src/gbm/backends/dri/gbm_dri.c`, and not in the dumb-buffer helper in `gbm_driint.h`.
+  - `gbm_dri_bo_map` doesn't mmap the dmabuf fd. For a normal (non-dumb) buffer it calls
+    `dri2_map_image`, a gallium transfer map on the driver's own mapping of the buffer.
+    `gbm_dri_bo_unmap` calls `dri2_unmap_image` and then `dri_flush(..., __DRI2_FLUSH_CONTEXT)`
+    ("Not all DRI drivers use direct maps. They may queue up DMA operations on the mapping
+    context"). So GBM's own guarantee is a context flush, not a dmabuf sync.
+  - So the kernel rule is about a path we don't take (mmap of the dmabuf fd), and GBM's map
+    doesn't call the ioctl. Whether the driver's own map is coherent for a later Vulkan read
+    through the imported dmabuf is the driver's business, and I couldn't confirm it for radeonsi,
+    anv or Turnip from this source (**unverified**).
+  - **Contract:** `gpu.rs`'s write path (`write_frame` and `show_raw`'s replacement, between map
+    and unmap) is bracketed by `DMA_BUF_IOCTL_SYNC` `START|WRITE` and `END|WRITE` on the buffer's
+    exported fd (`gbm_bo_get_fd`, which `Buffers::make` already has before it hands the fd over).
+    Because GBM doesn't issue it itself (above), there's no doubling up. Cost: two ioctls per
+    write, no copy. If a later Mesa starts doing it inside `gbm_bo_map`, the spike's check on item
+    2 below catches nothing wrong (a second sync is harmless), and we can drop ours then.
+  - The same ioctl is required anywhere we `mmap` a dmabuf fd ourselves: the PipeWire fallback in
+    1.10 if it ever reads a dmabuf on the CPU, and the VNC and RDP staging paths if they were to
+    mmap one. Staging `VkBuffer` memory we allocate through Vulkan isn't a dmabuf, so it needs
+    `vkFlushMappedMemoryRanges` only if the chosen memory type isn't `HOST_COHERENT`; we choose
+    one that is.
 - *For SPA explicit sync.* Newer PipeWire has `SPA_META_SyncTimeline` for explicit sync.
   **Unverified**: whether KWin's screencast or our PipeWire version offers it. If it does, that's
   option B without the ioctl.
@@ -215,13 +242,22 @@ Two separate waits, which OpenVR let us blur together.
     OpenXR runtime requires"). The swapchain needs `TRANSFER_DST` usage, so the create call asks
     for `XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT`, not only the `COLOR_ATTACHMENT | SAMPLED` that
     WayVR uses (`swapchain.rs`, `create_swapchain`) because WayVR draws instead of copying.
-- *Before `xrReleaseSwapchainImage`.* The copy has to be **submitted**. Whether it also has to be
-  **finished** is the open point: the runtime shares our queue and the spec says only that the
-  image must be in the stated layout and owned by the queue on release. Queue submission order
-  gives an execution order on one queue, so I expect that submit-then-release is enough, but I
-  haven't found the sentence that says so (**unverified**; the spec lines I found are about layout
-  and ownership). Baseline: wait on the fence before releasing. Then try submit-only in the spike
-  with a runtime-side validation pass.
+- *Before `xrReleaseSwapchainImage`: which rule is the shipped one.* There are two, and only one
+  of them ships.
+  - **Shipped contract: submit, then release, no CPU wait.** The copy has to be **submitted**
+    (`vkQueueSubmit` returned success) before release. We do not call `vkWaitForFences` in the
+    frame path. Fences are only polled (`vkGetFenceStatus`, 1.7). The runtime shares our `VkQueue`
+    and the spec says the image must be in the stated layout and owned by the queue on release
+    (OpenXR 1.1, 12.25.4). Queue submission order gives an execution order on one queue, so
+    submit-then-release should be enough, but I haven't found the sentence that says a runtime
+    may rely on it (**unverified**).
+  - **Spike-only control: wait on the copy's fence, then release.** The spike runs both. The
+    blocking variant is the control that tells us whether a corruption seen with submit-only is a
+    sync problem or something else. It is not shipped.
+  - **If the spike shows a runtime needs the wait:** that runtime gets a named per-runtime mode,
+    "wait before release", with a bound (proposal: 4 ms, then treat as a failed submit per 1.7).
+    That is an exception to "no `vkWaitForFences` in the frame path", it is written down as one,
+    and it's decided per runtime from the spike's result, not by default.
 
 **When a source buffer may be written again.** When the copy's fence has signalled. Not "a tick
 later" and not "a frame after it was shown". The swapchain image holds the pixels now, so the
@@ -245,17 +281,45 @@ yet. Concretely:
 risk 3, `vr.rs` `MAIN`/`wake`). On OpenXR it won't park while a session runs, so polling fences
 once per frame is free. If we ever park again, a fence wait needs a wake-up (Question 6).
 
-### 1.7 Release
+### 1.7 Release, and who holds what
 
-- `Textures::release(t)` marks an import for destruction after its last fence. The sweep runs
-  once per frame, on the main thread, with `vkGetFenceStatus`, never `vkWaitForFences` in the frame
-  path.
-- Teardown (session ending, `STOPPING` or `EXITING`, or `InstanceLossPending`): release any acquired
-  image, `vkQueueWaitIdle`, destroy imports, then `xrDestroySwapchain`, then the device. The
-  retirement queue pattern above covers a single swapchain being replaced mid-session.
-- A resize frees nothing at once. The old swapchain and the old pair of GBM buffers both wait for
-  their fences. This fixes the case the plan says is unsafe on OpenVR today ("A panel's resize
-  frees both buffers at once, the one on screen included").
+**Rules that apply everywhere:**
+
+- The frame path never blocks on the GPU. A once-per-frame sweep on the main thread polls
+  `vkGetFenceStatus` for every in-flight copy and every deferred import. `vkWaitForFences` and
+  `vkQueueWaitIdle` are allowed in teardown only (the table below), plus the per-runtime
+  wait-before-release mode if the spike makes us add one (1.6).
+- `Textures::release(t)` marks an import for destruction after its last fence. It returns at once,
+  as now.
+- A surface holds **at most one acquired swapchain image** at a time. It never acquires a second
+  until the first is released or its swapchain is destroyed.
+- A released image stays referencable (1.4), so a surface can always draw its last good picture
+  while a new one is being made.
+- The source buffer states are: **Producer** (the producer or the RDP thread may write it),
+  **Ours** (we hold it as the newest frame, nothing in flight), **In flight** (a submitted copy
+  reads it), and **Returned** (back to Producer). It becomes Returned when the copy's fence
+  signals, or at once if no copy was ever submitted for it.
+
+**What happens in each case.** "Image" is the surface's swapchain image. Numbers in the
+"Proposed" column are starting values for review.
+
+| Case | Swapchain image | Source buffer | When each is released |
+|---|---|---|---|
+| **Normal** | `xrAcquireSwapchainImage`, `xrWaitSwapchainImage` (bounded, see next row), barrier to `TRANSFER_DST`, copy, barrier back to `COLOR_ATTACHMENT_OPTIMAL`, `vkQueueSubmit` with a fence, then `xrReleaseSwapchainImage` in the same frame. Held for the length of that sequence only. | Ours, then In flight at submit. | Image: released right after the submit succeeds. Source: Returned when the fence signals (next sweep after it does). A frame superseded before its submit is Returned at once. |
+| **`xrWaitSwapchainImage` times out** (`XR_TIMEOUT_EXPIRED`) | Acquired but not waited. It can't be released (release without a wait is `XR_ERROR_CALL_ORDER_INVALID`, `xrReleaseSwapchainImage` man page), so we keep holding it and wait again next frame. We never call acquire again meanwhile. | Stays Ours (the newest frame). A newer frame replaces it and the older one is Returned at once. | The wait is bounded, not `XR_INFINITE_DURATION` (WayVR waits forever, `swapchain.rs` `acquire_wait_image`). Proposed: 2 ms per frame. The surface keeps drawing its last released image. After 30 consecutive timeouts (about 0.3 s at 90 Hz): destroy the swapchain (this drops the held image with it), Return the source, log once, recreate on the next frame. |
+| **Submit fails** (`vkQueueSubmit` returns an error) | Acquired and waited, but not written, so releasing it would make garbage the "last released" image. We do **not** release it. The layer keeps the previously released image. | Ours (never In flight). | Retry the copy next frame, up to 3 times. After the third failure: destroy the swapchain with the image held, Return the source, log once with the `VkResult`, recreate lazily. `VK_ERROR_DEVICE_LOST` skips the retries and is treated as session loss (last row). **Unverified:** that every runtime accepts a layer that references a swapchain which currently has an acquired image. The spec text I found says a layer references the last released image, not the acquired one. |
+| **Resize** (new size from the source) | A new swapchain is created. The old swapchain keeps being submitted, at its old size, until the new one has released its first image, then the layer switches in one frame. If the old one holds an acquired image it is released only if already waited, else left to die with the swapchain. | In-flight copies on the old swapchain finish as normal. The old GBM pair or old PipeWire buffers are Returned/freed as their fences signal. | The old swapchain goes on a retirement list and is destroyed once its last fence has signalled (WayVR's `SwapchainRetirementQueue` does this with a completion marker). This replaces "frees both at once, the shown one included" (plan 2.3). Nothing is freed on resize without a fence. |
+| **`STOPPING`** (session ending, the app may restart it on `READY`) | Stop acquiring. For each surface: if an image is acquired and waited, release it (after the in-flight submit, which already happened). If acquired and not waited, leave it. Then `xrDestroySwapchain` for every swapchain. | Ours: Returned at once. In flight: Returned after the single teardown `vkQueueWaitIdle`. | Order: stop the frame loop, `vkQueueWaitIdle` (teardown only, bounded by the driver), Return all sources, destroy deferred imports and every import, destroy swapchains, then `xrEndSession`. On `READY` again, swapchains and imports are re-created lazily on the next present. The core's buffers were never touched. |
+| **`LOSS_PENDING`, `EXITING`, `InstanceLossPending`, or `VK_ERROR_DEVICE_LOST`** | Don't release anything and don't wait on the queue for longer than a bounded timeout (a lost device may never idle). Destroy the swapchains. | All sources Returned immediately, whatever their fences. In-flight copies are abandoned with the device. | Destroy imports and Vulkan objects without waiting, then the XR session and instance. The backend is dropped. A fresh backend is built when the runtime is back (plan 2.6, `Quit`), and every surface presents again from nothing. Producers aren't left holding a buffer we never gave back. |
+
+Things this table pins that the earlier draft left loose:
+
+- "Release any acquired image" is gone. The rule is: release after a successful submit, never
+  after a failed one, never before a wait, and on teardown only an image that has been waited.
+- Source buffers are Returned on fence signal, or at once on every path that never submitted. There
+  is no path where a source is held with no fence and no owner.
+- Every timeout and retry count above is a proposal. The spike's resize and teardown steps (1.11)
+  exercise each row.
 
 ### 1.8 Sharing, and a panel's back
 
@@ -360,16 +424,19 @@ for this slice can be made from it:
    `BufId` generation changes). A stale give-back never reaches a new buffer.
 7. **Teardown.** End the session mid-frame (acquired, not released) and exit. Count open fds in
    `/proc/self/fd` and device memory (`VK_EXT_memory_budget`) before and after: unchanged.
-8. **Failure path.** Force an import failure (an unsupported modifier) and confirm the staging
+8. **State table rows (1.7).** Inject an `xrWaitSwapchainImage` timeout, a failed submit, a
+   resize while a copy is in flight, a `STOPPING` and a device loss, and check each row of the
+   table: nothing leaked, nothing released that shouldn't be, every source Returned.
+9. **Failure path.** Force an import failure (an unsupported modifier) and confirm the staging
    fallback shows the same picture, with one log line.
-9. **Where.** The Vulkan half (items 2 to 8 without the XR calls, copying into a plain
+10. **Where.** The Vulkan half (items 2 to 9 without the XR calls, copying into a plain
    `VkImage`) runs on the Frame's Turnip stack, since the Frame can't run Monado. The XR half runs on a
    PC with Monado's simulated HMD, and WiVRn with a Quest if one's available (plan 4, Phase 1).
    Targets: AMD (radv) and Intel (anv) on x86, Turnip on aarch64, and whatever the Quest-host PC
    has. I don't know which Mesa versions the Frame's SteamOS ships for Vulkan dmabuf import
    (**unverified**).
 
-Pass means all of 2 to 8 on each target. A target that fails item 3 on A-style fencing moves to
+Pass means all of 2 to 9 on each target. A target that fails item 3 on A-style fencing moves to
 the sync_file path before we call the spike done.
 
 ## 2. The layer budget
@@ -478,37 +545,95 @@ which case it can share a swapchain with that one when we're short.** Applied:
 
 ### 2.5 Past the limit
 
-At session start read `maxLayerCount` (call it `M`). Per frame, build the visible list, sort it by
-order, and if its length exceeds `B = M - R` (reserve `R` for the cursor and, if we find the budget
-is shared with the main session, whatever the game uses, **unverified**; start with `R = 0`), shed
-in this order until it fits:
+**The protected set `P`.** These are never dropped to make room, because the user can't work
+without them, and because a dropped surface must also stop taking input (the test below):
 
-1. **Out of view.** Drop surfaces entirely outside the view frustum (the headset's `xrLocateViews`
-   FOV with a margin, and not being grabbed). Cheap, and invisible to the user. This isn't a
-   budget measure in the plan; I'm adding it because it cuts the count for free. Question 9.
+- the cursor, the HUD strip, the taskbar frame and its card, Plasma's bar, the key strip, an Extra
+  window and its card, and the panel being grabbed or hovered, with its card.
+
+From the table in 2.2 that's at most 11 layers (cursor 1, HUD strip 1, taskbar 2, Plasma 1, keys 1,
+Extra 2, grabbed or hovered panel 2). Folded (a card drawn into its panel's or window's swapchain,
+2.3) it's at most 7. HUD marks, other panels, their cards, backs and the theater backdrop are not
+protected.
+
+**Budget.** At session start read `maxLayerCount` (call it `M`). The working budget is `B`, starting
+at `M`. The floor is `B_MIN = 7`, the size of the folded protected set. `M` is at least 16 on a
+conforming runtime (`XR_MIN_COMPOSITION_LAYERS_SUPPORTED`, 2.1), so `B_MIN` is always inside it.
+
+Per frame, build the visible list, sort it by order, and if it's longer than `B`, shed in this
+order until it fits:
+
+1. **Out of view.** Drop non-protected surfaces entirely outside the view frustum (the headset's
+   `xrLocateViews` FOV with a margin). Cheap, and invisible to the user. This isn't a budget
+   measure in the plan; I'm adding it because it cuts the count for free. Question 9.
 2. **Backs**, farthest first. The existing `BACKS` cap already does this by count; here it's by
    what fits.
-3. **Fold cards into pictures** (2.3), farthest from the head first.
-4. **Drop the lowest-priority surfaces.** Priority, lowest first: theater backdrop (when other
-   panels exist), panels the user isn't looking at (gaze or head-forward angle), then other
-   panels, farthest first. Never dropped: cursor, HUD, taskbar, Plasma's bar, an Extra window,
-   the panel being grabbed or hovered.
-5. If it still doesn't fit, `xrEndFrame` would fail, so submit only the top `B` and log.
+3. **Fold cards into pictures** (2.3), farthest from the head first, protected ones last.
+4. **Drop non-protected surfaces.** Lowest priority first: theater backdrop (when other panels
+   exist), HUD marks, panels the user isn't looking at (gaze or head-forward angle), then other
+   panels, farthest first.
+5. **If `P` itself is still longer than `B`** (only possible when `B < 11`, i.e. after a fold and
+   after halving, see below): fold every protected card, then drop from `P` in this order, stopping
+   as soon as it fits: key strip, HUD strip, Plasma's bar, the Extra window, the taskbar. The cursor
+   and the grabbed or hovered panel (folded) are the last two, so at `B = 2` they remain, and at
+   `B = 1` the cursor does. A grab in progress ends if the panel can't be kept, with the same
+   endings as a destroyed surface (plan section 3, `Pointing`: Up, then Leave).
+6. **Never submit zero layers while anything is visible.** Because `P` always contains the cursor
+   (or the grabbed panel), the submitted set has at least one layer whenever something is on
+   screen. That also covers the Monado quirk that WayVR works around (its comment in
+   `wayvr/src/backend/openxr/mod.rs`: "Monado freaks out if no layers are submitted"; **unverified**
+   beyond that comment). If everything is hidden, including the cursor, submit one near-transparent
+   1x1 quad as WayVR does (`alpha = 0.02` on a 0.001-scale transform), and mark it internal so it
+   takes no input.
 
-The brief for this draft said "merge the lowest-priority ones". Merging only works for card plus picture
-(step 3). Two unrelated panels have different poses and can't share one quad, so the honest
+The brief for this draft said "merge the lowest-priority ones". Merging only works for card plus
+picture (step 3). Two unrelated panels have different poses and can't share one quad, so the honest
 meaning of "past the limit" is merge what's coplanar, then drop. If you'd rather never drop a
 panel, the alternative is a shared composited "wall" for far panels, which I don't think is worth
 building (Question 10).
 
-**Logging.** Once, when the budget first binds, and again only when the shed set changes: `"layers:
-runtime allows <M>, <n> surfaces visible; folded <k> cards, dropped <names>"`. Never per frame.
-Also log `M` once at start, and put `maxLayerCount` and the current count in the `surfaces`
-control dump.
+**A dropped surface takes no input.** The hit test (`vr/pointing.rs`, plan section 3) walks only the
+list of layers submitted this frame, nearest the top of the array first. A visible surface that
+didn't get a layer isn't hittable, hovered or captured. Folding doesn't change this: a folded
+card keeps its own rectangle in the hit test and its events are translated to its own surface.
 
-**If `xrEndFrame` returns `XR_ERROR_LAYER_LIMIT_EXCEEDED` anyway,** because the real limit is below
-`M` (the shared-budget case), halve the budget for the rest of the session, log it, and continue.
-That's a cheap safety net for the **unverified** shared-limit case.
+**Test.** A property test over random surface sets (up to 60 surfaces, random kinds, order, one
+random grabbed or hovered panel) and `M` in 1, 2, 4, 7, 11, 16 and 64, with the real
+`shed` function and no OpenXR. After every shed it checks:
+
+- (a) the submitted count is at most `max(B, 1)`;
+- (b) at least one layer is submitted if any surface is visible;
+- (c) whenever `B >= 11`, every member of `P` that is visible is submitted (so the cursor,
+  controls and the grabbed or hovered panel can't vanish while still interactive);
+- (d) whenever `B` is below that, members leave `P` only in the step-5 order, and a surface that is
+  not submitted returns nothing from the hit test (so nothing invisible takes a click);
+- (e) the same input and `M` give the same list (stable, so nothing flickers between frames).
+
+A second test drives `Pointing` with a hit on a dropped panel and expects no event, and with a
+drop during a captured drag and expects Up then Leave.
+
+**Logging.** Once, when the budget first binds, and again only when the shed set changes: `"layers:
+runtime allows <M>, budget <B>, <n> surfaces visible; folded <k> cards, dropped <names>"`. Never per
+frame. Also log `M` once at start, and put `maxLayerCount`, `B` and the current count in the
+`surfaces` control dump.
+
+**If `xrEndFrame` returns `XR_ERROR_LAYER_LIMIT_EXCEEDED` anyway.** This is bounded and has no
+loop:
+
+- It means we submitted more than the runtime would take. It does not prove the limit is shared
+  with the main session. The man page says the error is for `layerCount` over the limit, and that
+  `xrEndFrame` may also fail when the runtime "cannot composite the layers due to resource
+  constraints". Shared or not, we can't tell from the error, and the handling doesn't depend on
+  which it is.
+- On the error: `B = max(B_MIN, B / 2)`, applied from the next frame. We don't resubmit in the same
+  frame (whether a failed `xrEndFrame` leaves the frame open is **unverified**), so we lose one
+  frame's layers. Log once per halving.
+- The halving stops at `B_MIN`, so at most two halvings happen (`16 -> 8 -> 7`; a larger `M` takes
+  a few more). `B` never grows back during a session, so there's no oscillation.
+- If the error comes back at `B_MIN`, step down to the step-5 order with a hard cap of 2 layers
+  (cursor and the grabbed panel). If that fails too, stop submitting layers, log once, and retry
+  an empty-but-keepalive frame once a second with no tight loop. The session isn't ended.
+- A different error from `xrEndFrame` (anything other than the layer limit) is not this path.
 
 ## 3. The interim room rule
 
@@ -562,47 +687,89 @@ we can't assume it changes when the room does.
 
 ### 3.3 The rule
 
-**One default room per runtime. `Session::universe_id()` on OpenXR returns `Some(id)`, where `id`
-is a fixed non-zero number for that runtime. A workspace is what separates layouts.**
+**One default room per runtime, named in the persisted identity by its backend. A room is
+`<backend>:<key>`. `Session::universe_id()` becomes a `RoomId`. On OpenXR it's
+`openxr:<runtime>`, fixed for the run. A workspace is what separates layouts.**
 
-- **Per runtime, not per backend.** The id is derived from the runtime's name from
-  `xrGetInstanceProperties` (`runtimeName`, e.g. "Monado", "WiVRn"), hashed to a `u64` with a
-  fixed tag in the top bits so it can't collide with a SteamVR universe id (which are random
-  64-bit values, so this is a probabilistic guarantee; **unverified** that SteamVR never uses the
-  top bit). The same layout would otherwise be shared between SteamVR's standing space and Monado's
-  stage space, whose origins have nothing to do with each other.
+This replaces my first idea (a hashed `u64` with a tag bit in the top bits). A tag bit is a
+probabilistic guarantee that SteamVR never uses that bit (**unverified**), and a hash is unreadable
+in `home.json`. A namespace in the identity is exact, and it shows up in the file.
+
+- **Why the id is already a string.** Rooms are persisted as strings: a workspace's `"universe"` and
+  `"universes"` (`conf::rooms`, `conf.rs:972`, which also accepts a hand-edited number),
+  Temporary's `"laid_out_in"` and the keys of its `"rooms"` map (`temporary_in`, `conf.rs:1057`).
+  Only the in-memory side is a `u64`: `conf::room(universe)`, `conf::choose_workspace(data, universe,
+  ..)`, `conf::add_room`, `conf::save_workspace_as`, `config::UNIVERSE` (an `AtomicU64`) and
+  `windows.rs`'s kept pose, which writes `"room"` as a JSON number (`windows.rs:1184`).
+- **The format.**
+  - OpenVR rooms stay exactly as they are: the bare decimal universe, e.g. `"5873160041"`. A string
+    with no `:` is read as `openvr:<that>`. We keep writing them bare, so no stored value changes
+    and an older build keeps reading the file.
+  - OpenXR rooms are written prefixed: `"openxr:monado"`, `"openxr:wivrn"`.
+  - The key is a small readable name for known runtimes, matched from `runtimeName` in
+    `xrGetInstanceProperties`: contains "monado" gives `monado`, contains "wivrn" gives `wivrn`.
+    Anything else gets `x-<8 hex digits of a hash of runtimeName>`, so two unknown runtimes still
+    don't share a room, and a human can see it's a hash. **Unverified:** what `runtimeName` string
+    Monado and WiVRn actually report (WiVRn is built on Monado, so it may say "Monado"). The
+    runtime manifest's `name` field (`active_runtime.json`, which `tools/xr-probe` already reads)
+    is the fallback identity if the string isn't distinguishing.
+  - The key identifies the runtime, nothing about the headset or the room. Question 11 (no
+    `systemName`) is settled that way.
+- **Per runtime, not per backend:** SteamVR's standing space and Monado's stage space have
+  unrelated origins, so they must not select each other's spots. The namespace guarantees that
+  `openvr:123` and `openxr:monado` are never equal, which a numeric id could only promise by luck.
 - **Per workspace** needs no new code. A workspace already holds its own `spots`. A dedicated
-  workspace can be bound to this id exactly as it can be bound to a universe today. That's the
-  "per runtime and workspace" key: `(runtime id, workspace) -> spots`.
+  workspace can be bound to an OpenXR room exactly as it can be bound to a universe today. Its
+  `universes` list may hold both kinds, if the user binds one workspace to a SteamVR room and a
+  Monado room on purpose. That's the "per runtime and workspace" key: `(room id, workspace) ->
+  spots`.
 - **What it buys:** `conf::choose_workspace` runs its normal rules. Rule 1 finds a workspace bound
-  to the default room. Rule 3 binds a new dedicated workspace to it. `save_workspace_as` binds
-  Save as workspace to it. If the user has no dedicated workspace, Temporary is laid out in the
-  default room (`temporary_in`) with one entry, and since the room never changes, it never swaps.
-- **No logging noise.** `config::choose_workspace`'s "SteamVR has no room yet" line is for room 0,
-  which doesn't happen on OpenXR any more. The message says "SteamVR", so it needs to say "the
-  runtime" if it ever fires there.
+  to the room. Rule 3 binds a new dedicated workspace to it. `save_workspace_as` binds Save as
+  workspace to it. If the user has no dedicated workspace, Temporary is laid out in the room
+  (`temporary_in`) with one entry, and since the room never changes, it never swaps.
+- **No logging noise.** `config::choose_workspace`'s "SteamVR has no room yet" line is for an empty
+  room, which doesn't happen on OpenXR any more. The message says "SteamVR", so it should say "the
+  runtime".
 
 What has to change (no code written, this is the list):
 
-1. **`Session::universe_id()` for the OpenXR backend** returns `Some(openxr_default_room(runtime))`.
-   OpenVR is unchanged (returns what SteamVR says, including the dummy ids that `room()` zeroes).
-2. **`conf::room()`** stays as is. The default room id is non-zero and not one of the two dummy
-   values.
-3. **A constant and a function for the default room,** in `crates/cc-proto/src/conf.rs` next to
-   `room()` so both crates agree and a test can pin it, e.g. `pub fn default_room(runtime: &str) ->
-   u64`.
-4. **Message text** in `config::choose_workspace` and `main.rs` that says "SteamVR" for the
-   universe: say "the runtime" (it reads the room from `Session`).
+1. **A `RoomId` type in `crates/cc-proto/src/conf.rs`,** next to `room()`: a backend (`OpenVr`,
+   `OpenXr`) and a key, with `Display` and `FromStr` as above (no `:` means OpenVR), and `None`
+   for "no room yet". `room(universe: u64)` stays and builds an OpenVR `RoomId`, still zeroing the
+   Frame's two dummy ids (424242, 525252).
+2. **`Session::universe_id()` returns `Option<RoomId>`** (the plan's section 3 has `Option<u64>`).
+   OpenVR returns what SteamVR says, through `room()`. OpenXR returns `openxr:<runtime>`.
+3. **Plumb the string.** `conf::choose_workspace`, `add_room`, `save_workspace_as` and
+   `temporary_in` take `&RoomId` (or its string) where they take a `u64` now. `rooms()` already
+   returns strings, so the comparison `rooms(ws).contains(&id)` is unchanged. `config::UNIVERSE`
+   becomes a small `Mutex<Option<String>>` (or the string behind a cheap clone). `control.rs`'s
+   `universe` command prints it.
+4. **Window poses.** `windows.rs` writes `"room"` as a number today. For an OpenXR room it writes
+   the string. `same_room` reads a number as `openvr:<n>`, a string as itself, and a missing value
+   as "an older file's: as before". Old files keep working, and the existing test
+   (`a_kept_window_pose_only_comes_back_in_its_own_room`) gets one more case.
 5. **Relocalization.** `S::Relocalized` and `S::RoomChanged` come from `Session::next_event`. On
    OpenXR, `XrEventDataReferenceSpaceChangePending` on the STAGE space gives `Relocalized` (plan
-   2.7). It never gives `RoomChanged`, since there's no id. So the default room is permanent for
+   2.7). It never gives `RoomChanged`, since the id doesn't change. So the room is permanent for
    the run.
-6. **Test:** add a fixture where `universe_id` is the default room and check (a) a workspace bound
-   to it is chosen, (b) Temporary lays out in it once and doesn't swap, (c) Save as workspace binds
-   it, (d) a SteamVR id and the default room never select the same dedicated workspace by
-   accident. The `old_loop` golden in `main.rs` tests is OpenVR-only and doesn't change.
-7. **Docs:** `docs/steamvr-integration.md`'s "Where things come back after a restart" and
-   `docs/workspaces.md` get an OpenXR paragraph (the public-release rule in my notes).
+6. **Migration of `home.json`: none required.** Existing values are bare decimals, which read as
+   `openvr:<n>`, and OpenXR values are new keys added next to them. Nothing is rewritten on load.
+   Compatibility with older builds: they read ids as opaque strings (`conf::rooms`'s `id` closure
+   takes any non-empty string), so an OpenXR id in `universes` simply never matches a SteamVR
+   universe there. An older build could, in principle, set `"universe"` to its first room from
+   such a list; it wouldn't match anything, which is the same as an unbound workspace. I haven't
+   tested an older build against such a file (**unverified**). If we later want to normalise
+   everything to `openvr:<n>`, that's its own step with a one-way write, and I'd not do it in phase 1.
+7. **Tests:** add a fixture where the room is `openxr:monado` and check (a) a workspace bound to
+   it is chosen, (b) Temporary lays out in it once and doesn't swap, (c) Save as workspace binds
+   it, (d) `openvr:<n>` and `openxr:monado` never select the same dedicated workspace, even if a
+   hand-edited `universes` list holds a bare `"0"` or a number; (e) bare decimals still parse as
+   OpenVR and round-trip unchanged through a load and save. The `old_loop` golden in `main.rs`
+   tests is OpenVR-only and doesn't change.
+8. **Docs:** `docs/steamvr-integration.md`'s "Where things come back after a restart" and
+   `docs/workspaces.md` get an OpenXR paragraph (every user-facing change gets its docs in the same batch), and the
+   home.json format description (`conf.rs` comment near 818, `docs/workspaces.md`) gets the room id
+   format.
 
 ### 3.4 What this doesn't solve, and the risk
 
@@ -660,21 +827,26 @@ All paths in https://github.com/wlx-team/wayvr at `ef7e5f6`.
 
 ## 5. Open questions
 
-Numbered so you can answer by number. The first three block phase 1.
+Numbered so you can answer by number. The first three block phase 1. Where Muse (board topic 129,
+#377) proposed an answer, it's recorded as **Proposed (Muse)**. These are proposals, and Anthony decides.
 
 1. **Copy or draw?** Is a format-matched `vkCmdCopyImage` enough for v1 (fewer moving parts, needs
    a swapchain format that matches the byte order), or do we build the draw pass now because the
    quarter-turned vertical panels and crops will want it anyway? My lean: copy, and build the draw
    pass only if the spike shows a runtime without a matching format.
+   **Proposed (Muse):** copy first, no draw pass unless the spike finds a runtime that needs it.
 2. **Does a back need to be mirrored?** `back.rs` mirrors it and dims it. On OpenXR a shared
    swapchain can't mirror, and can't dim without colour scale and bias. Is an un-mirrored, dimmed
    (or undimmed) back acceptable, or should a back get its own (cheap, plain-sheet) swapchain? The
    rule the module opens with is "the freedom to place them backwards, but still have an idea that
    a panel is there".
+   **Proposed (Muse):** no mirroring in phase 1. Dim through the `FILL` sheet if that's cheap; otherwise the
+   back is un-mirrored and undimmed, and that is documented.
 3. **Which modifiers do we offer PipeWire?** Today one (`capture.rs` `format`). Should it offer the
    set `vkGetPhysicalDeviceImageFormatProperties2` says the device can import, as WayVR does
    (`graphics/dmabuf.rs` `get_drm_formats`)? That changes the SteamVR path too if shared. Offer it
    only on the OpenXR backend?
+   **Proposed (Muse):** offer the importable modifier set, on the OpenXR backend only.
 4. **sRGB or UNORM** for swapchains, per runtime? I haven't pinned the colour rules for quads and
    the spike will have to show it.
 5. **Is fence option A (POLLIN) good enough,** or do we go straight to `sync_file`? A is what we do
@@ -691,19 +863,24 @@ Numbered so you can answer by number. The first three block phase 1.
 8. **Paint order source.** Keep `paint_order`'s ranks (view-overlap sort, about 4 times a second),
    or add WayVR's per-frame distance sort for tie-breaking during head motion? Mine is more
    accurate for wide panels, theirs is cheaper to reason about and faster to react.
+   **Proposed (Muse):** keep `paint_order`.
 9. **Frustum culling** as the first shed step: do we want it for the budget, or only when the
    budget binds? It could also save copies (don't update a panel nobody sees), which is a separate
    feature and a bigger one.
 10. **Is "drop the farthest panel" acceptable,** or should we prefer a hard cap on panels
     (`windows::SLOTS` = 16 is more than 16 layers) and refuse a new window with a message? The
     quiet drop is graceful, but a panel that's "open" and doesn't show is a bug report.
-11. **One shared default room per runtime** could be too coarse if the same Linux PC drives
-    both a Monado desktop session and WiVRn with a headset. Should the id mix in the system name
-    (`xrGetSystemProperties.systemName`) as well as the runtime? That separates headsets, not rooms.
-12. **Hash or tag:** a hashed `u64` with a tag bit, or a deliberately small constant (say
-    `1`..`15`) that no real SteamVR id would plausibly equal? Constants are readable in
-    `home.json`; hashes are safer against collision. I lean to small readable constants per known
-    runtime name, with a hash for unknown ones.
+    **Proposed (Muse):** drop quietly and log. Section 2.5 follows this, with the protected set
+    and a test that a dropped panel takes no input.
+11. **One room per runtime could be too coarse** if the same Linux PC drives both a Monado desktop
+    session and WiVRn with a headset. **Proposed (Muse):** no `systemName`. The room is keyed by
+    runtime only (section 3.3), and the user separates anything finer with workspaces.
+12. **Hash or tag, or constants?** **Proposed (Muse):** small readable constants for known runtimes,
+    a hash only for unknown ones. **Superseded in this revision** by the explicit backend namespace
+    in 3.3 (`openxr:monado`, `x-<hash>` for unknown runtimes, bare decimals for OpenVR), which keeps
+    Muse's constants-plus-hash-fallback idea and drops the tag bit. Still open: confirm the
+    namespace format and the `RoomId` plumbing, and whether to normalise OpenVR's ids to
+    `openvr:<n>` later (3.3, item 6).
 
 ## 6. What I didn't check
 
@@ -718,5 +895,8 @@ Numbered so you can answer by number. The first three block phase 1.
 - The count in 2.2 depends on the number of configured viewers, which I didn't look up.
 - `DMA_BUF_IOCTL_EXPORT_SYNC_FILE` availability by kernel version (6.0) and the semaphore import
   details are from my own knowledge, not from a source I read today.
-- The WayVR checkout was a shallow clone in `~/.cache/agent-scratch/cc/wayvr/` (not part of the
-  repo), left in place for the reviewers to grep. Delete it when done.
+- WayVR was read from a shallow clone at `ef7e5f6`, outside this repo.
+- The Mesa check in 1.6 was a sparse checkout of `src/gbm` and `src/gallium/frontends/dri` at
+  `b27d00d`. I did not read the per-driver (radeonsi, iris, freedreno) transfer-map code, so
+  whether a driver's CPU map is coherent for a later device read is unverified.
+- The retry counts, timeouts and `B_MIN = 7` in 1.7 and 2.5 are proposals I haven't measured.
