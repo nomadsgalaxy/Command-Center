@@ -156,9 +156,14 @@ quarter-turned panel (`PanelFacts.vert`, the vertical curve) and a crop could be
 in the layer. I don't want to build the draw pass in phase 1 unless the spike shows a runtime that
 needs it.
 
-Also unresolved: sRGB versus UNORM swapchain formats and how runtimes treat them for a quad. The
-spec has per-format colour-space rules I haven't pinned down for this case. The spike should look
-at one known-colour test card on each runtime (Question 4).
+sRGB versus UNORM (Grok, #380): desktop and KWin pixels are sRGB-encoded bytes, and a plain
+`vkCmdCopyImage` copies bytes without converting them. A runtime treats a UNORM swapchain's values
+as linear, so copying into `B8G8R8A8_UNORM` would show every panel washed out. Copying the same bytes
+into a `_SRGB` swapchain image is allowed (the formats are size-compatible) and displays them as
+intended. So the pick prefers the `_SRGB` variants (`B8G8R8A8_SRGB` for panels, `R8G8B8A8_SRGB` for
+cards), and the spike's corner-colour check compares against expected sRGB values, so a UNORM pick
+fails the test instead of looking a bit off. **Unverified** against the 1.1 spec's colour-space
+text; the spike settles it (Question 4).
 
 ### 1.6 Readiness and fencing
 
@@ -415,8 +420,10 @@ for this slice can be made from it:
    garbage doesn't show.
 3. **Cycle.** 10,000 acquire, copy, submit, release, `xrEndFrame` cycles. With the Khronos
    validation layer and synchronisation validation on, zero errors. Source buffers are rewritten
-   the instant their fence signals, and a checksum of what's displayed matches the pre-rewrite
-   frame (this is the test that "a tick later" isn't needed).
+   the instant their fence signals, and a checksum of the swapchain image, read back after the
+   copy's fence and before release, matches the pre-rewrite frame (this is the test that "a tick
+   later" isn't needed; the compositor's output can't be read back, so the image is what's
+   checked).
 4. **Negative control.** Rewrite a source before its fence signals on purpose and confirm the test
    sees corruption, so we know the check works.
 5. **Resize.** 100 random resizes of the swapchain and the source, no leak and no use-after-free.
@@ -847,8 +854,8 @@ Numbered so you can answer by number. The first three block phase 1. Where Muse 
    (`graphics/dmabuf.rs` `get_drm_formats`)? That changes the SteamVR path too if shared. Offer it
    only on the OpenXR backend?
    **Proposed (Muse):** offer the importable modifier set, on the OpenXR backend only.
-4. **sRGB or UNORM** for swapchains, per runtime? I haven't pinned the colour rules for quads and
-   the spike will have to show it.
+4. **sRGB or UNORM** for swapchains, per runtime? **Proposed (Grok, #380):** `_SRGB`, since our
+   bytes are sRGB-encoded and a copy doesn't convert them (1.5). The spike confirms it.
 5. **Is fence option A (POLLIN) good enough,** or do we go straight to `sync_file`? A is what we do
    now and costs nothing; B is right on principle. Does anyone know whether KWin's screencast
    attaches fences reliably? If you know SPA explicit sync is available in the PipeWire we build
