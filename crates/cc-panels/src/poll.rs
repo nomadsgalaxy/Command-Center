@@ -88,8 +88,8 @@ impl Pointing for Live {
 /// The rate and the universe are None when OpenVR sets the property's error, whatever value came
 /// with it (`vr::prop`): that value is only documented for a bad index or type, 0 (openvr.h,
 /// IVRSystem_022). The callers' fallbacks then apply, 0.0 (Pace's 90 Hz) and 0 ("no room yet").
-/// The properties are spelled `openvr_sys::` in full: this file has no `sys` alias outside its tests (in `call!`,
-/// `sys` is the table's name), and the two uses don't earn one.
+/// The properties are spelled `openvr_sys::` in full: this file has no `sys` alias outside its
+/// tests (in `call!`, `sys` is the table's name), and the two uses don't earn one.
 impl Session for Live {
     fn display_hz(&self) -> Option<f32> {
         let mut err = 0;
