@@ -162,7 +162,12 @@ as linear, so copying into `B8G8R8A8_UNORM` would show every panel washed out. C
 into a `_SRGB` swapchain image is allowed (the formats are size-compatible) and displays them as
 intended. So the pick prefers the `_SRGB` variants (`B8G8R8A8_SRGB` for panels, `R8G8B8A8_SRGB` for
 cards), and the spike's corner-colour check compares against expected sRGB values, so a UNORM pick
-fails the test instead of looking a bit off. **Unverified** against the 1.1 spec's colour-space
+fails the test instead of looking a bit off. The dmabuf is still imported as `B8G8R8A8_UNORM`,
+and a `vkCmdCopyImage` from that into a `_SRGB` image of the same layout is legal (the same
+compatibility class, and the copy is bitwise), which gives exactly the bytes we want (Grok, #392).
+So copy-first (Question 1) and `_SRGB` (Question 4) hang together. If a runtime offers no `_SRGB`
+format in our byte order, copy-first isn't enough there: the fallback is the draw pass, or a UNORM
+swapchain with washed-out colours, logged. **Unverified** against the 1.1 spec's colour-space
 text; the spike settles it (Question 4).
 
 ### 1.6 Readiness and fencing
@@ -420,8 +425,10 @@ for this slice can be made from it:
 2. **Picture.** A test source that fills a known pattern (corner colours, a diagonal, a stripe
    with alpha 0 in the X byte) as (a) a GBM linear buffer written on the CPU, (b) a PipeWire
    dmabuf from a real KWin screencast, (c) a GPU-rendered dmabuf with a deliberately slow producer.
-   Expected: colours correct (no red/blue swap), no black or torn frames in 10,000 presents, X-byte
-   garbage doesn't show.
+   Expected: colours correct (no red/blue swap, and sRGB values as expected), no black or torn
+   frames in 10,000 presents, X-byte garbage doesn't show. Also record whether the runtime offers
+   an `_SRGB` format in our byte order, and that `XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT` is accepted
+   on it (Grok, #392).
 3. **Cycle.** 10,000 acquire, copy, submit, release, `xrEndFrame` cycles. With the Khronos
    validation layer and synchronisation validation on, zero errors. Source buffers are rewritten
    the instant their fence signals, and a checksum of the swapchain image, read back after the
