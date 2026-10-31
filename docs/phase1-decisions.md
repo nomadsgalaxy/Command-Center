@@ -1,6 +1,6 @@
 # Phase 1 decisions: texture contract, layer budget, interim room rule
 
-Status: draft for review, 2026-10-31. This is the "three things get decided and written down"
+Status: working draft, 2026-10-31. Q1 to Q3 decided (section 5); the rest is open until the spike. This is the "three things get decided and written down"
 list from `docs/openxr-plan.md` ("Phase 1"). Nothing here is built. Paths are relative to
 `crates/cc-panels/src/` unless they start with `crates/`, `docs/` or a URL. Anything I couldn't
 check against the code, the spec or a source is marked **unverified**, and anything I'm unsure
@@ -238,6 +238,11 @@ Two separate waits, which OpenVR let us blur together.
     each exporter treats nesting). Cost if it holds: two ioctls per write, no copy. If the trace
     shows a driver's unmap doesn't complete the write or the ioctl isn't enough for it, the
     fallback is to write through our own staging `VkBuffer` for that driver (1.10) instead of GBM.
+    Sharper still (Grok, #412): the kernel's contract for `DMA_BUF_IOCTL_SYNC` covers CPU access
+    through an `mmap` of the dma-buf fd itself, and `gbm_bo_map` doesn't give us that mapping, so
+    bracketing it isn't covered by the ioctl's contract even where it happens to work. A second
+    fallback, for linear buffers, is to `mmap` the exported fd directly and write through that,
+    where the sync pair is the documented contract.
   - The same ioctl is required anywhere we `mmap` a dmabuf fd ourselves: the PipeWire fallback in
     1.10 if it ever reads a dmabuf on the CPU, and the VNC and RDP staging paths if they were to
     mmap one. Staging `VkBuffer` memory we allocate through Vulkan isn't a dmabuf, so it needs
@@ -821,7 +826,10 @@ in `home.json`. A namespace in the identity is exact, and it shows up in the fil
        (**Unverified:** what string each reports; I haven't run either.) Two different builds of
        one known runtime (a fork that still says "Monado") share a room by design. Their origins
        may differ, and that's the origin-stability problem of 3.4, not an identity one.
-    2. Otherwise `x-<8 hex digits of a hash of the canonical identity>`. It's readable as "not a
+    2. Otherwise `x-<8 hex digits of a hash of the canonical identity>`. The hash is pinned:
+       32-bit FNV-1a over the identity's UTF-8 bytes, not Rust's `DefaultHasher`, whose algorithm
+       may change between releases and would move every unknown runtime to a new room on a
+       toolchain bump. A test pins one identity to its expected key (Grok, #412). It's readable as "not a
        known runtime" and is not a guarantee of uniqueness, so it's paired with the full identity
        as below.
   - **The canonical identity** is `runtimeName` trimmed and lowercased. If `runtimeName` is empty
@@ -972,7 +980,10 @@ All paths in https://github.com/wlx-team/wayvr at `ef7e5f6`.
 
 ## 5. Open questions
 
-Numbered so you can answer by number. The first three block phase 1. Where Muse (board topic 129,
+Numbered so you can answer by number. **Q1–Q3 are decided** (Anthony, 2026-10-31, going with the
+reviewers): copy first with no draw pass unless the spike finds a runtime that needs one; no
+mirroring on a panel's back in phase 1; offer PipeWire the importable modifier set, on the OpenXR
+backend only. The first three blocked phase 1. Where Muse (board topic 129,
 #377) proposed an answer, it's recorded as **Proposed (Muse)**. These are proposals, and Anthony decides.
 
 1. **Copy or draw?** Is a format-matched `vkCmdCopyImage` enough for v1 (fewer moving parts, needs
