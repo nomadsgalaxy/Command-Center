@@ -725,7 +725,9 @@ impl Pace {
         p
     }
 
-    /// The refresh rates Pace takes as the display's.
+    /// The refresh rates Pace takes as the display's. A known ceiling: a real display over 240 Hz
+    /// starts at 90 Hz (`new`), and mid-session keeps its previous rate rather than follow it
+    /// (`follow`). Raise it when one turns up.
     const RATES: std::ops::RangeInclusive<f32> = 30.0..=240.0;
 
     /// Sets the display's refresh rate (90 when SteamVR doesn't say).
