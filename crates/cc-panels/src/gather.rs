@@ -90,9 +90,16 @@ pub fn layout(head: &Mat, sizes: &[(f64, f64, f64)]) -> Vec<Pose> {
 /// A panel's width in degrees from the eye, NEW_AHEAD away. A curved one's edges come toward you
 /// (its sagitta), and it's the chord between them that you see.
 fn across(w: f64, curve: f64) -> f64 {
+    across_at(w, 0.0, curve, 0.0)
+}
+
+/// `across` for one `h` high whose middle is `dy` above the eyes (below, negative). Off the eyes'
+/// level it's turned to face them, so its edge nearest you comes closer and takes a wider angle.
+fn across_at(w: f64, h: f64, curve: f64, dy: f64) -> f64 {
     let r = crate::limits::NEW_AHEAD;
+    let tilt = dy.atan2(r).sin().abs() * h / 2.0;
     let half = if curve > 0.0 { curve * (w / (2.0 * curve)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
-    (2.0 * (half / (r - sagitta(w, curve)).max(0.1)).atan()).to_degrees()
+    (2.0 * (half / (r - sagitta(w, curve) - tilt).max(0.1)).atan()).to_degrees()
 }
 
 /// The rows, as runs of indices, packed in order into `span` degrees.
@@ -140,10 +147,12 @@ fn place_rows(head: &Mat, sizes: &[(f64, f64, f64)], rows: &[Vec<usize>]) -> Vec
                 -y
             }
         };
-        let width: f64 = row.iter().map(|&i| across(sizes[i].0, sizes[i].2)).sum::<f64>() + gap * (row.len() - 1) as f64;
+        // a row above or below is turned to face the eyes, so it's spaced by its nearer edges
+        let a = |i: usize| across_at(sizes[i].0, sizes[i].1, sizes[i].2, dy);
+        let width: f64 = row.iter().map(|&i| a(i)).sum::<f64>() + gap * (row.len() - 1) as f64;
         let mut left = yaw0 + width / 2.0; // a bigger yaw is further left
         for &i in row {
-            let a = across(sizes[i].0, sizes[i].2);
+            let a = a(i);
             let yaw = (left - a / 2.0).to_radians();
             left -= a + gap;
             let centre = [eye[0] - r * yaw.sin(), eye[1] + dy, eye[2] - r * yaw.cos()];
@@ -202,12 +211,7 @@ pub fn side_by_side(head: &Mat, first_dy: f64, sizes: &[(f64, f64, f64)]) -> Vec
             k if k % 2 == 1 => up + GAP + h / 2.0,
             _ => -(down + GAP + h / 2.0),
         };
-        // off the eyes' level it's turned to face them, so its edge nearest you takes a wider angle
-        let wide = |dy: f64| {
-            let tilt = dy.atan2(r).sin().abs() * h / 2.0;
-            let half = if c > 0.0 { c * (w / (2.0 * c)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
-            (2.0 * (half / (r - sagitta(w, c) - tilt).max(0.1)).atan()).to_degrees()
-        };
+        let wide = |dy: f64| across_at(w, h, c, dy);
         let mut a = wide(dy_in(row, up, down));
         let past = |edge: f64, a: f64| edge + gap + a > BESIDE;
         let full = !first && past(if on_right { right } else { left }, a) && past(if on_right { left } else { right }, a);
@@ -358,27 +362,18 @@ mod tests {
         head(0.0)[1][3] as f64
     }
 
-    /// Each pose's horizontal span in degrees round the eye, and its vertical span in metres.
-    fn spans(poses: &[Pose], sizes: &[(f64, f64, f64)]) -> Vec<((f64, f64), (f64, f64))> {
-        poses
-            .iter()
-            .zip(sizes)
-            .map(|(p, &(w, h, c))| {
-                let half = across(w, c) / 2.0;
-                ((p.yaw - half, p.yaw + half), (p.centre[1] - h / 2.0, p.centre[1] + h / 2.0))
-            })
-            .collect()
-    }
-
-    /// Like `spans`, but from each one's corners (flat ones only), so it's right for a stacked one
-    /// too, which keeps the turn of the one it stacks on.
+    /// Each one's real bounds, from its corners: the angles round the eye (at the origin, level)
+    /// of their left and right, and their lowest and highest. A curved one's edges are its chord's
+    /// ends, brought toward you by its sagitta. It's right for one turned to face the eyes from a row
+    /// above or below, and for a stacked one, which keeps the turn of the one it stacks on.
     fn corner_spans(poses: &[Pose], sizes: &[(f64, f64, f64)]) -> Vec<((f64, f64), (f64, f64))> {
         poses
             .iter()
             .zip(sizes)
-            .map(|(p, &(w, h, _))| {
-                let m = panel_matrix(p);
-                let corner = |sx: f64, sy: f64| [0, 1, 2].map(|i| m[i][3] as f64 + m[i][0] as f64 * sx * w / 2.0 + m[i][1] as f64 * sy * h / 2.0);
+            .map(|(p, &(w, h, c))| {
+                let (x, y, z) = axes(p);
+                let half = if c > 0.0 { c * (w / (2.0 * c)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
+                let corner = |sx: f64, sy: f64| [0, 1, 2].map(|i| p.centre[i] + sx * half * x[i] + sy * h / 2.0 * y[i] + sagitta(w, c) * z[i]);
                 let cs = [corner(-1.0, -1.0), corner(1.0, -1.0), corner(-1.0, 1.0), corner(1.0, 1.0)];
                 let mid = angles(&p.centre).0;
                 let ang = |q: &V3| (angles(&[q[0], 0.0, q[2]]).0 - mid + 540.0).rem_euclid(360.0) - 180.0 + mid;
@@ -416,7 +411,7 @@ mod tests {
         let sizes = [(0.6, 0.34, 0.0), (0.9, 0.5, 0.0), (0.5, 0.4, 0.0)]; // 24° + 36° + 20° and two gaps: one row
         for yaw in [0.0, 70.0, -150.0] {
             let poses = layout(&head(yaw), &sizes);
-            let s = spans(&poses, &sizes);
+            let s = corner_spans(&poses, &sizes);
             for i in 0..3 {
                 for j in i + 1..3 {
                     assert!(apart(s[i].0, s[j].0) || apart(s[i].1, s[j].1), "{i} and {j} overlap: {s:?}");
@@ -444,7 +439,7 @@ mod tests {
         let sizes = [(0.6, 0.34, 0.0), (0.9, 0.5, 0.0), (0.5, 0.4, 0.0), (0.4, 0.3, 1.0)];
         for yaw in [0.0, 70.0, -150.0] {
             let poses = side_by_side(&head(yaw), 0.0, &sizes);
-            let s = spans(&poses, &sizes);
+            let s = corner_spans(&poses, &sizes);
             let off = |y: f64| (y - yaw + 540.0).rem_euclid(360.0) - 180.0;
             assert!(off(poses[0].yaw).abs() < 1e-4, "the first in the middle: {}", off(poses[0].yaw));
             assert!(off(poses[1].yaw) < 0.0 && off(poses[2].yaw) > 0.0 && off(poses[3].yaw) < off(poses[1].yaw), "then right, left, right");
@@ -471,7 +466,7 @@ mod tests {
         let sizes: Vec<_> = (0..14).map(|i| (0.7 + 0.1 * (i % 3) as f64, 0.35 + 0.05 * (i % 4) as f64, 0.0)).collect();
         for yaw in [0.0, 120.0] {
             let poses = side_by_side(&head(yaw), 0.0, &sizes);
-            let s = spans(&poses, &sizes);
+            let s = corner_spans(&poses, &sizes);
             let off = |y: f64| (y - yaw + 540.0).rem_euclid(360.0) - 180.0;
             for (i, (x, _)) in s.iter().enumerate() {
                 assert!(off(x.0) >= -90.0 - 1e-6 && off(x.1) <= 90.0 + 1e-6, "{i} past the sides: {x:?}");
@@ -511,7 +506,7 @@ mod tests {
             let tallest = sizes.iter().map(|z| z.1).fold(0.0, f64::max);
             let reach = tallest + GAP; // from the eyes to the middle of the row above or below, at most
             let poses = side_by_side(&head(yaw), 0.0, &sizes);
-            let s = spans(&poses, &sizes);
+            let s = corner_spans(&poses, &sizes);
             let off = |y: f64| (y - yaw + 540.0).rem_euclid(360.0) - 180.0;
             for (i, (x, _)) in s.iter().enumerate() {
                 assert!(off(x.0) >= -90.0 - 1e-6 && off(x.1) <= 90.0 + 1e-6, "{i} past the sides: {x:?}");
@@ -612,7 +607,7 @@ mod tests {
     fn too_many_for_the_arc_wrap_into_rows_above_and_below() {
         let sizes = vec![(1.0, 0.6, 0.0); 5]; // two to a 100° row: three rows
         let poses = layout(&head(0.0), &sizes);
-        let s = spans(&poses, &sizes);
+        let s = corner_spans(&poses, &sizes);
         for (i, (a, b)) in s.iter().enumerate() {
             assert!(a.0 >= -SPAN / 2.0 - 1e-6 && a.1 <= SPAN / 2.0 + 1e-6, "{i} is within the arc: {a:?}");
             for (j, (c, d)) in s.iter().enumerate().skip(i + 1) {
@@ -634,6 +629,27 @@ mod tests {
             let (y, pt) = angles(&d);
             assert!((y - p.yaw).abs() < 1e-9 && (pt - p.pitch).abs() < 1e-9, "every row faces the eye");
         }
+    }
+
+    /// Tall and curved, on every arc: the rows above and below are turned to face the eyes, so
+    /// their nearer edges take a wider angle than at eye level, and still none overlaps another by
+    /// its real corners.
+    #[test]
+    fn tilted_rows_keep_clear_by_their_real_corners() {
+        let mut below = false;
+        for n in [5, 7, 9, 13] {
+            let sizes: Vec<_> = (0..n).map(|i| (0.9 + 0.1 * (i % 2) as f64, 0.9, if i % 3 == 0 { 1.2 } else { 0.0 })).collect();
+            let poses = layout(&head(0.0), &sizes);
+            assert!(poses.iter().any(|p| p.centre[1] > eye_y()), "{n}: a row above");
+            below |= poses.iter().any(|p| p.centre[1] < eye_y());
+            let s = corner_spans(&poses, &sizes);
+            for i in 0..n {
+                for j in i + 1..n {
+                    assert!(apart(s[i].0, s[j].0) || apart(s[i].1, s[j].1), "{n}: {i} and {j} overlap: {:?} {:?}", s[i], s[j]);
+                }
+            }
+        }
+        assert!(below, "and a row below");
     }
 
     #[test]
@@ -672,7 +688,7 @@ mod tests {
         ys.sort_by(f64::total_cmp);
         ys.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
         assert!(ys.len() <= ROWS, "nine take at most {ROWS} rows on a wider arc: {ys:?}");
-        let s = spans(&poses, &sizes);
+        let s = corner_spans(&poses, &sizes);
         assert!(s.iter().any(|(a, _)| a.0 < -SPAN / 2.0 || a.1 > SPAN / 2.0), "and the arc's wider than 100°: {s:?}");
         for i in 0..9 {
             for j in i + 1..9 {

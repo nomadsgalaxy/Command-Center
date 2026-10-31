@@ -88,8 +88,9 @@ updates, `--remove --yes` removes, and `--dry-run` only says what it would do.
 - **Bring all here:** if panels get lost behind you or out of reach, the taskbar's Bring all
   here chip (four arrows pointing in at a panel) puts every panel that's showing, and an open
   Machines, Preferences or Workspace window, in front of you. They go on an arc 1.4 m ahead,
-  facing you, each keeping its size and curve, in rows above and below if there are many. A
-  docked panel goes back in the world. It's also on the dashboard tab, Right Ctrl + B, and
+  facing you, each keeping its size and curve, in rows above and below if there are many. The
+  rows above and below tilt to face you, and they're spaced so their nearer edges don't overlap
+  either. A docked panel goes back in the world. It's also on the dashboard tab, Right Ctrl + B, and
   `cc-home gather`. It isn't saved: Left Ctrl + Shift + B, Right Ctrl + Shift + B or
   `cc-home ungather` puts them back where they were, Right Ctrl + Home sends everything home,
   and a panel you then carry and let go of is saved as usual.
