@@ -202,15 +202,17 @@ mod tests {
     }
 
     /// A relocalization's re-read of the universe follows `Session::universe_id`'s rule: with its
-    /// error set, whatever its value, it's 0, "no room yet", as main.rs's start takes it. So in a
-    /// room it's a change to no room, and with no room yet it's only a relocalization.
+    /// error set, whatever its value, it can't tell, and the room it's in stays. So it's only a
+    /// relocalization, in a room or with no room yet, and never a change to the value that came
+    /// with the error, or to no room.
     #[test]
-    fn a_relocalization_with_the_universe_unreadable_is_no_room() {
+    fn a_relocalization_with_the_universe_unreadable_keeps_the_room() {
         let e = vr::VREvent_t { eventType: sys::EVREventType_VREvent_StandingZeroPoseReset, ..Default::default() };
         let unknown = Some(sys::ETrackedPropertyError_TrackedProp_UnknownProperty);
         let _vr = vr::fake::install(vr::fake::Script { universe: 8, prop_error: unknown, sys_events: [e, e].into(), ..Default::default() });
         let mut q = Queue::new(7);
-        assert_eq!((q.next_event(), q.universe), (Some(SessionEvent::RoomChanged(0)), 0), "not room 8: can't tell");
-        assert_eq!((q.next_event(), q.universe), (Some(SessionEvent::Relocalized), 0), "still no room");
+        assert_eq!((q.next_event(), q.universe), (Some(SessionEvent::Relocalized), 7), "not room 8, nor no room: still 7");
+        let mut q = Queue::new(0);
+        assert_eq!((q.next_event(), q.universe), (Some(SessionEvent::Relocalized), 0), "with no room yet, still none");
     }
 }

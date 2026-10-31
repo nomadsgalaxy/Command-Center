@@ -219,7 +219,8 @@ pub fn prop<T>(value: T, err: sys::ETrackedPropertyError) -> Option<T> {
 /// One of SteamVR's own events (PollNextEvent), as the neutral event the core reads (events.rs):
 /// `Other` with its type for one main.rs doesn't act on. A relocalization reads the universe now,
 /// as main.rs did, to tell the same room (`Relocalized`) from a new one (`RoomChanged`) against
-/// `universe`. A read with its error set is 0, "no room yet", as main.rs's start takes it (`prop`).
+/// `universe`. A read with its error set (`prop`) keeps `universe`: a passing error mid-session
+/// is only a relocalization, not a move to no room, which would leave every later save roomless.
 /// A button counts only on a real controller, and wearing only on the headset.
 pub fn session_event(e: &VREvent_t, universe: u64) -> crate::events::SessionEvent {
     use crate::events::SessionEvent as S;
@@ -230,7 +231,7 @@ pub fn session_event(e: &VREvent_t, universe: u64) -> crate::events::SessionEven
         sys::EVREventType_VREvent_ButtonPress if is_real_controller(e.trackedDeviceIndex) => S::ControllerUsed(crate::ids::Ctl::new(e.trackedDeviceIndex)),
         sys::EVREventType_VREvent_StandingZeroPoseReset => {
             let mut err = 0;
-            let now = prop(crate::call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err), err).unwrap_or(0);
+            let now = prop(crate::call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err), err).unwrap_or(universe);
             if now == universe { S::Relocalized } else { S::RoomChanged(now) }
         }
         // A new universe with no relocalization: the Frame makes one each time it tracks again

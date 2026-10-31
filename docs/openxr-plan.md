@@ -726,11 +726,12 @@ Behaviour changes phase 0 put off, each its own branch with its own test:
 - OpenVR's property errors (the display rate, the universe) read as `Session`'s None instead of
   whatever value came back (6d), and vr.rs's re-read of the universe follows the same rule.
   Done: `vr::prop` turns a property read with its error set into None, whatever its value, for
-  `Live`'s `display_hz` and `universe_id` and for `session_event`'s re-read. The callers keep
-  their fallbacks: 0.0 (Pace's 90 Hz) for the rate, and 0 ("no room yet") for the universe, so a
-  relocalization with the universe unreadable is a change to no room, as a documented error's 0
-  was before. The rate `to_photons` reads for its prediction is unchanged: it isn't a `Session`
-  read.
+  `Live`'s `display_hz` and `universe_id` and for `session_event`'s re-read. main.rs's start
+  keeps its fallbacks: 0.0 (Pace's 90 Hz) for the rate, and 0 ("no room yet") for the universe.
+  A relocalization with the universe unreadable keeps the room it's in, so it's only a
+  relocalization. Before, a documented error's 0 was a change to no room, and every later save
+  went roomless, which room-carry can't undo. The rate `to_photons` reads for its prediction is
+  unchanged: it isn't a `Session` read.
 - New things placed in front of the predicted head pose instead of the unpredicted one (6c's
   `head_now`).
 - The two readers of a pointer's x and y on kinds where they aren't a position (5a): a card's
