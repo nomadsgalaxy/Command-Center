@@ -12,7 +12,7 @@
 //!
 //! The taskbar's chip, the dashboard tab's button, Right Ctrl + B, the control socket's `gather`
 //! and `cc-home gather` all end here.
-use crate::geometry::{Mat, Placement, Pose, V3, angles, panel_matrix, sagitta};
+use crate::geometry::{Mat, Placement, Pose, V3, ahead_of, angles, level, panel_matrix, sagitta};
 use crate::stage::Stage;
 use crate::{Source, grab, panels, vr, windows::Windows};
 use std::sync::Mutex;
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 /// How wide a row can be, in degrees round you, before it wraps.
 const SPAN: f64 = 100.0;
 /// Past this many rows the arc widens instead (WIDER), so a big desktop doesn't stack up out of
-/// sight above and below you.
+/// sight above and below you. `side_by_side` stops at it too.
 const ROWS: usize = 3;
 const WIDER: [f64; 2] = [160.0, 220.0];
 /// The space between two panels, along a row and between rows, in metres.
@@ -157,13 +157,19 @@ fn place_rows(head: &Mat, sizes: &[(f64, f64, f64)], rows: &[Vec<usize>]) -> Vec
 /// How far round from the gaze, each way, `side_by_side` goes before it starts another row.
 const BESIDE: f64 = 90.0;
 
+/// How far right and down each window that doesn't fit in ROWS steps from the last: 8 cm, like
+/// windows.rs `ahead`'s cascade.
+const STEP: f64 = 0.08;
+
 /// Where each of `sizes` goes when they open one after another (windows.rs `ahead`, the windows
 /// KWin reports at start): the first in the middle of the gaze, `first_dy` metres above the eyes
 /// (below if negative: ahead's cascade drops it), then each next one beside what's there, right,
 /// left, right, ..., level with the eyes on `layout`'s arc. One that would go past BESIDE degrees
 /// either way starts a new row, from the middle again: above, then below, then further above, each
-/// clear of everything already above or below it, the first included wherever it sits. Unlike
-/// `layout`, an earlier one never moves for a later one, so each can be placed as it comes.
+/// clear of everything already above or below it, the first included wherever it sits. Once ROWS
+/// are full, the rest stack on the last one placed, STEP further down and across for each (one to
+/// five steps, then round again), toward the gaze so none goes past BESIDE. Unlike `layout`, an
+/// earlier one never moves for a later one, so each can be placed as it comes.
 pub fn side_by_side(head: &Mat, first_dy: f64, sizes: &[(f64, f64, f64)]) -> Vec<Pose> {
     let r = crate::limits::NEW_AHEAD;
     let eye: V3 = [0, 1, 2].map(|i| head[i][3] as f64);
@@ -175,7 +181,8 @@ pub fn side_by_side(head: &Mat, first_dy: f64, sizes: &[(f64, f64, f64)]) -> Vec
     let (mut up, mut down) = (0.0f64, 0.0f64);
     let (mut top, mut bottom) = (f64::MIN, f64::MAX);
     let mut on_right = true;
-    let mut out = Vec::new();
+    let mut stacked = 0; // how many have gone on the last one placed, once ROWS are full
+    let mut out: Vec<Pose> = Vec::new();
     for (n, &(w, h, c)) in sizes.iter().enumerate() {
         // each sits on its row's edge nearest the eyes: its bottom above, its top below
         let dy_in = |row: usize, up: f64, down: f64| match row {
@@ -192,7 +199,18 @@ pub fn side_by_side(head: &Mat, first_dy: f64, sizes: &[(f64, f64, f64)]) -> Vec
         };
         let mut a = wide(dy_in(row, up, down));
         let past = |edge: f64, a: f64| edge + gap + a > BESIDE;
-        if !first && past(if on_right { right } else { left }, a) && past(if on_right { left } else { right }, a) {
+        let full = !first && past(if on_right { right } else { left }, a) && past(if on_right { left } else { right }, a);
+        if stacked > 0 || (full && row + 1 == ROWS) {
+            stacked += 1;
+            let from = out[n - stacked]; // the last one placed in a row
+            let step = STEP * (1 + (stacked - 1) % 5) as f64;
+            // right, unless it's right of the gaze already (a bigger yaw is further left)
+            let aside = if (from.yaw - yaw0 + 540.0).rem_euclid(360.0) - 180.0 > -1e-9 { step } else { -step };
+            let f = level([from.centre[0] - eye[0], 0.0, from.centre[2] - eye[2]]);
+            out.push(Pose { centre: ahead_of(&from.centre, &f, 0.0, step, aside), width: w, curve: c, ..from });
+            continue;
+        }
+        if full {
             // this row's full both ways: the next one goes above (odd rows) or below (even)
             if row == 0 {
                 (up, down) = (top, -bottom);
@@ -325,6 +343,25 @@ mod tests {
             .collect()
     }
 
+    /// Like `spans`, but from each one's corners (flat ones only), so it's right for a stacked one
+    /// too, which keeps the turn of the one it stacks on.
+    fn corner_spans(poses: &[Pose], sizes: &[(f64, f64, f64)]) -> Vec<((f64, f64), (f64, f64))> {
+        poses
+            .iter()
+            .zip(sizes)
+            .map(|(p, &(w, h, _))| {
+                let m = panel_matrix(p);
+                let corner = |sx: f64, sy: f64| [0, 1, 2].map(|i| m[i][3] as f64 + m[i][0] as f64 * sx * w / 2.0 + m[i][1] as f64 * sy * h / 2.0);
+                let cs = [corner(-1.0, -1.0), corner(1.0, -1.0), corner(-1.0, 1.0), corner(1.0, 1.0)];
+                let mid = angles(&p.centre).0;
+                let ang = |q: &V3| (angles(&[q[0], 0.0, q[2]]).0 - mid + 540.0).rem_euclid(360.0) - 180.0 + mid;
+                let (lo, hi) = cs.iter().map(ang).fold((f64::MAX, f64::MIN), |(l, h), a| (l.min(a), h.max(a)));
+                let (b, t) = cs.iter().fold((f64::MAX, f64::MIN), |(b, t), q| (b.min(q[1]), t.max(q[1])));
+                ((lo, hi), (b, t))
+            })
+            .collect()
+    }
+
     fn apart(a: (f64, f64), b: (f64, f64)) -> bool {
         a.1 <= b.0 + 1e-9 || b.1 <= a.0 + 1e-9
     }
@@ -403,6 +440,88 @@ mod tests {
             }
             assert_eq!(side_by_side(&head(yaw), 0.0, &sizes[..9]), poses[..9], "one more doesn't move the others");
         }
+    }
+
+    /// Forty at once (a big session at start): only ROWS rows, none of them further above or below
+    /// the eyes than one row's reach, the stack under the last of them going no more than five
+    /// steps further, none past the sides, the ones in the rows where they'd be without the rest,
+    /// and each of the rest STEP-steps down and across from the last one in a row.
+    #[test]
+    fn past_three_rows_the_rest_stack_on_the_last() {
+        let mut sides = std::collections::BTreeSet::new(); // which side of the gaze the stacks start
+        for (n, yaw) in (0..4).flat_map(|n| [(n, 0.0), (n, 120.0)]) {
+            // mixed sizes end their last row left of the gaze; narrow and narrower by turns end it right,
+            // near enough the side that stacking further out would pass it
+            let width = |i: usize| match n {
+                0 | 1 => 0.7 + 0.1 * ((i + n) % 3) as f64,
+                _ => {
+                    if i % 2 == n % 2 {
+                        0.4
+                    } else {
+                        0.15
+                    }
+                }
+            };
+            let sizes: Vec<_> = (0..40).map(|i| (width(i), 0.35 + 0.05 * ((i + n) % 4) as f64, 0.0)).collect();
+            let tallest = sizes.iter().map(|z| z.1).fold(0.0, f64::max);
+            let reach = tallest + GAP; // from the eyes to the middle of the row above or below, at most
+            let poses = side_by_side(&head(yaw), 0.0, &sizes);
+            let s = spans(&poses, &sizes);
+            let off = |y: f64| (y - yaw + 540.0).rem_euclid(360.0) - 180.0;
+            for (i, (x, _)) in s.iter().enumerate() {
+                assert!(off(x.0) >= -90.0 - 1e-6 && off(x.1) <= 90.0 + 1e-6, "{i} past the sides: {x:?}");
+            }
+            let dy = |p: &Pose| p.centre[1] - eye_y();
+            // one in a row is on the arc; a stacked one is moved off it
+            let on_arc = |p: &Pose| (norm(&[p.centre[0], 0.0, p.centre[2]]) - crate::limits::NEW_AHEAD).abs() < 1e-9;
+            let k = poses.iter().position(|p| !on_arc(p)).expect("some stacked");
+            assert!(poses[k..].iter().all(|p| !on_arc(p)), "once stacking, the rest stack");
+            // a row's edge nearest the eyes: its windows' bottoms above, their tops below
+            let near = |i: usize| match dy(&poses[i]) {
+                0.0 => 0.0,
+                d => d - d.signum() * sizes[i].1 / 2.0,
+            };
+            let rows: std::collections::BTreeSet<i64> = (0..k).map(|i| (near(i) * 1e6).round() as i64).collect();
+            assert_eq!(rows.len(), ROWS, "only three rows: {rows:?}");
+            for (i, p) in poses[..k].iter().enumerate() {
+                assert!(dy(p).abs() <= reach + 1e-9, "{i} more than a row up or down: {}", dy(p));
+            }
+            let from = poses[k - 1];
+            sides.insert(off(from.yaw) < 0.0);
+            // the first to stack: one STEP down and across from the last in a row
+            let across = |p: &Pose| norm(&[p.centre[0] - from.centre[0], 0.0, p.centre[2] - from.centre[2]]);
+            assert!((dy(&from) - dy(&poses[k]) - STEP).abs() < 1e-9 && (across(&poses[k]) - STEP).abs() < 1e-9, "{k} stacks first");
+            // a stacked one keeps the last one's turn, so its edges aren't at its yaw ± half (spans)
+            let right = [from.yaw.to_radians().cos(), 0.0, -from.yaw.to_radians().sin()];
+            for (j, p) in poses[k..].iter().enumerate() {
+                for e in [-0.5, 0.5] {
+                    let edge = [p.centre[0] + e * p.width * right[0], 0.0, p.centre[2] + e * p.width * right[2]];
+                    assert!(off(angles(&edge).0).abs() <= 90.0 + 1e-6, "{} past the sides: {edge:?}", k + j);
+                }
+                // the rest: one to five steps, then round again
+                let step = STEP * (1 + j % 5) as f64;
+                assert!((dy(&from) - dy(p) - step).abs() < 1e-9 && (across(p) - step).abs() < 1e-9, "{} a stack step from {}", k + j, k - 1);
+                assert!(dy(p).abs() <= reach + 5.0 * STEP + 1e-9, "{} too far down: {}", k + j, dy(p));
+                assert_eq!((p.width, p.curve), (sizes[k + j].0, sizes[k + j].2));
+            }
+            // overlaps: none among the rows, and a stacked one only over the stack or the row it's on
+            // (below), whose windows beside the last it steps toward; never the row level or above
+            let c = corner_spans(&poses, &sizes);
+            let over = |i: usize, j: usize| !(apart(c[i].0, c[j].0) || apart(c[i].1, c[j].1));
+            for (i, p) in poses[..k].iter().enumerate() {
+                for j in i + 1..k {
+                    assert!(!over(i, j), "{i} and {j} in rows overlap");
+                }
+                for j in k..sizes.len() {
+                    assert!(!over(i, j) || dy(p) < 0.0, "{j}, stacked, over {i} in the row level or above");
+                }
+            }
+            assert!(over(k - 1, k), "the first stacked one is over the last in a row");
+            for n in k - 2..=k {
+                assert_eq!(side_by_side(&head(yaw), 0.0, &sizes[..n]), poses[..n], "the rest don't move the first");
+            }
+        }
+        assert_eq!(sides.len(), 2, "stacks started on both sides of the gaze");
     }
 
     #[test]

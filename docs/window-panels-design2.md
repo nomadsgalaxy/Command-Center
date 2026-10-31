@@ -283,6 +283,10 @@ Instead, a press only goes through once its window is known to be on top:
    window in turn) go side by side on that arc instead, right, left, right of the first (gather.rs
    `side_by_side`), and none moves for a later one. One that would go past 90° either way starts
    a new row from the middle, above, then below, so a dozen at start never wrap round behind you.
+   There are three rows at most (gather.rs `ROWS`): once the one below is full too, the rest
+   stack on the last one placed, 8 cm further down and across for each (one to five steps, then
+   round again) toward the middle of your view, so 40 at start don't go a metre below your eyes
+   or up over your head.
 5. The tag is fetched (§9).
 
 **Idle windows**
