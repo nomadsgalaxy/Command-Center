@@ -395,10 +395,6 @@ impl Beam {
         let _ = crate::texture::Live.present_pixels(lasermode, &[0u8; 4 * 4 * 4], 4, 4);
         call!(ov, SetOverlayWidthInMeters, lasermode.0, 0.001);
         call!(ov, SetOverlayFlag, lasermode.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        // the dominant hand's first load stays here, so a runtime with no Beam never loads it
-        // and keeps the right (docs/openxr-plan.md, phase 1)
-        crate::config::set_dominant(crate::config::dominant_hand());
-        eprintln!("laser: dominant hand {:?}, the mouse's laser uses the other one while it's free", crate::config::dominant());
         Beam { laser: Laser::new(Instant::now()), ours: None, pid: 0, refreshed: None, lasermode }
     }
 

@@ -985,6 +985,7 @@ fn run() -> Result<(), String> {
     let mut universe = poll::Live.universe_id().unwrap_or(0); // it logs what SteamVR said
     let (workspace, new) = config::choose_workspace(universe);
     eprintln!("workspace: {workspace} in room {}{}", cc_proto::conf::room(universe), if new { " (made for this room: the Workspace window's Save as workspace keeps it)" } else { "" });
+    config::load_dominant(); // before anything points, on any runtime
     let mut list = Vec::new();
     for v in viewers {
         let tag = load_tag(&format!("{assets}/tag-{}.rgba", v.name));

@@ -336,8 +336,8 @@ pub fn settings() -> serde_json::Value {
     std::fs::read_to_string(config("settings.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}))
 }
 
-/// True if the dominant hand is the left (settings.json's `dominant_hand`). Beam::new loads it
-/// and Preferences sets it live; until then it's the right.
+/// True if the dominant hand is the left (settings.json's `dominant_hand`). main.rs loads it at
+/// start, on any runtime (`load_dominant`), and Preferences sets it live; until then it's the right.
 static DOMINANT_LEFT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The hand you point with. The mouse's laser and the wrist taskbar take the other one.
@@ -349,10 +349,19 @@ pub fn set_dominant(h: Hand) {
     DOMINANT_LEFT.store(h == Hand::Left, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Loads the dominant hand from settings.json, once, at start and before anything points: on any
+/// runtime, not only one with SteamVR's laser, so every pointer takes the hand you chose.
+pub fn load_dominant() {
+    load_dominant_from(&settings());
+}
+
+fn load_dominant_from(settings: &serde_json::Value) {
+    set_dominant(dominant_in(settings));
+    eprintln!("hands: dominant hand {:?}, the mouse's laser uses the other one while it's free", dominant());
+}
+
 /// settings.json's `dominant_hand`: "left" or "right", and right when it's missing or neither.
-pub fn dominant_hand() -> Hand {
-    let text = std::fs::read_to_string(config("settings.json")).unwrap_or_default();
-    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+fn dominant_in(v: &serde_json::Value) -> Hand {
     match v["dominant_hand"].as_str() {
         None | Some("right") => Hand::Right,
         Some("left") => Hand::Left,
@@ -433,6 +442,22 @@ pub fn save_home_pose(name: &str, screen: Option<i32>, p: &Pose, height: f64, zo
 
 #[cfg(test)]
 mod tests {
+    /// settings.json's dominant hand is what loads, the right when it's missing or neither, with
+    /// no laser involved: main.rs loads it at start on any runtime.
+    #[test]
+    fn the_dominant_hand_loads_from_the_settings() {
+        use crate::ids::Hand;
+        let load = |v: serde_json::Value| {
+            super::load_dominant_from(&v);
+            super::dominant()
+        };
+        assert_eq!(load(serde_json::json!({"dominant_hand": "left"})), Hand::Left);
+        assert_eq!(load(serde_json::json!({"dominant_hand": "right"})), Hand::Right);
+        assert_eq!(load(serde_json::json!({"dominant_hand": "left"})), Hand::Left, "left again");
+        assert_eq!(load(serde_json::json!({})), Hand::Right, "missing: the right");
+        assert_eq!(load(serde_json::json!({"dominant_hand": "up"})), Hand::Right, "neither: the right");
+    }
+
     #[test]
     fn viewers_read_autoconnect() {
         let t =

@@ -613,7 +613,8 @@ cc-panels.
    a conversion. The dominant-hand preference (settings.json's `dominant_hand`, which Preferences
    sets live) moves to config.rs, and `aim_basis`, which kvm's ray uses too, to geometry.rs. The
    preference's first load stays in `Beam::new`, so nothing changes on OpenVR, and a runtime
-   with no `Beam` never loads it and points with the right hand.
+   with no `Beam` never loads it and points with the right hand. (Phase 1 has since moved the
+   load to start.)
    Then kvm.rs and the settings windows reach the laser through `MouseLaser` (laser.rs, on
    `laser::Live`): `working` (it has SteamVR's dashboard pointer), `press` with an
    `events::Button`, so kvm never names a lease bit, `dashboard` (Right Ctrl + D), `scroll` and
@@ -756,6 +757,9 @@ Behaviour changes phase 0 put off, each its own branch with its own test:
 - Before a `Stage` is injected: the fake's `head_pose` and `head_now` give different fixtures,
   so swapping them fails a test, and the registry scan learns generic callers (6b).
 - The dominant hand loads at start on any runtime, not in the OpenVR laser's `Beam::new` (6e).
+  Done: main.rs calls `config::load_dominant` once at start, after the workspace is chosen and
+  before any panel or pointer exists, and `Beam::new` no longer loads it. Its log line moved
+  with it, now "hands:" instead of "laser:".
 - While the laser works, the settings windows' fallback doesn't take the mouse's queued presses
   (kvm's `extra_mouse`), so a press queued just before it started working comes out the next
   time it stops. Drop them when it starts working instead (6e).
