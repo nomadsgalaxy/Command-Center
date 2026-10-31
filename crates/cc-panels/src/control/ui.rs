@@ -318,22 +318,35 @@ pub fn next_event(h: vr::Handle) -> Option<crate::events::SurfaceEvent> {
     // held it, and the fallback's did that before 6e too. So nothing takes them the other way
     // round. KVM can still wait here on another thread's hold of it, as any lock of it can.
     static SENT: Mutex<Option<(f32, f32)>> = Mutex::new(None); // the point we last moved to
+    // a Down this sent and no Up yet (only touched with SENT held)
+    static DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering::Relaxed;
     if let Some(ev) = crate::poll::Live.next(h) {
         return Some(ev);
     }
     let mut sent = SENT.lock().unwrap();
     let laser = crate::kvm::lock().laser; // KVM only for this statement
     if laser.working() {
-        *sent = None; // the laser sends its own events now
-        return None;
+        // The laser sends its own events now. Presses queued for this are dropped, not sent the
+        // next time it stops working; one whose Down already went is let go once, here, so the
+        // window isn't left holding it.
+        crate::kvm::lock().extra_mouse.clear();
+        let (x, y) = sent.take().unwrap_or_default();
+        let up = PointerEvent { kind: PointerKind::Up(Button::Left), x, y, from: crate::ids::Dev::Mouse, age: 0.0 };
+        return DOWN.swap(false, Relaxed).then_some(SurfaceEvent::Pointer(up));
     }
     // The laser can start working between that check and this lock. The HEALTHY load this
     // replaced had the same gap, and the next call sees it.
     let mut k = crate::kvm::lock();
     let scale = crate::overlay::Live.mouse_scale_of(h);
     let at = k.extra.zip(k.extra_at()).map(|((pl, _), (u, v))| (((u / pl.width + 0.5) * scale[0] as f64) as f32, ((v / pl.height + 0.5) * scale[1] as f64) as f32));
+    // an Up for a Down that was let go above (its button was still held then) is stale
+    while k.extra_mouse.first() == Some(&false) && !DOWN.load(Relaxed) {
+        k.extra_mouse.remove(0);
+    }
     let (kind, (x, y)) = if !k.extra_mouse.is_empty() {
         let down = k.extra_mouse.remove(0);
+        DOWN.store(down, Relaxed);
         let kind = if down { PointerKind::Down(Button::Left) } else { PointerKind::Up(Button::Left) };
         (kind, at.or(*sent).unwrap_or_default())
     } else if at.is_some() && at != *sent {
@@ -401,6 +414,27 @@ mod tests {
         assert_eq!(next_event(h), None, "nothing stale replayed");
         on(true);
         assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0), "and the next point is a move again");
+        // a press queued just before the laser starts working is dropped, not sent the next time
+        // it stops
+        crate::kvm::lock().extra_mouse.push(true);
+        laser.working.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(next_event(h), None);
+        assert!(crate::kvm::lock().extra_mouse.is_empty(), "the queue's dropped");
+        laser.working.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0), "a move, no stale press");
+        assert_eq!(next_event(h), None);
+        // one whose Down already went is let go once when the laser starts, and its own late Up,
+        // after the laser stops again, isn't sent a second time
+        crate::kvm::lock().extra_mouse.push(true);
+        assert_eq!(next_event(h), ev(P::Down(Button::Left), 250.0, 300.0));
+        laser.working.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(next_event(h), ev(P::Up(Button::Left), 250.0, 300.0), "let go, so the window isn't left holding it");
+        assert_eq!(next_event(h), None, "once");
+        laser.working.store(false, std::sync::atomic::Ordering::Relaxed);
+        crate::kvm::lock().extra_mouse.push(false); // the button let go of at last
+        assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0), "a move, not a second Up");
+        assert_eq!(next_event(h), None);
+        assert!(crate::kvm::lock().extra_mouse.is_empty());
     }
 
     #[test]
