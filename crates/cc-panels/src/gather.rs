@@ -158,41 +158,58 @@ fn place_rows(head: &Mat, sizes: &[(f64, f64, f64)], rows: &[Vec<usize>]) -> Vec
 const BESIDE: f64 = 90.0;
 
 /// Where each of `sizes` goes when they open one after another (windows.rs `ahead`, the windows
-/// KWin reports at start): the first in the middle of the gaze, then each next one beside what's
-/// there, right, left, right, ..., on `layout`'s arc. One that would go past BESIDE degrees either
-/// way starts a new row, from the middle again: above, then below, then further above, each row
-/// clear of the last one there. Unlike `layout`, an earlier one never moves for a later one, so
-/// each can be placed as it comes.
-pub fn side_by_side(head: &Mat, sizes: &[(f64, f64, f64)]) -> Vec<Pose> {
+/// KWin reports at start): the first in the middle of the gaze, `first_dy` metres above the eyes
+/// (below if negative: ahead's cascade drops it), then each next one beside what's there, right,
+/// left, right, ..., level with the eyes on `layout`'s arc. One that would go past BESIDE degrees
+/// either way starts a new row, from the middle again: above, then below, then further above, each
+/// clear of everything already above or below it, the first included wherever it sits. Unlike
+/// `layout`, an earlier one never moves for a later one, so each can be placed as it comes.
+pub fn side_by_side(head: &Mat, first_dy: f64, sizes: &[(f64, f64, f64)]) -> Vec<Pose> {
     let r = crate::limits::NEW_AHEAD;
     let eye: V3 = [0, 1, 2].map(|i| head[i][3] as f64);
     let (yaw0, _) = angles(&forward(head));
     let gap = across(GAP, 0.0);
     let (mut left, mut right) = (0.0f64, 0.0f64); // this row's edges, in degrees left and right of the gaze
     let (mut row, mut first) = (0, true); // which row, and whether nothing's in it yet
-    let (mut up, mut down, mut tall) = (0.0f64, 0.0f64, 0.0f64); // the rows' top and bottom so far, and this row's tallest
+    // how far up and down from the eyes everything placed so far reaches, and this row's reach
+    let (mut up, mut down) = (0.0f64, 0.0f64);
+    let (mut top, mut bottom) = (f64::MIN, f64::MAX);
     let mut on_right = true;
     let mut out = Vec::new();
-    for &(w, h, c) in sizes {
-        let a = across(w, c);
-        let past = |edge: f64| edge + gap + a > BESIDE;
-        if !first && past(if on_right { right } else { left }) && past(if on_right { left } else { right }) {
+    for (n, &(w, h, c)) in sizes.iter().enumerate() {
+        // each sits on its row's edge nearest the eyes: its bottom above, its top below
+        let dy_in = |row: usize, up: f64, down: f64| match row {
+            0 if n == 0 => first_dy,
+            0 => 0.0,
+            k if k % 2 == 1 => up + GAP + h / 2.0,
+            _ => -(down + GAP + h / 2.0),
+        };
+        // off the eyes' level it's turned to face them, so its edge nearest you takes a wider angle
+        let wide = |dy: f64| {
+            let tilt = dy.atan2(r).sin().abs() * h / 2.0;
+            let half = if c > 0.0 { c * (w / (2.0 * c)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
+            (2.0 * (half / (r - sagitta(w, c) - tilt).max(0.1)).atan()).to_degrees()
+        };
+        let mut a = wide(dy_in(row, up, down));
+        let past = |edge: f64, a: f64| edge + gap + a > BESIDE;
+        if !first && past(if on_right { right } else { left }, a) && past(if on_right { left } else { right }, a) {
             // this row's full both ways: the next one goes above (odd rows) or below (even)
             if row == 0 {
-                (up, down) = (tall / 2.0, tall / 2.0);
+                (up, down) = (top, -bottom);
             } else if row % 2 == 1 {
-                up += GAP + tall;
+                up = up.max(top);
             } else {
-                down += GAP + tall;
+                down = down.max(-bottom);
             }
-            (row, first, tall) = (row + 1, true, 0.0);
+            (row, first, top, bottom) = (row + 1, true, f64::MIN, f64::MAX);
+            a = wide(dy_in(row, up, down));
         }
         let off = if first {
             (left, right, first, on_right) = (a / 2.0, a / 2.0, false, true);
             0.0
         } else {
             // the side it's that one's turn for, unless that side's full
-            let side = if past(if on_right { right } else { left }) { !on_right } else { on_right };
+            let side = if past(if on_right { right } else { left }, a) { !on_right } else { on_right };
             on_right = !side;
             if side {
                 right += gap + a;
@@ -202,13 +219,8 @@ pub fn side_by_side(head: &Mat, sizes: &[(f64, f64, f64)]) -> Vec<Pose> {
                 left - a / 2.0
             }
         };
-        tall = tall.max(h);
-        // each sits on the row's edge nearest the first row: its bottom above, its top below
-        let dy = match row {
-            0 => 0.0,
-            n if n % 2 == 1 => up + GAP + h / 2.0,
-            _ => -(down + GAP + h / 2.0),
-        };
+        let dy = dy_in(row, up, down);
+        (top, bottom) = (top.max(dy + h / 2.0), bottom.min(dy - h / 2.0));
         let yaw = (yaw0 + off).to_radians();
         let centre = [eye[0] - r * yaw.sin(), eye[1] + dy, eye[2] - r * yaw.cos()];
         let (y, p) = angles(&[centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]]);
@@ -349,7 +361,7 @@ mod tests {
     fn one_after_another_they_go_beside_each_other_from_the_middle() {
         let sizes = [(0.6, 0.34, 0.0), (0.9, 0.5, 0.0), (0.5, 0.4, 0.0), (0.4, 0.3, 1.0)];
         for yaw in [0.0, 70.0, -150.0] {
-            let poses = side_by_side(&head(yaw), &sizes);
+            let poses = side_by_side(&head(yaw), 0.0, &sizes);
             let s = spans(&poses, &sizes);
             let off = |y: f64| (y - yaw + 540.0).rem_euclid(360.0) - 180.0;
             assert!(off(poses[0].yaw).abs() < 1e-4, "the first in the middle: {}", off(poses[0].yaw));
@@ -364,7 +376,7 @@ mod tests {
                 assert_eq!((poses[i].width, poses[i].curve), (sizes[i].0, sizes[i].2));
             }
             for n in 1..4 {
-                assert_eq!(side_by_side(&head(yaw), &sizes[..n]), poses[..n], "one more doesn't move the others");
+                assert_eq!(side_by_side(&head(yaw), 0.0, &sizes[..n]), poses[..n], "one more doesn't move the others");
             }
         }
     }
@@ -376,7 +388,7 @@ mod tests {
     fn one_after_another_past_the_sides_they_start_rows_above_and_below() {
         let sizes: Vec<_> = (0..14).map(|i| (0.7 + 0.1 * (i % 3) as f64, 0.35 + 0.05 * (i % 4) as f64, 0.0)).collect();
         for yaw in [0.0, 120.0] {
-            let poses = side_by_side(&head(yaw), &sizes);
+            let poses = side_by_side(&head(yaw), 0.0, &sizes);
             let s = spans(&poses, &sizes);
             let off = |y: f64| (y - yaw + 540.0).rem_euclid(360.0) - 180.0;
             for (i, (x, _)) in s.iter().enumerate() {
@@ -389,7 +401,7 @@ mod tests {
                     assert!(apart(s[i].0, s[j].0) || apart(s[i].1, s[j].1), "{i} and {j} overlap: {:?} {:?}", s[i], s[j]);
                 }
             }
-            assert_eq!(side_by_side(&head(yaw), &sizes[..9]), poses[..9], "one more doesn't move the others");
+            assert_eq!(side_by_side(&head(yaw), 0.0, &sizes[..9]), poses[..9], "one more doesn't move the others");
         }
     }
 

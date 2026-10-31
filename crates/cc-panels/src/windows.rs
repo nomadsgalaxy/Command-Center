@@ -464,18 +464,19 @@ fn stuck_after(level: Level, fps: u32) -> Duration {
     STUCK.max(interval * 6)
 }
 
-/// The head an `ahead` run is laid out for, from the head at its first window and where that went:
-/// at the eyes, looking level the way to it (the 8 cm cascade moves it off the gaze), so the next
-/// sits beside it, not over it.
-fn run_head(head: &Mat, first: &Pose) -> Mat {
+/// What an `ahead` run is laid out for, from the head at its first window and where that went:
+/// the head at the eyes, looking level the way to it, and how far above the eyes it is (below,
+/// negative). The 8 cm cascade moves it right of the gaze and down, so the next sits beside it and
+/// the rows clear of it, not over it.
+fn run_start(head: &Mat, first: &Pose) -> (Mat, f64) {
     let eye = [0, 1, 2].map(|i| head[i][3] as f64);
     let (yaw, _) = angles(&[first.centre[0] - eye[0], 0.0, first.centre[2] - eye[2]]);
-    panel_matrix(&Pose { centre: eye, yaw, ..Default::default() })
+    (panel_matrix(&Pose { centre: eye, yaw, ..Default::default() }), first.centre[1] - eye[1])
 }
 
-/// A run of windows gone `ahead`: when the last went, the head the run's laid out for, and their
-/// sizes (width, height, curve), in order.
-type AheadRun = (Instant, Mat, Vec<(f64, f64, f64)>);
+/// A run of windows gone `ahead`: when the last went, the head the run's laid out for and the
+/// first's height off the eyes (run_start), and their sizes (width, height, curve), in order.
+type AheadRun = (Instant, (Mat, f64), Vec<(f64, f64, f64)>);
 
 pub struct Windows {
     first: usize, // panel index of slot 0
@@ -1078,17 +1079,18 @@ impl Windows {
     fn ahead(&mut self, width: f64, height: f64) -> Pose {
         let now = Instant::now();
         let run = self.ahead_run.take().filter(|r| now.duration_since(r.0) < AHEAD_RUN);
-        let Some((_, head, mut sizes)) = run else {
+        // flat (0): a window panel opens flat, new_pose's and side_by_side's curve both
+        let Some((_, start, mut sizes)) = run else {
             let head = crate::stage::Live.head_now().unwrap_or(STAND_IN_HEAD);
             let n = (0..SLOTS).filter(|&j| panel(self.first + j).live()).count() % 6;
             let c = 0.08 * n as f64;
             let pose = crate::geometry::new_pose(&head, 1.0, c, c); // 1 m wide; adopt sets the width
-            self.ahead_run = Some((now, run_head(&head, &pose), vec![(width, height, 0.0)]));
+            self.ahead_run = Some((now, run_start(&head, &pose), vec![(width, height, 0.0)]));
             return pose;
         };
         sizes.push((width, height, 0.0));
-        let pose = crate::gather::side_by_side(&head, &sizes).pop().unwrap_or_default();
-        self.ahead_run = Some((now, head, sizes));
+        let pose = crate::gather::side_by_side(&start.0, start.1, &sizes).pop().unwrap_or_default();
+        self.ahead_run = Some((now, start, sizes));
         pose
     }
 
@@ -1445,33 +1447,78 @@ impl Windows {
 mod tests {
     use super::*;
 
-    /// An `ahead` run built the way ahead() builds it: the first window from new_pose (cascaded or
-    /// not), the rest from side_by_side for run_head. Each later one is in front of the eyes, the
-    /// way the head looks, 1.4 m out like the first, and clear of the first, for a head turned
-    /// any way.
+    /// An `ahead` run built the way ahead() and adopt build it: the first window from new_pose,
+    /// cascaded 0, 8 or 16 cm (right and down), at its real width and height as adopt sets them,
+    /// the rest from side_by_side for run_start, among them one far taller than the others, and
+    /// enough to fill the sides and start rows above and below. For a head turned any way, each
+    /// later one is in front of the eyes, the way the head looks, 1.4 m out like the first, and
+    /// flat; and none overlaps another, the first included as it really is (its own corners, with
+    /// the cascade's drop and shift and its turn), not where side_by_side would have put it.
     #[test]
-    fn an_ahead_runs_next_window_is_in_front_and_beside_the_first() {
+    fn an_ahead_run_from_a_cascaded_first_window_keeps_clear_of_it() {
         use crate::geometry::{level_ahead, new_pose, norm};
-        for yaw in [0.0, 70.0, -150.0] {
-            let head = panel_matrix(&Pose { centre: [0.3, 1.6, -0.2], yaw, pitch: -10.0, ..Default::default() });
-            let eye = [0, 1, 2].map(|i| head[i][3] as f64);
-            let gaze = level_ahead(&head);
-            for c in [0.0, 0.16] {
-                let first = new_pose(&head, 1.0, c, c);
-                let sizes = [(0.6, 0.4, 0.0), (0.8, 0.5, 0.0), (0.5, 0.3, 0.0)];
-                let poses = crate::gather::side_by_side(&run_head(&head, &first), &sizes);
-                let d = |p: &Pose| [p.centre[0] - eye[0], 0.0, p.centre[2] - eye[2]];
-                assert!((norm(&d(&first)) - crate::limits::NEW_AHEAD).abs() < 0.02, "the first {} m out", norm(&d(&first)));
-                for p in &poses[1..] {
-                    let v = d(p);
-                    assert!(v[0] * gaze[0] + v[2] * gaze[2] > 0.0, "yaw {yaw}, cascade {c}: in front, not behind: {p:?}");
-                    assert!((norm(&v) - crate::limits::NEW_AHEAD).abs() < 1e-6, "on the same arc");
+        // width and height in metres, as adopt sets them (cw / density, the window's aspect); with
+        // a tall one in row 0, which pushes the row below down past the first anyway, and without,
+        // where only the first's own drop keeps that row clear of it
+        for tall_in_row_0 in [true, false] {
+            let sizes: Vec<(f64, f64, f64)> = (0..16)
+                .map(|i| match i {
+                    3 if tall_in_row_0 => (0.5, 1.1, 0.0),
+                    9 => (0.6, 0.9, 0.0), // a tall one in a row off the first
+                    i => (0.7 + 0.1 * (i % 3) as f64, 0.35 + 0.05 * (i % 4) as f64, 0.0),
+                })
+                .collect();
+            for yaw in [0.0, 70.0, -150.0] {
+                let head = panel_matrix(&Pose { centre: [0.3, 1.6, -0.2], yaw, pitch: -10.0, ..Default::default() });
+                let eye = [0, 1, 2].map(|i| head[i][3] as f64);
+                let gaze = level_ahead(&head);
+                for c in [0.0, 0.08, 0.16] {
+                    let first = Pose { width: sizes[0].0, ..new_pose(&head, 1.0, c, c) };
+                    let (run, first_dy) = run_start(&head, &first);
+                    assert!((first_dy + c).abs() < 1e-6, "the cascade's drop: {first_dy}");
+                    let poses = crate::gather::side_by_side(&run, first_dy, &sizes);
+                    let flat = |p: &Pose| [p.centre[0] - eye[0], 0.0, p.centre[2] - eye[2]];
+                    assert!((norm(&flat(&first)) - crate::limits::NEW_AHEAD).abs() < 0.02, "the first {} m out", norm(&flat(&first)));
+                    for p in &poses[1..] {
+                        let v = flat(p);
+                        assert!(v[0] * gaze[0] + v[2] * gaze[2] > 0.0, "yaw {yaw}, cascade {c}: in front, not behind: {p:?}");
+                        assert!((norm(&v) - crate::limits::NEW_AHEAD).abs() < 1e-6, "on the same arc");
+                        assert_eq!(p.curve, 0.0, "flat");
+                    }
+                    // each one's real bounds: the angles round the eye of its corners' left and right,
+                    // and its corners' lowest and highest, from its own matrix (the first's pose as it
+                    // is, the rest as side_by_side placed them)
+                    let real = std::iter::once(first).chain(poses[1..].iter().copied());
+                    let bounds: Vec<((f64, f64), (f64, f64))> = real
+                        .zip(&sizes)
+                        .map(|(p, &(w, h, _))| {
+                            let m = panel_matrix(&p);
+                            let corner = |sx: f64, sy: f64| [0, 1, 2].map(|i| m[i][3] as f64 + m[i][0] as f64 * sx * w / 2.0 + m[i][1] as f64 * sy * h / 2.0);
+                            let cs = [corner(-1.0, -1.0), corner(1.0, -1.0), corner(-1.0, 1.0), corner(1.0, 1.0)];
+                            let ang = |q: [f64; 3]| (q[0] - eye[0]).atan2(-(q[2] - eye[2])).to_degrees();
+                            let angs: Vec<f64> = cs.iter().map(|&q| ang(q)).collect();
+                            let mid = ang(p.centre);
+                            let rel: Vec<f64> = angs.iter().map(|a| (a - mid + 540.0).rem_euclid(360.0) - 180.0 + mid).collect();
+                            let (lo, hi) = rel.iter().fold((f64::MAX, f64::MIN), |(l, h), &a| (l.min(a), h.max(a)));
+                            let (b, t) = cs.iter().fold((f64::MAX, f64::MIN), |(b, t), q| (b.min(q[1]), t.max(q[1])));
+                            ((lo, hi), (b, t))
+                        })
+                        .collect();
+                    let apart = |a: (f64, f64), b: (f64, f64)| a.1 <= b.0 + 1e-9 || b.1 <= a.0 + 1e-9;
+                    let across = |a: (f64, f64), b: (f64, f64)| {
+                        // the angles taken round, so a span either side of ±180° still compares
+                        let d = (b.0 - a.0 + 540.0).rem_euclid(360.0) - 180.0;
+                        apart(a, (a.0 + d, a.0 + d + (b.1 - b.0)))
+                    };
+                    for i in 0..sizes.len() {
+                        for j in i + 1..sizes.len() {
+                            let (bi, bj) = (bounds[i], bounds[j]);
+                            assert!(across(bi.0, bj.0) || apart(bi.1, bj.1), "tall in row 0 {tall_in_row_0}, yaw {yaw}, cascade {c}: {i} and {j} overlap: {bi:?} {bj:?}");
+                        }
+                    }
+                    let rows: std::collections::BTreeSet<i64> = poses[1..].iter().map(|p| ((p.centre[1] - eye[1]) * 100.0).round() as i64).collect();
+                    assert!(rows.iter().any(|&y| y > 0) && rows.iter().any(|&y| y < 0), "rows above and below: {rows:?}");
                 }
-                // clear of the first, where it really is: their angles apart at least their half widths
-                let ang = |v: [f64; 3]| v[0].atan2(-v[2]).to_degrees();
-                let half = |w: f64| (w / 2.0 / crate::limits::NEW_AHEAD).atan().to_degrees();
-                let apart = (ang(d(&poses[1])) - ang(d(&first)) + 540.0).rem_euclid(360.0) - 180.0;
-                assert!(apart.abs() >= half(sizes[0].0) + half(sizes[1].0), "yaw {yaw}, cascade {c}: the second covers the first ({apart}°)");
             }
         }
     }
