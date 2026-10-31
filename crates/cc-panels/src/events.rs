@@ -137,3 +137,30 @@ impl SessionEvent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every event's name, whole: the logs read these, and only Other carries a number.
+    #[test]
+    fn each_session_event_has_its_own_name() {
+        use SessionEvent as S;
+        let state = SessionState { running: true, visible: false, focused: true };
+        let names = [
+            (S::Quit, "quit"),
+            (S::State(state), "state (running true, visible false, focused true)"),
+            (S::Worn(true), "headset on"),
+            (S::Worn(false), "headset off"),
+            (S::Relocalized, "relocalized"),
+            (S::RoomChanged(8), "room changed"),
+            (S::DashboardShown(true), "dashboard shown"),
+            (S::DashboardShown(false), "dashboard hidden"),
+            (S::ControllerUsed(crate::ids::Ctl::new(3)), "controller used"),
+            (S::Other(200), "other (the backend's 200)"),
+        ];
+        for (e, name) in names {
+            assert_eq!(e.name(), name, "{e:?}");
+        }
+    }
+}
