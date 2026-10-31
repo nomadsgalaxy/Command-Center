@@ -715,10 +715,15 @@ mod tests {
     /// a big curved one last, too tall and too wide for its plain step, which is moved to fit.
     #[test]
     fn past_the_widest_arc_the_rest_stack_on_the_last() {
-        for big in [false, true] {
+        // plain, a big curved one last, one tall one among the short in the eye-level row, and both:
+        // the tall one lowers the ceiling the big one is pulled under
+        for (big, tall) in [(false, false), (true, false), (false, true), (true, true)] {
             let mut sizes = vec![(1.0, 0.6, 0.0); 30];
             if big {
                 sizes[29] = (2.6, 1.4, 1.5);
+            }
+            if tall {
+                sizes[2] = (1.0, 1.4, 0.0);
             }
             let span = span_for(&sizes);
             assert_eq!(span, WIDER[WIDER.len() - 1], "the widest arc");
@@ -733,6 +738,7 @@ mod tests {
                 }
             }
             assert!(rows[1].1 > 0.0 && rows[2].1 < 0.0, "one above, one below");
+            assert!(!tall || rows[0].0.contains(&2), "the tall one is in the eye-level row");
             let row_of = |i: usize| rows[..ROWS].iter().position(|(row, _)| row.contains(&i));
             let stacked: Vec<usize> = (0..sizes.len()).filter(|&i| row_of(i).is_none()).collect();
             assert_eq!(stacked, (rows[..ROWS].iter().map(|(row, _)| row.len()).sum::<usize>()..sizes.len()).collect::<Vec<_>>(), "the rest, in order, stack");
