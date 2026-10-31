@@ -1074,9 +1074,11 @@ impl Windows {
             let n = (0..SLOTS).filter(|&j| panel(self.first + j).live()).count() % 6;
             let c = 0.08 * n as f64;
             let pose = crate::geometry::new_pose(&head, 1.0, c, c);
-            // the run goes on from where this one is, so the next sits beside it, not over it
+            // the run goes on from the way to this one (the cascade moves it off the gaze), so the
+            // next sits beside it, not over it
             let eye = [0, 1, 2].map(|i| head[i][3] as f64);
-            self.ahead_run = Some((now, panel_matrix(&Pose { centre: eye, yaw: pose.yaw, ..Default::default() }), vec![(width, height, 0.0)]));
+            let (yaw, _) = angles(&[pose.centre[0] - eye[0], 0.0, pose.centre[2] - eye[2]]);
+            self.ahead_run = Some((now, panel_matrix(&Pose { centre: eye, yaw, ..Default::default() }), vec![(width, height, 0.0)]));
             return pose;
         };
         sizes.push((width, height, 0.0));
