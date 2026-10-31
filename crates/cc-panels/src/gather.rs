@@ -83,8 +83,12 @@ fn forward(head: &Mat) -> V3 {
 /// rows, one above, one below, and so on. A panel wider than the arc gets a row to itself. If it
 /// would take more than ROWS rows, the arc widens.
 pub fn layout(head: &Mat, sizes: &[(f64, f64, f64)]) -> Vec<Pose> {
-    let span = [SPAN].into_iter().chain(WIDER).find(|&s| rows_for(sizes, s).len() <= ROWS).unwrap_or(WIDER[WIDER.len() - 1]);
-    place_rows(head, sizes, &rows_for(sizes, span))
+    place_rows(head, sizes, &rows_for(sizes, span_for(sizes)))
+}
+
+/// The arc `layout` packs `sizes` into: SPAN, or the first of WIDER they fit in ROWS rows of.
+fn span_for(sizes: &[(f64, f64, f64)]) -> f64 {
+    [SPAN].into_iter().chain(WIDER).find(|&s| rows_for(sizes, s).len() <= ROWS).unwrap_or(WIDER[WIDER.len() - 1])
 }
 
 /// A panel's width in degrees from the eye, NEW_AHEAD away. A curved one's edges come toward you
@@ -102,51 +106,55 @@ fn across_at(w: f64, h: f64, curve: f64, dy: f64) -> f64 {
     (2.0 * (half / (r - sagitta(w, curve) - tilt).max(0.1)).atan()).to_degrees()
 }
 
-/// The rows, as runs of indices, packed in order into `span` degrees.
-fn rows_for(sizes: &[(f64, f64, f64)], span: f64) -> Vec<Vec<usize>> {
+/// The rows, as runs of indices with each one's height off the eyes, packed in order into `span`
+/// degrees: the first level with the eyes, then one above, one below, and so on, each clear of the
+/// ones before it. A row off the eyes' level is turned to face them, so it's packed by its panels'
+/// nearer edges (`across_at`), and one panel too wide for the arc still gets a row to itself.
+fn rows_for(sizes: &[(f64, f64, f64)], span: f64) -> Vec<(Vec<usize>, f64)> {
     let gap = across(GAP, 0.0);
-    let mut rows: Vec<Vec<usize>> = Vec::new();
-    let mut used = 0.0;
-    for (i, &(w, _, c)) in sizes.iter().enumerate() {
-        match rows.last_mut() {
-            Some(row) if used + gap + across(w, c) <= span => {
-                row.push(i);
-                used += gap + across(w, c);
-            }
-            _ => {
-                rows.push(vec![i]);
-                used = across(w, c);
-            }
+    let tall = |row: &[usize]| row.iter().map(|&i| sizes[i].1).fold(0.0, f64::max);
+    // the nth row's height off the eyes for its tallest `h`, with the rows so far reaching `up` and `down`
+    let dy = |n: usize, h: f64, up: f64, down: f64| match n {
+        0 => 0.0,
+        n if n % 2 == 1 => up + GAP + h / 2.0,
+        _ => -(down + GAP + h / 2.0),
+    };
+    let width = |row: &[usize], dy: f64| row.iter().map(|&i| across_at(sizes[i].0, sizes[i].1, sizes[i].2, dy)).sum::<f64>() + gap * (row.len() - 1) as f64;
+    let (mut rows, mut row): (Vec<(Vec<usize>, f64)>, Vec<usize>) = (Vec::new(), Vec::new());
+    let mut reach = (0.0, 0.0); // how far the rows so far reach above and below the eyes
+    let close = |row: Vec<usize>, rows: &mut Vec<(Vec<usize>, f64)>, (up, down): &mut (f64, f64)| {
+        let (n, h) = (rows.len(), tall(&row));
+        let y = dy(n, h, *up, *down);
+        match n {
+            0 => (*up, *down) = (h / 2.0, h / 2.0),
+            n if n % 2 == 1 => *up = y + h / 2.0,
+            _ => *down = -y + h / 2.0,
         }
+        rows.push((row, y));
+    };
+    for i in 0..sizes.len() {
+        let mut next = row.clone();
+        next.push(i);
+        if row.is_empty() || width(&next, dy(rows.len(), tall(&next), reach.0, reach.1)) <= span {
+            row = next;
+        } else {
+            close(std::mem::replace(&mut row, vec![i]), &mut rows, &mut reach);
+        }
+    }
+    if !row.is_empty() {
+        close(row, &mut rows, &mut reach);
     }
     rows
 }
 
-fn place_rows(head: &Mat, sizes: &[(f64, f64, f64)], rows: &[Vec<usize>]) -> Vec<Pose> {
+fn place_rows(head: &Mat, sizes: &[(f64, f64, f64)], rows: &[(Vec<usize>, f64)]) -> Vec<Pose> {
     let r = crate::limits::NEW_AHEAD;
     let eye: V3 = [0, 1, 2].map(|i| head[i][3] as f64);
     let (yaw0, _) = angles(&forward(head));
     let gap = across(GAP, 0.0);
-    // each row's height off the eyes: the first level with them, then one above, one below, ...
-    let tall = |row: &[usize]| row.iter().map(|&i| sizes[i].1).fold(0.0, f64::max);
-    let first = rows.first().map_or(0.0, |row| tall(row)) / 2.0;
-    let (mut up, mut down) = (first, first);
     let mut out = vec![Pose::default(); sizes.len()];
-    for (n, row) in rows.iter().enumerate() {
-        let h = tall(row);
-        let dy = match n {
-            0 => 0.0,
-            n if n % 2 == 1 => {
-                let y = up + GAP + h / 2.0;
-                up = y + h / 2.0;
-                y
-            }
-            _ => {
-                let y = down + GAP + h / 2.0;
-                down = y + h / 2.0;
-                -y
-            }
-        };
+    for (row, dy) in rows {
+        let dy = *dy;
         // a row above or below is turned to face the eyes, so it's spaced by its nearer edges
         let a = |i: usize| across_at(sizes[i].0, sizes[i].1, sizes[i].2, dy);
         let width: f64 = row.iter().map(|&i| a(i)).sum::<f64>() + gap * (row.len() - 1) as f64;
@@ -636,20 +644,28 @@ mod tests {
     /// its real corners.
     #[test]
     fn tilted_rows_keep_clear_by_their_real_corners() {
-        let mut below = false;
+        // rows_for packs a tilted row by its nearer edges, so it fits its arc; this is only rounding
+        // (packing by eye-level width overshot 160° by 13° here)
+        const OVERSHOOT: f64 = 1e-9;
+        let (mut below, mut arcs) = (false, std::collections::BTreeSet::new());
         for n in [5, 7, 9, 13] {
             let sizes: Vec<_> = (0..n).map(|i| (0.9 + 0.1 * (i % 2) as f64, 0.9, if i % 3 == 0 { 1.2 } else { 0.0 })).collect();
             let poses = layout(&head(0.0), &sizes);
             assert!(poses.iter().any(|p| p.centre[1] > eye_y()), "{n}: a row above");
             below |= poses.iter().any(|p| p.centre[1] < eye_y());
             let s = corner_spans(&poses, &sizes);
+            let span = span_for(&sizes);
+            arcs.insert(span as i64);
             for i in 0..n {
                 for j in i + 1..n {
                     assert!(apart(s[i].0, s[j].0) || apart(s[i].1, s[j].1), "{n}: {i} and {j} overlap: {:?} {:?}", s[i], s[j]);
                 }
+                let half = span / 2.0 * (1.0 + OVERSHOOT);
+                assert!(s[i].0.0 >= -half && s[i].0.1 <= half, "{n}: {i} outside the {span}° arc: {:?}", s[i].0);
             }
         }
         assert!(below, "and a row below");
+        assert_eq!(arcs, [100, 160, 220].into(), "every arc");
     }
 
     #[test]
