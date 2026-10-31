@@ -70,7 +70,7 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
     ("plasmabar.rs", "plasma-debug's line, by SteamVR's own event type: a diagnostic", &["vr::openvr_type"]),
     (
         "plasmabar.rs",
-        "Plasma's raw loop: a non-pointer event still moves its last point (events.rs, 5a's two readers)",
+        "Plasma's raw loop: a non-pointer event still counts as a laser this frame, which Pointing would drop",
         &["sys::EVREventType_VREvent_MouseMove", "trace::poll", "vr::VREvent_t", "vr::dev", "vr::laser_pose", "vr::surface_event"],
     ),
     (
@@ -81,6 +81,7 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "sys::EVREventType_VREvent_FocusLeave",
             "sys::EVREventType_VREvent_MouseButtonDown",
             "sys::EVREventType_VREvent_MouseButtonUp",
+            "sys::EVREventType_VREvent_ScrollDiscrete",
             "sys::EVRMouseButton_VRMouseButton_Left",
             "sys::VREvent_Mouse_t",
         ],

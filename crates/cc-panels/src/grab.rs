@@ -229,6 +229,19 @@ fn part_at(u: f64, v: f64, w: f64, h: f64) -> Option<Part> {
     }
 }
 
+/// A card's hover after a laser event of `kind` on it, `part` being what's under the event's x
+/// and y, and `was` the hover before. A move hovers what's under it and a leave hovers nothing.
+/// An Enter's x and y aren't a position (events.rs: on OpenVR they're whatever SteamVR left
+/// there), so it keeps what was there, and the first move after it says what's under the laser.
+fn hovered(kind: crate::events::PointerKind, part: Option<Part>, was: Option<Part>) -> Option<Part> {
+    use crate::events::PointerKind as P;
+    match kind {
+        P::Move => part,
+        P::Leave => None,
+        _ => was,
+    }
+}
+
 /// The part of a card (for a w × h picture) at (u, v) from the picture's middle, held the same
 /// way as prefs.rs held(). A button, the bar or a corner counts where it actually is. On the
 /// plain frame (or the picture) within HOLD_SLOP frames of the part it was on, it stays on that
@@ -1364,13 +1377,9 @@ impl Grab {
                     let S::Pointer(pe) = ev else { continue };
                     let part = self.card_part(i, (pe.x, pe.y), k);
                     match pe.kind {
-                        P::Move | P::Enter => {
-                            self.touch(i, 2, true);
-                            self.hover[i] = part;
-                        }
-                        P::Leave => {
-                            self.touch(i, 2, false);
-                            self.hover[i] = None;
+                        P::Move | P::Enter | P::Leave => {
+                            self.touch(i, 2, pe.kind != P::Leave);
+                            self.hover[i] = hovered(pe.kind, part, self.hover[i]);
                         }
                         P::Down(Button::Left) => {
                             eprintln!("{}: card pressed by device {} on {part:?}", p.name, crate::stage::Live.label(pe.from));
@@ -2364,6 +2373,18 @@ mod tests {
         assert_eq!(held_part(&spec, w, h, true, close, dead.0, dead.1), close);
         assert_eq!(held_part(&spec, w, h, true, None, dead.0, dead.1), None);
         assert_eq!(held_part(&spec, w, h, false, None, dead.0, dead.1), Some(Part::Edge), "a panel's: its frame");
+    }
+
+    /// Only a move says what a card's laser is over: an Enter keeps the hover as it was, since
+    /// its x and y aren't a position, and a leave clears it.
+    #[test]
+    fn a_cards_hover_comes_from_a_move_not_an_enter() {
+        use crate::events::PointerKind as P;
+        assert_eq!(hovered(P::Enter, Some(Part::Edge), None), None, "an Enter's x and y aren't where the laser is");
+        assert_eq!(hovered(P::Enter, Some(Part::Edge), Some(Part::Bar)), Some(Part::Bar));
+        assert_eq!(hovered(P::Move, Some(Part::Edge), None), Some(Part::Edge));
+        assert_eq!(hovered(P::Move, None, Some(Part::Bar)), None, "a move off every part");
+        assert_eq!(hovered(P::Leave, Some(Part::Edge), Some(Part::Bar)), None);
     }
 
     #[test]

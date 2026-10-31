@@ -568,9 +568,11 @@ impl Plasma {
         while crate::trace::poll("plasma", self.ov, &mut e) {
             let dev = e.trackedDeviceIndex;
             // a pointer's kind and its point; anything else still goes through below as it always
-            // has (it counts as a laser this frame and can move its device's last point), with what
-            // its mouse data holds. Phase 1 drops that. So this is the one overlay loop that still
-            // reads SteamVR's raw event, not Pointing: it moves behind it with that fix (events.rs).
+            // has (it counts as a laser this frame), with what its mouse data holds, but only a
+            // move, a press or a release is a point (events.rs), so nothing else moves its
+            // device's last point. This loop still reads SteamVR's raw event, not Pointing, so a
+            // non-pointer event still counts as a laser here; moving it behind Pointing would drop
+            // those, which is a change of its own.
             let (kind, x, y, from) = match vr::surface_event(&e) {
                 SurfaceEvent::Pointer(pe) => (Some(pe.kind), pe.x, pe.y, pe.from),
                 _ => {
@@ -597,7 +599,12 @@ impl Plasma {
             // SteamVR's laser uses. The trace still records the laser above, to check against.
             // SteamVR's point is squeezed up and down with a popup open, which drawn_fy undoes.
             let last = self.last.get(dev, crop);
-            let Some((spot, fell_back)) = laser_point(kind, pl, crop, None, last, (b, x as f64, y as f64)) else {
+            let positioned = matches!(kind, Some(PointerKind::Move | PointerKind::Down(_) | PointerKind::Up(_)));
+            let (spot, fell_back) = if !positioned {
+                (None, false) // a scroll's deltas, or a focus change's leftovers: no point, and the last one stays
+            } else if let Some(r) = laser_point(kind, pl, crop, None, last, (b, x as f64, y as f64)) {
+                r
+            } else {
                 if debug() {
                     eprintln!("plasma-debug: a press with the laser's ray off the overlay, dropped");
                 }
@@ -853,6 +860,34 @@ mod tests {
         }
         log.vr_calls();
         log.line(format!("held {:#x}, visible {}", p.held, p.visible));
+    }
+
+    /// A scroll's x and y are its deltas and a focus change's are whatever SteamVR left there, not
+    /// a point (events.rs), so neither moves a laser's last point: a move off the picture after
+    /// them stays where the laser last pointed.
+    #[test]
+    fn only_a_pointers_position_moves_its_last_point() {
+        let _vr = crate::trace::fake_vr();
+        let mut p = Plasma::new();
+        let (placed, ev) = kickoff();
+        p.replay(&placed);
+        let at = |t: u32, x: f32, y: f32| {
+            let mut e: vr::VREvent_t = Default::default();
+            (e.eventType, e.trackedDeviceIndex) = (t, 3);
+            e.data.mouse = sys::VREvent_Mouse_t { x, y, button: 0, cursorIndex: 0 };
+            crate::trace::event_line("plasma", &e).unwrap().to_string()
+        };
+        windows::SHELL_SENT.lock().unwrap().clear();
+        pass(&mut p, &[ev(sys::EVREventType_VREvent_MouseMove)]);
+        let on_item = windows::SHELL_SENT.lock().unwrap().last().copied().expect("a move on the item");
+        assert!(on_item.1.is_some(), "{on_item:?}");
+        for t in [sys::EVREventType_VREvent_ScrollDiscrete, sys::EVREventType_VREvent_FocusEnter] {
+            windows::SHELL_SENT.lock().unwrap().clear();
+            // deltas, or leftovers, that would be a point well inside the bar, then a move off it
+            pass(&mut p, &[at(t, 0.1, 0.5), at(sys::EVREventType_VREvent_MouseMove, 0.5, 5.0)]);
+            let sent = std::mem::take(&mut *windows::SHELL_SENT.lock().unwrap());
+            assert_eq!(sent.last(), Some(&on_item), "after {t}: still the item's point, {sent:?}");
+        }
     }
 
     /// Golden (golden.rs): a laser presses on Kickoff, then leaves the bar with the button still

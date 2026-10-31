@@ -549,7 +549,8 @@ cc-panels.
    - The overlay loops call `poll::Live.next(surface)`, and the taskbar's `trace::Traced`, which
      writes the trace as before. Plasma's loop still reads SteamVR's raw event, since an event
      that isn't a pointer still moves its last point (the two readers above); it moves with that
-     fix. tab.rs's loop, which runs before any backend, and cc-win-spike's own queue stay raw too.
+     fix. (Phase 1 fixed the readers, and the loop stays raw for now: behind `Pointing` it would
+     lose the non-pointer events it counts as a laser.) tab.rs's loop, which runs before any backend, and cc-win-spike's own queue stay raw too.
 6. (1 d) The source-scan test that nothing outside `vr/openvr` touches OpenVR, and the cargo
    features. Started as a ratchet (6a, `boundary.rs`): the test reads the sources and fails if a
    file outside the OpenVR side uses an OpenVR name that isn't on its list (a `call!`, an
@@ -744,7 +745,12 @@ Behaviour changes phase 0 put off, each its own branch with its own test:
   when its first picture reaches the eyes, not 20 ms or so behind. `vr::head`, at time 0, stays
   for the laser's standing-to-raw check and cc-win-spike.
 - The two readers of a pointer's x and y on kinds where they aren't a position (5a): a card's
-  hover on Enter, and Plasma's last point.
+  hover on Enter, and Plasma's last point. Done: a card's hover on Enter keeps what it was, and
+  the first move says what's under the laser (grab.rs `hovered`). Plasma's last point moves only
+  on a move, a press or a release, so a scroll's deltas or a focus change's leftovers no longer
+  put it somewhere else. Plasma's loop still reads SteamVR's raw event: moving it behind
+  `Pointing` would drop the non-pointer events it counts as a laser this frame, a change of its
+  own.
 - `last_event` gets names of its own, not OpenVR's numbers (5f). Done: `SessionEvent::name` gives
   the core's own name for each event ("quit", "dashboard shown", "controller used", "headset
   off", "relocalized", "room changed"). Only `Other`, which nothing acts on, keeps the backend's
