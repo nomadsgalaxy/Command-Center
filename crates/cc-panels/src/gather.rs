@@ -81,7 +81,8 @@ fn forward(head: &Mat) -> V3 {
 /// Where each of `sizes` (width and height in metres, and the curve radius, 0 flat) goes for a head
 /// at `head`, in order: the first row left to right from the middle of the gaze, then the next
 /// rows, one above, one below, and so on. A panel wider than the arc gets a row to itself. If it
-/// would take more than ROWS rows, the arc widens.
+/// would take more than ROWS rows, the arc widens; past WIDER's last it keeps that and adds rows,
+/// above and below by turns, as far out as they need.
 pub fn layout(head: &Mat, sizes: &[(f64, f64, f64)]) -> Vec<Pose> {
     place_rows(head, sizes, &rows_for(sizes, span_for(sizes)))
 }
@@ -679,6 +680,39 @@ mod tests {
         }
         assert!(below, "and a row below");
         assert_eq!(arcs, [100, 160, 220].into(), "every arc");
+    }
+
+    /// Too many for ROWS rows even on the widest arc: layout keeps WIDER's last arc and goes on
+    /// adding rows, still turn about above and below, each further out than the last on its side,
+    /// none overlapping another by its real corners and none outside the arc.
+    #[test]
+    fn past_the_widest_arc_rows_keep_going_above_and_below() {
+        let sizes = vec![(1.0, 0.6, 0.0); 30];
+        let span = span_for(&sizes);
+        assert_eq!(span, WIDER[WIDER.len() - 1], "the widest arc");
+        let rows = rows_for(&sizes, span);
+        assert!(rows.len() > ROWS + 1, "more rows than ROWS: {}", rows.len());
+        let poses = layout(&head(0.0), &sizes);
+        let dys: Vec<f64> = rows.iter().map(|(_, dy)| *dy).collect();
+        assert_eq!(dys[0], 0.0, "the first level with the eyes");
+        for (n, pair) in dys.windows(2).enumerate().skip(1) {
+            assert!(pair[0].signum() != pair[1].signum(), "row {} then {}: above and below by turns: {dys:?}", n, n + 1);
+        }
+        for n in 3..dys.len() {
+            assert!(dys[n].abs() > dys[n - 2].abs() && dys[n].signum() == dys[n - 2].signum(), "row {n} further out than {}: {dys:?}", n - 2);
+        }
+        for (row, dy) in &rows {
+            for &i in row {
+                assert!((poses[i].centre[1] - eye_y() - dy).abs() < 1e-6, "{i} at its row's height");
+            }
+        }
+        let s = corner_spans(&poses, &sizes);
+        for i in 0..sizes.len() {
+            assert!(s[i].0.0 >= -span / 2.0 - 1e-9 && s[i].0.1 <= span / 2.0 + 1e-9, "{i} outside the {span}° arc: {:?}", s[i].0);
+            for j in i + 1..sizes.len() {
+                assert!(apart(s[i].0, s[j].0) || apart(s[i].1, s[j].1), "{i} and {j} overlap: {:?} {:?}", s[i], s[j]);
+            }
+        }
     }
 
     #[test]
