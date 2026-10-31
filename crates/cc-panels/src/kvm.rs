@@ -2260,6 +2260,37 @@ mod tests {
         assert!(!sent().iter().any(|&(c, _)| c == KEY_B));
     }
 
+    /// RCTRL_KEYS is a hand-kept copy of key()'s Right Ctrl table, so it's checked against key()
+    /// itself: with Right Ctrl held, every key code's release goes in, and exactly the listed ones
+    /// are kept from the remote. A release takes the same branch as its press there, without
+    /// doing it (a press of Home or F1 to F4 would run cc-home apply). Esc is the exception: only
+    /// its press is Right Ctrl's (closing the Desktop), so it's pressed, with the fake SteamVR in
+    /// so close_desktop only records it.
+    #[test]
+    fn rctrl_keys_are_exactly_the_keys_right_ctrl_takes() {
+        let _vr = crate::trace::fake_vr(); // so close_desktop only records Esc
+        let mut k = Kvm::idle();
+        k.engaged = true;
+        let sent = || tests::SENT.with(|s| std::mem::take(&mut *s.borrow_mut()));
+        k.key(KEY_RIGHTCTRL, 1, true);
+        sent();
+        let mut taken = Vec::new();
+        for code in 1..=248u16 {
+            if COMBO_MODS.iter().any(|(_, keys)| keys.contains(&code)) {
+                continue; // the modifiers themselves, Right Ctrl among them
+            }
+            k.key(code, if code == KEY_ESC { 1 } else { 0 }, true);
+            if sent().is_empty() {
+                taken.push(code);
+            }
+        }
+        k.key(KEY_RIGHTCTRL, 0, true);
+        let mut want = RCTRL_KEYS.to_vec();
+        want.sort();
+        assert_eq!(taken, want, "key()'s Right Ctrl table and RCTRL_KEYS differ");
+        assert_eq!(crate::tests::CLOSED.lock().unwrap().pop().as_deref(), Some("Right Ctrl + Esc"));
+    }
+
     #[test]
     fn an_ungather_key_is_modifiers_and_one_key() {
         assert_eq!(Combo::parse("LeftCtrl+Shift+B"), Ok(UNGATHER_KEY));
