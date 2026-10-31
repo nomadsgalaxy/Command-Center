@@ -59,16 +59,6 @@ pub trait Session {
 /// SteamVR's overlay queues and session, for real.
 pub struct Live;
 
-impl Live {
-    /// The universe with OpenVR's error code beside it (0 is none), for main.rs's log at start:
-    /// what it said, before any fallback. universe_id is its value.
-    pub fn universe_read(&self) -> (u64, u32) {
-        let mut err = 0;
-        let u = call!(sys, GetUint64TrackedDeviceProperty, 0, openvr_sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
-        (u, err as u32)
-    }
-}
-
 /// SteamVR's own queue, for real. `universe` is the one the session's in, which a relocalization
 /// is compared with (vr::session_event); it follows each RoomChanged it hands out.
 pub struct Queue {
@@ -108,8 +98,14 @@ impl Session for Live {
         Some(call!(sys, GetFloatTrackedDeviceProperty, 0, openvr_sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &mut err))
     }
 
+    /// It logs what SteamVR said, error and all, before any fallback: main.rs asks once, at
+    /// start, and the Frame makes a new universe each time it tracks again without finding its
+    /// saved map, so the log is the only record of which one a run had.
     fn universe_id(&self) -> Option<u64> {
-        Some(self.universe_read().0)
+        let mut err = 0;
+        let u = call!(sys, GetUint64TrackedDeviceProperty, 0, openvr_sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
+        eprintln!("room: SteamVR's universe {u} (property error {err})");
+        Some(u)
     }
 
     /// GetCurrentSceneProcessId has no error to read, so OpenVR always tells.
@@ -161,7 +157,6 @@ mod tests {
             vr::fake::Script { vsync: Some((0.0, 90.0, 0.011)), universe: 7, prop_error: unknown, activity: Some(sys::EDeviceActivityLevel_k_EDeviceActivityLevel_Idle), ..Default::default() };
         let _vr = vr::fake::install(failed);
         assert_eq!((Live.display_hz(), Live.universe_id()), (Some(90.0), Some(7)), "the error ignored: its value, as main.rs read it");
-        assert_eq!(Live.universe_read(), (7, unknown.unwrap() as u32), "and the log at start has the error");
         assert_eq!((Live.scene_app_running(), Live.worn()), (Some(false), Some(false)), "no game, and off the head");
         drop(_vr);
 
