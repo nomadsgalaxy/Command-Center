@@ -99,6 +99,8 @@ fn across(w: f64, curve: f64) -> f64 {
 
 /// `across` for one `h` high whose middle is `dy` above the eyes (below, negative). Off the eyes'
 /// level it's turned to face them, so its edge nearest you comes closer and takes a wider angle.
+/// A tilted curved one's edges come toward you by its sagitta times the tilt's cosine, a little
+/// less than the whole sagitta taken here, so this errs wide, which only spaces it more.
 fn across_at(w: f64, h: f64, curve: f64, dy: f64) -> f64 {
     let r = crate::limits::NEW_AHEAD;
     let tilt = dy.atan2(r).sin().abs() * h / 2.0;
@@ -151,6 +153,8 @@ fn place_rows(head: &Mat, sizes: &[(f64, f64, f64)], rows: &[(Vec<usize>, f64)])
     let r = crate::limits::NEW_AHEAD;
     let eye: V3 = [0, 1, 2].map(|i| head[i][3] as f64);
     let (yaw0, _) = angles(&forward(head));
+    // an eye-level angle: between a tilted row's nearer edges, (r - tilt) / r of the way out, it's
+    // a little under GAP in metres, which is meant (the panels still don't touch)
     let gap = across(GAP, 0.0);
     let mut out = vec![Pose::default(); sizes.len()];
     for (row, dy) in rows {
@@ -375,6 +379,8 @@ mod tests {
     /// of their left and right, and their lowest and highest. A curved one's edges are its chord's
     /// ends, brought toward you by its sagitta. It's right for one turned to face the eyes from a row
     /// above or below, and for a stacked one, which keeps the turn of the one it stacks on.
+    /// Up and down it compares metres, not angles, which holds because the edges either side of
+    /// the gap between rows are the ones nearer you; it wouldn't if a far edge ever faced the gap.
     fn corner_spans(poses: &[Pose], sizes: &[(f64, f64, f64)]) -> Vec<((f64, f64), (f64, f64))> {
         poses
             .iter()
