@@ -692,7 +692,9 @@ inside what the fixtures pin, not stood in for. The scripts, with the ones that 
    handling was inline in main.rs's loop, so the golden was written first against a copy of that
    loop as it stood (`old_loop` in main's tests). Then the handling was pulled out into
    `steamvr_events`, extraction only, and the same events through both write the same fixture.
-   This was phase 0's first step.
+   This was phase 0's first step. Phase 1 named the last event (`last_event` below), which the
+   copy can't, so the copy went: the fixture was rewritten on purpose, its last-event column
+   only, and is the record of what the old loop did.
 10. **Recorded traces:** each trace from the headset (docs/vr-harness.md), replayed, including the
    session recorded with Plasma's debug log on, once it's in.
 
@@ -742,7 +744,13 @@ Behaviour changes phase 0 put off, each its own branch with its own test:
   for the laser's standing-to-raw check and cc-win-spike.
 - The two readers of a pointer's x and y on kinds where they aren't a position (5a): a card's
   hover on Enter, and Plasma's last point.
-- `last_event` gets names of its own, not OpenVR's numbers (5f).
+- `last_event` gets names of its own, not OpenVR's numbers (5f). Done: `SessionEvent::name` gives
+  the core's own name for each event ("quit", "dashboard shown", "controller used", "headset
+  off", "relocalized", "room changed"). Only `Other`, which nothing acts on, keeps the backend's
+  number, and says so ("other (the backend's 200)"). main.rs keeps the last name for the loop's
+  status line, and `poll::Queue` no longer keeps OpenVR's type. So a press from our virtual
+  pointer, or a controller's interaction, which main.rs doesn't act on, now reads as `Other`
+  rather than as the same number a real press or the headset gives.
 - Before a `Stage` is injected: the fake's `head_pose` and `head_now` give different fixtures,
   so swapping them fails a test, and the registry scan learns generic callers (6b).
 - The dominant hand loads at start on any runtime, not in the OpenVR laser's `Beam::new` (6e).

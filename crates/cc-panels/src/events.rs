@@ -112,8 +112,28 @@ pub enum SessionEvent {
     DashboardShown(bool),
     /// A real controller's button, anywhere (VREvent_ButtonPress): it's the primary device now.
     ControllerUsed(crate::ids::Ctl),
-    /// Any other event, by the backend's own number (OpenVR's event type), for diagnostics only:
-    /// main.rs keeps the last one it saw. Nothing may match on its value, since OpenXR numbers its
-    /// events differently. It's an event, not an empty queue, which is the next_event's None.
+    /// Any other event, by the backend's own number (OpenVR's event type), for diagnostics only.
+    /// Nothing may match on its value, since OpenXR numbers its events differently. It's an
+    /// event, not an empty queue, which is the next_event's None.
     Other(u32),
+}
+
+impl SessionEvent {
+    /// What the logs call it (main.rs's `last_event`): the core's own name, the same on any
+    /// runtime. Only one nothing acts on keeps the backend's number, and says it's the backend's.
+    pub fn name(&self) -> String {
+        use SessionEvent as S;
+        match self {
+            S::Quit => "quit".into(),
+            S::State(s) => format!("state (running {}, visible {}, focused {})", s.running, s.visible, s.focused),
+            S::Worn(true) => "headset on".into(),
+            S::Worn(false) => "headset off".into(),
+            S::Relocalized => "relocalized".into(),
+            S::RoomChanged(_) => "room changed".into(),
+            S::DashboardShown(true) => "dashboard shown".into(),
+            S::DashboardShown(false) => "dashboard hidden".into(),
+            S::ControllerUsed(_) => "controller used".into(),
+            S::Other(n) => format!("other (the backend's {n})"),
+        }
+    }
 }

@@ -66,8 +66,6 @@ use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_F
 use gaze::Input;
 use geometry::{Pose, panel_matrix};
 use laser::MouseLaser;
-#[cfg(test)] // only old_loop and the tests name OpenVR's items now (6d): keep it test-only
-use openvr_sys as sys;
 use overlay::{Flag, InputMode, Overlays, Surfaces};
 use poll::{Pointing, Session};
 use stage::Stage;
@@ -517,15 +515,16 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
 
 /// SteamVR's own events since the last tick (PollNextEvent): it quitting, the dashboard opening
 /// or closing, a real controller's button, a relocalization or a new universe, and the headset
-/// coming off or going on. `universe`, `on_head` and `last_event` are the main loop's, kept up to
-/// date here. Returns how many events there were.
-fn steamvr_events(machines: &mut control::machines::Machines, grab: &mut grab::Grab, universe: &mut u64, on_head: &mut bool, last_event: &mut u32) -> i32 {
+/// coming off or going on. `universe`, `on_head` and `last_event` (the last one's name, the core's
+/// own: SessionEvent::name) are the main loop's, kept up to date here. Returns how many events
+/// there were.
+fn steamvr_events(machines: &mut control::machines::Machines, grab: &mut grab::Grab, universe: &mut u64, on_head: &mut bool, last_event: &mut String) -> i32 {
     use crate::events::SessionEvent as S;
     use poll::SessionEvents;
     let (mut queue, mut events) = (poll::Queue::new(*universe), 0);
     while let Some(ev) = queue.next_event() {
         // every event counts and is the last, Other too; nothing else here looks at Other
-        (events, *last_event) = (events + 1, queue.last_type());
+        (events, *last_event) = (events + 1, ev.name());
         match ev {
             S::Quit => close_desktop("SteamVR quit it"), // e.g. a game launched over the Desktop
             S::DashboardShown(true) => {
@@ -1108,7 +1107,7 @@ fn run() -> Result<(), String> {
     let mut gaze_off = false; // a game is running, so the gaze's action set is let go
     let mut hand = handoff::Handoff::default(); // who has the input, with a VR or a 2D game running (handoff.rs)
     handoff::start();
-    let mut last_event = 0; // the last SteamVR event's type, for the loop's status line
+    let mut last_event = String::from("none"); // the last SteamVR event's name, for the loop's status line
     let mut was_away = false; // hidden or under a game last tick
     while !QUIT.load(Relaxed) {
         let mut laps = Laps::new();
@@ -1169,7 +1168,7 @@ fn run() -> Result<(), String> {
                 fast * 100 / all.max(1),
                 1.0 / pace.frame.as_secs_f64(),
                 pace.why,
-                if pace.why == "SteamVR events" { format!(" (type {last_event})") } else { String::new() }
+                if pace.why == "SteamVR events" { format!(" (the last {last_event})") } else { String::new() }
             );
         }
         laps.lap("status");
@@ -1398,81 +1397,14 @@ mod tests {
     /// What a test's `close_desktop` was asked (it doesn't write the file or set QUIT).
     pub static CLOSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-    /// main.rs's SteamVR event handling as it was before phase 0 pulled it out of the main loop,
-    /// copied as it stood there, with the locals it used as parameters. The golden test runs it and
-    /// the extracted function on the same events, so the move is checked against the code before it.
-    fn old_loop(machines: &mut control::machines::Machines, grab: &mut grab::Grab, mut universe: u64, mut on_head: bool, last: u32) -> (u64, bool, u32, i32) {
-        let mut err = 0;
-        let mut last_event = last; // the loop's, kept from the tick before
-        let mut e: vr::VREvent_t = Default::default();
-        let mut events = 0;
-        while call!(sys, PollNextEvent, &mut e, size_of::<vr::VREvent_t>() as u32) {
-            (events, last_event) = (events + 1, e.eventType);
-            if e.eventType == sys::EVREventType_VREvent_Quit {
-                close_desktop("SteamVR quit it"); // e.g. a game launched over the Desktop
-            }
-            if e.eventType == sys::EVREventType_VREvent_DashboardActivated {
-                crate::kvm::lock().set_engaged(false, "dashboard opened"); // click to type: typing goes to it
-                control::dashtab::dashboard(true);
-            }
-            if e.eventType == sys::EVREventType_VREvent_DashboardDeactivated {
-                control::dashtab::dashboard(false);
-            }
-            if e.eventType == sys::EVREventType_VREvent_ButtonPress && vr::is_real_controller(e.trackedDeviceIndex) {
-                controller_pressed(); // anywhere, not only on our panels
-            }
-            // the Frame relocalized (vrserver.txt: "Standing origin changed. Sending reset standing zero pose event")
-            // (a new universe, like the dummy one's first localization at start, doesn't move any saved spot)
-            if e.eventType == sys::EVREventType_VREvent_StandingZeroPoseReset {
-                let now = call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
-                if now == universe {
-                    machines.relocalized();
-                    grab.relocalized(); // aligned monitors' snap buttons switch to align
-                } else {
-                    eprintln!("tracking: universe {universe} -> {now}");
-                    universe = now;
-                    // ponytail: the workspace is picked at start. A room change mid-session shows
-                    // on the Workspace page (Use / Load there) instead of switching under you
-                    config::UNIVERSE.store(cc_proto::conf::room(now), Relaxed);
-                }
-            }
-            // the headset's (device 0) proximity sensor: off the head, every stream pauses
-            let worn = match e.eventType {
-                sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted => Some(true),
-                sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded => Some(false),
-                _ => None,
-            };
-            if let Some(on) = worn.filter(|&on| e.trackedDeviceIndex == 0 && on != on_head) {
-                on_head = on;
-                eprintln!("headset: {}", if on { "on" } else { "off" });
-            }
-        }
-        let _ = err;
-        (universe, on_head, last_event, events)
-    }
-
-    /// The handling a golden run drives: the old loop, or `steamvr_events`. Given the state before
-    /// the pass (universe, on head, the last event's type), it gives the state after and the count.
-    type Handle = fn(&mut control::machines::Machines, &mut grab::Grab, u64, bool, u32) -> (u64, bool, u32, i32);
-
-    fn extracted(machines: &mut control::machines::Machines, grab: &mut grab::Grab, mut universe: u64, mut on_head: bool, last: u32) -> (u64, bool, u32, i32) {
-        let mut last_event = last;
-        let events = steamvr_events(machines, grab, &mut universe, &mut on_head, &mut last_event);
-        (universe, on_head, last_event, events)
-    }
-
     /// Golden (golden.rs): SteamVR's own events, one at a time, through main's handling of them:
     /// Quit, the dashboard opening and closing, a button on a real controller and on our virtual
     /// pointer, a relocalization in the same universe and a change of universe, and the headset off
-    /// and on (and another device's interaction, which doesn't count). The copy of the loop as it
-    /// was and the function it became write the same fixture.
+    /// and on (and another device's interaction, which doesn't count). Phase 0 checked this against
+    /// a copy of the loop from before it; phase 1 named the last event (SessionEvent::name), which
+    /// that copy can't, so the copy went and the fixture is the record.
     #[test]
     fn golden_steamvr_events() {
-        steamvr_events_through(old_loop);
-        steamvr_events_through(extracted);
-    }
-
-    fn steamvr_events_through(handle: Handle) {
         use openvr_sys as sys;
         const POINTER: u32 = 9;
         let _vr = crate::trace::fake_vr();
@@ -1506,7 +1438,7 @@ mod tests {
             ("the dashboard closes", vec![ev(sys::EVREventType_VREvent_DashboardDeactivated, 0)], 7),
             ("our virtual pointer's button", vec![ev(sys::EVREventType_VREvent_ButtonPress, POINTER)], 7),
             ("a real controller's button", vec![ev(sys::EVREventType_VREvent_ButtonPress, 3)], 7),
-            // one main.rs has no arm for: still counted, and still the last type
+            // one main.rs has no arm for: still counted, and still the last event
             ("a device turns on", vec![ev(sys::EVREventType_VREvent_TrackedDeviceActivated, 3)], 7),
             ("relocalized, same universe", vec![ev(sys::EVREventType_VREvent_StandingZeroPoseReset, 0)], 7),
             ("relocalized into universe 8", vec![ev(sys::EVREventType_VREvent_StandingZeroPoseReset, 0)], 8),
@@ -1519,7 +1451,7 @@ mod tests {
             ("the headset goes back on", vec![ev(started, 0)], 8),
             ("one pass: the dashboard opens and the headset comes off", vec![ev(sys::EVREventType_VREvent_DashboardActivated, 0), ev(ended, 0)], 8),
         ];
-        let mut last = 0;
+        let mut last = String::from("none");
         for (what, events, now) in steps {
             log.step(what);
             {
@@ -1527,8 +1459,7 @@ mod tests {
                 let s = s.get_or_insert_with(Default::default);
                 (s.universe, s.sys_events) = (now, events.into());
             }
-            let (u, on, l, n) = handle(&mut machines, &mut grab, universe, on_head, last);
-            (universe, on_head, last) = (u, on, l);
+            let n = steamvr_events(&mut machines, &mut grab, &mut universe, &mut on_head, &mut last);
             log.vr_calls();
             for c in std::mem::take(&mut *CLOSED.lock().unwrap()) {
                 log.line(format!("close_desktop({c:?})"));

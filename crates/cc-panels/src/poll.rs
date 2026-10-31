@@ -63,18 +63,11 @@ pub struct Live;
 /// is compared with (vr::session_event); it follows each RoomChanged it hands out.
 pub struct Queue {
     pub universe: u64,
-    last: u32,
 }
 
 impl Queue {
     pub fn new(universe: u64) -> Queue {
-        Queue { universe, last: 0 }
-    }
-
-    /// OpenVR's type number for the last event next_event handed out, whatever it became:
-    /// main.rs's `last_event`, a diagnostic.
-    pub fn last_type(&self) -> u32 {
-        self.last
+        Queue { universe }
     }
 }
 
@@ -122,7 +115,6 @@ impl SessionEvents for Queue {
         if !call!(sys, PollNextEvent, &mut e, size_of::<vr::VREvent_t>() as u32) {
             return None;
         }
-        self.last = e.eventType;
         let ev = vr::session_event(&e, self.universe);
         if let SessionEvent::RoomChanged(now) = ev {
             self.universe = now;
@@ -167,9 +159,10 @@ mod tests {
         assert_eq!(Live.worn(), None, "the sensor can't tell");
     }
 
-    /// At the polling boundary: an event nothing acts on is an event (Other, and the last type
-    /// moves), an empty queue is None (and the last type stays), and the universe follows a room
-    /// change, so the next relocalization in that room is only that.
+    /// At the polling boundary: an event nothing acts on is an event (Other), an empty queue is
+    /// None, and the universe follows a room change, so the next relocalization in that room is
+    /// only that. Each has the core's own name for the logs (main.rs's `last_event`), and only
+    /// Other keeps OpenVR's number.
     #[test]
     fn an_ignored_event_is_one_and_an_empty_queue_isnt() {
         let ev = |t: u32, dev: u32| {
@@ -185,20 +178,21 @@ mod tests {
         let mut q = Queue::new(7);
         let mut got = vec![];
         while let Some(e) = q.next_event() {
-            got.push((e, q.last_type()));
+            got.push((e.name(), e));
         }
+        let other = |t: u32| (format!("other (the backend's {t})"), SessionEvent::Other(t));
         assert_eq!(
             got,
             [
-                (SessionEvent::Other(sys::EVREventType_VREvent_TrackedDeviceActivated), sys::EVREventType_VREvent_TrackedDeviceActivated),
-                (SessionEvent::Other(ended), ended),
-                (SessionEvent::Worn(false), ended),
-                (SessionEvent::Other(changed), changed),
-                (SessionEvent::RoomChanged(8), reset),
-                (SessionEvent::Relocalized, reset),
+                other(sys::EVREventType_VREvent_TrackedDeviceActivated),
+                other(ended),
+                ("headset off".into(), SessionEvent::Worn(false)),
+                other(changed),
+                ("room changed".into(), SessionEvent::RoomChanged(8)),
+                ("relocalized".into(), SessionEvent::Relocalized),
             ]
         );
-        assert_eq!((q.next_event(), q.last_type(), q.universe), (None, reset, 8), "an empty poll changes nothing");
+        assert_eq!((q.next_event(), q.universe), (None, 8), "an empty poll changes nothing");
     }
 
     /// A relocalization's re-read of the universe follows `Session::universe_id`'s rule: with its

@@ -8,7 +8,7 @@
 //!
 //! What it doesn't do: it's an interim ratchet, not proof the boundary is done.
 //! - It counts names, not call sites, so another use of a name a file is already allowed passes.
-//! - The groups for tests (`FAKES`), main.rs's old_loop and Plasma's raw loop are file-wide
+//! - The groups for tests (`FAKES`, main.rs's golden events) and Plasma's raw loop are file-wide
 //!   allowances, not spans it enforces, so a production use of a name allowed there for a test
 //!   or for that loop passes too.
 //! - It reads text, not Rust (see `names`).
@@ -53,9 +53,8 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
     ),
     (
         "main.rs",
-        "old_loop, golden_steamvr_events' copy of the loop from before phase 0, and its events (test only)",
+        "golden_steamvr_events' events, as SteamVR sends them (test only)",
         &[
-            "PollNextEvent",
             "sys::EVREventType_VREvent_ButtonPress",
             "sys::EVREventType_VREvent_DashboardActivated",
             "sys::EVREventType_VREvent_DashboardDeactivated",
@@ -65,9 +64,6 @@ const ALLOWED: &[(&str, &str, &[&str])] = &[
             "sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded",
             "sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted",
             "vr::VREvent_t",
-            "vr::is_real_controller",
-            "GetUint64TrackedDeviceProperty",
-            "sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64",
         ],
     ),
     ("osk.rs", "tests: SteamVR's keyboard bytes, decoded as vr.rs does", &["vr::typed"]),
