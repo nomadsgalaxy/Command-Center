@@ -81,10 +81,23 @@ fn forward(head: &Mat) -> V3 {
 /// Where each of `sizes` (width and height in metres, and the curve radius, 0 flat) goes for a head
 /// at `head`, in order: the first row left to right from the middle of the gaze, then the next
 /// rows, one above, one below, and so on. A panel wider than the arc gets a row to itself. If it
-/// would take more than ROWS rows, the arc widens; past WIDER's last it keeps that and adds rows,
-/// above and below by turns, as far out as they need.
+/// would take more than ROWS rows, the arc widens; past WIDER's last, the rest stack on the last
+/// one placed (`stack_on`, as `side_by_side`'s do), their tops under the eye-level row and their
+/// corners inside the arc.
 pub fn layout(head: &Mat, sizes: &[(f64, f64, f64)]) -> Vec<Pose> {
-    place_rows(head, sizes, &rows_for(sizes, span_for(sizes)))
+    let span = span_for(sizes);
+    let mut rows = rows_for(sizes, span);
+    let rest: Vec<usize> = rows.drain(ROWS.min(rows.len())..).flat_map(|(row, _)| row).collect();
+    let mut out = place_rows(head, sizes, &rows);
+    let Some(&last) = rows.last().and_then(|(row, _)| row.last()) else { return out };
+    let eye: V3 = [0, 1, 2].map(|i| head[i][3] as f64);
+    let (yaw0, _) = angles(&forward(head));
+    // the eye-level row's bottom, less GAP, as the row below's tops are
+    let ceiling = -rows[0].0.iter().map(|&i| sizes[i].1).fold(0.0, f64::max) / 2.0 - GAP;
+    for (j, &i) in rest.iter().enumerate() {
+        out[i] = stack_on(&out[last], j, sizes[i], &eye, yaw0, ceiling, span / 2.0);
+    }
+    out
 }
 
 /// The arc `layout` packs `sizes` into: SPAN, or the first of WIDER they fit in ROWS rows of.
@@ -695,35 +708,73 @@ mod tests {
         assert_eq!(arcs, [100, 160, 220].into(), "every arc");
     }
 
-    /// Too many for ROWS rows even on the widest arc: layout keeps WIDER's last arc and goes on
-    /// adding rows, still turn about above and below, each further out than the last on its side,
-    /// none overlapping another by its real corners and none outside the arc.
+    /// Too many for ROWS rows even on the widest arc: layout keeps WIDER's last arc and ROWS rows,
+    /// and the rest stack on the last one placed, the way side_by_side's do (stack_on). Every panel
+    /// stays inside the arc by its real corners; the rows don't overlap; a stacked one overlaps only
+    /// the row below and the stack, never the eye-level row or the one above. Then once more with
+    /// a big curved one last, too tall and too wide for its plain step, which is moved to fit.
     #[test]
-    fn past_the_widest_arc_rows_keep_going_above_and_below() {
-        let sizes = vec![(1.0, 0.6, 0.0); 30];
-        let span = span_for(&sizes);
-        assert_eq!(span, WIDER[WIDER.len() - 1], "the widest arc");
-        let rows = rows_for(&sizes, span);
-        assert!(rows.len() > ROWS + 1, "more rows than ROWS: {}", rows.len());
-        let poses = layout(&head(0.0), &sizes);
-        let dys: Vec<f64> = rows.iter().map(|(_, dy)| *dy).collect();
-        assert_eq!(dys[0], 0.0, "the first level with the eyes");
-        for (n, pair) in dys.windows(2).enumerate().skip(1) {
-            assert!(pair[0].signum() != pair[1].signum(), "row {} then {}: above and below by turns: {dys:?}", n, n + 1);
-        }
-        for n in 3..dys.len() {
-            assert!(dys[n].abs() > dys[n - 2].abs() && dys[n].signum() == dys[n - 2].signum(), "row {n} further out than {}: {dys:?}", n - 2);
-        }
-        for (row, dy) in &rows {
-            for &i in row {
-                assert!((poses[i].centre[1] - eye_y() - dy).abs() < 1e-6, "{i} at its row's height");
+    fn past_the_widest_arc_the_rest_stack_on_the_last() {
+        for big in [false, true] {
+            let mut sizes = vec![(1.0, 0.6, 0.0); 30];
+            if big {
+                sizes[29] = (2.6, 1.4, 1.5);
             }
-        }
-        let s = corner_spans(&poses, &sizes);
-        for i in 0..sizes.len() {
-            assert!(s[i].0.0 >= -span / 2.0 - 1e-9 && s[i].0.1 <= span / 2.0 + 1e-9, "{i} outside the {span}° arc: {:?}", s[i].0);
-            for j in i + 1..sizes.len() {
-                assert!(apart(s[i].0, s[j].0) || apart(s[i].1, s[j].1), "{i} and {j} overlap: {:?} {:?}", s[i], s[j]);
+            let span = span_for(&sizes);
+            assert_eq!(span, WIDER[WIDER.len() - 1], "the widest arc");
+            let rows = rows_for(&sizes, span);
+            assert!(rows.len() > ROWS, "more than ROWS rows' worth: {}", rows.len());
+            let poses = layout(&head(0.0), &sizes);
+            let dy = |p: &Pose| p.centre[1] - eye_y();
+            // the rows: the first ROWS of rows_for's, level, above, below
+            for (row, y) in &rows[..ROWS] {
+                for &i in row {
+                    assert!((dy(&poses[i]) - y).abs() < 1e-6, "{i} at its row's height");
+                }
+            }
+            assert!(rows[1].1 > 0.0 && rows[2].1 < 0.0, "one above, one below");
+            let row_of = |i: usize| rows[..ROWS].iter().position(|(row, _)| row.contains(&i));
+            let stacked: Vec<usize> = (0..sizes.len()).filter(|&i| row_of(i).is_none()).collect();
+            assert_eq!(stacked, (rows[..ROWS].iter().map(|(row, _)| row.len()).sum::<usize>()..sizes.len()).collect::<Vec<_>>(), "the rest, in order, stack");
+            let from = poses[*rows[ROWS - 1].0.last().unwrap()];
+            let ceiling = -rows[0].0.iter().map(|&i| sizes[i].1).fold(0.0, f64::max) / 2.0 - GAP;
+            let s = corner_spans(&poses, &sizes);
+            for (j, &i) in stacked.iter().enumerate() {
+                let d = facing(&from, &poses[i]);
+                assert!((d[2] - NEARER * (j + 1) as f64).abs() < 1e-9, "{i} nearer than the one before: {d:?}");
+                assert!(s[i].1.1 - eye_y() <= ceiling + 1e-9, "{i}'s top under the eye-level row: {} {ceiling}", s[i].1.1 - eye_y());
+                if !(big && i == 29) {
+                    let (down, round) = (STEP * (1 + j % 5) as f64, STEP / 5.0 * (j / 5 % 5) as f64);
+                    assert!((d[0].abs() - down - round).abs() < 1e-9 && (d[1] + down).abs() < 1e-9, "{i} a plain stack step: {d:?}");
+                    // and none on another's spot, a round later included
+                    for &l in &stacked[..j] {
+                        let e = facing(&poses[l], &poses[i]);
+                        assert!(e[0].hypot(e[1]) > STEP / 5.0 - 1e-9, "{i} on {l}'s spot");
+                    }
+                }
+            }
+            if big {
+                // where its plain step would have put it: over the eye-level row and past the arc
+                let j = stacked.len() - 1;
+                let (down, round) = (STEP * (1 + j % 5) as f64, STEP / 5.0 * (j / 5 % 5) as f64);
+                let (x, y, z) = axes(&from);
+                let sign = facing(&from, &poses[stacked[0]])[0].signum();
+                let plain = Pose { centre: [0, 1, 2].map(|k| from.centre[k] + sign * (down + round) * x[k] - down * y[k] + NEARER * (j + 1) as f64 * z[k]), ..poses[29] };
+                let p = corner_spans(&[plain], &[sizes[29]])[0];
+                assert!(p.1.1 - eye_y() > ceiling, "its plain step would cross the eye-level row");
+                assert!(p.0.0 < -span / 2.0 || p.0.1 > span / 2.0, "and pass the arc: {:?}", p.0);
+                assert!((s[29].1.1 - eye_y() - ceiling).abs() < 1e-9, "so its top is moved to just under it");
+            }
+            for i in 0..sizes.len() {
+                assert!(s[i].0.0 >= -span / 2.0 - 1e-6 && s[i].0.1 <= span / 2.0 + 1e-6, "{i} outside the {span}° arc: {:?}", s[i].0);
+                for j in i + 1..sizes.len() {
+                    let over = !(apart(s[i].0, s[j].0) || apart(s[i].1, s[j].1));
+                    match (row_of(i), row_of(j)) {
+                        (Some(_), Some(_)) => assert!(!over, "{i} and {j} in rows overlap"),
+                        (Some(r), None) | (None, Some(r)) => assert!(!over || r == ROWS - 1, "a stacked one over {} in row {r}", if row_of(i).is_some() { i } else { j }),
+                        (None, None) => {}
+                    }
+                }
             }
         }
     }
