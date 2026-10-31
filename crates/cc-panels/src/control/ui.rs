@@ -317,8 +317,9 @@ pub fn next_event(h: vr::Handle) -> Option<crate::events::SurfaceEvent> {
     // inside their loops over these events): the locks below would never return on a thread that
     // held it, and the fallback's did that before 6e too. So nothing takes them the other way
     // round. KVM can still wait here on another thread's hold of it, as any lock of it can.
+    type Point = Option<(f32, f32)>;
     // the point we last moved to, and where a Down this sent went while its Up hasn't
-    static SENT: Mutex<(Option<(f32, f32)>, Option<(f32, f32)>)> = Mutex::new((None, None));
+    static SENT: Mutex<(Point, Point)> = Mutex::new((None, None));
     if let Some(ev) = crate::poll::Live.next(h) {
         return Some(ev);
     }
