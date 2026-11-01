@@ -19,7 +19,9 @@ Each row has the connected dot, name and host, plus:
 When a monitor's session can't start, the panel asks the host's agent why (`status`, at most every
 30 s). If the host's server for that monitor keeps restarting, the host column says **host server
 failing**, and once it gave up, **host server down**, instead of the panel retrying quietly. It goes
-back to the host's name when the session starts again.
+back to the host's name when the session starts again. While it's down, the panel asks again every
+5 minutes rather than every few seconds; press Disconnect, then Connect, to have the host try its
+server again right away.
 
 **2026-10-03.** The taskbar chip is now **Workspace**. The Workspace window lists the saved
 workspaces (Use / Load for travel, Machines, Rename, delete, Save as workspace) and opens the

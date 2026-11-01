@@ -2,15 +2,11 @@
 //! home.json (saved spots), settings.json and password (plus passwords/<machine> and
 //! trusted-hosts/ once a machine is paired).
 use crate::geometry::Pose;
+use crate::ids::Hand;
 use cc_proto::conf::{self, Json};
 
-pub fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_else(|_| ".".into())
-}
-
-pub fn config(name: &str) -> String {
-    format!("{}/.config/control-center/{name}", home_dir())
-}
+// Where the files are, by HOME (cc_proto::paths, shared with cc-home).
+pub use cc_proto::paths::{cache, config, home_dir};
 
 /// One remote monitor: `<name> <user>@<host>:<port> <screen> <w>x<h> [curve=h|v|flat] [autoconnect=yes|no] ...`.
 #[derive(Clone, Debug, Default)]
@@ -22,12 +18,12 @@ pub struct Viewer {
     pub screen: i32, // the screen column (1-based): the RDP monitor, and the key older spots were saved under
     pub w: u32,
     pub h: u32,
-    pub auto: bool, // autoconnect=yes (for cc-home, missing means no)
-    pub machine: String, // machine= (a paired host's name, which finds its password and certificate pin), else ""
-    pub label: String,   // label= (D-050), decoded: the user's name for this monitor, else ""
+    pub auto: bool,                    // autoconnect=yes (for cc-home, missing means no)
+    pub machine: String,               // machine= (a paired host's name, which finds its password and certificate pin), else ""
+    pub label: String,                 // label= (D-050), decoded: the user's name for this monitor, else ""
     pub pop: Option<(String, String)>, // for a popped-out window (popout.rs): its source monitor and uuid
-    pub vnc: Option<Vnc>, // proto=vnc (vnc.rs); None is RDP, the default
-    pub no_audio: bool, // audio=no: this machine's sound and microphone stay off (docs/audio.md); on by default
+    pub vnc: Option<Vnc>,              // proto=vnc (vnc.rs); None is RDP, the default
+    pub no_audio: bool,                // audio=no: this machine's sound and microphone stay off (docs/audio.md); on by default
 }
 
 /// A VNC monitor's options (docs/vnc.md): `proto=vnc [pin=<sha256 hex>] [tls=no]`.
@@ -55,10 +51,7 @@ fn parse_viewers(text: &str, wanted: &[String]) -> Vec<Viewer> {
         }
         let Ok(screen) = f[2].parse::<i32>() else { continue };
         let (user, hostport) = f[1].split_once('@').unwrap_or(("", f[1]));
-        let vnc = f[4..].contains(&"proto=vnc").then(|| Vnc {
-            pin: f[4..].iter().find_map(|o| o.strip_prefix("pin=")).unwrap_or("").to_ascii_lowercase(),
-            insecure: f[4..].contains(&"tls=no"),
-        });
+        let vnc = f[4..].contains(&"proto=vnc").then(|| Vnc { pin: f[4..].iter().find_map(|o| o.strip_prefix("pin=")).unwrap_or("").to_ascii_lowercase(), insecure: f[4..].contains(&"tls=no") });
         let default_port = if vnc.is_some() { "5900" } else { "3389" };
         let (host, port) = hostport.rsplit_once(':').unwrap_or((hostport, default_port));
         let (w, h) = f[3].split_once('x').unwrap_or(("1920", "1080"));
@@ -173,8 +166,7 @@ fn display_in(dir: &str, v: &Viewer, all: &[Viewer]) -> String {
 // An older file with only "spots" becomes the workspace "default". cc-home reads it the same way.
 
 fn read_home() -> serde_json::Value {
-    let json: serde_json::Value =
-        std::fs::read_to_string(config("home.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}));
+    let json: serde_json::Value = std::fs::read_to_string(config("home.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}));
     migrate(json)
 }
 
@@ -190,11 +182,6 @@ fn migrate(mut json: serde_json::Value) -> serde_json::Value {
 
 fn write_home(json: &serde_json::Value) -> std::io::Result<()> {
     write_json(&config("home.json"), json)
-}
-
-/// ~/.cache/control-center/<name>
-pub fn cache(name: &str) -> String {
-    format!("{}/.cache/control-center/{name}", home_dir())
 }
 
 /// Writes the whole file or nothing, so a crash mid-write never leaves half a file.
@@ -349,6 +336,42 @@ pub fn settings() -> serde_json::Value {
     std::fs::read_to_string(config("settings.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}))
 }
 
+/// True if the dominant hand is the left (settings.json's `dominant_hand`). main.rs loads it at
+/// start, on any runtime (`load_dominant`), and Preferences sets it live; until then it's the right.
+static DOMINANT_LEFT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The hand you point with. The mouse's laser and the wrist taskbar take the other one.
+pub fn dominant() -> Hand {
+    if DOMINANT_LEFT.load(std::sync::atomic::Ordering::Relaxed) { Hand::Left } else { Hand::Right }
+}
+
+pub fn set_dominant(h: Hand) {
+    DOMINANT_LEFT.store(h == Hand::Left, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Loads the dominant hand from settings.json, once, at start and before anything points: on any
+/// runtime, not only one with SteamVR's laser, so every pointer takes the hand you chose.
+pub fn load_dominant() {
+    load_dominant_from(&settings());
+}
+
+fn load_dominant_from(settings: &serde_json::Value) {
+    set_dominant(dominant_in(settings));
+    eprintln!("hands: dominant hand {:?}, the mouse's laser uses the other one while it's free", dominant());
+}
+
+/// settings.json's `dominant_hand`: "left" or "right", and right when it's missing or neither.
+fn dominant_in(v: &serde_json::Value) -> Hand {
+    match v["dominant_hand"].as_str() {
+        None | Some("right") => Hand::Right,
+        Some("left") => Hand::Left,
+        Some(other) => {
+            eprintln!("settings.json: dominant_hand {other:?} isn't left or right; using right");
+            Hand::Right
+        }
+    }
+}
+
 /// The krdp password for a viewer of `machine`: passwords/<machine> from pairing, else the
 /// global one.
 pub fn password(machine: &str) -> String {
@@ -419,9 +442,36 @@ pub fn save_home_pose(name: &str, screen: Option<i32>, p: &Pose, height: f64, zo
 
 #[cfg(test)]
 mod tests {
+    /// settings.json's dominant hand is what loads, the right when it's missing or neither, with
+    /// no laser involved: main.rs loads it at start on any runtime. It holds the fake SteamVR's
+    /// lock while it sets the hand, since the golden wrist test reads it under that lock
+    /// (taskbar::wrist_frame), and puts the right back after.
+    #[test]
+    fn the_dominant_hand_loads_from_the_settings() {
+        use crate::ids::Hand;
+        let _vr = crate::trace::fake_vr();
+        struct Right;
+        impl Drop for Right {
+            fn drop(&mut self) {
+                super::set_dominant(Hand::Right); // however the test ends
+            }
+        }
+        let _right = Right;
+        let load = |v: serde_json::Value| {
+            super::load_dominant_from(&v);
+            super::dominant()
+        };
+        assert_eq!(load(serde_json::json!({"dominant_hand": "left"})), Hand::Left);
+        assert_eq!(load(serde_json::json!({"dominant_hand": "right"})), Hand::Right);
+        assert_eq!(load(serde_json::json!({"dominant_hand": "left"})), Hand::Left, "left again");
+        assert_eq!(load(serde_json::json!({})), Hand::Right, "missing: the right");
+        assert_eq!(load(serde_json::json!({"dominant_hand": "up"})), Hand::Right, "neither: the right");
+    }
+
     #[test]
     fn viewers_read_autoconnect() {
-        let t = "# name  user@host:port\ndesk-wide  a@10.0.0.1:3400  2  3840x1080  curve=h  autoconnect=yes\nlaptop  a@10.0.0.2:3400  3  1920x1080  autoconnect=no\nold  a@10.0.0.3:3401  1  1440x2560\n";
+        let t =
+            "# name  user@host:port\ndesk-wide  a@10.0.0.1:3400  2  3840x1080  curve=h  autoconnect=yes\nlaptop  a@10.0.0.2:3400  3  1920x1080  autoconnect=no\nold  a@10.0.0.3:3401  1  1440x2560\n";
         let v = super::parse_viewers(t, &[]);
         assert_eq!(v.iter().map(|v| (v.name.as_str(), v.auto)).collect::<Vec<_>>(), [("desk-wide", true), ("laptop", false), ("old", false)]);
         assert_eq!((v[0].host.as_str(), v[0].port, v[0].screen, v[0].w), ("10.0.0.1", 3400, 3, 3840));
@@ -439,7 +489,10 @@ mod tests {
 
     #[test]
     fn one_session_per_machine_carries_audio() {
-        let v = super::parse_viewers("wide u@h:3410 1 1920x1080 machine=desk\nport u@h:3411 2 1080x1920 machine=desk\nlap u@l:3410 1 1920x1080 machine=lap\nvnc u@m:5900 1 1920x1080 machine=desk proto=vnc\n", &[]);
+        let v = super::parse_viewers(
+            "wide u@h:3410 1 1920x1080 machine=desk\nport u@h:3411 2 1080x1920 machine=desk\nlap u@l:3410 1 1920x1080 machine=lap\nvnc u@m:5900 1 1920x1080 machine=desk proto=vnc\n",
+            &[],
+        );
         let all = |up: [bool; 4]| v.iter().zip(up).collect::<Vec<_>>();
         let who = |p: &[(&super::Viewer, bool)]| v.iter().map(|m| super::carries_audio(m, p)).collect::<Vec<_>>();
         assert_eq!(who(&all([true; 4])), [true, false, true, false], "the lowest screen of each machine, never VNC");
@@ -569,7 +622,8 @@ mod tests {
         let back = super::pose_json(&p, 0.698);
         assert_eq!((back["curve"].as_f64(), back["vcurve"].as_f64()), (Some(0.0), Some(1.09)));
         let flat = super::pose_from(&serde_json::json!({"centre": [0, 1, -1], "yaw": 0, "pitch": 0, "roll": 0,
-                                                        "width": 1.2, "curve": 1.04})).unwrap();
+                                                        "width": 1.2, "curve": 1.04}))
+        .unwrap();
         assert!(!flat.vert && (flat.curve - 1.04).abs() < 1e-9);
     }
 

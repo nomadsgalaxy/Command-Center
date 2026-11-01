@@ -5,6 +5,7 @@
 //!   hand-added one on that host's shared login, then a removed one brought back.
 //! - A pre-id host migrated to its id (files, machine=, a workspace's primary, its label).
 //! - viewers.removed.
+//!
 //! cc-home's tests/cross.rs checks each case against what cc-home.py wrote (tests/fixtures/conf-cross).
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -180,7 +181,12 @@ pub fn set_options(line: &str, opts: &[(String, String)]) -> Result<String, Stri
 
 /// The pin= on the line for the monitor `name` in viewers.conf, if it has one.
 pub fn viewer_pin(conf: &Path, name: &str) -> Option<String> {
-    let lines: Vec<String> = std::fs::read_to_string(conf.join("viewers.conf")).ok()?.lines().map(str::to_owned).collect();
+    viewer_pin_in(&std::fs::read_to_string(conf.join("viewers.conf")).ok()?, name)
+}
+
+/// viewer_pin, on viewers.conf's text.
+pub fn viewer_pin_in(text: &str, name: &str) -> Option<String> {
+    let lines = splitlines(text);
     let l = &lines[entry(&lines, name)?];
     opt(&line_opts(l), "pin").map(str::to_owned)
 }
@@ -196,22 +202,82 @@ pub enum FirstPin {
     Other(String),
 }
 
+/// Same as Python's str.splitlines.
+pub fn splitlines(t: &str) -> Vec<String> {
+    let (mut out, mut cur, mut it) = (Vec::new(), String::new(), t.chars().peekable());
+    while let Some(c) = it.next() {
+        if matches!(c, '\n' | '\r' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}') {
+            if c == '\r' && it.peek() == Some(&'\n') {
+                it.next();
+            }
+            out.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Rewrites viewers.conf through `change`, the one way anything writes it (pairing, cc-home
+/// machine, a VNC pin). change gets the lines (none if there's no file yet) and returns new lines
+/// to write, or None to leave the file alone, plus what to hand back. An Err writes nothing.
+///
+/// Two writers at once mustn't lose either's change (a `machine set` while a VNC panel pins its
+/// first certificate), so it holds a lock for this process and flock on .viewers.conf.lock beside
+/// it (a file that's never renamed, so every writer locks the same one), reads the file after
+/// taking it, writes a temporary file of its own with the file's mode (0600 for a new one), fsyncs
+/// it, renames it into place and fsyncs the folder.
+pub fn edit_viewers<T>(conf: &Path, change: impl FnOnce(Vec<String>) -> Result<(Option<Vec<String>>, T), String>) -> Result<T, String> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    let path = conf.join("viewers.conf");
+    let err = |e: std::io::Error| format!("{}: {e}", path.display());
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(conf).map_err(err)?;
+    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(conf.join(".viewers.conf.lock")).map_err(err)?;
+    lock.lock().map_err(err)?;
+    let (text, mode) = match std::fs::read_to_string(&path) {
+        Ok(t) => (t, std::fs::metadata(&path).map_err(err)?.permissions().mode() & 0o7777),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), 0o600),
+        Err(e) => return Err(err(e)),
+    };
+    let (lines, out) = change(splitlines(&text))?;
+    let Some(lines) = lines else { return Ok(out) };
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    let tmp = conf.join(format!(".viewers.conf.{}.{nanos}", std::process::id()));
+    let written = (|| {
+        let mut t = std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp)?;
+        t.set_permissions(std::fs::Permissions::from_mode(mode))?; // the umask doesn't get a say
+        t.write_all((lines.join("\n") + "\n").as_bytes())?;
+        t.sync_all()?;
+        std::fs::rename(&tmp, &path)?;
+        std::fs::File::open(conf)?.sync_all()
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err(e));
+    }
+    Ok(out)
+}
+
 /// Trust on first use for a VNC server (docs/vnc.md): the first certificate it shows becomes the
 /// line's pin=, and after that only that one is taken. It never replaces a pin. Only that line
-/// changes, so comments and every other line stay as they were, and the file is replaced in one
-/// rename.
+/// changes, so comments and every other line stay as they were.
 pub fn pin_first_use(conf: &Path, name: &str, hex: &str) -> Result<FirstPin, String> {
-    let path = conf.join("viewers.conf");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    let i = entry(&lines, name).ok_or_else(|| format!("no {name} in {}", path.display()))?;
-    if let Some(pin) = opt(&line_opts(&lines[i]), "pin") {
-        return Ok(if pin.eq_ignore_ascii_case(hex) { FirstPin::Same } else { FirstPin::Other(pin.to_owned()) });
+    if !conf.join("viewers.conf").exists() {
+        return Err(format!("{}: no viewers.conf", conf.display()));
     }
-    lines[i] = set_options(&lines[i], &[("pin".into(), hex.to_ascii_lowercase())])?;
-    let tmp = conf.join("viewers.conf.tmp");
-    std::fs::write(&tmp, lines.join("\n") + "\n").and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(FirstPin::Saved)
+    edit_viewers(conf, |mut lines| {
+        let i = entry(&lines, name).ok_or_else(|| format!("no {name} in {}", conf.join("viewers.conf").display()))?;
+        if let Some(pin) = opt(&line_opts(&lines[i]), "pin") {
+            return Ok((None, if pin.eq_ignore_ascii_case(hex) { FirstPin::Same } else { FirstPin::Other(pin.to_owned()) }));
+        }
+        lines[i] = set_options(&lines[i], &[("pin".into(), hex.to_ascii_lowercase())])?;
+        Ok((Some(lines), FirstPin::Saved))
+    })
 }
 
 /// The line for the monitor `name` (cc-home's entry).
@@ -226,12 +292,17 @@ fn index_of(l: &str) -> Option<i64> {
 
 /// The trusted hosts: machine -> its JSON.
 pub fn trusted_hosts(conf: &Path) -> Vec<(String, Value)> {
-    let mut out: Vec<(String, Value)> = std::fs::read_dir(conf.join("trusted-hosts")).into_iter().flatten().flatten().filter_map(|e| {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let m = name.strip_suffix(".json")?.to_owned();
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
-        v.is_object().then_some((m, v))
-    }).collect();
+    let mut out: Vec<(String, Value)> = std::fs::read_dir(conf.join("trusted-hosts"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let m = name.strip_suffix(".json")?.to_owned();
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
+            v.is_object().then_some((m, v))
+        })
+        .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
@@ -262,11 +333,19 @@ pub fn write_pairing(conf: &Path, addr: &str, frame: &str, result: &Value, repla
         return Err("host-changed".into());
     }
     let olds: BTreeSet<String> = same.iter().filter(|(k, t)| *k != mid && (t["id"].as_str().is_none() || replace)).map(|(k, _)| k.clone()).collect();
-    let label = known.iter().find(|(k, _)| *k == mid).and_then(|(_, t)| t["label"].as_str().filter(|s| !s.is_empty()))
-        .or_else(|| same.iter().find_map(|(_, t)| t["label"].as_str().filter(|s| !s.is_empty())));
+    let label =
+        known.iter().find(|(k, _)| *k == mid).and_then(|(_, t)| t["label"].as_str().filter(|s| !s.is_empty())).or_else(|| same.iter().find_map(|(_, t)| t["label"].as_str().filter(|s| !s.is_empty())));
     let mons_json = monitors.iter().map(|m| format!("{}: {}", py_str(&m["index"].as_i64().unwrap_or(0).to_string()), py_str(m["output"].as_str().unwrap_or("")))).collect::<Vec<_>>().join(", ");
-    let th = format!("{{\"id\": {}, \"host\": {}, \"addr\": {}, \"host_pk\": {}, \"frame\": {}, \"cert_sha256\": {}, \"label\": {}, \"monitors\": {{{mons_json}}}}}",
-                     py_opt(id), py_str(host), py_str(addr), py_str(host_pk), py_str(frame), py_str(r["cert_sha256"].as_str().unwrap_or("")), py_opt(label));
+    let th = format!(
+        "{{\"id\": {}, \"host\": {}, \"addr\": {}, \"host_pk\": {}, \"frame\": {}, \"cert_sha256\": {}, \"label\": {}, \"monitors\": {{{mons_json}}}}}",
+        py_opt(id),
+        py_str(host),
+        py_str(addr),
+        py_str(host_pk),
+        py_str(frame),
+        py_str(r["cert_sha256"].as_str().unwrap_or("")),
+        py_opt(label)
+    );
     write_secret(&conf.join("trusted-hosts").join(format!("{mid}.json")), &th).map_err(|e| e.to_string())?;
     write_secret(&conf.join("passwords").join(&mid), r["password"].as_str().unwrap_or("")).map_err(|e| e.to_string())?;
     if !olds.is_empty() {
@@ -288,73 +367,83 @@ pub fn write_pairing(conf: &Path, addr: &str, frame: &str, result: &Value, repla
     let removed_path = conf.join("viewers.removed");
     let removed: Vec<String> = std::fs::read_to_string(&removed_path).unwrap_or_default().lines().filter(|l| words(l).len() >= 4).map(str::to_owned).collect();
     let mut restored: Vec<String> = Vec::new();
-    let conf_path = conf.join("viewers.conf");
-    let mut lines: Vec<String> = std::fs::read_to_string(&conf_path).unwrap_or_default().lines().map(str::to_owned).collect();
-    let mut screens: Vec<i64> = lines.iter().filter(|l| words(l).len() >= 4 && !l.starts_with('#')).filter_map(|l| words(l)[2].parse().ok()).collect();
-    for l in lines.iter_mut() {
-        if opt(&line_opts(l), "machine").is_some_and(|m| olds.contains(m)) {
-            *l = set_option(l, "machine", &mid);
-        }
-    }
-    let user = r["user"].as_str().unwrap_or("");
-    for m in &monitors {
-        let (index, output) = (m["index"].as_i64().unwrap_or(0), m["output"].as_str().unwrap_or(""));
-        let name = format!("{host}-{output}").to_lowercase();
-        let target = format!("{user}@{addr}:{}", m["port"].as_i64().unwrap_or(0));
-        let size = format!("{}x{}", m["width"].as_i64().unwrap_or(0), m["height"].as_i64().unwrap_or(0));
-        let mut i = lines.iter().position(|l| words(l).len() >= 4 && !l.starts_with('#') && opt(&line_opts(l), "machine") == Some(mid.as_str())
-                                                 && words(l)[1].rsplit_once(':').is_some_and(|(_, p)| p.parse::<i64>().is_ok()) && index_of(l) == Some(index));
-        if i.is_none() {
-            i = entry(&lines, &name);
-        }
-        let shared_target = format!("@{addr}:{}", 3400 + index);
-        let same_l = |l: &str| words(l).len() >= 4 && !l.starts_with('#') && words(l)[1].ends_with(&shared_target)
-                             && words(l)[1].len() > shared_target.len() && !words(l)[1][..words(l)[1].len() - shared_target.len()].chars().any(|c| c.is_whitespace() || c == '@');
-        let mut old = if i.is_some() { None } else { lines.iter().position(|l| same_l(l)) };
-        if i.is_none() && old.is_none() {
-            let ours = |l: &str| opt(&line_opts(l), "machine").is_some_and(|x| x == mid || olds.contains(x))
-                                && words(l)[1].rsplit_once(':').is_some_and(|(_, p)| p.parse::<i64>().is_ok()) && index_of(l) == Some(index);
-            let gone: Vec<&String> = removed.iter().filter(|l| (same_l(l) || ours(l)) && entry(&lines, words(l)[0]).is_none()).collect();
-            if let Some(last) = gone.last() {
-                let mut back = split_keep(last);
-                if let Ok(n) = back[4].parse::<i64>() {
-                    if screens.contains(&n) {
-                        let next = screens.iter().max().copied().unwrap_or(0) + 1;
-                        screens.push(next);
-                        back[4] = next.to_string();
-                    } else {
-                        screens.push(n);
-                    }
-                }
-                lines.push(back.concat());
-                old = Some(lines.len() - 1);
-                restored.push((*last).clone());
+    // Read and written under edit_viewers' lock, so a `machine set` or a VNC pin at the same time
+    // isn't lost (and a viewers.conf that can't be read stops here, instead of being rewritten
+    // from nothing).
+    edit_viewers(conf, |mut lines| {
+        let mut screens: Vec<i64> = lines.iter().filter(|l| words(l).len() >= 4 && !l.starts_with('#')).filter_map(|l| words(l)[2].parse().ok()).collect();
+        for l in lines.iter_mut() {
+            if opt(&line_opts(l), "machine").is_some_and(|m| olds.contains(m)) {
+                *l = set_option(l, "machine", &mid);
             }
         }
-        if let Some(o) = old {
-            let mut p = split_keep(&lines[o]);
-            let was = p[2].rsplit_once(':').map_or(p[2].clone(), |x| x.0.to_owned());
-            p[2] = target.clone();
-            lines[o] = set_option(&p.concat(), "machine", &mid);
-            said.push(format!("@pair {addr} kept={} (was {was}:{})", p[0], 3400 + index));
-        } else if let Some(i) = i {
-            let mut p = split_keep(&lines[i]);
-            p[2] = target.clone();
-            p[6] = size.clone();
-            lines[i] = set_option(&p.concat(), "machine", &mid);
-        } else {
-            let next = screens.iter().max().copied().unwrap_or(0) + 1;
-            screens.push(next);
-            lines.push(set_option(&format!("{name:<15} {target:<27} {next:<7} {size}"), "machine", &mid));
+        let user = r["user"].as_str().unwrap_or("");
+        for m in &monitors {
+            let (index, output) = (m["index"].as_i64().unwrap_or(0), m["output"].as_str().unwrap_or(""));
+            let name = format!("{host}-{output}").to_lowercase();
+            let target = format!("{user}@{addr}:{}", m["port"].as_i64().unwrap_or(0));
+            let size = format!("{}x{}", m["width"].as_i64().unwrap_or(0), m["height"].as_i64().unwrap_or(0));
+            let mut i = lines.iter().position(|l| {
+                words(l).len() >= 4
+                    && !l.starts_with('#')
+                    && opt(&line_opts(l), "machine") == Some(mid.as_str())
+                    && words(l)[1].rsplit_once(':').is_some_and(|(_, p)| p.parse::<i64>().is_ok())
+                    && index_of(l) == Some(index)
+            });
+            if i.is_none() {
+                i = entry(&lines, &name);
+            }
+            let shared_target = format!("@{addr}:{}", 3400 + index);
+            let same_l = |l: &str| {
+                words(l).len() >= 4
+                    && !l.starts_with('#')
+                    && words(l)[1].ends_with(&shared_target)
+                    && words(l)[1].len() > shared_target.len()
+                    && !words(l)[1][..words(l)[1].len() - shared_target.len()].chars().any(|c| c.is_whitespace() || c == '@')
+            };
+            let mut old = if i.is_some() { None } else { lines.iter().position(|l| same_l(l)) };
+            if i.is_none() && old.is_none() {
+                let ours = |l: &str| {
+                    opt(&line_opts(l), "machine").is_some_and(|x| x == mid || olds.contains(x))
+                        && words(l)[1].rsplit_once(':').is_some_and(|(_, p)| p.parse::<i64>().is_ok())
+                        && index_of(l) == Some(index)
+                };
+                let gone: Vec<&String> = removed.iter().filter(|l| (same_l(l) || ours(l)) && entry(&lines, words(l)[0]).is_none()).collect();
+                if let Some(last) = gone.last() {
+                    let mut back = split_keep(last);
+                    if let Ok(n) = back[4].parse::<i64>() {
+                        if screens.contains(&n) {
+                            let next = screens.iter().max().copied().unwrap_or(0) + 1;
+                            screens.push(next);
+                            back[4] = next.to_string();
+                        } else {
+                            screens.push(n);
+                        }
+                    }
+                    lines.push(back.concat());
+                    old = Some(lines.len() - 1);
+                    restored.push((*last).clone());
+                }
+            }
+            if let Some(o) = old {
+                let mut p = split_keep(&lines[o]);
+                let was = p[2].rsplit_once(':').map_or(p[2].clone(), |x| x.0.to_owned());
+                p[2] = target.clone();
+                lines[o] = set_option(&p.concat(), "machine", &mid);
+                said.push(format!("@pair {addr} kept={} (was {was}:{})", p[0], 3400 + index));
+            } else if let Some(i) = i {
+                let mut p = split_keep(&lines[i]);
+                p[2] = target.clone();
+                p[6] = size.clone();
+                lines[i] = set_option(&p.concat(), "machine", &mid);
+            } else {
+                let next = screens.iter().max().copied().unwrap_or(0) + 1;
+                screens.push(next);
+                lines.push(set_option(&format!("{name:<15} {target:<27} {next:<7} {size}"), "machine", &mid));
+            }
         }
-    }
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(conf);
-    }
-    let tmp = conf.join("viewers.conf.tmp");
-    std::fs::write(&tmp, lines.join("\n") + "\n").map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &conf_path).map_err(|e| e.to_string())?;
+        Ok((Some(lines), ()))
+    })?;
     if !restored.is_empty() {
         let left: String = removed.iter().filter(|l| !restored.contains(l)).map(|l| format!("{l}\n")).collect();
         let _ = std::fs::write(&removed_path, left);
@@ -443,7 +532,7 @@ impl Json {
     /// json.loads (None if it isn't JSON). It's lenient where Python is strict (control characters,
     /// "1."), and a lone surrogate becomes U+FFFD.
     pub fn parse(s: &str) -> Option<Json> {
-        let mut p = Parser { s: s.as_bytes(), i: 0 };
+        let mut p = Parser { s: s.as_bytes(), i: 0, depth: 0 };
         let v = p.value()?;
         p.ws();
         (p.i == p.s.len()).then_some(v)
@@ -591,7 +680,12 @@ impl Json {
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    depth: usize, // arrays and objects open around this point
 }
+
+/// How deep arrays and objects may nest. Ours go 4 or 5 deep; without a cap, a file of `[[[[…`
+/// would recurse until the stack overflows.
+const MAX_DEPTH: usize = 64;
 
 impl Parser<'_> {
     fn ws(&mut self) {
@@ -613,8 +707,14 @@ impl Parser<'_> {
             b'{' => (b'{', "}"),
             b'[' => (b'[', "]"),
             _ => {
-                for (t, v) in [("null", Json::Null), ("true", Json::Bool(true)), ("false", Json::Bool(false)), ("NaN", Json::Num("NaN".into())),
-                               ("Infinity", Json::Num("Infinity".into())), ("-Infinity", Json::Num("-Infinity".into()))] {
+                for (t, v) in [
+                    ("null", Json::Null),
+                    ("true", Json::Bool(true)),
+                    ("false", Json::Bool(false)),
+                    ("NaN", Json::Num("NaN".into())),
+                    ("Infinity", Json::Num("Infinity".into())),
+                    ("-Infinity", Json::Num("-Infinity".into())),
+                ] {
                     if self.eat(t) {
                         return Some(v);
                     }
@@ -622,6 +722,15 @@ impl Parser<'_> {
                 return self.number();
             }
         };
+        if self.depth >= MAX_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let out = self.container(open, close);
+        self.depth -= 1;
+        out
+    }
+    fn container(&mut self, open: u8, close: &str) -> Option<Json> {
         self.i += 1;
         let mut out = if open == b'{' { Json::obj() } else { Json::Arr(Vec::new()) };
         self.ws();
@@ -656,11 +765,7 @@ impl Parser<'_> {
             self.i += 1;
         }
         let t = std::str::from_utf8(&self.s[start..self.i]).ok()?;
-        if t.contains(['.', 'e', 'E']) {
-            t.parse::<f64>().ok().map(Json::float)
-        } else {
-            t.parse::<i128>().ok().map(|n| Json::Num(n.to_string()))
-        }
+        if t.contains(['.', 'e', 'E']) { t.parse::<f64>().ok().map(Json::float) } else { t.parse::<i128>().ok().map(|n| Json::Num(n.to_string())) }
     }
     fn hex4(&mut self) -> Option<u32> {
         let h = std::str::from_utf8(self.s.get(self.i..self.i + 4)?).ok()?;
@@ -745,8 +850,8 @@ pub fn write_home(path: &Path, data: &Json) -> std::io::Result<()> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Viewer {
     pub name: String,
-    pub target: String,              // user@host:port
-    pub screen: i64,                 // 1-based (the file's column + 1)
+    pub target: String, // user@host:port
+    pub screen: i64,    // 1-based (the file's column + 1)
     pub pixels: (i64, i64),
     pub opts: Vec<(String, String)>, // key=value after the size; a repeated key: the last
     pub machine: String,             // machine=, else the host
@@ -792,7 +897,10 @@ pub fn viewers(conf: &Path) -> Vec<Viewer> {
         let (Ok(screen), [Some(w), Some(h)]) = (p[2].parse::<i64>(), size.as_slice()) else { continue };
         let opts: Vec<(String, String)> = p[4..].iter().filter_map(|o| o.split_once('=')).map(|(k, v)| (k.into(), v.into())).collect();
         let mut v = Viewer { name: p[0].into(), target: p[1].into(), screen: screen + 1, pixels: (*w, *h), opts, machine: String::new(), label: None };
-        v.machine = v.opt("machine").filter(|m| !m.is_empty()).map(str::to_owned)
+        v.machine = v
+            .opt("machine")
+            .filter(|m| !m.is_empty())
+            .map(str::to_owned)
             .unwrap_or_else(|| p[1].rsplit('@').next().unwrap_or("").rsplit_once(':').map_or(p[1].rsplit('@').next().unwrap_or(""), |x| x.0).to_owned());
         v.label = Some(unquote(v.opt("label").unwrap_or(""))).filter(|s| !s.is_empty());
         match out.iter_mut().find(|x| x.name == v.name) {
@@ -931,11 +1039,53 @@ fn has_workspace(data: &Json, n: &str) -> bool {
     matches!(data.at("workspaces").get(n), Some(Json::Obj(_)))
 }
 
-/// A new Temporary from workspace `from`'s layout and machines (empty if there's none).
+/// Temporary keeps a layout per room it's been laid out in, so each room's places come back when
+/// you're there again (Anthony's rule, docs/steamvr-integration.md). A room it hasn't seen starts
+/// from the last room's layout, not empty: on the Frame a new universe is mostly the same room,
+/// tracked again without its saved map ("Switching to a new universe ... without a universe
+/// relocalization" in vrserver.txt, a new random id each time). The active room (LAID_OUT_IN, a
+/// universe id) has its layout in "spots", which is what everything reads; the others wait under
+/// ROOMS, at most KEEP_ROOMS of them, the one seen longest ago going first ("seen", from the
+/// running count "seq").
+const LAID_OUT_IN: &str = "laid_out_in";
+const ROOMS: &str = "rooms";
+const KEEP_ROOMS: usize = 8;
+
+/// Temporary `t`, now in room `here`: the last room's layout put away, and this room's out, or a
+/// copy of the last room's if it has none.
+/// An older Temporary with no room on it has this room's layout, so an upgrade loses nothing.
+fn temporary_in(t: &mut Json, here: &str) {
+    let prev = t.get(LAID_OUT_IN).and_then(Json::str).map(str::to_string);
+    let seq = t.get("seq").and_then(Json::num).unwrap_or(0.0) as u64 + 1;
+    t.set("seq", Json::Num(seq.to_string()));
+    if let Some(prev) = prev.filter(|p| p != here) {
+        let last = t.get("spots").cloned().unwrap_or_else(Json::obj);
+        let mut away = Json::obj();
+        away.set("spots", last.clone());
+        away.set("seen", Json::Num(seq.to_string()));
+        let rooms = t.setdefault(ROOMS, Json::obj());
+        rooms.set(&prev, away);
+        let mine = match rooms.remove(here) {
+            Some(r) => r.get("spots").cloned().unwrap_or_else(Json::obj),
+            None => last, // a room it hasn't seen
+        };
+        while rooms.items().len() > KEEP_ROOMS {
+            let oldest = rooms.items().iter().min_by(|a, b| a.1.at("seen").num().unwrap_or(0.0).total_cmp(&b.1.at("seen").num().unwrap_or(0.0))).map(|(k, _)| k.clone());
+            match oldest {
+                Some(k) => rooms.remove(&k),
+                None => break,
+            };
+        }
+        t.set("spots", mine);
+    }
+    t.set(LAID_OUT_IN, Json::Str(here.to_string()));
+}
+
+/// A new Temporary: the active workspace's machines, but none of its spots, which are its room's.
 fn make_temporary(data: &mut Json, from: &str) {
     let src = data.at("workspaces").at(from).clone();
     let mut t = Json::obj();
-    t.set("spots", src.get("spots").cloned().unwrap_or_else(Json::obj));
+    t.set("spots", Json::obj());
     if let Some(m) = src.get("machines") {
         t.set("machines", m.clone());
     }
@@ -948,8 +1098,10 @@ fn make_temporary(data: &mut Json, from: &str) {
 /// 2. No room known (0, or a dummy universe): the hint's, else the active one.
 /// 3. A new room while the active one is dedicated and bound to none (`cc-home workspace new`):
 ///    that one, bound to this room.
-/// 4. Otherwise (travelling, or no dedicated workspace yet): Temporary, made from the active one's
-///    layout if it's missing.
+/// 4. Otherwise (travelling, or no dedicated workspace yet): Temporary, made with the active one's
+///    machines if it's missing. It keeps a layout per room (`temporary_in`): back in a room, that
+///    room's places; in a new one, a copy of the last room's.
+///
 /// Returns its name and whether Temporary was just made.
 pub fn choose_workspace(data: &mut Json, universe: u64, hint: Option<&str>) -> (String, bool) {
     let (universe, active) = (room(universe), active_workspace(data));
@@ -974,6 +1126,9 @@ pub fn choose_workspace(data: &mut Json, universe: u64, hint: Option<&str>) -> (
     };
     if made {
         make_temporary(data, &active);
+    }
+    if name == TEMPORARY && universe != 0 {
+        temporary_in(data.setdefault("workspaces", Json::obj()).setdefault(TEMPORARY, Json::obj()), &universe.to_string());
     }
     data.set("workspace", Json::Str(name.clone()));
     (name, made)
@@ -1231,6 +1386,48 @@ pub fn enter_workspace(data: &mut Json, name: &str, universe: u64, saved: &Json,
 mod tests {
     use super::*;
 
+    /// Nesting is capped at MAX_DEPTH, so a hostile file can't overflow the stack; anything ours
+    /// (a few levels) still parses.
+    #[test]
+    fn json_nesting_is_capped() {
+        let deep = |n: usize| "[".repeat(n) + &"]".repeat(n);
+        assert!(Json::parse(&deep(MAX_DEPTH)).is_some());
+        assert!(Json::parse(&deep(MAX_DEPTH + 1)).is_none());
+        assert!(Json::parse(&deep(100_000)).is_none(), "and no stack overflow");
+        assert!(Json::parse(r#"{"a": {"b": [1, {"c": [2]}]}}"#).is_some());
+    }
+
+    /// Eight first connects at once, each to its own line: every pin survives, and the file keeps
+    /// its mode.
+    #[test]
+    fn concurrent_first_pins_all_survive() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("cc-proto-pins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let conf: String = (0..8).map(|i| format!("m{i}  me@10.0.0.{i}:5900  {i}  1920x1080  proto=vnc\n")).collect();
+        std::fs::write(d.join("viewers.conf"), format!("# eight macs\n{conf}")).unwrap();
+        std::fs::set_permissions(d.join("viewers.conf"), std::fs::Permissions::from_mode(0o640)).unwrap();
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let d = d.clone();
+                std::thread::spawn(move || pin_first_use(&d, &format!("m{i}"), &format!("{i:02x}").repeat(32)))
+            })
+            .collect();
+        for t in threads {
+            assert_eq!(t.join().unwrap(), Ok(FirstPin::Saved));
+        }
+        let pins: Vec<Option<String>> = (0..8).map(|i| viewer_pin(&d, &format!("m{i}"))).collect();
+        let mode = std::fs::metadata(d.join("viewers.conf")).unwrap().permissions().mode() & 0o777;
+        let left = std::fs::read_dir(&d).unwrap().flatten().filter(|e| e.file_name() != ".viewers.conf.lock").count();
+        let _ = std::fs::remove_dir_all(&d);
+        for (i, p) in pins.iter().enumerate() {
+            assert_eq!(p.as_deref(), Some(format!("{i:02x}").repeat(32).as_str()), "m{i}");
+        }
+        assert_eq!(mode, 0o640, "the file's own mode");
+        assert_eq!(left, 1, "no temporary file left");
+    }
+
     /// The first certificate becomes the pin, the same one passes, a different one doesn't, and the
     /// comments and the other lines are left as they were.
     #[test]
@@ -1290,14 +1487,20 @@ mod tests {
         let o = |kv: &[&str]| kv.iter().map(|a| a.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())).unwrap()).collect::<Vec<_>>();
         let l = "a   u@h:3410   1   1920x1080  curve=h";
         assert_eq!(set_options(l, &o(&["label=Desk é/1", "curve="])).unwrap(), "a   u@h:3410   1   1920x1080  label=Desk%20%C3%A9%2F1");
-        assert_eq!(set_options(l, &o(&["radius=1.5", "machine=m.1"])).unwrap(),
-                   "a   u@h:3410   1   1920x1080  curve=h  radius=1.5  machine=m.1");
+        assert_eq!(set_options(l, &o(&["radius=1.5", "machine=m.1"])).unwrap(), "a   u@h:3410   1   1920x1080  curve=h  radius=1.5  machine=m.1");
         // an option nothing reads any more stays on its line
         assert_eq!(set_options("a u@h:3410 1 1920x1080 old=x", &o(&["radius=2.0"])).unwrap(), "a u@h:3410 1 1920x1080 old=x  radius=2.0");
-        for (kv, e) in [("curve=x", "curve is one of h, v, flat"), ("autoconnect=1", "autoconnect is one of yes, no"), ("radius=0.1", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"),
-                        ("radius=1.", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"), ("machine=a b", "bad machine name"),
-                        ("label=a\tb", "label: at most 64 characters, no control characters"), ("proto=x", "proto is one of rdp, vnc"), ("tls=off", "tls is one of yes, no"),
-                        ("pin=abc", "pin is a certificate's SHA-256, 64 hex digits")] {
+        for (kv, e) in [
+            ("curve=x", "curve is one of h, v, flat"),
+            ("autoconnect=1", "autoconnect is one of yes, no"),
+            ("radius=0.1", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"),
+            ("radius=1.", "radius is in metres, 0.2 to 20 (a 1000R monitor: 1.0)"),
+            ("machine=a b", "bad machine name"),
+            ("label=a\tb", "label: at most 64 characters, no control characters"),
+            ("proto=x", "proto is one of rdp, vnc"),
+            ("tls=off", "tls is one of yes, no"),
+            ("pin=abc", "pin is a certificate's SHA-256, 64 hex digits"),
+        ] {
             assert_eq!(set_options(l, &o(&[kv])).unwrap_err(), e);
         }
         assert_eq!(set_options(l, &o(&[&format!("label={}", "x".repeat(65))])).unwrap_err(), "label: at most 64 characters, no control characters");
@@ -1314,7 +1517,11 @@ mod tests {
     fn viewers_as_cc_home_reads_them() {
         let d = std::env::temp_dir().join(format!("cc-conf-viewers-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("viewers.conf"), "# name user@host:port screen size\na  u@10.0.0.2:3411  1  1920x1080  label=Desk%20%C3%A9  curve=v\nb u@10.0.0.2:3410 2 bad\nc  u@h:3400 0 800x600 machine=  autoconnect=yes  old=x\n").unwrap();
+        std::fs::write(
+            d.join("viewers.conf"),
+            "# name user@host:port screen size\na  u@10.0.0.2:3411  1  1920x1080  label=Desk%20%C3%A9  curve=v\nb u@10.0.0.2:3410 2 bad\nc  u@h:3400 0 800x600 machine=  autoconnect=yes  old=x\n",
+        )
+        .unwrap();
         let v = viewers(&d);
         assert_eq!(v.iter().map(|x| (x.name.as_str(), x.screen, x.machine.as_str())).collect::<Vec<_>>(), [("a", 2, "10.0.0.2"), ("c", 1, "h")]);
         assert_eq!(v[0].label.as_deref(), Some("Desk é"));
@@ -1364,15 +1571,95 @@ mod tests {
         let mut data = home(TWO);
         assert_eq!(choose_workspace(&mut data, 333, None), (TEMPORARY.into(), true));
         let t = data.at("workspaces").at(TEMPORARY);
-        assert_eq!(t.at("spots").dumps(), home(TWO).at("workspaces").at("workspace-2").at("spots").dumps(), "made from the last-used layout");
+        assert_eq!(t.at("spots").dumps(), "{}", "another room's places don't come along: everything opens in front of you");
+        assert_eq!(t.at("machines").dumps(), home(TWO).at("workspaces").at("workspace-2").at("machines").dumps(), "its machines do");
         assert!(!t.at("universe").truthy() && data.at("workspaces").get("workspace-3").is_none());
-        // from then on it keeps its own layout: another unknown room, and back
-        data.setdefault("workspaces", Json::obj()).setdefault(TEMPORARY, Json::obj()).set("spots", home(r#"{"home": {}}"#));
+        // what you place in this room stays for this room: a restart here keeps it
+        let placed = r#"{"home": {"desk-wide": {"centre": [0.5, 1.4, -1.4], "yaw": 0.0, "pitch": 0.0, "roll": 0.0, "width": 1.2}}}"#;
+        data.setdefault("workspaces", Json::obj()).setdefault(TEMPORARY, Json::obj()).set("spots", home(placed));
+        assert_eq!(choose_workspace(&mut data, 333, None), (TEMPORARY.into(), false));
+        assert_eq!(data.at("workspaces").at(TEMPORARY).at("spots").dumps(), home(placed).dumps(), "same room: its spot");
+        // somewhere new: the last room's layout to start from; then that room's own; then back:
+        // each room its own
         assert_eq!(choose_workspace(&mut data, 444, None), (TEMPORARY.into(), false));
-        assert_eq!(data.at("workspaces").at(TEMPORARY).at("spots").dumps(), r#"{"home": {}}"#);
+        assert_eq!(data.at("workspaces").at(TEMPORARY).at("spots").dumps(), home(placed).dumps(), "new room: the last one's places");
+        let there = r#"{"home": {"desk-wide": {"centre": [-2.0, 1.4, 0.5], "yaw": 90.0, "pitch": 0.0, "roll": 0.0, "width": 1.2}}}"#;
+        data.setdefault("workspaces", Json::obj()).setdefault(TEMPORARY, Json::obj()).set("spots", home(there));
+        assert_eq!(choose_workspace(&mut data, 333, None), (TEMPORARY.into(), false));
+        assert_eq!(data.at("workspaces").at(TEMPORARY).at("spots").dumps(), home(placed).dumps(), "back in the first room: its places again");
+        assert_eq!(choose_workspace(&mut data, 444, None), (TEMPORARY.into(), false));
+        assert_eq!(data.at("workspaces").at(TEMPORARY).at("spots").dumps(), home(there).dumps(), "and the second room's own");
         assert_eq!(choose_workspace(&mut data, 111, None), ("home".into(), false), "home again: its own");
-        assert_eq!(choose_workspace(&mut data, 555, None), (TEMPORARY.into(), false));
-        assert_eq!(data.at("workspaces").at(TEMPORARY).at("spots").dumps(), r#"{"home": {}}"#, "kept, not copied again");
+        assert_eq!(data.at("workspaces").at("home").at("spots").dumps(), home(TWO).at("workspaces").at("home").at("spots").dumps(), "a dedicated room's places are never touched");
+        // an older Temporary with no room on it is taken as this room's, so an upgrade loses nothing
+        let mut old = home(TWO);
+        old.setdefault("workspaces", Json::obj()).set(TEMPORARY, home(&format!(r#"{{"spots": {placed}}}"#)));
+        assert_eq!(choose_workspace(&mut old, 555, None), (TEMPORARY.into(), false));
+        assert_eq!(old.at("workspaces").at(TEMPORARY).at("spots").dumps(), home(placed).dumps());
+    }
+
+    /// The Frame's universe changed with no relocalization (a new random id, the same room): the
+    /// new one starts from the last room's layout, and the last room's own entry stays as it was,
+    /// so moving something in the new one doesn't touch it.
+    #[test]
+    fn a_new_universe_starts_from_the_last_rooms_layout_and_leaves_that_room_alone() {
+        let mut data = home(TWO);
+        let placed = r#"{"home": {"app:org.kde.konsole": {"centre": [-0.06, 2.48, -0.77], "yaw": 0.0, "pitch": 41.2, "roll": 0.0, "width": 0.65}}}"#;
+        choose_workspace(&mut data, 7639716931857085912, None);
+        data.setdefault("workspaces", Json::obj()).setdefault(TEMPORARY, Json::obj()).set("spots", home(placed));
+        assert_eq!(choose_workspace(&mut data, 1406665270974733418, None), (TEMPORARY.into(), false));
+        let t = data.at("workspaces").at(TEMPORARY);
+        assert_eq!(t.at("spots").dumps(), home(placed).dumps(), "the new universe has the last room's places");
+        assert_eq!(t.at(LAID_OUT_IN).str(), Some("1406665270974733418"));
+        let old = t.at(ROOMS).at("7639716931857085912").at("spots").dumps();
+        assert_eq!(old, home(placed).dumps(), "the last room's entry is kept");
+        // a move in the new room is the new room's
+        let moved = r#"{"home": {"app:org.kde.konsole": {"centre": [0.4, 1.5, -1.2], "yaw": 0.0, "pitch": 0.0, "roll": 0.0, "width": 0.65}}}"#;
+        data.setdefault("workspaces", Json::obj()).setdefault(TEMPORARY, Json::obj()).set("spots", home(moved));
+        assert_eq!(choose_workspace(&mut data, 2035229576121921133, None), (TEMPORARY.into(), false));
+        let t = data.at("workspaces").at(TEMPORARY);
+        assert_eq!(t.at(ROOMS).at("7639716931857085912").at("spots").dumps(), old, "still as it was");
+        assert_eq!(t.at(ROOMS).at("1406665270974733418").at("spots").dumps(), home(moved).dumps());
+        assert_eq!(t.at("spots").dumps(), home(moved).dumps(), "the next new one starts from the latest");
+        // a dedicated workspace's room is still its own, and Temporary isn't copied into it
+        assert_eq!(choose_workspace(&mut data, 111, None), ("home".into(), false));
+        assert_eq!(data.at("workspaces").at("home").at("spots").dumps(), home(TWO).at("workspaces").at("home").at("spots").dumps());
+    }
+
+    /// A start while the Frame's lost its world (the dummy universe, room 0) doesn't lay Temporary
+    /// out anywhere: nothing goes under room 0 or a dummy id, laid_out_in stays the last real room,
+    /// and the next real new room still carries that room's places.
+    #[test]
+    fn a_dummy_universe_start_leaves_temporarys_rooms_alone() {
+        let mut data = home(TWO);
+        let placed = r#"{"home": {"app:tv.plex.plex-bin": {"centre": [0.4, 1.5, -1.3], "yaw": 0.0, "pitch": 0.0, "roll": 0.0, "width": 0.8}}}"#;
+        choose_workspace(&mut data, 333, None);
+        data.setdefault("workspaces", Json::obj()).setdefault(TEMPORARY, Json::obj()).set("spots", home(placed));
+        let before = data.at("workspaces").at(TEMPORARY).dumps();
+        for dummy in [0, 424242, 525252] {
+            assert_eq!(choose_workspace(&mut data, dummy, None), (TEMPORARY.into(), false), "the active one, Temporary");
+            assert_eq!(data.at("workspaces").at(TEMPORARY).dumps(), before, "untouched by {dummy}");
+        }
+        assert_eq!(choose_workspace(&mut data, 444, None), (TEMPORARY.into(), false));
+        let t = data.at("workspaces").at(TEMPORARY);
+        assert_eq!(t.at("spots").dumps(), home(placed).dumps(), "the real room's places carried");
+        let rooms: Vec<String> = t.at(ROOMS).items().iter().map(|(k, _)| k.clone()).collect();
+        assert_eq!(rooms, ["333"], "no room 0 or dummy under rooms");
+    }
+
+    #[test]
+    fn temporary_keeps_the_most_recent_rooms_layouts_only() {
+        let mut t = Json::obj();
+        for room in 1..=12 {
+            temporary_in(&mut t, &room.to_string());
+            t.set("spots", home(&format!(r#"{{"home": {{"n": {room}}}}}"#)));
+        }
+        temporary_in(&mut t, "13");
+        let rooms = t.at(ROOMS);
+        assert_eq!(rooms.items().len(), KEEP_ROOMS, "the file can't grow forever");
+        assert!(rooms.get("4").is_none() && rooms.get("5").is_some() && rooms.get("12").is_some(), "the ones seen longest ago went");
+        temporary_in(&mut t, "12");
+        assert_eq!(t.at("spots").dumps(), r#"{"home": {"n": 12}}"#);
     }
 
     #[test]
@@ -1466,9 +1753,11 @@ mod tests {
         assert_eq!(choose_workspace(&mut data, 111, None), ("home".into(), false));
         assert_eq!(data.at("workspaces").at("home").dumps(), home_before);
         // the primary's monitor is the anchor when there is one; scanned stays behind
-        let mut data = home(r#"{"workspace": "w", "workspaces": {"w": {"spots": {
+        let mut data = home(
+            r#"{"workspace": "w", "workspaces": {"w": {"spots": {
             "home": {"a": {"centre": [0.0, 1.0, -1.0], "yaw": 0.0}, "b": {"centre": [1.0, 1.5, -1.0], "yaw": 20.0}},
-            "scanned": {"a": {"centre": [0.0, 1.0, -1.0], "yaw": 0.0}}}}}}"#);
+            "scanned": {"a": {"centre": [0.0, 1.0, -1.0], "yaw": 0.0}}}}}}"#,
+        );
         load_workspace(&mut data, "w", [0.0, 1.6, 0.0], 0.0, &["b".into()]).unwrap();
         let s = data.at("workspaces").at(TEMPORARY).at("spots");
         assert!(centre_of(s.at("home").at("b")).unwrap().iter().zip([0.0, 1.5, -1.0]).all(|(a, b)| (a - b).abs() < 1e-4));

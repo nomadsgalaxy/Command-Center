@@ -5,12 +5,17 @@
 //!   Mouse and keyboard   [Command Center|Steam / game]   where they go. "Steam / game" gives the
 //!                        keyboards and mice back to the Frame (kvm.rs `set_yielded`, the way a VR
 //!                        game does), and "Command Center" takes them again.
+//!   Panels               [Bring all here]   every panel in front of you (gather.rs), for when
+//!                        some get lost; not there while the Desktop is closed
 //! plus a line saying what the choice does. While a 2D Steam game is playing, the same two choices
 //! hand the Desktop back and forth with the game (handoff.rs), and picking this tab does what
 //! pressing "Command Center" does. What it shows is who has the input right now, game or not.
 //!
-//! It's made once at start (`CreateDashboardOverlay`, key controlcenter.dashboard) and lives as
-//! long as cc-panels does, so unlike the other windows it has no card and no open/close. Its
+//! It's made at start (`CreateDashboardOverlay`, key controlcenter.dashboard) and lives as long as
+//! cc-panels does, so unlike the other windows it has no card and no open/close. While the Desktop
+//! is closed, `cc-panels --tab` (tab.rs) shows the same tab in its `closed` mode, where Show opens
+//! the Desktop. Only one of them holds the key: the tab mode lets go as soon as the Desktop takes
+//! its lock, and the Desktop's tab tries again every RETRY until it gets it. Its
 //! thumbnail is packaging/command-center.png. It's painted with the Preferences window's kit
 //! (ui.rs) and gets laser clicks as mouse events on its overlay, in the page's units.
 //!
@@ -18,28 +23,41 @@
 //! state to set kvm's `yielded`. That keeps one writer for it, because a second would be undone on
 //! the next frame.
 //!
+//! SteamVR draws its own control bar under the tab, and its close quits Command Center, the way it
+//! quits any overlay app from the dashboard.
+//!
 //! Not here: handing the mouse and keyboard to Steam by itself when the dashboard merely opens.
 //! `dashboard()` is where that would go, since main.rs calls it when the dashboard opens or closes.
 use super::ui::{self, BTN_H, PAD, Px, ROW, Rect, SCALE, TITLE, text, typed, typed_w};
-use crate::grab::{Paint, TagImg, over, tint};
-use crate::taskbar::tex_scale;
 use crate::geometry::from_top;
+use crate::grab::{Paint, TagImg, over, tint};
 use crate::handoff::Handoff;
-use crate::{HIDDEN, call, theme, vr};
-use openvr_sys as sys;
+use crate::overlay::{Flag, InputMode, Overlays, Surfaces};
+use crate::poll::Pointing;
+use crate::shell::{self, Shell};
+use crate::taskbar::tex_scale;
+use crate::{HIDDEN, theme, vr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::time::{Duration, Instant};
 
 /// Its labels, drawn by assets.rs at start as tag-ui-<key>.rgba. "dash" is both the title and the
 /// first choice of where the mouse and keyboard go.
-pub const LABELS: [(&str, &str); 6] = [
+pub const LABELS: [(&str, &str); 8] = [
     ("dash", "Command Center"),
     ("dashdesktop", "Desktop"),
     ("dashshow", "Show"),
     ("dashhide", "Hide"),
     ("dashinput", "Mouse and keyboard"),
     ("dashsteam", "Steam / game"),
+    ("dashpanels", "Panels"),
+    ("dashgather", "Bring all here"),
 ];
+
+/// How long the closed tab says it's opening the Desktop after Show.
+const OPENING: Duration = Duration::from_secs(60);
+/// How often making the tab is tried again while its key is taken (tab.rs letting go of it).
+const RETRY: Duration = Duration::from_millis(500);
 
 /// SteamVR's dashboard is open (main.rs tells `dashboard`), so the tab is being looked at.
 static OPEN: AtomicBool = AtomicBool::new(false);
@@ -49,8 +67,15 @@ pub fn dashboard(open: bool) {
     OPEN.store(open, Relaxed);
 }
 
+/// Whether SteamVR's dashboard is open, as `dashboard` was last told (the golden tests).
+#[cfg(test)]
+pub fn dashboard_open() -> bool {
+    OPEN.load(Relaxed)
+}
+
 const W: f64 = 600.0; // in units (the taskbar's: a Breeze logical pixel)
-const ROWS: usize = 3; // Desktop, Mouse and keyboard, and what that choice does
+const ROWS: usize = 4; // Desktop, Mouse and keyboard, what that choice does, and Panels' Bring all here
+const GATHER: usize = 3; // the row with Bring all here (gather.rs)
 const H: f64 = TITLE + ROWS as f64 * ROW + PAD;
 const SEG: f64 = 150.0; // one segment's width
 /// Calibration knob: how wide the page is in the dashboard, in metres. It wants a look in the headset.
@@ -76,6 +101,9 @@ fn hit(x: f64, y: f64) -> Option<Hit> {
         return None;
     }
     let i = ((y - TITLE) / ROW) as usize;
+    if i == GATHER && (y - row_y(i)).abs() <= BTN_H / 2.0 {
+        return (span().0..=span().1).contains(&x).then_some(Hit(GATHER, 0)); // one button, as wide as the two segments
+    }
     if !NAMES.contains(&i) || (y - row_y(i)).abs() > BTN_H / 2.0 {
         return None;
     }
@@ -95,7 +123,7 @@ fn whole_row(i: usize) -> Rect {
 
 /// The areas to redraw going from a to b. None means redraw all of it.
 fn dirty(a: &Key, b: &Key) -> Option<Vec<Rect>> {
-    if a.theme != b.theme {
+    if a.theme != b.theme || a.closed != b.closed || a.opening != b.opening {
         return None;
     }
     let mut r: Vec<Rect> = if a.hover != b.hover { [a.hover, b.hover].into_iter().flatten().map(rect).collect() } else { Vec::new() };
@@ -115,13 +143,16 @@ struct Key {
     steam: bool,
     hover: Option<Hit>,
     theme: u32,
+    closed: bool,  // the Desktop isn't running (tab.rs): Show opens it, and the input row isn't there
+    opening: bool, // ...and Show was pressed
 }
 
 /// Its labels, plus ascii.rgba for the line about the choice.
 #[derive(Default)]
 struct Ui {
     title: Option<TagImg>,
-    names: [Option<TagImg>; 2],
+    names: [Option<TagImg>; 3], // Desktop, Mouse and keyboard, Panels
+    gather: Option<TagImg>,
     segs: [[Option<TagImg>; 2]; 2],
     ascii: Option<TagImg>,
 }
@@ -137,8 +168,22 @@ impl Scene<'_> {
     fn row(&self, i: usize, x: f64, y: f64) -> Px {
         let (t, k, ui, cy) = (&self.p.t, self.k, self.ui, row_y(i));
         let ink = |px: Px, c| tint(px, c, c, c);
+        if k.closed && (i == 1 || i == GATHER) {
+            return ([0.0; 3], 0.0); // nothing to choose or bring with no Desktop
+        }
+        if i == GATHER {
+            let lit = k.hover == Some(Hit(GATHER, 0));
+            let control = ui::labelled(&self.p, lit, span(), cy, ui.gather.as_ref(), x, y);
+            let name = if x < span().0 - ui::GAP { ink(text(ui.names[2].as_ref(), x, y, PAD + 16.0, cy), t.wtext) } else { ([0.0; 3], 0.0) };
+            return over(name, control);
+        }
         if i == 2 {
-            let line = if k.steam { "Your mouse and keyboard go to Steam and your game." } else { "Your mouse and keyboard work Command Center." };
+            let line = match (k.closed, k.opening, k.steam) {
+                (true, true, _) => "Opening the Desktop...",
+                (true, false, _) => "The Desktop is closed. Show opens it.",
+                (false, _, true) => "Your mouse and keyboard go to Steam and your game.",
+                (false, _, false) => "Your mouse and keyboard work Command Center.",
+            };
             let left = (PAD + 4.0).min(W - PAD - typed_w(ui.ascii.as_ref(), line)); // a long one shows its end
             return if x < W - PAD { ink(typed(ui.ascii.as_ref(), line, x, y, left, cy), t.wdim) } else { ([0.0; 3], 0.0) };
         }
@@ -166,7 +211,12 @@ impl Scene<'_> {
 
 pub struct Dashtab {
     ov: Option<(vr::Handle, vr::Handle)>, // the page and its thumbnail
-    tried: bool,
+    retry: Option<Instant>,               // when to try making it again, after a try that failed
+    failed: bool,                         // the last try failed, so the next failure isn't logged again
+    pub closed: bool,                     // tab.rs's mode: the Desktop isn't running
+    opening: Option<Instant>,             // Show pressed in that mode
+    pub quit: bool,                       // ...and SteamVR's close pressed on it, so tab.rs ends
+
     ui: Arc<Ui>,
     hover: Option<Hit>,
     painter: ui::Painter<Key>,
@@ -177,10 +227,15 @@ impl Dashtab {
         let load = |k: &str| crate::load_tag(&format!("{assets}/tag-ui-{k}.rgba"));
         Dashtab {
             ov: None,
-            tried: false,
+            retry: None,
+            failed: false,
+            closed: false,
+            opening: None,
+            quit: false,
             ui: Arc::new(Ui {
                 title: load("dash"),
-                names: ["dashdesktop", "dashinput"].map(load),
+                names: ["dashdesktop", "dashinput", "dashpanels"].map(load),
+                gather: load("dashgather"),
                 segs: [["dashshow", "dashhide"].map(load), ["dash", "dashsteam"].map(load)],
                 ascii: crate::load_tag(&format!("{assets}/ascii.rgba")),
             }),
@@ -196,19 +251,24 @@ impl Dashtab {
 
     /// Our tab is the dashboard's active one: the dashboard is open and this is the page showing.
     pub fn selected(&self) -> bool {
-        OPEN.load(Relaxed) && self.ov.is_some_and(|(h, _)| call!(ov, IsActiveDashboardOverlay, h))
+        OPEN.load(Relaxed) && self.ov.is_some_and(|(h, _)| shell::Live.our_tab_active(h))
+    }
+
+    /// The tab's page overlay, once it's made (notify.rs hangs SteamVR's toasts off it).
+    pub fn page(&self) -> Option<vr::Handle> {
+        self.ov.map(|(h, _)| h)
     }
 
     /// Every frame: makes the tab the first time, then handles its events and draws it.
     pub fn tick(&mut self, hand: &mut Handoff) {
-        if self.ov.is_none() && !self.tried {
-            self.tried = true;
+        if self.ov.is_none() && self.retry.is_none_or(|t| Instant::now() >= t) {
+            self.retry = Some(Instant::now() + RETRY);
             self.open();
         }
         let Some((h, _)) = self.ov else { return };
         // asked every frame, not only told by the Activated event: the Desktop is usually started
         // from the dashboard, so it's already open when we start, and that event never comes
-        OPEN.store(call!(ov, IsDashboardVisible), Relaxed);
+        OPEN.store(shell::Live.dashboard_visible(), Relaxed);
         self.events(h, hand);
         // drawn once at the start, and after that only while the dashboard is open
         if self.painter.drawn().is_none() || OPEN.load(Relaxed) {
@@ -220,46 +280,72 @@ impl Dashtab {
         let (h, thumb) = match crate::surface::create_dashboard("controlcenter.dashboard", "Command Center") {
             Ok(h) => h,
             Err(e) => {
-                eprintln!("dashboard tab: no overlay: {e}"); // the key's in use, or the overlays are all taken
+                if !std::mem::replace(&mut self.failed, true) {
+                    eprintln!("dashboard tab: no overlay yet: {e}; trying again every {} s", RETRY.as_secs()); // the key's in use (tab.rs), or the overlays are all taken
+                }
                 return;
             }
         };
+        self.failed = false;
         let logo = crate::root().join("packaging/command-center.png");
         if logo.exists() {
-            vr::set_from_file(thumb, &logo.to_string_lossy());
+            crate::overlay::Live.picture_file(thumb, &logo.to_string_lossy());
         } else {
             eprintln!("dashboard tab: no logo at {}, so its icon stays blank", logo.display());
         }
-        call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayWidthInMeters, h, WIDTH_M);
+        crate::overlay::Live.input(h, InputMode::Pointer);
+        crate::overlay::Live.width(h, WIDTH_M);
+        // SteamVR's own bar under the tab, with its close (VREvent_OverlayClosed, in events). It's
+        // only drawn for what the dashboard hosts, so the floating windows keep our own bar.
+        // settings.json `"steamvr_bar": false` turns it off from the next start.
+        let bar = crate::config::settings()["steamvr_bar"].as_bool() != Some(false);
+        crate::overlay::Live.flag(h, Flag::ControlBar, bar);
+        crate::overlay::Live.flag(h, Flag::ControlBarClose, bar);
         self.ov = Some((h, thumb));
         eprintln!("dashboard tab: made");
     }
 
     /// Laser events: hovering, and presses on a choice.
     fn events(&mut self, h: vr::Handle, hand: &mut Handoff) {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
-        while call!(ov, PollNextOverlayEvent, h, &mut e, size_of::<vr::VREvent_t>() as u32) {
-            let m = unsafe { e.data.mouse };
-            let at = hit(m.x as f64, from_top(H, m.y as f64)); // page units; events count from the bottom left
-            match e.eventType {
-                sys::EVREventType_VREvent_MouseMove => self.hover = at,
-                sys::EVREventType_VREvent_FocusLeave => self.hover = None,
-                sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
-                    if let Some(a) = at {
-                        act(a, hand);
-                    }
+        let mut again = false;
+        while let Some(ev) = crate::poll::Live.next(h) {
+            use crate::events::{Button, PointerEvent, PointerKind as P, SurfaceEvent as S};
+            // page units; events count from the bottom left
+            let at = if let S::Pointer(pe) = &ev { hit(pe.x as f64, from_top(H, pe.y as f64)) } else { None };
+            let kind = if let S::Pointer(PointerEvent { kind, .. }) = &ev { Some(*kind) } else { None };
+            match (&ev, kind) {
+                (_, Some(P::Move)) => self.hover = at,
+                (_, Some(P::Leave)) => self.hover = None,
+                // SteamVR's close on the tab quits Command Center, the way it quits any overlay app.
+                // Only when you could have pressed it: the dashboard showing, on our tab. Any other
+                // close (a dashboard restart, say) makes the tab again and leaves the Desktop be.
+                (S::Closed, _) if !(shell::Live.dashboard_visible() && shell::Live.our_tab_active(h)) => {
+                    eprintln!("dashboard tab: SteamVR closed it while it wasn't showing, so it's made again");
+                    again = true;
                 }
+                (S::Closed, _) if self.closed => self.quit = true, // tab.rs ends
+                (S::Closed, _) => crate::close_desktop("the dashboard tab's close"),
+                (_, Some(P::Down(Button::Left))) => match at {
+                    Some(Hit(0, 0)) if self.closed => self.open_desktop(),
+                    Some(_) if self.closed => {}
+                    Some(a) => act(a, hand),
+                    None => {}
+                },
                 _ => {}
             }
+        }
+        if again {
+            self.remake();
         }
     }
 
     /// Redraws it off the main thread when anything changed, and only the parts that did.
     fn paint(&mut self, h: vr::Handle, steam: bool) {
-        let key = Key { shown: !HIDDEN.load(Relaxed), steam, hover: self.hover, theme: theme::generation() };
+        let opening = self.opening.is_some_and(|t| t.elapsed() < OPENING);
+        let key = Key { shown: !HIDDEN.load(Relaxed) && !self.closed, steam, hover: self.hover, theme: theme::generation(), closed: self.closed, opening };
         self.painter.paint(h, key, || {
-            let (ui, p) = (self.ui.clone(), Paint::new(&theme::get(), theme::VIOLET));
+            let th = theme::get();
+            let (ui, p) = (self.ui.clone(), Paint::new(&th, th.accent)); // SteamVR's blue in its look: the tab sits in SteamVR's dashboard
             move |was: Option<Key>, px, k: &Key| {
                 let sc = Scene { k, p, ui: &ui };
                 let s = tex_scale(W, H, SCALE);
@@ -275,12 +361,52 @@ impl Dashtab {
             crate::surface::destroy(thumb);
         }
     }
+
+    /// Lets go of the tab and its key (tab.rs, once the Desktop runs). The next tick makes it again.
+    pub fn release(&mut self) {
+        if self.ov.is_some() {
+            self.remake();
+            eprintln!("dashboard tab: handed to the Desktop");
+        }
+    }
+
+    /// Destroys the tab so the next tick makes it anew.
+    fn remake(&mut self) {
+        self.destroy();
+        (self.hover, self.painter, self.retry, self.opening) = (None, ui::Painter::default(), None, None);
+    }
+
+    /// Show in the closed mode: starts the Desktop the way the launcher's tile does (cc-home desktop),
+    /// as a systemd unit of its own on the host, so it outlives this process. The unit's fixed name
+    /// keeps a second press from starting a second one.
+    fn open_desktop(&mut self) {
+        if self.opening.is_some_and(|t| t.elapsed() < OPENING) {
+            return;
+        }
+        let cc_home = crate::root().join("cc-home");
+        let mut argv: Vec<std::ffi::OsString> = ["systemd-run", "--user", "--collect", "--quiet", "--unit=command-center-open"].map(Into::into).into();
+        argv.extend([cc_home.into_os_string(), "desktop".into()]);
+        if std::path::Path::new("/run/.containerenv").exists() {
+            argv.insert(0, format!("{}/.local/bin/distrobox-host-exec", crate::config::home_dir()).into()); // the container's way to the host (machines.rs on_host)
+        }
+        let started = std::process::Command::new(&argv[0]).args(&argv[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).spawn();
+        match started {
+            Ok(_) => {
+                self.opening = Some(Instant::now());
+                eprintln!("dashboard tab: opening the Desktop");
+            }
+            Err(e) => eprintln!("dashboard tab: can't open the Desktop: {e}"),
+        }
+    }
 }
 
 /// A click. The Desktop's choice is applied now; the input's goes to the hand-off, which main.rs
 /// reads on its next frame.
 fn act(Hit(row, seg): Hit, hand: &mut Handoff) {
-    if row == 0 {
+    if row == GATHER {
+        eprintln!("dashboard tab: Bring all here");
+        crate::gather::ask(false); // the main loop has what it moves
+    } else if row == 0 {
         let show = seg == 0;
         if show != HIDDEN.load(Relaxed) {
             return; // already how it says
@@ -298,8 +424,24 @@ mod tests {
     use super::*;
     use crate::grab;
 
+    /// Bring all here is one button across the segments' width, on its own row, and pressing it
+    /// asks the main loop for a gather.
+    #[test]
+    fn bring_all_here_is_a_button_that_asks_for_a_gather() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (x0, x1) = span();
+        assert_eq!(hit(x0 + 1.0, row_y(GATHER)), Some(Hit(GATHER, 0)));
+        assert_eq!(hit(x1 - 1.0, row_y(GATHER)), Some(Hit(GATHER, 0)), "one button: no second segment");
+        assert_eq!(hit(x0 - 20.0, row_y(GATHER)), None, "not on its name");
+        assert!(H >= row_y(GATHER) + ROW / 2.0, "the page is tall enough for it");
+        let mut hand = Handoff::default();
+        crate::gather::ASKED.store(false, Relaxed);
+        act(Hit(GATHER, 0), &mut hand);
+        assert!(crate::gather::ASKED.swap(false, Relaxed), "asked");
+    }
+
     fn key(hover: Option<Hit>) -> Key {
-        Key { shown: true, steam: false, hover, theme: 0 }
+        Key { shown: true, steam: false, hover, theme: 0, closed: false, opening: false }
     }
 
     #[test]
@@ -336,20 +478,24 @@ mod tests {
     }
 
     #[test]
+    fn closed_it_offers_only_show() {
+        let (ui, p) = (Ui::default(), Paint::new(&theme::Theme::default(), theme::VIOLET));
+        let seg = |s: usize| span().0 + SEG * (s as f64 + 0.5);
+        let k = Key { closed: true, shown: false, ..key(None) };
+        let sc = Scene { k: &k, p, ui: &ui };
+        assert_eq!(sc.row(1, seg(0), row_y(1)).1, 0.0, "no input row with no Desktop");
+        assert!(sc.row(0, seg(0), row_y(0)).1 > 0.0, "Show is there");
+        assert!(dirty(&key(None), &k).is_none() && dirty(&k, &Key { opening: true, ..k.clone() }).is_none(), "the mode and its line: all of it");
+    }
+
+    #[test]
     fn a_patch_draws_as_all_of_it() {
         let (ui, p) = (Ui::default(), Paint::new(&theme::Theme::default(), theme::VIOLET));
         let s = 1.5;
         let (tw, th) = ((W * s) as usize, (H * s) as usize);
         let h = Some(Hit(0, 0));
-        let mut cases: Vec<(Key, Key)> = [
-            (None, Some(Hit(0, 1))),
-            (Some(Hit(0, 1)), Some(Hit(1, 0))),
-            (Some(Hit(1, 0)), Some(Hit(1, 1))),
-            (Some(Hit(1, 1)), None),
-        ]
-        .into_iter()
-        .map(|(a, b)| (key(a), key(b)))
-        .collect();
+        let mut cases: Vec<(Key, Key)> =
+            [(None, Some(Hit(0, 1))), (Some(Hit(0, 1)), Some(Hit(1, 0))), (Some(Hit(1, 0)), Some(Hit(1, 1))), (Some(Hit(1, 1)), None)].into_iter().map(|(a, b)| (key(a), key(b))).collect();
         cases.extend([Key { shown: false, ..key(h) }, Key { steam: true, ..key(h) }, Key { shown: false, steam: true, ..key(None) }].map(|b| (key(h), b)));
         let draw = |k: &Key| {
             let sc = Scene { k, p, ui: &ui };

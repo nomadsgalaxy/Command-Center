@@ -30,9 +30,22 @@ unsafe fn with_panel<R>(c: *mut rdpContext, f: impl FnOnce(&Panel) -> R) -> Opti
     crate::panels().get(unsafe { (*(c as *mut PanelContext)).panel }).map(f)
 }
 
+/// The GDI's window and its invalid region, or None if any link on the way there is null, so a
+/// callback fails instead of reading through a null pointer.
+unsafe fn gdi_window(c: *mut rdpContext) -> Option<(HGDI_WND, *mut rdpGdi)> {
+    unsafe {
+        if c.is_null() || (*c).gdi.is_null() || (*(*c).gdi).primary.is_null() || (*(*(*c).gdi).primary).hdc.is_null() {
+            return None;
+        }
+        let hwnd = (*(*(*(*c).gdi).primary).hdc).hwnd;
+        (!hwnd.is_null() && !(*hwnd).invalid.is_null()).then_some((hwnd, (*c).gdi))
+    }
+}
+
 unsafe extern "C" fn on_begin_paint(c: *mut rdpContext) -> BOOL {
     crate::ffi::guard("on_begin_paint", 0, || {
-        let hwnd = unsafe { &mut *(*(*(*(*c).gdi).primary).hdc).hwnd };
+        let Some((hwnd, _)) = (unsafe { gdi_window(c) }) else { return 0 };
+        let hwnd = unsafe { &mut *hwnd };
         unsafe { (*hwnd.invalid).null = 1 };
         hwnd.ninvalid = 0; // clear its rects like gdi_begin_paint does, or they'd pile up
         1
@@ -41,8 +54,9 @@ unsafe extern "C" fn on_begin_paint(c: *mut rdpContext) -> BOOL {
 
 unsafe extern "C" fn on_end_paint(c: *mut rdpContext) -> BOOL {
     crate::ffi::guard("on_end_paint", 0, || {
+        let Some((hwnd, gdi)) = (unsafe { gdi_window(c) }) else { return 0 };
         let f = |p: &Panel| {
-            let r = unsafe { &*(*(*(*(*(*c).gdi).primary).hdc).hwnd).invalid };
+            let r = unsafe { &*(*hwnd).invalid };
             if r.null != 0 {
                 return 1;
             }
@@ -51,8 +65,9 @@ unsafe extern "C" fn on_end_paint(c: *mut rdpContext) -> BOOL {
             }
             // D-045: how much of the picture this update changed, for attention.rs. It sums the rects
             // instead of their bounds, since a caret and a clock in opposite corners are only a little.
-            let (hwnd, gdi) = unsafe { (&*(*(*(*(*c).gdi).primary).hdc).hwnd, &*(*c).gdi) };
+            let (hwnd, gdi) = unsafe { (&*hwnd, &*gdi) };
             let n = if hwnd.cinvalid.is_null() { 0 } else { hwnd.ninvalid.max(0) as usize };
+            // SAFETY: FreeRDP's invalid regions for this paint; cinvalid is non-null here and holds ninvalid (n) rects.
             let rects = if n == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(hwnd.cinvalid, n) } };
             let area: i64 = rects.iter().map(|r| r.w.max(0) as i64 * r.h.max(0) as i64).sum();
             let all = (gdi.width.max(1) as i64 * gdi.height.max(1) as i64).max(1);
@@ -88,6 +103,9 @@ unsafe extern "C" fn on_desktop_resize(c: *mut rdpContext) -> BOOL {
             if p.v.pop.is_some() {
                 crate::popout::resized(p.index, w, h, false); // a popup or the window resized its stream
             }
+            if unsafe { (*c).gdi.is_null() } {
+                return 0;
+            }
             unsafe { gdi_resize((*c).gdi, w, h) }
         };
         unsafe { with_panel(c, f) }.unwrap_or(0)
@@ -108,11 +126,186 @@ fn is_cliprdr(name: *const std::os::raw::c_char) -> bool {
     unsafe { CStr::from_ptr(name) }.to_bytes_with_nul() == CLIPRDR_SVC_CHANNEL_NAME
 }
 
+// ------------------------------------------------------------------ which codec it got (docs/rdp-text.md)
+
+/// The GDI's own graphics pipeline callbacks, which ours log then call. They're only installed on
+/// the GDI's path (watch_gfx, right after the GDI's own handler in on_channel_connected), so a
+/// context's `custom` is always an rdpGdi. They're kept from the first session and never reset, on
+/// purpose: every session's GDI hands out the same functions, and a later session's slot already
+/// holds our wrapper, so taking it per session would make the wrapper call itself.
+static GFX_CAPS: std::sync::OnceLock<pcRdpgfxCapsConfirm> = std::sync::OnceLock::new();
+static GFX_SURFACE: std::sync::OnceLock<pcRdpgfxSurfaceCommand> = std::sync::OnceLock::new();
+
+/// The rdpContext behind a graphics pipeline context: its custom is the GDI (gdi_graphics_pipeline_init).
+unsafe fn gfx_context(g: *mut RdpgfxClientContext) -> *mut rdpContext {
+    unsafe { if g.is_null() || (*g).custom.is_null() { std::ptr::null_mut() } else { (*((*g).custom as *mut rdpGdi)).context } }
+}
+
+/// A codec's name for the log: every one in FreeRDP's RDPGFX_CODECID, and the raw id for any other.
+#[allow(non_upper_case_globals)] // FreeRDP's own name, AVC444v2
+fn codec_name(id: u32) -> String {
+    match id {
+        RDPGFX_CODECID_RDPGFX_CODECID_AVC420 => "H.264 4:2:0 (AVC420)".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_AVC444 => "H.264 4:4:4 (AVC444)".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_AVC444v2 => "H.264 4:4:4 (AVC444v2)".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE => "RemoteFX Progressive".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE_V2 => "RemoteFX Progressive v2".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_CAVIDEO => "RemoteFX".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_UNCOMPRESSED => "uncompressed".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_PLANAR => "planar".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_CLEARCODEC => "ClearCodec".into(),
+        RDPGFX_CODECID_RDPGFX_CODECID_ALPHA => "alpha".into(),
+        id => format!("unknown ({id:#x})"),
+    }
+}
+
+/// How often a panel getting more than one codec says how many frames each got.
+const SUMMARY: Duration = Duration::from_secs(60);
+
+/// Frames by codec, for one panel's log. The first frame of each codec says so. A minute in which
+/// more than one codec sent frames ends with a count of each, so a server mixing them doesn't put
+/// a line in the log per switch.
+#[derive(Default)]
+pub struct Codecs {
+    seen: Vec<u32>,          // every codec it's had, in order
+    window: Vec<(u32, u64)>, // frames by codec since `since`
+    since: Option<std::time::Instant>,
+}
+
+impl Codecs {
+    /// One frame of codec `id` at `now`: what to log about it, if anything.
+    fn frame(&mut self, id: u32, now: std::time::Instant) -> Vec<String> {
+        let mut say = Vec::new();
+        if !self.seen.contains(&id) {
+            self.seen.push(id);
+            say.push(format!("the server sends {}", codec_name(id)));
+        }
+        let since = *self.since.get_or_insert(now);
+        if now.duration_since(since) >= SUMMARY {
+            if self.window.len() > 1 {
+                let each: Vec<String> = self.window.iter().map(|(c, n)| format!("{} {n}", codec_name(*c))).collect();
+                say.push(format!("frames in the last {} s: {}", now.duration_since(since).as_secs(), each.join(", ")));
+            }
+            (self.window, self.since) = (Vec::new(), Some(now));
+        }
+        match self.window.iter_mut().find(|w| w.0 == id) {
+            Some(w) => w.1 += 1,
+            None => self.window.push((id, 1)),
+        }
+        say
+    }
+}
+
+/// What a session asks for, from settings.json: H.264 (with 4:4:4 offered too only where
+/// "rdp_avc444" turns it on, true for every machine or a list of machine names), or RemoteFX
+/// Progressive with "rdp_codec": "progressive". A missing key is null, which isn't
+/// "progressive", so a fresh settings.json keeps H.264. Returns (H.264, AVC444, Progressive).
+fn codecs_asked(settings: &serde_json::Value, machine: &str) -> (bool, bool, bool) {
+    for w in codec_settings_wrong(settings) {
+        static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let mut said = crate::ffi::lock(&SAID);
+        if !said.contains(&w) {
+            eprintln!("settings.json: {w}");
+            said.push(w);
+        }
+    }
+    if settings["rdp_codec"] == "progressive" {
+        return (false, false, true);
+    }
+    let a = &settings["rdp_avc444"];
+    let avc444 = *a == true || a.as_array().is_some_and(|l| l.iter().any(|m| m == machine));
+    (true, avc444, false)
+}
+
+/// What's wrong with settings.json's codec keys, if anything: a value they don't take. Each is
+/// said once a run (codecs_asked), and the setting then counts as missing.
+fn codec_settings_wrong(settings: &serde_json::Value) -> Vec<String> {
+    let mut wrong = Vec::new();
+    let c = &settings["rdp_codec"];
+    if !(c.is_null() || *c == "h264" || *c == "progressive") {
+        wrong.push(format!("rdp_codec {c} isn't \"h264\" or \"progressive\", so it's H.264"));
+    }
+    let a = &settings["rdp_avc444"];
+    if !(a.is_null() || a.is_boolean() || a.as_array().is_some_and(|l| l.iter().all(|m| m.is_string()))) {
+        wrong.push(format!("rdp_avc444 {a} isn't true, false or a list of machine names, so it's off"));
+    }
+    wrong
+}
+
+/// What a session asked for, for the log line at its connect.
+fn asked_name((h264, avc444, _): (bool, bool, bool)) -> &'static str {
+    match (h264, avc444) {
+        (true, true) => "h264+avc444",
+        (true, false) => "h264",
+        (false, _) => "progressive",
+    }
+}
+
+#[cfg(test)]
+static PANIC_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The server's choice of capability set, which says whether it can send H.264 at all. The
+/// logging runs on its own (ffi::aside), so a bug in it can't keep the GDI's own from running.
+unsafe extern "C" fn on_caps_confirm(g: *mut RdpgfxClientContext, pdu: *const RDPGFX_CAPS_CONFIRM_PDU) -> UINT {
+    crate::ffi::aside("on_caps_confirm's log", || unsafe {
+        #[cfg(test)]
+        assert!(!PANIC_LOG.load(Relaxed), "a logging bug");
+        if !pdu.is_null() && !(*pdu).capsSet.is_null() {
+            let set = *(*pdu).capsSet;
+            with_panel(gfx_context(g), |p| eprintln!("{}: graphics caps {:#x}, flags {:#x}", p.v.name, set.version, set.flags));
+        }
+    });
+    crate::ffi::guard("on_caps_confirm", CHANNEL_RC_OK, || unsafe { GFX_CAPS.get().copied().flatten().map_or(CHANNEL_RC_OK, |f| f(g, pdu)) }) // the GDI's, exactly once
+}
+
+/// Each frame's codec, counted on its own panel (Codecs), then the GDI's own, whatever the
+/// counting did.
+unsafe extern "C" fn on_surface_command(g: *mut RdpgfxClientContext, cmd: *const RDPGFX_SURFACE_COMMAND) -> UINT {
+    crate::ffi::aside("on_surface_command's log", || unsafe {
+        #[cfg(test)]
+        assert!(!PANIC_LOG.load(Relaxed), "a logging bug");
+        if !cmd.is_null() {
+            let id = (*cmd).codecId;
+            with_panel(gfx_context(g), |p| {
+                for line in crate::ffi::lock(&p.codecs).frame(id, std::time::Instant::now()) {
+                    eprintln!("{}: {line}", p.v.name);
+                }
+            });
+        }
+    });
+    crate::ffi::guard("on_surface_command", CHANNEL_RC_OK, || unsafe { GFX_SURFACE.get().copied().flatten().map_or(CHANNEL_RC_OK, |f| f(g, cmd)) })
+}
+
+/// Wraps the GDI's graphics pipeline callbacks with the logging ones above.
+unsafe fn watch_gfx(g: *mut RdpgfxClientContext) {
+    unsafe {
+        if g.is_null() {
+            return;
+        }
+        GFX_CAPS.get_or_init(|| {
+            let f = (*g).CapsConfirm;
+            debug_assert!(f.map(|f| f as usize) != Some(on_caps_confirm as *const () as usize), "the GDI's CapsConfirm, not ours");
+            f
+        });
+        GFX_SURFACE.get_or_init(|| {
+            let f = (*g).SurfaceCommand;
+            debug_assert!(f.map(|f| f as usize) != Some(on_surface_command as *const () as usize), "the GDI's SurfaceCommand, not ours");
+            f
+        });
+        (*g).CapsConfirm = Some(on_caps_confirm);
+        (*g).SurfaceCommand = Some(on_surface_command);
+    }
+}
+
 unsafe extern "C" fn on_channel_connected(context: *mut c_void, e: *const ChannelConnectedEventArgs) {
     crate::ffi::guard("on_channel_connected", (), || {
         let e = unsafe { &*e };
         if !is_cliprdr(e.name) {
-            return unsafe { freerdp_client_OnChannelConnectedEventHandler(context, e) }; // graphics pipeline to the GDI
+            unsafe { freerdp_client_OnChannelConnectedEventHandler(context, e) }; // graphics pipeline to the GDI
+            if unsafe { CStr::from_ptr(e.name) }.to_bytes_with_nul() == RDPGFX_DVC_CHANNEL_NAME {
+                unsafe { watch_gfx(e.pInterface as *mut RdpgfxClientContext) };
+            }
+            return;
         }
         unsafe { with_panel(context as *mut rdpContext, |p| crate::clipboard::cliprdr::attach(p, e.pInterface as *mut CliprdrClientContext)) };
     })
@@ -134,13 +327,11 @@ type Disconnected = unsafe extern "C" fn(*mut c_void, *const ChannelDisconnected
 // ------------------------------------------------------------------ the session
 
 unsafe extern "C" fn on_pre_connect(instance: *mut freerdp) -> BOOL {
-    crate::ffi::guard("on_pre_connect", 0, || {
-        unsafe {
-            let c = (*instance).context;
-            PubSub_Subscribe((*c).pubSub, c"ChannelConnected".as_ptr(), on_channel_connected as Connected);
-            PubSub_Subscribe((*c).pubSub, c"ChannelDisconnected".as_ptr(), on_channel_disconnected as Disconnected);
-            freerdp_settings_set_uint32((*c).settings, FreeRDP_Settings_Keys_UInt32_FreeRDP_OsMajorType, OSMAJORTYPE_UNIX)
-        }
+    crate::ffi::guard("on_pre_connect", 0, || unsafe {
+        let c = (*instance).context;
+        PubSub_Subscribe((*c).pubSub, c"ChannelConnected".as_ptr(), on_channel_connected as Connected);
+        PubSub_Subscribe((*c).pubSub, c"ChannelDisconnected".as_ptr(), on_channel_disconnected as Disconnected);
+        freerdp_settings_set_uint32((*c).settings, FreeRDP_Settings_Keys_UInt32_FreeRDP_OsMajorType, OSMAJORTYPE_UNIX)
     })
 }
 
@@ -160,13 +351,11 @@ unsafe extern "C" fn on_post_connect(instance: *mut freerdp) -> BOOL {
 }
 
 unsafe extern "C" fn on_post_disconnect(instance: *mut freerdp) {
-    crate::ffi::guard("on_post_disconnect", (), || {
-        unsafe {
-            let c = (*instance).context;
-            PubSub_Unsubscribe((*c).pubSub, c"ChannelConnected".as_ptr(), on_channel_connected as Connected);
-            PubSub_Unsubscribe((*c).pubSub, c"ChannelDisconnected".as_ptr(), on_channel_disconnected as Disconnected);
-            gdi_free(instance);
-        }
+    crate::ffi::guard("on_post_disconnect", (), || unsafe {
+        let c = (*instance).context;
+        PubSub_Unsubscribe((*c).pubSub, c"ChannelConnected".as_ptr(), on_channel_connected as Connected);
+        PubSub_Unsubscribe((*c).pubSub, c"ChannelDisconnected".as_ptr(), on_channel_disconnected as Disconnected);
+        gdi_free(instance);
     })
 }
 
@@ -231,6 +420,24 @@ pub fn host_health(status: &serde_json::Value, index: u32) -> u8 {
     }
 }
 
+/// Sets what the host says of p's server, with a notification when that changes (notify.rs).
+fn set_health(p: &Panel, h: u8) {
+    let was = p.host_health.swap(h, Relaxed);
+    if let Some(t) = health_note(&p.v.name, was, h) {
+        crate::notify::send(&format!("health {}", p.v.name), &t);
+    }
+}
+
+/// What to say when a monitor's host health goes from was to now, if anything.
+fn health_note(name: &str, was: u8, now: u8) -> Option<String> {
+    match (was, now) {
+        _ if was == now => None,
+        (_, HOST_DOWN) => Some(format!("{name}: its computer stopped sharing this screen. Command Center asks again in 5 minutes, or press Connect.")),
+        (_, HOST_DEGRADED) => Some(format!("{name}: its computer's screen sharing keeps restarting.")),
+        _ => Some(format!("{name} is back.")),
+    }
+}
+
 /// After a failed start, asks the agent why, at most every 30 s, so the machines window can say the
 /// host's server is broken instead of the panel retrying quietly.
 fn ask_health(p: &Panel, last: &mut Option<std::time::Instant>) {
@@ -240,22 +447,35 @@ fn ask_health(p: &Panel, last: &mut Option<std::time::Instant>) {
     *last = Some(std::time::Instant::now());
     if let Ok(st) = agent(crate::config::machine_of(&p.v), "status", serde_json::json!({})) {
         let h = host_health(&st, (p.v.port - 3400) % 10);
-        if p.host_health.swap(h, Relaxed) != h && h != HOST_OK {
+        if p.host_health.load(Relaxed) != h && h != HOST_OK {
             eprintln!("{}: its host says its server is {}", p.v.name, if h == HOST_DOWN { "down (it gave up restarting)" } else { "restarting again and again" });
         }
+        set_health(p, h);
     }
+}
+
+/// How long a panel waits before asking again when its host says its server gave up ("down").
+/// Not every few seconds: each start the host lets through would fail again and alert again. Five
+/// minutes is also about when someone may have fixed it. Connect asks at once (Panel::retry).
+pub const DOWN_RETRY: Duration = Duration::from_secs(300);
+
+/// Whether a panel whose host server is down keeps waiting after `waited`.
+pub fn keep_waiting(waited: Duration, live: bool, retry: bool) -> bool {
+    live && !retry && waited < DOWN_RETRY
 }
 
 fn session(p: &Panel, start: bool) -> Result<u32, String> {
     let v: &crate::config::Viewer = &p.v;
     let verb = if start { "start" } else { "stop" };
+    // A window popping out is always someone asking, and so is Connect.
+    let force = start && (v.pop.is_some() || p.retry.swap(false, Relaxed));
     let machine = crate::config::machine_of(v);
     let (cmd, args) = match &v.pop {
         // its source monitor is on the shared login, so it's not paired (cc-home's window)
         Some((from, _)) if crate::panels().iter().any(|q| q.v.name == *from && q.v.port < 3410) => return Err("not-paired".into()),
-        Some((_, uuid)) => ("window", serde_json::json!({"op": verb, "uuid": uuid})),
+        Some((_, uuid)) => ("window", serde_json::json!({"op": verb, "uuid": uuid, "force": force})),
         None if v.port < 3410 || cc_proto::agent::trusted(std::path::Path::new(&crate::config::config("")), machine).is_err() => return Ok(v.port),
-        None => ("session", serde_json::json!({"op": verb, "index": (v.port - 3400) % 10})),
+        None => ("session", serde_json::json!({"op": verb, "index": (v.port - 3400) % 10, "force": force})),
     };
     let r = agent(machine, cmd, args).map_err(|e| if e == "unknown-command" && v.pop.is_some() { "unsupported".into() } else { e });
     match r {
@@ -338,18 +558,32 @@ pub fn run(p: &'static Panel) {
         let port = match session(p, true) {
             Ok(n) => {
                 (said, changed) = (false, false);
-                p.host_health.store(HOST_OK, Relaxed);
+                set_health(p, HOST_OK);
                 n
             }
             // another key at its address: we never connect unpinned, so not until it's paired again
             Err(why) if why == "host-changed" => {
                 if !std::mem::replace(&mut changed, true) {
                     eprintln!("{}: host changed: pair again", p.v.name);
+                    crate::notify::send(&format!("host-changed {}", p.v.name), &format!("{}: a different computer answers at its address. Pair it again in Machines.", p.v.name));
                 }
                 if pop {
                     return crate::popout::failed(p, &why);
                 }
                 pause();
+                continue;
+            }
+            // Its host's server gave up. Asking every few seconds would restart it and fail again,
+            // so wait (DOWN_RETRY, or until Connect), showing it as down meanwhile.
+            Err(why) if why == "down" && !pop => {
+                if p.host_health.load(Relaxed) != HOST_DOWN {
+                    set_health(p, HOST_DOWN);
+                    eprintln!("{}: its host's server gave up; asking again in {} min, or at Connect", p.v.name, DOWN_RETRY.as_secs() / 60);
+                }
+                let t0 = std::time::Instant::now();
+                while !QUIT.load(Relaxed) && keep_waiting(t0.elapsed(), p.live(), p.retry.load(Relaxed)) {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
                 continue;
             }
             Err(why) if pop => {
@@ -366,7 +600,7 @@ pub fn run(p: &'static Panel) {
                 p.v.port
             }
         };
-        let mut ep: RDP_CLIENT_ENTRY_POINTS = unsafe { std::mem::zeroed() };
+        let mut ep: RDP_CLIENT_ENTRY_POINTS = Default::default();
         ep.Version = RDP_CLIENT_INTERFACE_VERSION;
         ep.Size = size_of::<RDP_CLIENT_ENTRY_POINTS_V1>() as u32;
         ep.ContextSize = size_of::<PanelContext>() as u32;
@@ -393,6 +627,7 @@ pub fn run(p: &'static Panel) {
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_NlaSecurity, true);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_TlsSecurity, true);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_RdpSecurity, false);
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_UnicodeInput, true); // asked for; the server's capability decides (unicode())
             if let Some(pin) = &pin {
                 // paired (H2): only that certificate. FreeRDP accepts it by fingerprint before
                 // anything else, and any other one goes to on_other_cert, which refuses it
@@ -404,8 +639,17 @@ pub fn run(p: &'static Panel) {
                 b(FreeRDP_Settings_Keys_Bool_FreeRDP_AutoAcceptCertificate, true); // trust on first use, then insist
             }
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_SupportGraphicsPipeline, true);
-            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxH264, true);
-            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxAVC444, false);
+            // H.264 by default. 4:4:4 is only offered where settings.json's "rdp_avc444" says so,
+            // until the Frame's decoding of a real 4:4:4 source has been measured; krdp only sends
+            // 4:2:0 anyway. "rdp_codec": "progressive" turns H.264 off, so krdp sends RemoteFX
+            // Progressive, its full-colour mode, for text that has to stay sharp (docs/rdp-text.md).
+            // Only these two keys change what FreeRDP 3.31's client offers (rdpgfx_main.c); its
+            // GfxAVC444v2 and GfxProgressive* are server settings, so they're left alone. The
+            // client decodes AVC444v2 and Progressive whenever a server sends them.
+            let asked = codecs_asked(&crate::config::settings(), if p.v.machine.is_empty() { &p.v.name } else { &p.v.machine });
+            eprintln!("{}: asked for {}", p.v.name, asked_name(asked));
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxH264, asked.0);
+            b(FreeRDP_Settings_Keys_Bool_FreeRDP_GfxAVC444, asked.1);
             b(FreeRDP_Settings_Keys_Bool_FreeRDP_RemoteFxCodec, false);
             // Decode the graphics pipeline (H.264) inside check_event_handles, on this thread and
             // under p.lock, instead of on drdynvc's own thread, so gpu::write right after it sees the finished frame
@@ -433,6 +677,8 @@ pub fn run(p: &'static Panel) {
             // WinPR's 8-thread pool (3.5-4 ms less CPU a 3840x1080 frame, ~5 ms more latency; efficiency-plan.md 2a)
             n(FreeRDP_Settings_Keys_UInt32_FreeRDP_ThreadingFlags, THREADING_FLAGS_DISABLE_THREADS);
             p.rdp.store(c, Release);
+            crate::ffi::new_session();
+            *crate::ffi::lock(&p.codecs) = Codecs::default(); // a new connection says its codec again
             if freerdp_client_start(c) == 0 && freerdp_connect((*c).instance) != 0 {
                 p.connected.store(true, Release);
                 p.down.store(false, Relaxed);
@@ -476,6 +722,10 @@ pub fn run(p: &'static Panel) {
                     if ok == 0 {
                         break;
                     }
+                    if crate::ffi::session_failed() {
+                        eprintln!("{}: a callback panicked, so this session ends and reconnects", p.v.name);
+                        break;
+                    }
                     // Still holding the lock, write the decoded picture into the spare GPU buffer
                     // here, off the main loop. Live, doing it there cost 20-50 ms a desk-portrait
                     // frame and 10 ms desk-wide.
@@ -486,7 +736,6 @@ pub fn run(p: &'static Panel) {
                 p.connected.store(false, Release);
                 detach(p);
                 freerdp_disconnect((*c).instance); // frees the GDI
-
             } else {
                 p.down.store(true, Relaxed);
                 eprintln!("{}: can't connect (0x{:08x})", p.v.name, freerdp_get_last_error(c));
@@ -540,6 +789,43 @@ pub fn mouse(p: &Panel, flags: u32, x: f64, y: f64) {
     }
 }
 
+/// Whether the server takes Unicode keyboard input: we ask for it before connecting, and FreeRDP
+/// keeps that only if the server's input capability says INPUT_FLAG_UNICODE. None until connected.
+pub fn unicode(p: &Panel) -> Option<bool> {
+    let c = p.rdp.load(Acquire);
+    (p.connected.load(Acquire) && !c.is_null()).then(|| unsafe { freerdp_settings_get_bool((*c).settings, FreeRDP_Settings_Keys_Bool_FreeRDP_UnicodeInput) != 0 })
+}
+
+/// c's UTF-16 units: one, or a surrogate pair past the BMP, which RDP's Unicode input takes one at a time.
+fn units(c: char) -> Vec<u16> {
+    c.encode_utf16(&mut [0u16; 2]).to_vec()
+}
+
+/// A character as itself (SteamVR's keyboard): each UTF-16 unit pressed and let go. False if
+/// FreeRDP refused one, and the caller never retries it as keys.
+pub fn text(p: &Panel, c: char) -> bool {
+    let Some(i) = input(p) else { return false };
+    send_units(&units(c), |flags, u| unsafe { freerdp_input_send_unicode_keyboard_event(i, flags, u) != 0 })
+}
+
+/// Presses and lets go of each unit through `send` (flags, unit). The release always goes, even
+/// when its press failed, and a release that fails is tried once more; after a failure no further
+/// unit is pressed, so a surrogate pair never goes out half. True only if every press and release
+/// went. If a release fails twice, that unit stays down at the host until its session ends or the
+/// next key from this Frame comes in; it's counted as missed, so the strip says so.
+fn send_units(units: &[u16], mut send: impl FnMut(u16, u16) -> bool) -> bool {
+    let mut ok = true;
+    for &u in units {
+        if !ok {
+            break;
+        }
+        let down = send(0, u);
+        let up = send(KBD_FLAGS_RELEASE as u16, u) || send(KBD_FLAGS_RELEASE as u16, u);
+        ok = down && up;
+    }
+    ok
+}
+
 pub fn key(p: &Panel, down: bool, repeat: bool, scancode: u32) {
     if let Some(i) = input(p) {
         unsafe { freerdp_input_send_keyboard_event_ex(i, down as BOOL, repeat as BOOL, scancode) };
@@ -557,6 +843,182 @@ pub fn wheel(p: &Panel, horizontal: bool, rotation: i32) {
 mod tests {
     use super::*;
 
+    #[test]
+    #[allow(non_upper_case_globals)]
+    fn every_codec_freerdp_names_has_a_name_and_any_other_says_its_id() {
+        for (id, name) in [
+            (RDPGFX_CODECID_RDPGFX_CODECID_AVC420, "H.264 4:2:0 (AVC420)"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_AVC444, "H.264 4:4:4 (AVC444)"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_AVC444v2, "H.264 4:4:4 (AVC444v2)"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE, "RemoteFX Progressive"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE_V2, "RemoteFX Progressive v2"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_CAVIDEO, "RemoteFX"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_UNCOMPRESSED, "uncompressed"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_PLANAR, "planar"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_CLEARCODEC, "ClearCodec"),
+            (RDPGFX_CODECID_RDPGFX_CODECID_ALPHA, "alpha"),
+        ] {
+            assert_eq!(codec_name(id), name);
+        }
+        assert_eq!(codec_name(0x1), "unknown (0x1)", "AV1, which our FreeRDP isn't built with");
+        assert_eq!(codec_name(0x42), "unknown (0x42)");
+    }
+
+    #[test]
+    fn h264_unless_progressive_is_asked_for_and_444_only_where_its_turned_on() {
+        let s = |v: serde_json::Value| codecs_asked(&v, "home_desktop");
+        assert_eq!(s(serde_json::json!({})), (true, false, false), "a fresh settings.json: H.264, 4:2:0 only, as before");
+        assert_eq!(s(serde_json::json!({"rdp_codec": "h264"})), (true, false, false));
+        assert_eq!(s(serde_json::json!({"rdp_codec": 7})), (true, false, false), "anything else isn't progressive");
+        assert_eq!(s(serde_json::json!({"rdp_codec": "progressive"})), (false, false, true));
+        assert_eq!(s(serde_json::json!({"rdp_codec": "progressive", "rdp_avc444": true})), (false, false, true), "progressive wins");
+        assert_eq!(s(serde_json::json!({"rdp_avc444": true})), (true, true, false), "every machine");
+        assert_eq!(s(serde_json::json!({"rdp_avc444": ["home_desktop"]})), (true, true, false), "this one");
+        assert_eq!(s(serde_json::json!({"rdp_avc444": ["work-laptop"]})), (true, false, false), "another one");
+        assert_eq!(s(serde_json::json!({"rdp_avc444": "yes"})), (true, false, false), "only true or a list");
+    }
+
+    #[test]
+    fn a_codec_is_logged_once_and_a_mix_only_as_a_count_each_minute() {
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut c = Codecs::default();
+        let (avc, prog) = (RDPGFX_CODECID_RDPGFX_CODECID_AVC420, RDPGFX_CODECID_RDPGFX_CODECID_CAPROGRESSIVE);
+        assert_eq!(c.frame(avc, at(0)), ["the server sends H.264 4:2:0 (AVC420)"]);
+        assert!((1..30).all(|s| c.frame(avc, at(s)).is_empty()), "the same codec again: nothing");
+        assert_eq!(c.frame(prog, at(30)), ["the server sends RemoteFX Progressive"]);
+        assert!(c.frame(avc, at(31)).is_empty(), "back to one it's had: no line per switch");
+        assert_eq!(c.frame(avc, at(61)), ["frames in the last 61 s: H.264 4:2:0 (AVC420) 31, RemoteFX Progressive 1"]);
+        assert!((62..130).all(|s| c.frame(avc, at(s)).is_empty()), "a minute of one codec: no count");
+        assert_eq!(c.frame(0x42, at(130)), ["the server sends unknown (0x42)"]);
+    }
+
+    static GDI_CAPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    unsafe extern "C" fn gdi_caps(_g: *mut RdpgfxClientContext, _p: *const RDPGFX_CAPS_CONFIRM_PDU) -> UINT {
+        GDI_CAPS.fetch_add(1, Relaxed);
+        CHANNEL_RC_OK
+    }
+    static GDI_SURFACE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    unsafe extern "C" fn gdi_surface(_g: *mut RdpgfxClientContext, _c: *const RDPGFX_SURFACE_COMMAND) -> UINT {
+        GDI_SURFACE.fetch_add(1, Relaxed);
+        CHANNEL_RC_OK
+    }
+
+    #[test]
+    fn a_logging_panic_still_runs_the_gdis_own_and_the_session_carries_on() {
+        let (_c, _d, mut g) = session(usize::MAX);
+        unsafe { watch_gfx(&mut *g) };
+        crate::ffi::new_session();
+        let cmd = RDPGFX_SURFACE_COMMAND { codecId: RDPGFX_CODECID_RDPGFX_CODECID_AVC420, ..Default::default() };
+        let quiet = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        PANIC_LOG.store(true, Relaxed);
+        let before = GDI_SURFACE.load(Relaxed);
+        let r = unsafe { (g.SurfaceCommand.unwrap())(&mut *g, &cmd) };
+        PANIC_LOG.store(false, Relaxed);
+        std::panic::set_hook(quiet);
+        assert_eq!((r, GDI_SURFACE.load(Relaxed) - before), (CHANNEL_RC_OK, 1), "the frame still went to the GDI");
+        assert!(!crate::ffi::session_failed(), "and the session wasn't failed over a log line");
+    }
+
+    #[test]
+    fn a_new_connection_says_its_codec_again_and_each_panel_counts_its_own() {
+        let t0 = std::time::Instant::now();
+        let avc = RDPGFX_CODECID_RDPGFX_CODECID_AVC420;
+        let (mut a, mut b) = (Codecs::default(), Codecs::default()); // two monitors of one machine
+        assert_eq!(a.frame(avc, t0).len(), 1);
+        assert_eq!(b.frame(avc, t0).len(), 1, "the same codec on another panel is that panel's first");
+        assert!(a.frame(avc, t0).is_empty());
+        a = Codecs::default(); // what a reconnect does (run)
+        assert_eq!(a.frame(avc, t0), ["the server sends H.264 4:2:0 (AVC420)"], "said again after the reconnect");
+        assert!(b.frame(avc, t0).is_empty(), "the other panel's untouched");
+    }
+
+    #[test]
+    fn a_codec_setting_it_doesnt_take_is_said_and_counts_as_missing() {
+        assert!(codec_settings_wrong(&serde_json::json!({})).is_empty());
+        assert!(codec_settings_wrong(&serde_json::json!({"rdp_codec": "h264", "rdp_avc444": ["a", "b"]})).is_empty());
+        assert!(codec_settings_wrong(&serde_json::json!({"rdp_avc444": false})).is_empty());
+        let w = codec_settings_wrong(&serde_json::json!({"rdp_codec": "prog", "rdp_avc444": "yes"}));
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[0].contains("\"prog\"") && w[1].contains("\"yes\""), "{w:?}");
+        assert_eq!(codec_settings_wrong(&serde_json::json!({"rdp_avc444": [1]})).len(), 1, "a list of names, not numbers");
+        assert_eq!(asked_name(codecs_asked(&serde_json::json!({"rdp_codec": "prog"}), "x")), "h264", "and it's H.264");
+        assert_eq!(asked_name((true, true, false)), "h264+avc444");
+        assert_eq!(asked_name((false, false, true)), "progressive");
+    }
+
+    /// A session's graphics pipeline as the GDI sets it up: its context (panel `i`), the GDI, and
+    /// the GDI's own callbacks in the slots.
+    fn session(i: usize) -> (Box<PanelContext>, Box<rdpGdi>, Box<RdpgfxClientContext>) {
+        let mut ctx = Box::new(PanelContext { common: Default::default(), panel: i });
+        let mut gdi = Box::new(rdpGdi { context: &mut *ctx as *mut PanelContext as *mut rdpContext, ..Default::default() });
+        let g = Box::new(RdpgfxClientContext { custom: &mut *gdi as *mut rdpGdi as *mut c_void, CapsConfirm: Some(gdi_caps), SurfaceCommand: Some(gdi_surface), ..Default::default() });
+        (ctx, gdi, g)
+    }
+
+    #[test]
+    fn the_wrapper_calls_the_gdis_own_once_and_each_session_finds_its_own_panel() {
+        let (_c1, _d1, mut g1) = session(usize::MAX - 1); // not panels, so nothing's logged
+        let (_c2, _d2, mut g2) = session(usize::MAX);
+        unsafe {
+            assert_eq!((*(gfx_context(&mut *g1) as *mut PanelContext)).panel, usize::MAX - 1, "each session's frames count on its own panel");
+            assert_eq!((*(gfx_context(&mut *g2) as *mut PanelContext)).panel, usize::MAX);
+            assert!(gfx_context(std::ptr::null_mut()).is_null());
+            let mut set = RDPGFX_CAPSET::default();
+            let pdu = RDPGFX_CAPS_CONFIRM_PDU { capsSet: &mut set };
+            watch_gfx(&mut *g1);
+            watch_gfx(&mut *g1); // installed again on the same session
+            (g1.CapsConfirm.unwrap())(&mut *g1, &pdu);
+            assert_eq!(GDI_CAPS.load(Relaxed), 1, "the GDI's own, once, not ours calling ours");
+            watch_gfx(&mut *g2); // a reconnect: a new session's GDI with its own callbacks again
+            (g2.CapsConfirm.unwrap())(&mut *g2, &pdu);
+            assert_eq!(GDI_CAPS.load(Relaxed), 2);
+        }
+    }
+
+    #[test]
+    fn a_failed_unit_is_still_let_go_and_the_rest_of_its_pair_isnt_pressed() {
+        let rel = KBD_FLAGS_RELEASE as u16;
+        let mut sent = Vec::new();
+        assert!(send_units(&[0xd83d, 0xde00], |f, u| {
+            sent.push((f, u));
+            true
+        }));
+        assert_eq!(sent, [(0, 0xd83d), (rel, 0xd83d), (0, 0xde00), (rel, 0xde00)]);
+        let mut sent = Vec::new();
+        assert!(!send_units(&[0xd83d, 0xde00], |f, u| {
+            sent.push((f, u));
+            f != 0 // every press fails
+        }));
+        assert_eq!(sent, [(0, 0xd83d), (rel, 0xd83d)], "its release still went, and the low half was never pressed");
+        let (mut sent, mut tries) = (Vec::new(), 0);
+        assert!(send_units(&[0x61], |f, u| {
+            sent.push((f, u));
+            tries += (f != 0) as u32;
+            f == 0 || tries > 1 // the first release fails, the second goes
+        }));
+        assert_eq!(sent, [(0, 0x61), (rel, 0x61), (rel, 0x61)], "a failed release is tried once more");
+    }
+
+    #[test]
+    fn a_character_past_the_bmp_goes_as_its_surrogate_pair() {
+        assert_eq!(units('a'), [0x61]);
+        assert_eq!(units('€'), [0x20ac]);
+        assert_eq!(units('😀'), [0xd83d, 0xde00]);
+    }
+
+    /// A panel whose host server is down waits five minutes, or until Connect, or until it's closed.
+    #[test]
+    fn a_down_host_waits_for_connect_or_five_minutes() {
+        let s = Duration::from_secs;
+        assert!(keep_waiting(s(10), true, false));
+        assert!(keep_waiting(s(299), true, false));
+        assert!(!keep_waiting(s(300), true, false), "then it asks again");
+        assert!(!keep_waiting(s(10), true, true), "Connect asks at once");
+        assert!(!keep_waiting(s(10), false, false), "closed: stop");
+    }
+
     /// The agent's status says which monitor's server is broken, and only that panel shows it.
     #[test]
     fn reads_its_own_monitors_health() {
@@ -564,6 +1026,10 @@ mod tests {
             {"index": 0, "health": "ok"}, {"index": 1, "health": "down", "restarts": 5}, {"index": 2, "health": "degraded"}]});
         assert_eq!((host_health(&st, 0), host_health(&st, 1), host_health(&st, 2)), (HOST_OK, HOST_DOWN, HOST_DEGRADED));
         assert_eq!(host_health(&st, 3), HOST_OK, "a monitor it doesn't list");
+        assert_eq!(health_note("desk", HOST_OK, HOST_OK), None);
+        assert!(health_note("desk", HOST_OK, HOST_DOWN).is_some_and(|t| t.starts_with("desk: its computer stopped")));
+        assert!(health_note("desk", HOST_DOWN, HOST_DEGRADED).is_some_and(|t| t.contains("keeps restarting")));
+        assert_eq!(health_note("desk", HOST_DEGRADED, HOST_OK).as_deref(), Some("desk is back."));
         assert_eq!(host_health(&serde_json::json!({"ok": true}), 0), HOST_OK, "an older agent says nothing");
     }
 }

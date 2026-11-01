@@ -30,7 +30,10 @@ pub fn stamp_version(text: &str) -> Option<String> {
 pub enum Built {
     /// Built on this SteamOS.
     Same,
-    Differs { built: String, running: String },
+    Differs {
+        built: String,
+        running: String,
+    },
     /// Not known (no stamp, or no os-release), so nothing can be said.
     Unknown,
 }
@@ -68,7 +71,9 @@ pub fn unresolved(ldd_output: &str) -> Vec<String> {
 /// What to tell the user. `missing` is empty when everything still loads.
 pub fn abi_message(built: &str, running: &str, missing: &[String]) -> String {
     if missing.is_empty() {
-        format!("SteamOS is {running} now, and this Command Center was built on {built}. Everything it needs still loads, so it starts. Update Command Center when you can, since a later SteamOS may change a library it uses.")
+        format!(
+            "SteamOS is {running} now, and this Command Center was built on {built}. Everything it needs still loads, so it starts. Update Command Center when you can, since a later SteamOS may change a library it uses."
+        )
     } else {
         format!(
             "SteamOS is {running} now, and this Command Center was built on {built}. It can't start because SteamOS no longer has what it was built against: {}. Update Command Center for this SteamOS (run its installer again), and it will start.",
@@ -87,6 +92,23 @@ pub fn note(msg: &str) {
     let _ = fs::create_dir_all(Path::new(&path).parent().unwrap_or(Path::new(".")));
     if let Ok(mut f) = fs::OpenOptions::new().append(true).create(true).open(&path) {
         let _ = std::io::Write::write_all(&mut f, format!("{}\n", msg).as_bytes());
+    }
+}
+
+/// The image's extension-release file, as systemd-sysext reads it to decide whether to load it:
+/// `ID=_any` (any OS, skipping the VERSION_ID match SteamOS would otherwise need) and
+/// `ARCHITECTURE=arm64`. An image without both isn't one we built (packaging/sysext/build.sh).
+pub fn release_ok(text: &str) -> bool {
+    let has = |kv: &str| text.lines().any(|l| l.trim() == kv);
+    has("ID=_any") && has("ARCHITECTURE=arm64")
+}
+
+/// cc-launch on a native build: the image it runs from says it's ours, else what to do.
+pub fn check_release() -> Result<(), String> {
+    let f = "/usr/lib/extension-release.d/extension-release.command-center";
+    match std::fs::read_to_string(f) {
+        Ok(t) if release_ok(&t) => Ok(()),
+        _ => Err("Command Center's system image isn't loaded properly (its extension-release file is missing or not ours): run the installer again".into()),
     }
 }
 
@@ -169,10 +191,12 @@ pub fn driver_plan(runtime: Option<&str>, os: &str, external: &[String], present
 /// What gets logged for each outcome, plainly.
 pub fn driver_note(d: &Driver, registered_ok: Option<bool>) -> Option<String> {
     match d {
-        Driver::Register { runtime } if registered_ok == Some(true) => {
-            Some(format!("SteamVR runs from {runtime}, not {OS_STEAMVR}, so it doesn't see the pointer driver in the image. I registered {IMAGE_DRIVER} with vrpathreg. Restart SteamVR once to load it."))
-        }
-        Driver::Register { runtime } => Some(format!("SteamVR runs from {runtime}, not {OS_STEAMVR}, so it doesn't see the pointer driver in the image, and registering {IMAGE_DRIVER} with vrpathreg failed. The mouse's laser won't work until it's registered.")),
+        Driver::Register { runtime } if registered_ok == Some(true) => Some(format!(
+            "SteamVR runs from {runtime}, not {OS_STEAMVR}, so it doesn't see the pointer driver in the image. I registered {IMAGE_DRIVER} with vrpathreg. Restart SteamVR once to load it."
+        )),
+        Driver::Register { runtime } => Some(format!(
+            "SteamVR runs from {runtime}, not {OS_STEAMVR}, so it doesn't see the pointer driver in the image, and registering {IMAGE_DRIVER} with vrpathreg failed. The mouse's laser won't work until it's registered."
+        )),
         _ => None,
     }
 }
@@ -203,6 +227,14 @@ pub fn check_steamvr(register: impl FnOnce(&str) -> bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_release_file_is_ours_with_any_os_and_arm64() {
+        assert!(release_ok("ID=_any\nARCHITECTURE=arm64\nIMAGE_ID=command-center\nIMAGE_VERSION=0.9.1\n"));
+        assert!(!release_ok("ID=steamos\nVERSION_ID=0.4.5\nARCHITECTURE=arm64\n"), "pinned to one SteamOS: an old image");
+        assert!(!release_ok("ID=_any\n"), "no architecture");
+        assert!(!release_ok(""));
+    }
 
     #[test]
     fn it_reads_the_version_from_os_release() {

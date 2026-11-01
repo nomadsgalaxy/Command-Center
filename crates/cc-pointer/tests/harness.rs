@@ -120,8 +120,7 @@ unsafe extern "C" fn host_added(this: This, serial: *const c_char, class: i32, d
 unsafe extern "C" fn host_pose(this: This, id: u32, pose: *const DriverPose, size: u32) {
     push(this, format!("TrackedDevicePoseUpdated {id} size={size} {:?}", unsafe { *pose }));
 }
-static HOST_VTBL: HostVtbl =
-    HostVtbl { tracked_device_added: host_added, tracked_device_pose_updated: host_pose, rest: [trap; 10] };
+static HOST_VTBL: HostVtbl = HostVtbl { tracked_device_added: host_added, tracked_device_pose_updated: host_pose, rest: [trap; 10] };
 
 #[repr(C)]
 struct PropertiesVtbl {
@@ -131,8 +130,10 @@ struct PropertiesVtbl {
     tracked_device_to_property_container: unsafe extern "C" fn(This, u32) -> u64,
 }
 unsafe extern "C" fn props_write(this: This, c: u64, batch: *mut PropertyWrite, n: u32) -> i32 {
+    // SAFETY: the driver passes n writes it owns for this call; buffers are checked below.
     for w in unsafe { std::slice::from_raw_parts_mut(batch, n as usize) } {
-        let b = unsafe { std::slice::from_raw_parts(w.buffer as *const u8, w.buffer_size as usize) };
+        // SAFETY: each write's buffer is buffer_size bytes, or null for none (not a slice)
+        let b = if w.buffer.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(w.buffer as *const u8, w.buffer_size as usize) } };
         let v = match w.tag {
             2 => format!("{}", i32::from_ne_bytes(b.try_into().unwrap())),
             4 => format!("{}", b[0] != 0),
@@ -148,12 +149,8 @@ unsafe extern "C" fn props_container(this: This, id: u32) -> u64 {
     push(this, format!("TrackedDeviceToPropertyContainer {id}"));
     0x100 + id as u64
 }
-static PROPS_VTBL: PropertiesVtbl = PropertiesVtbl {
-    read_property_batch: trap,
-    write_property_batch: props_write,
-    get_prop_error_name_from_enum: trap,
-    tracked_device_to_property_container: props_container,
-};
+static PROPS_VTBL: PropertiesVtbl =
+    PropertiesVtbl { read_property_batch: trap, write_property_batch: props_write, get_prop_error_name_from_enum: trap, tracked_device_to_property_container: props_container };
 
 #[repr(C)]
 struct InputVtbl {

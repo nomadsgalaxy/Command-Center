@@ -14,8 +14,7 @@ fn main() {
         let mut err = 0;
         vr::VR_InitInternal2(&mut err, vr::EVRApplicationType_VRApplication_Overlay, std::ptr::null());
         assert_eq!(err, 0, "VR_InitInternal2 failed: {err}");
-        let overlay: &vr::VR_IVROverlay_FnTable = &*table(std::str::from_utf8_unchecked(
-            std::ffi::CStr::from_ptr(vr::IVROverlay_Version.as_ptr() as *const _).to_bytes()));
+        let overlay: &vr::VR_IVROverlay_FnTable = &*table(std::str::from_utf8_unchecked(std::ffi::CStr::from_ptr(vr::IVROverlay_Version.as_ptr() as *const _).to_bytes()));
         let key = CString::new("controlcenter.hello").unwrap();
         let mut h: vr::VROverlayHandle_t = 0;
         assert_eq!(overlay.CreateOverlay.unwrap()(key.as_ptr() as *mut _, key.as_ptr() as *mut _, &mut h), 0);
@@ -23,8 +22,7 @@ fn main() {
         let px: Vec<u8> = (0..w * hgt).flat_map(|_| [125u8, 249, 255, 255]).collect();
         overlay.SetOverlayRaw.unwrap()(h, px.as_ptr() as *mut _, w, hgt, 4);
         overlay.SetOverlayWidthInMeters.unwrap()(h, 0.2);
-        let mut m = vr::HmdMatrix34_t::default();
-        m.m = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 1.5], [0.0, 0.0, 1.0, -1.5]];
+        let mut m = vr::HmdMatrix34_t { m: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 1.5], [0.0, 0.0, 1.0, -1.5]] };
         overlay.SetOverlayTransformAbsolute.unwrap()(h, vr::ETrackingUniverseOrigin_TrackingUniverseStanding, &mut m);
         overlay.ShowOverlay.unwrap()(h);
         println!("overlay {h} shown");

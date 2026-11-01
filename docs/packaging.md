@@ -78,13 +78,23 @@ per-user step after it, because a package runs as root and can't set up someone'
 
 ## When a host's units break
 
-Every `control-center-*` unit gives up instead of crash-looping forever. It's allowed 5 starts in
-5 minutes (`StartLimitIntervalSec=300`, `StartLimitBurst=5`), and the wait between restarts grows
+Every `control-center-*` unit gives up instead of crash-looping forever. It's allowed 10 starts in
+10 minutes (`StartLimitIntervalSec=600`, `StartLimitBurst=10`), and the wait between restarts grows
 from 2 s to a minute (`RestartSteps=5`, `RestartMaxDelaySec=60s`; systemd 254 and later, and older
-versions ignore those two keys with a warning). Once a unit gives up it's `failed`, so
+versions ignore those two keys with a warning). The waits go about 2, 4, 8, 15, 30 s and then a
+minute each, so the tenth start comes about 5 minutes in: a server that's down for a few minutes
+(a network drop, an update in progress) comes back by itself, and one that's really broken gives
+up within 10. With 5 starts in 5 minutes it gave up after about 30 s, before anything transient
+could pass. Once a unit gives up it's `failed`, so
 `systemctl --user --failed` lists it, and `OnFailure=` starts `control-center-alert@<unit>`. That
 runs `cc-host alert`, which shows a desktop notification and adds a line to
-`~/.cache/control-center/host-alerts`.
+`~/.cache/control-center/host-alerts`. systemd triggers `OnFailure=` on every failed start, not only
+the last one, so `cc-host alert` first asks systemd about the unit and stays quiet while a restart is
+coming (SubState `failed-before-auto-restart` or `auto-restart`). It alerts when the unit has given
+up: `Result=start-limit-hit`, or failed with `Restart=no`, or still failed with nothing queued a
+moment later. Each failure is said once: `~/.cache/control-center/host-alerts.state` keeps the time
+each unit last went failed, so a repeat for the same failure is dropped, and a new failure after the
+unit recovered alerts again.
 
 Before krdp starts, its unit runs the same krdp with `--version` (`cc-host krdp-check` for a paired
 Frame's servers). A krdp that can't load its libraries then fails once, with the loader's error in
@@ -93,8 +103,19 @@ Frame's servers). A krdp that can't load its libraries then fails once, with the
 Command Center ships no drop-ins for its units, so `cc-share install` and `cc-share up` refuse to
 start while any `control-center-*.d/*.conf` exists in `~/.config/systemd/user`, `/etc/systemd/user`,
 `/run/systemd/user`, `/usr/lib/systemd/user` or `$XDG_RUNTIME_DIR/systemd/user`, and `cc-share
-check` lists them. Remove them, run `systemctl --user daemon-reload` and start again. That's the
+check` lists them. That includes `service.d/*.conf` in those folders except `/usr/lib`, since one
+there changes every user service, ours too; the distro's own (Fedora ships one) are left alone.
+Install checks this before it writes or reloads any unit. `cc-share check` also notes
+`LD_LIBRARY_PATH` or `LD_PRELOAD` set in `~/.config/environment.d` or in the user manager's
+environment, which would change the libraries krdp loads. Remove them, run `systemctl --user
+daemon-reload` and start again. That's the
 leftover that once pointed krdp at an old library and restarted it more than 5,000 times.
+
+Once a unit has given up, the agent doesn't start it again on its own. A Frame asking for that
+monitor's session gets `down`, shows the host server as down, and asks again every 5 minutes. Press
+Disconnect and then Connect in the Machines window to try at once: that start resets the unit
+(`reset-failed`) first. Before this, the Frame's own retries restarted the unit every 15 s or so,
+which made a fresh failure and a fresh alert each time.
 
 ## Updates
 
@@ -371,9 +392,23 @@ The command line route (`cc-share uninstall`, then `pacman -R command-center-hos
 ## The krdp patches stay as they are
 
 Each package build downloads krdp's release tarball, checks its checksum, applies
-krdp/pointer-offset.patch, clipboard.patch and window-stream.patch, and builds it into our
-private directory. The clipboard work (files, HTML, images, the echo guard) goes on in
-clipboard.patch unchanged and ships with the next package.
+krdp/pointer-offset.patch, clipboard.patch, window-stream.patch, audio.patch and
+password-file.patch, and builds it into our private directory. The clipboard work (files, HTML,
+images, the echo guard) goes on in clipboard.patch unchanged and ships with the next package.
+
+password-file.patch adds `--password-file <path>`: krdp reads the password from the first line of
+that file (or an inherited pipe, `/dev/fd/<n>`), because `-p` puts it in argv, where any local user
+can read it in `/proc/<pid>/cmdline`. It needs `-u`, can't go with `-p`, and an empty first line is
+an error, so krdp never starts with an empty password. cc-host checks the same before it starts a
+paired Frame's server: a missing or empty user or password, or one with a line break or NUL, stops
+it with a message saying to pair the Frame again. The share unit points it at
+`~/.config/control-center/password`, and a paired Frame's servers (frame-run, window-run) get theirs
+through a pipe, with no file on disk: cc-host writes the password into it and passes `--password-file /dev/fd/<n>`, with only that one fd left open for krdp. Whether a krdp takes the option comes from its `--help`, asked once per start with a 5 s limit; a krdp that doesn't answer isn't started, rather than quietly given `-p`. A krdp without the patch (one a distro ships, in a user
+install) still gets `-p`, cc-host logs that each time it starts one, and `cc-share check` lists it as
+a need. The Steam Deck's krdp 6.4.3 gets the same option from krdp/deck/password-file.patch. The patch
+applies to krdp 6.7.5 and, with line offsets only, to 6.8.0, but our other patches don't apply to
+6.8.0 yet, so there's no patched 6.8 build. A host whose krdp is 6.8 (the desktop host went to 6.8.0
+on 2026-10-20) runs its distro's krdp, which doesn't take `--password-file`, so it gets `-p`. It's meant to go upstream: krdp/upstream/password-file-issue.md is the issue we're filing.
 
 ## Order of work
 

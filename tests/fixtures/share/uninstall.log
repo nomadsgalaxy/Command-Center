@@ -12,6 +12,7 @@ systemctl --user disable --now control-center-announce.service
 systemctl --user daemon-reload
 systemctl is-active -q firewalld
 systemctl is-active -q ufw
+systemctl --user show-environment
 systemctl --user is-active -q control-center-agent
 systemctl --user is-active -q control-center-guard
 systemctl --user is-active -q control-center-announce.service
@@ -21,7 +22,7 @@ systemctl --user is-active -q control-center-announce.service
 systemctl is-active -q firewalld
 systemctl is-active -q ufw
 systemctl --user disable --now control-center-announce.service
-systemctl --user stop control-center-frame@f1-* control-center-window@f1-*
+systemctl --user stop control-center-frame@f1-[0-9].service control-center-window@f1-[0-9]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].service
 systemctl --user kill -s HUP control-center-agent
 systemctl is-active -q firewalld
 systemctl is-active -q ufw

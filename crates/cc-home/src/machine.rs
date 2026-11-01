@@ -70,9 +70,13 @@ fn py_repr(s: &str) -> String {
                 o.push(c);
             }
             _ if n < 0x20 || (0x7f..0xa1).contains(&n) => o.push_str(&format!("\\x{n:02x}")),
-            c if !c.is_ascii() && (c.is_whitespace() || c.is_control() || matches!(n, 0xad | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x206f | 0xfeff)) => {
-                o.push_str(&if n <= 0xff { format!("\\x{n:02x}") } else if n <= 0xffff { format!("\\u{n:04x}") } else { format!("\\U{n:08x}") })
-            }
+            c if !c.is_ascii() && (c.is_whitespace() || c.is_control() || matches!(n, 0xad | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x206f | 0xfeff)) => o.push_str(&if n <= 0xff {
+                format!("\\x{n:02x}")
+            } else if n <= 0xffff {
+                format!("\\u{n:04x}")
+            } else {
+                format!("\\U{n:08x}")
+            }),
             c => o.push(c),
         }
     }
@@ -106,43 +110,13 @@ pub(crate) fn port_of(v: &Viewer) -> i64 {
     port(v).unwrap_or_else(|| die(format!("{}: {} has no port", v.name, v.target)))
 }
 
-/// Same as Python's str.splitlines.
-fn splitlines(t: &str) -> Vec<String> {
-    let (mut out, mut cur, mut it) = (Vec::new(), String::new(), t.chars().peekable());
-    while let Some(c) = it.next() {
-        if matches!(c, '\n' | '\r' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}') {
-            if c == '\r' && it.peek() == Some(&'\n') {
-                it.next();
-            }
-            out.push(std::mem::take(&mut cur));
-        } else {
-            cur.push(c);
-        }
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out
-}
-
-/// Rewrites viewers.conf with change(lines), written to a temporary file and renamed into place.
-/// If change returns Err, its message is printed and nothing's written. (Python read an unreadable
-/// file as empty; here that stops instead, and the file is left alone.)
+/// Rewrites viewers.conf with change(lines), through cc_proto's edit_viewers, the one writer: under
+/// its lock (so a VNC pin or a pairing at the same moment isn't lost), into a temporary file that's
+/// renamed into place. If change returns Err, its message is printed and nothing's written. (Python
+/// read an unreadable file as empty; here that stops instead, and the file is left alone.)
 fn edit_conf(change: impl FnOnce(Vec<String>) -> Result<Vec<String>, String>) {
-    use std::os::unix::fs::DirBuilderExt;
-    let path = conf_dir().join("viewers.conf");
-    let lines = match std::fs::read_to_string(&path) {
-        Ok(t) => splitlines(&t),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
-        Err(e) => die(format!("can't read {}: {e}", path.display())),
-    };
-    let lines = change(lines).unwrap_or_else(|e| die(e));
-    let tmp = conf_dir().join("viewers.conf.tmp");
-    let r = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(conf_dir())
-        .and_then(|_| std::fs::write(&tmp, lines.join("\n") + "\n"))
-        .and_then(|_| std::fs::rename(&tmp, &path));
-    if let Err(e) = r {
-        die(format!("can't write {}: {e}", path.display()));
+    if let Err(e) = conf::edit_viewers(&conf_dir(), |lines| change(lines).map(|l| (Some(l), ()))) {
+        die(e);
     }
 }
 
@@ -203,8 +177,10 @@ pub(crate) fn agent_for(m: &str) -> Result<Client, Fail> {
             agent::Error::NotPaired(s) => format!("not-paired ({s})"),
             e => format!("not-paired ({e})"),
         };
-        Fail::NoAgent(format!("{m}: agent not answering ({why}): start Command Center on it (Command Center Host in its app menu, \
-                               or cc-share up), or run cc-share install there"))
+        Fail::NoAgent(format!(
+            "{m}: agent not answering ({why}): start Command Center on it (Command Center Host in its app menu, \
+                               or cc-share up), or run cc-share install there"
+        ))
     })
 }
 
@@ -217,8 +193,7 @@ pub(crate) fn args(v: Value) -> Map<String, Value> {
 fn probe(m: &str) -> Vec<(i64, String, i64, i64)> {
     let mut cl = agent_for(m).unwrap_or_else(|e| die(e.msg()));
     let r = cl.call("monitors", Map::new(), Duration::from_secs(10), |_| {}).unwrap_or_else(|e| die(format!("{m}: {e}")));
-    r["monitors"].as_array().into_iter().flatten()
-        .map(|x| (x["index"].as_i64().unwrap_or(-1), py_text(&x["output"]), x["width"].as_i64().unwrap_or(0), x["height"].as_i64().unwrap_or(0))).collect()
+    r["monitors"].as_array().into_iter().flatten().map(|x| (x["index"].as_i64().unwrap_or(-1), py_text(&x["output"]), x["width"].as_i64().unwrap_or(0), x["height"].as_i64().unwrap_or(0))).collect()
 }
 
 /// Starts a paired monitor's server on its host before cc-panels connects, and stops it after.
@@ -237,11 +212,13 @@ fn session(op: &str, name: &str) {
         die(e.msg())
     });
     let index = (port - 3400).rem_euclid(10);
-    let r = cl.call("session", args(json!({"op": op, "index": index})), Duration::from_secs(15), |e| {
-        if e["event"] == "session" && e["index"] == index {
-            println!("@session {name} state={}", py_text(&e["state"])); // "starting", so the window can show it
-        }
-    }).unwrap_or_else(|_| json!({"ok": false, "error": "no-answer"}));
+    let r = cl
+        .call("session", args(json!({"op": op, "index": index})), Duration::from_secs(15), |e| {
+            if e["event"] == "session" && e["index"] == index {
+                println!("@session {name} state={}", py_text(&e["state"])); // "starting", so the window can show it
+            }
+        })
+        .unwrap_or_else(|_| json!({"ok": false, "error": "no-answer"}));
     drop(cl);
     if !truthy(&r["ok"]) {
         println!("@session {name} state={}", py_text(&r["error"]));
@@ -308,8 +285,17 @@ fn imu(m: &str, secs: Option<f64>) {
             let e = last.euler_deg().map(|(y, p, r)| (y - *yaw0.get_or_insert(y), p, r));
             let span = (t_last.saturating_sub(t_first)).max(1) as f64 / 1e6;
             let o = e.map_or("no orientation yet".to_string(), |(y, p, r)| format!("yaw {:+7.1}  pitch {p:+6.1}  roll {r:+6.1} deg", (y + 540.0).rem_euclid(360.0) - 180.0));
-            println!("{o} | gyro {:+7.1} {:+7.1} {:+7.1} deg/s | accel {:+.2} {:+.2} {:+.2} g | {:.0} samples/s, {:.0} batches/s, {lost} lost", w[0], w[1], w[2], g[0], g[1], g[2],
-                     samples.saturating_sub(1) as f64 / span, batches as f64 / start.elapsed().as_secs_f64());
+            println!(
+                "{o} | gyro {:+7.1} {:+7.1} {:+7.1} deg/s | accel {:+.2} {:+.2} {:+.2} g | {:.0} samples/s, {:.0} batches/s, {lost} lost",
+                w[0],
+                w[1],
+                w[2],
+                g[0],
+                g[1],
+                g[2],
+                samples.saturating_sub(1) as f64 / span,
+                batches as f64 / start.elapsed().as_secs_f64()
+            );
         }
     }
     let _ = cl.call("imu", args(json!({"op": "stop"})), Duration::from_secs(5), |_| {});
@@ -321,11 +307,12 @@ fn window(op: &str, wh: &str, uuid: Option<&str>) {
     let (vs, hs) = (viewers(), hosts());
     let name = conf::find_viewer(wh, vs, &hs).map_or(wh.to_owned(), |v| v.name.clone());
     let v = vs.iter().find(|v| v.name == name);
-    let machine = v.map(|v| v.machine.clone()).or_else(|| conf::find_machine(wh, vs, &hs)).filter(|m| !m.is_empty())
-        .unwrap_or_else(|| die(format!("no monitor or machine {wh} (machine list)")));
+    let machine = v.map(|v| v.machine.clone()).or_else(|| conf::find_machine(wh, vs, &hs)).filter(|m| !m.is_empty()).unwrap_or_else(|| die(format!("no monitor or machine {wh} (machine list)")));
     let braced = |u: &str| {
         let b = u.as_bytes();
-        b.len() == 38 && b[0] == b'{' && b[37] == b'}'
+        b.len() == 38
+            && b[0] == b'{'
+            && b[37] == b'}'
             && b[1..37].iter().enumerate().all(|(i, c)| if [8, 13, 18, 23].contains(&i) { *c == b'-' } else { c.is_ascii_digit() || (b'a'..=b'f').contains(c) })
     };
     if uuid.is_some_and(|u| !braced(u)) {
@@ -360,11 +347,13 @@ fn window(op: &str, wh: &str, uuid: Option<&str>) {
         return;
     }
     let Some(uuid) = uuid else { die(format!("usage: machine window {op} <monitor> <uuid>")) };
-    let r = cl.call("window", args(json!({"op": op, "uuid": uuid})), Duration::from_secs(15), |e| {
-        if e["event"] == "window" && e["uuid"] == uuid {
-            println!("@window {name} uuid={uuid} state={}", py_text(&e["state"]));
-        }
-    }).unwrap_or_else(|_| json!({"ok": false, "error": "no-answer"}));
+    let r = cl
+        .call("window", args(json!({"op": op, "uuid": uuid})), Duration::from_secs(15), |e| {
+            if e["event"] == "window" && e["uuid"] == uuid {
+                println!("@window {name} uuid={uuid} state={}", py_text(&e["state"]));
+            }
+        })
+        .unwrap_or_else(|_| json!({"ok": false, "error": "no-answer"}));
     drop(cl);
     if !truthy(&r["ok"]) {
         let err = py_text(&r["error"]);
@@ -436,12 +425,15 @@ pub(crate) fn pair(addr: &str, key: &str, replace: bool) -> Result<(), String> {
     }
     let frame = agent::frame_name();
     // The key paired before at this address. A changed one is refused unless we're replacing it.
-    let known = conf::trusted_hosts(&conf).iter().filter(|(_, t)| t["addr"].as_str() == Some(addr) && truthy(&t["host_pk"]))
-        .filter_map(|(_, t)| B64.decode(t["host_pk"].as_str()?).ok()).map(|b| b.try_into().unwrap_or([0u8; 32])).last();
+    let known = conf::trusted_hosts(&conf)
+        .iter()
+        .filter(|(_, t)| t["addr"].as_str() == Some(addr) && truthy(&t["host_pk"]))
+        .filter_map(|(_, t)| B64.decode(t["host_pk"].as_str()?).ok())
+        .map(|b| b.try_into().unwrap_or([0u8; 32]))
+        .next_back();
     let sk = agent::frame_key_or_new(&conf).map_err(|e| format!("pairing: this Frame's key: {e}"))?;
     println!("@pair {addr} state=waiting");
-    let s = std::net::ToSocketAddrs::to_socket_addrs(&(addr, agent::PORT)).into_iter().flatten()
-        .find_map(|a| std::net::TcpStream::connect_timeout(&a, cc_proto::pair::STEP).ok());
+    let s = std::net::ToSocketAddrs::to_socket_addrs(&(addr, agent::PORT)).into_iter().flatten().find_map(|a| std::net::TcpStream::connect_timeout(&a, cc_proto::pair::STEP).ok());
     let Some(s) = s else {
         println!("@pair {addr} state=unreachable");
         return Err(format!("pairing: unreachable (nothing answered on {addr}:{}: is its key up, and its firewall open? cc-share pair --firewall on it)", agent::PORT));
@@ -531,8 +523,7 @@ fn shlex(s: &str) -> Option<Vec<String>> {
 fn run_timeout(argv: &[&str], secs: f64) -> Result<String, String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
-    let mut child = Command::new(argv[0]).args(&argv[1..]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
-        .spawn().map_err(|e| format!("{}: '{}'", py_err(&e), argv[0]))?;
+    let mut child = Command::new(argv[0]).args(&argv[1..]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("{}: '{}'", py_err(&e), argv[0]))?;
     let mut out = child.stdout.take().expect("piped");
     let reader = std::thread::spawn(move || {
         let mut b = Vec::new();
@@ -583,13 +574,22 @@ pub(crate) fn try_discover(wait: f64) -> Result<Vec<Found>, String> {
     let route = route.map(|r| String::from_utf8_lossy(&r.stdout).into_owned()).unwrap_or_default();
     let route: Vec<&str> = route.split_whitespace().collect();
     let lan = route.iter().position(|w| *w == "dev").and_then(|i| route.get(i + 1)).copied();
+    Ok(browsed(&out, lan))
+}
+
+/// The hosts in avahi-browse -rpt's answer, the best address of each. An announcement anyone on
+/// the network can make, so one whose TXT doesn't parse is skipped, not the end of discovery.
+fn browsed(out: &str, lan: Option<&str>) -> Vec<Found> {
     let mut hosts: Vec<Found> = Vec::new();
     for line in out.lines() {
         let f: Vec<&str> = line.splitn(10, ';').collect();
         if f.len() < 10 || f[0] != "=" || f[7].starts_with("127.") {
             continue;
         }
-        let txt = shlex(f[9]).unwrap_or_else(|| die("can't read avahi-browse's answer: No closing quotation")); // (a ValueError in Python)
+        let Some(txt) = shlex(f[9]) else {
+            eprintln!("{}: its announcement's TXT doesn't parse (an unclosed quote), so it's skipped", f[3]);
+            continue;
+        };
         let txt: Vec<(String, String)> = txt.iter().filter_map(|t| t.split_once('=')).map(|(k, v)| (k.into(), v.into())).collect();
         let rank = (f[2] == "IPv4") as i32 * 2 + (Some(f[1]) == lan) as i32;
         let mut h = Found { key: f[3].into(), rank, name: f[3].into(), addr: f[7].into(), port: f[8].into(), txt };
@@ -600,7 +600,7 @@ pub(crate) fn try_discover(wait: f64) -> Result<Vec<Found>, String> {
             None => hosts.push(h),
         }
     }
-    Ok(hosts)
+    hosts
 }
 
 fn discover_cmd(rest: &[String]) {
@@ -610,18 +610,25 @@ fn discover_cmd(rest: &[String]) {
     };
     let vs = viewers();
     for h in discover(wait) {
-        let known: Vec<&str> = vs.iter().filter(|x| {
-            let t = x.target.rsplit('@').next().unwrap_or("");
-            let t = t.rsplit_once(':').map_or(t, |p| p.0);
-            t == h.addr || t == h.name
-        }).map(|x| x.name.as_str()).collect();
+        let known: Vec<&str> = vs
+            .iter()
+            .filter(|x| {
+                let t = x.target.rsplit('@').next().unwrap_or("");
+                let t = t.rsplit_once(':').map_or(t, |p| p.0);
+                t == h.addr || t == h.name
+            })
+            .map(|x| x.name.as_str())
+            .collect();
         let mut keys: Vec<&str> = h.txt.iter().map(|(k, _)| k.as_str()).filter(|k| k.strip_prefix('m').is_some_and(digits)).collect();
         keys.sort();
         keys.dedup();
         let mons: Vec<String> = keys.iter().map(|k| format!("{k}={}", h.txt(k).unwrap_or(""))).collect();
         let known = if known.is_empty() { "-".into() } else { known.join(",") };
-        println!("{}", format!("@host name={} addr={} port={} monitors={} {} pair={} known={known}", h.name, h.addr, h.port,
-                               h.txt("monitors").unwrap_or("0"), mons.join(" "), h.txt("pair").unwrap_or("0")).replace("  ", " "));
+        println!(
+            "{}",
+            format!("@host name={} addr={} port={} monitors={} {} pair={} known={known}", h.name, h.addr, h.port, h.txt("monitors").unwrap_or("0"), mons.join(" "), h.txt("pair").unwrap_or("0"))
+                .replace("  ", " ")
+        );
     }
 }
 
@@ -651,41 +658,44 @@ pub fn main(argv: &[&str]) {
         die(super::machine_usage());
     }
     let (vs, hs) = (viewers(), hosts());
-    if ["set", "remove", "connect"].contains(&cmd) {
-        if let Some(v) = conf::find_viewer(&rest[0], vs, &hs) {
-            rest[0] = v.name.clone(); // also find a monitor by the name the user sees
-        }
+    if ["set", "remove", "connect"].contains(&cmd)
+        && let Some(v) = conf::find_viewer(&rest[0], vs, &hs)
+    {
+        rest[0] = v.name.clone(); // also find a monitor by the name the user sees
     }
     if (cmd == "unpair" || cmd == "align" || cmd == "imu") && conf::find_viewer(&rest[0], vs, &hs).is_none() {
         if let Some(m) = conf::find_machine(&rest[0], vs, &hs) {
             rest[0] = m;
         }
-    } else if cmd == "align" {
-        if let Some(v) = conf::find_viewer(&rest[0], vs, &hs) {
-            rest[0] = v.name.clone();
-        }
+    } else if cmd == "align"
+        && let Some(v) = conf::find_viewer(&rest[0], vs, &hs)
+    {
+        rest[0] = v.name.clone();
     }
     match cmd {
         "discover" => discover_cmd(&rest),
         "list" if rest.iter().any(|a| a == "--json") => {
             // for other clients (cc-panels has its own display rule)
-            let out: Vec<Json> = vs.iter().map(|x| {
-                let t = host(&hs, &x.machine);
-                let index = (port_of(x) - 3400).rem_euclid(10);
-                let pending = conf_dir().join("pending-unpair").join(format!("{}.json", x.machine)).exists();
-                Json::Obj(vec![
-                    ("name".into(), Json::Str(x.name.clone())),
-                    ("label".into(), x.label.clone().map_or(Json::Null, Json::Str)),
-                    ("display".into(), Json::Str(conf::display(x, &hs, vs))),
-                    ("machine".into(), Json::Str(x.machine.clone())),
-                    ("machine_label".into(), Json::from_serde(&t["label"])),
-                    ("host".into(), Json::from_serde(&t["host"])),
-                    ("output".into(), Json::from_serde(&t["monitors"][index.to_string()])),
-                    ("target".into(), Json::Str(x.target.clone())),
-                    ("pixels".into(), Json::Arr(vec![Json::Num(x.pixels.0.to_string()), Json::Num(x.pixels.1.to_string())])),
-                    ("host_trusts_after_unpair".into(), Json::Bool(pending)),
-                ])
-            }).collect();
+            let out: Vec<Json> = vs
+                .iter()
+                .map(|x| {
+                    let t = host(&hs, &x.machine);
+                    let index = (port_of(x) - 3400).rem_euclid(10);
+                    let pending = conf_dir().join("pending-unpair").join(format!("{}.json", x.machine)).exists();
+                    Json::Obj(vec![
+                        ("name".into(), Json::Str(x.name.clone())),
+                        ("label".into(), x.label.clone().map_or(Json::Null, Json::Str)),
+                        ("display".into(), Json::Str(conf::display(x, &hs, vs))),
+                        ("machine".into(), Json::Str(x.machine.clone())),
+                        ("machine_label".into(), Json::from_serde(&t["label"])),
+                        ("host".into(), Json::from_serde(&t["host"])),
+                        ("output".into(), Json::from_serde(&t["monitors"][index.to_string()])),
+                        ("target".into(), Json::Str(x.target.clone())),
+                        ("pixels".into(), Json::Arr(vec![Json::Num(x.pixels.0.to_string()), Json::Num(x.pixels.1.to_string())])),
+                        ("host_trusts_after_unpair".into(), Json::Bool(pending)),
+                    ])
+                })
+                .collect();
             println!("{}", Json::Arr(out).dumps());
         }
         "list" => {
@@ -702,8 +712,16 @@ pub fn main(argv: &[&str]) {
                 let h = if truthy(&t["host"]) && t["host"].as_str() != Some(m) { format!("  host {}", py_text(&t["host"])) } else { String::new() };
                 println!("{m}{label}{h}");
                 for x in vs.iter().filter(|x| x.machine == m) {
-                    println!("  {} \"{}\": {} {}x{} curve={} autoconnect={}", x.name, conf::display(x, &hs, vs), x.target, x.pixels.0, x.pixels.1,
-                             x.opt("curve").filter(|c| !c.is_empty()).unwrap_or("flat"), x.opt("autoconnect").unwrap_or("no"));
+                    println!(
+                        "  {} \"{}\": {} {}x{} curve={} autoconnect={}",
+                        x.name,
+                        conf::display(x, &hs, vs),
+                        x.target,
+                        x.pixels.0,
+                        x.pixels.1,
+                        x.opt("curve").filter(|c| !c.is_empty()).unwrap_or("flat"),
+                        x.opt("autoconnect").unwrap_or("no")
+                    );
                 }
             }
         }
@@ -712,11 +730,7 @@ pub fn main(argv: &[&str]) {
             let label = rest[1..].iter().filter(|a| *a != "--monitor").cloned().collect::<Vec<_>>().join(" ");
             if rest.iter().any(|a| a == "--monitor") {
                 let name = conf::find_viewer(&rest[0], vs, &hs).unwrap_or_else(|| die(format!("no monitor {} (machine list)", rest[0]))).name.clone();
-                edit_conf(|ls| ls.into_iter().map(|l| if l.split_whitespace().next() == Some(&name) {
-                    conf::set_options(&l, &[("label".into(), label.clone())])
-                } else {
-                    Ok(l)
-                }).collect());
+                edit_conf(|ls| ls.into_iter().map(|l| if l.split_whitespace().next() == Some(&name) { conf::set_options(&l, &[("label".into(), label.clone())]) } else { Ok(l) }).collect());
                 println!("{name}: {}", said(&label));
             } else {
                 let m = conf::find_machine(&rest[0], vs, &hs).unwrap_or_else(|| die(format!("no machine {} (machine list)", rest[0])));
@@ -736,8 +750,7 @@ pub fn main(argv: &[&str]) {
         }
         "probe" => {
             // A machine's monitors, from its agent.
-            let m = conf::find_machine(&rest[0], vs, &hs).or_else(|| machine_at(&hs, &rest[0]))
-                .unwrap_or_else(|| die(format!("no paired machine {}: Pair it first", rest[0])));
+            let m = conf::find_machine(&rest[0], vs, &hs).or_else(|| machine_at(&hs, &rest[0])).unwrap_or_else(|| die(format!("no paired machine {}: Pair it first", rest[0])));
             let found = probe(&m);
             for (index, output, w, h) in found {
                 println!("monitor {index}: {output} {w}x{h}");
@@ -747,8 +760,7 @@ pub fn main(argv: &[&str]) {
             let sized = n > 2 && rest[2].split_once('x').is_some_and(|(w, h)| digits(w) && digits(h));
             let opts = parse_opts(&rest[if sized { 3 } else { 2 }..]);
             let (name, addr) = (&rest[0], &rest[1]);
-            let addr_ok = addr.split_once('@').and_then(|(u, r)| Some((u, r.rsplit_once(':')?)))
-                .is_some_and(|(u, (h, p))| word(u, ".-") && word(h, ".:-") && digits(p));
+            let addr_ok = addr.split_once('@').and_then(|(u, r)| Some((u, r.rsplit_once(':')?))).is_some_and(|(u, (h, p))| word(u, ".-") && word(h, ".:-") && digits(p));
             if !word(name, ".-") || !addr_ok {
                 die("usage: machine add <name> <user@host:port> [WxH] [curve=..] [autoconnect=..]");
             }
@@ -761,17 +773,21 @@ pub fn main(argv: &[&str]) {
                 let Some(m) = m else { die("give a size (WxH), or Pair it (Pair reads the size)") };
                 let found = probe(&m);
                 let index = (p.parse::<i64>().unwrap_or_else(|_| die("usage: machine add <name> <user@host:port>")) - 3400).rem_euclid(10);
-                found.iter().find(|x| x.0 == index).map(|x| format!("{}x{}", x.2, x.3))
-                    .unwrap_or_else(|| die(format!("no monitor {index} on {h}, or give WxH")))
+                found.iter().find(|x| x.0 == index).map(|x| format!("{}x{}", x.2, x.3)).unwrap_or_else(|| die(format!("no monitor {index} on {h}, or give WxH")))
             };
             edit_conf(|mut lines| {
                 if conf::entry(&lines, name).is_some() {
                     return Err(format!("{name} exists (machine set)"));
                 }
-                let next = lines.iter().filter_map(|l| {
-                    let w: Vec<&str> = l.split_whitespace().collect();
-                    (w.len() >= 4 && !l.starts_with('#') && digits(w[2])).then(|| w[2].parse::<i64>().ok()).flatten()
-                }).max().unwrap_or(0) + 1;
+                let next = lines
+                    .iter()
+                    .filter_map(|l| {
+                        let w: Vec<&str> = l.split_whitespace().collect();
+                        (w.len() >= 4 && !l.starts_with('#') && digits(w[2])).then(|| w[2].parse::<i64>().ok()).flatten()
+                    })
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
                 lines.push(conf::set_options(&format!("{name:<15} {addr:<27} {next:<7} {size}"), &opts)?);
                 Ok(lines)
             });
@@ -804,7 +820,10 @@ pub fn main(argv: &[&str]) {
                 // Remember it, so pairing its machine later brings it back, spots and all.
                 use std::io::Write;
                 let path = conf_dir().join("viewers.removed");
-                std::fs::OpenOptions::new().append(true).create(true).open(&path)
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&path)
                     .and_then(|mut f| f.write_all(format!("{}\n", lines[i].trim_end()).as_bytes()))
                     .map_err(|e| format!("can't write {}: {e}", path.display()))?;
                 lines.remove(i);
@@ -839,11 +858,7 @@ pub fn main(argv: &[&str]) {
         "imu" => imu(&rest[0], rest.get(1).map(|s| s.parse().unwrap_or_else(|_| die("imu takes a machine and optionally how many seconds")))),
         _ => {
             // one monitor, or every monitor on a machine
-            let names: Vec<String> = if vs.iter().any(|v| v.name == rest[0]) {
-                vec![rest[0].clone()]
-            } else {
-                vs.iter().filter(|v| v.machine == rest[0]).map(|v| v.name.clone()).collect()
-            };
+            let names: Vec<String> = if vs.iter().any(|v| v.name == rest[0]) { vec![rest[0].clone()] } else { vs.iter().filter(|v| v.machine == rest[0]).map(|v| v.name.clone()).collect() };
             if names.is_empty() {
                 die(format!("no monitor or machine {} (machine list)", rest[0]));
             }
@@ -863,8 +878,12 @@ mod tests {
         assert_eq!(py_repr("a'b\"c\\\u{7f}é\u{a0}"), "'a\\'b\"c\\\\\\x7fé\\xa0'");
         assert_eq!(py_text(&json!([1.0, "x", null, {"a": true}])), "[1.0, 'x', None, {'a': True}]");
         assert_eq!(py_io("Connection refused (os error 111)"), "[Errno 111] Connection refused");
-        assert_eq!(splitlines("a\r\nb\n\nc"), ["a", "b", "", "c"]);
+        assert_eq!(conf::splitlines("a\r\nb\n\nc"), ["a", "b", "", "c"]);
         assert_eq!(shlex(r#""host=a b" 'm0=x' pair=1 "q=\"\\x""#).unwrap(), ["host=a b", "m0=x", "pair=1", "q=\"\\x"]);
         assert_eq!(shlex("\"open"), None);
+        // A broken announcement on the network is skipped; the good one next to it is still found.
+        let out = "=;eth0;IPv4;bad;_controlcenter._tcp;local;bad.local;192.168.1.9;3399;\"host=bad\n=;eth0;IPv4;desk;_controlcenter._tcp;local;desk.local;192.168.1.5;3399;\"host=desk\" \"id=7\"";
+        let found = browsed(out, Some("eth0"));
+        assert_eq!(found.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["desk"]);
     }
 }

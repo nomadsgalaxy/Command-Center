@@ -24,6 +24,12 @@ use std::time::{Duration, Instant};
 
 pub static HUB: Mutex<Hub> = Mutex::new(Hub::new());
 
+/// HUB, locked. Every session shares it, so after a caught panic poisoned it, it starts over (what
+/// was copied is forgotten) instead of going on half-changed.
+pub fn hub() -> std::sync::MutexGuard<'static, Hub> {
+    crate::ffi::lock_or_reset(&HUB, |h| *h = Hub::new())
+}
+
 /// How long after we announce something to a machine its own announcements of the same
 /// formats are taken for our echo.
 pub const ECHO_TTL: Duration = Duration::from_secs(3);
@@ -301,11 +307,7 @@ mod tests {
 
     fn chans() -> Vec<Chan> {
         // the desktop has two monitors (panels 0 and 1), the laptop one (2) with no file support
-        vec![
-            Chan { panel: 0, machine: "desktop".into(), files: true },
-            Chan { panel: 1, machine: "desktop".into(), files: true },
-            Chan { panel: 2, machine: "laptop".into(), files: false },
-        ]
+        vec![Chan { panel: 0, machine: "desktop".into(), files: true }, Chan { panel: 1, machine: "desktop".into(), files: true }, Chan { panel: 2, machine: "laptop".into(), files: false }]
     }
 
     fn text(s: &str) -> Option<Vec<u8>> {

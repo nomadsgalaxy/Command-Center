@@ -1,0 +1,54 @@
+== the right hand takes the bar, the other hand 8 cm away
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+== held there, not armed yet
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+== half the dwell
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+== the whole dwell: it arms
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+  vr TriggerLaserMouseHapticVibration 100 0.05000 160.00000 0.60000
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+== twice the dwell
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+== let go: it docks on the other hand
+  ended any: true
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [1.00000 0.00000 0.00000 0.18692; 0.00000 1.00000 0.00000 1.30162; 0.00000 0.00000 1.00000 -0.95892]
+  drag none
+  docked Some(Hand(2))
+  panel 1.60000 wide, curve 0.00000, [1.00000 0.00000 0.00000 0.18692; 0.00000 1.00000 0.00000 1.30162; 0.00000 0.00000 1.00000 -0.95892]
+== the other hand moves 30 cm left
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [1.00000 0.00000 0.00000 -0.11308; 0.00000 1.00000 0.00000 1.30162; 0.00000 0.00000 1.00000 -0.95892]
+  drag none
+  docked Some(Hand(2))
+  panel 1.60000 wide, curve 0.00000, [1.00000 0.00000 0.00000 -0.11308; 0.00000 1.00000 0.00000 1.30162; 0.00000 0.00000 1.00000 -0.95892]

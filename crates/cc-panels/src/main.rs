@@ -17,43 +17,64 @@
 mod assets;
 mod attention;
 mod back;
+#[allow(dead_code)] // the boundary's design: phase 0 moves OpenVR behind it (docs/openxr-plan.md)
+mod backend;
+mod boundary;
 mod capture;
 mod clipboard;
-mod ffi;
 mod config;
 mod control;
-mod geometry;
+mod events;
+mod ffi;
+mod gather;
 mod gaze;
-mod grab;
+mod geometry;
+#[cfg(test)]
+mod golden;
 mod gpu;
+mod grab;
 mod handoff;
+mod ids;
+mod keyboard;
 mod kvm;
 mod kwin;
 mod laser;
 mod limits;
+mod notify;
+mod osk;
 mod overlay;
 mod plasmabar;
+mod poll;
 mod popout;
+mod power;
 mod rdp;
-mod vnc;
 #[allow(dead_code)] // virtual outputs for desktop mode aren't wired up yet; the spike uses them
 mod session;
+mod shell;
 mod stage;
 mod surface;
+mod tab;
 mod taskbar;
+mod texture;
 mod theme;
+mod trace;
+mod vnc;
 mod vr;
 mod windows;
 
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
+use gaze::Input;
 use geometry::{Pose, panel_matrix};
-use kvm::KVM;
-use openvr_sys as sys;
+use laser::MouseLaser;
+use overlay::{Flag, InputMode, Overlays, Surfaces};
+use poll::{Pointing, Session};
+use stage::Stage;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering::*;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use texture::Textures;
 
 pub static QUIT: AtomicBool = AtomicBool::new(false);
 pub static HIDDEN: AtomicBool = AtomicBool::new(false); // every panel hidden, by the camera scan or the user
@@ -110,7 +131,21 @@ const SPARES: usize = 2;
 /// a pop-out's slot is emptied again when it ends.
 /// ponytail: each fill leaks its Viewer (a few hundred bytes), so `p.v` stays a plain reference
 pub struct Fill(Mutex<Option<&'static config::Viewer>>);
-static NONE: config::Viewer = config::Viewer { name: String::new(), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1920, h: 1080, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None, no_audio: false };
+static NONE: config::Viewer = config::Viewer {
+    name: String::new(),
+    user: String::new(),
+    host: String::new(),
+    port: 0,
+    screen: 0,
+    w: 1920,
+    h: 1080,
+    auto: false,
+    machine: String::new(),
+    label: String::new(),
+    pop: None,
+    vnc: None,
+    no_audio: false,
+};
 
 impl std::ops::Deref for Fill {
     type Target = config::Viewer;
@@ -124,28 +159,30 @@ pub struct Panel {
     pub v: Fill, // ponytail: for a window slot it's only the name (win-N); move it into Source::Rdp(Viewer) if that confuses
     pub src: Source,
     pub overlay: vr::Handle,
-    pub card: vr::Handle,  // its frame, grab bar and tag, all one overlay (grab.rs)
-    pub accent: [f64; 3], // its kind's colour: cyan for a remote machine, violet for a Frame window
+    pub card: vr::Handle,                         // its frame, grab bar and tag, all one overlay (grab.rs)
+    pub accent: [f64; 3],                         // its kind's colour: cyan for a remote machine, violet for a Frame window
     tag: Mutex<(u32, Option<Arc<grab::TagImg>>)>, // its border tag's image (assets.rs) and how many times it's changed
-    zoom: AtomicU64, // a window panel's text size, which window_px_per_m is divided by (f64 bits)
-    size: [AtomicU32; 2],         // its picture in pixels: the remote's desktop or the window's stream
-    live: AtomicBool,             // shown and in use (for a window slot: it has a window and a frame)
-    gone: AtomicBool,             // a remote removed in the Machines window: no row, no chip, never connects again
-    min: AtomicBool,              // hidden by its taskbar chip or its v (taskbar.rs), so picture and card are gone
-    vert: AtomicBool,             // curved top to bottom, so its overlay and picture are turned a quarter (gpu.rs)
-    pub lock: Mutex<()>, // guards the GDI between its RDP thread (decode, then gpu::write) and resizes or detach
-    pub gpu: Mutex<gpu::Shared>, // its two GPU buffers: its RDP thread writes them, the main loop shows them
+    zoom: AtomicU64,                              // a window panel's text size, which window_px_per_m is divided by (f64 bits)
+    size: [AtomicU32; 2],                         // its picture in pixels: the remote's desktop or the window's stream
+    live: AtomicBool,                             // shown and in use (for a window slot: it has a window and a frame)
+    gone: AtomicBool,                             // a remote removed in the Machines window: no row, no chip, never connects again
+    min: AtomicBool,                              // hidden by its taskbar chip or its v (taskbar.rs), so picture and card are gone
+    vert: AtomicBool,                             // curved top to bottom, so its overlay and picture are turned a quarter (gpu.rs)
+    pub lock: Mutex<()>,                          // guards the GDI between its RDP thread (decode, then gpu::write) and resizes or detach
+    pub gpu: Mutex<gpu::Shared>,                  // its two GPU buffers: its RDP thread writes them, the main loop shows them
     pub rdp: AtomicPtr<freerdp_sys::rdpContext>,
     pub wake: AtomicPtr<std::ffi::c_void>, // wakes its RDP thread's wait (rdp::poke)
     pub dirty: AtomicBool,
     pub connected: AtomicBool,
-    pub down: AtomicBool,  // its last try to connect failed (rdp.rs): audio doesn't wait on it
-    pub host_health: AtomicU8, // what its host says of its server (rdp::HOST_*), shown in the machines window
-    pub audio: AtomicBool, // its session connected carrying the machine's sound and microphone (rdp.rs)
-    pub stale: [Stale; 2], // per GPU buffer
+    pub down: AtomicBool,                                      // its last try to connect failed (rdp.rs): audio doesn't wait on it
+    pub host_health: AtomicU8,                                 // what its host says of its server (rdp::HOST_*), shown in the machines window
+    pub retry: AtomicBool,                                     // Connect was pressed: the next session start asks the host to try a server that gave up
+    pub audio: AtomicBool,                                     // its session connected carrying the machine's sound and microphone (rdp.rs)
+    pub stale: [Stale; 2],                                     // per GPU buffer
     pub cliprdr: AtomicPtr<freerdp_sys::CliprdrClientContext>, // its clipboard channel, while connected
-    level: AtomicU8,            // how much of its stream is worth having (attention.rs)
-    pub change: AtomicU32,      // the most of its picture one frame changed since the last tick, in thousandths (attention.rs)
+    level: AtomicU8,                                           // how much of its stream is worth having (attention.rs)
+    pub change: AtomicU32,                                     // the most of its picture one frame changed since the last tick, in thousandths (attention.rs)
+    pub codecs: Mutex<rdp::Codecs>,                            // frames by graphics codec, for the log (rdp.rs)
 }
 
 impl Panel {
@@ -174,17 +211,19 @@ impl Panel {
             connected: AtomicBool::new(false),
             down: AtomicBool::new(false),
             host_health: AtomicU8::new(0),
+            retry: AtomicBool::new(false),
             audio: AtomicBool::new(false),
             stale: [Stale::new(), Stale::new()],
             cliprdr: AtomicPtr::default(),
             level: AtomicU8::new(attention::Level::Full as u8),
             change: AtomicU32::new(0),
+            codecs: Mutex::default(),
         };
         // Lasers work it with the dashboard closed, wheels scroll it in steps, and it's never see-through.
-        call!(ov, SetOverlayInputMethod, p.overlay, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, p.overlay, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlayFlag, p.overlay, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
-        call!(ov, SetOverlayFlag, p.overlay, sys::VROverlayFlags_IgnoreTextureAlpha, true);
+        crate::overlay::Live.input(p.overlay, InputMode::Pointer);
+        crate::overlay::Live.flag(p.overlay, Flag::Interactive, true);
+        crate::overlay::Live.flag(p.overlay, Flag::DiscreteScroll, true);
+        crate::overlay::Live.flag(p.overlay, Flag::IgnoreAlpha, true);
         p.set_mouse_scale();
         Ok(p)
     }
@@ -203,8 +242,7 @@ impl Panel {
     fn set_mouse_scale(&self) {
         let (w, h) = self.size();
         let (w, h) = if self.vert() { (h, w) } else { (w, h) }; // a turned overlay's own axes
-        let mut scale = sys::HmdVector2_t { v: [w as f32, h as f32] };
-        call!(ov, SetOverlayMouseScale, self.overlay, &mut scale);
+        crate::overlay::Live.mouse_scale(self.overlay, [w as f32, h as f32]);
     }
 
     /// Its tag and how many times it has changed, so the card knows when to redraw.
@@ -256,8 +294,7 @@ impl Panel {
         }
         self.gone.store(false, Relaxed);
         self.set_size(w, h);
-        let name = std::ffi::CString::new(format!("Command Center {}", self.v.name)).unwrap_or_default();
-        call!(ov, SetOverlayName, self.overlay, name.as_ptr() as *mut _);
+        crate::overlay::Live.rename(self.overlay, &format!("Command Center {}", self.v.name));
         true
     }
 
@@ -267,10 +304,10 @@ impl Panel {
     /// without a click.
     pub fn empty(&self) {
         self.set_live(false);
-        call!(ov, HideOverlay, self.overlay);
-        call!(ov, ClearOverlayTexture, self.overlay); // so the next fill shows nothing until its own first frame
+        crate::overlay::Live.hide(self.overlay);
+        texture::Live.clear(self.overlay); // so the next fill shows nothing until its own first frame
         {
-            let mut k = KVM.lock().unwrap();
+            let mut k = crate::kvm::lock();
             if k.kbd == self.index {
                 let from = self.v.pop.as_ref().and_then(|(m, _)| panels().iter().position(|q| q.used() && q.v.name == *m));
                 k.type_to(from.unwrap_or(0));
@@ -348,6 +385,30 @@ impl Panel {
         }
     }
 
+    /// How a character typed on SteamVR's keyboard gets here (kvm.rs `type_text`): as itself
+    /// where the transport can (VNC's keysyms, RDP's Unicode input when the server announces it),
+    /// else as a US keyboard's keys. A window panel's input is evdev keys only.
+    pub fn text_mode(&self) -> kvm::TextMode {
+        match self.src {
+            Source::Rdp if self.v.vnc.is_some() => kvm::TextMode::Unicode,
+            Source::Rdp => match rdp::unicode(self) {
+                Some(true) => kvm::TextMode::Unicode,
+                Some(false) => kvm::TextMode::UsKeys,
+                None => kvm::TextMode::Unknown, // not connected yet: don't tell anyone it's a US keyboard
+            },
+            Source::Window(_) => kvm::TextMode::UsKeys,
+        }
+    }
+
+    /// A character as itself, when text_mode says it can. False if the transport refused it.
+    pub fn text(&self, c: char) -> bool {
+        match self.src {
+            Source::Rdp if self.v.vnc.is_some() => vnc::text(self, c),
+            Source::Rdp => rdp::text(self, c),
+            Source::Window(_) => false,
+        }
+    }
+
     /// A key: its evdev code, and 0 for up, 1 for down, 2 for the kernel's repeat.
     pub fn key(&self, code: u16, value: i32) {
         match self.src {
@@ -397,13 +458,18 @@ impl Panel {
 /// there were and whether any worked it (a move, click or scroll to its machine, which is
 /// D-045's input).
 fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, bool) {
-    let (mut e, mut n, mut worked): (vr::VREvent_t, u32, bool) = (unsafe { std::mem::zeroed() }, 0, false);
-    while call!(ov, PollNextOverlayEvent, p.overlay, &mut e, size_of::<vr::VREvent_t>() as u32) {
-        n += 1;
-        if grab.panel_event(p.index, &e, &mut KVM.lock().unwrap()) {
+    use events::{Button, PointerKind as P, SurfaceEvent as S};
+    let (mut n, mut worked) = (0u32, false);
+    while let Some(ev) = crate::poll::Live.next(p.overlay) {
+        n += 1; // every event, Other too: the count is the tick's, as before
+        if osk::event(p, &ev) {
+            continue; // typed on SteamVR's keyboard, for this panel
+        }
+        if grab.panel_event(p.index, &ev, &mut crate::kvm::lock()) {
             continue; // the release of a drag, not meant for the remote
         }
-        if *mouse_has_it && e.eventType == sys::EVREventType_VREvent_MouseButtonDown {
+        let S::Pointer(pe) = ev else { continue }; // the keyboard's not ours, and anything else: nothing for the remote
+        if *mouse_has_it && matches!(pe.kind, P::Down(_)) {
             controller_pressed();
             *mouse_has_it = false;
         }
@@ -411,54 +477,91 @@ fn laser(p: &Panel, mouse_has_it: &mut bool, grab: &mut grab::Grab) -> (u32, boo
             continue;
         }
         let window = matches!(p.src, Source::Window(_));
-        if window && e.eventType == sys::EVREventType_VREvent_FocusLeave {
+        if window && pe.kind == P::Leave {
             windows::leave();
             continue;
         }
-        if window && e.eventType == sys::EVREventType_VREvent_MouseButtonDown {
-            let mut k = KVM.lock().unwrap();
+        if window && matches!(pe.kind, P::Down(_)) {
+            let mut k = crate::kvm::lock();
             k.type_to(p.index); // typing follows the laser's click too
             if !k.engaged {
                 k.set_engaged(true, &format!("clicked {} with a controller", p.v.name));
             }
         }
-        worked |= matches!(
-            e.eventType,
-            sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp | sys::EVREventType_VREvent_ScrollDiscrete | sys::EVREventType_VREvent_ScrollSmooth
-        );
-        let m = unsafe { e.data.mouse };
+        worked |= matches!(pe.kind, P::Move | P::Down(_) | P::Up(_) | P::Scroll { .. });
         let (w, h) = p.size();
         let (w, h) = (w as f32, h as f32);
         // from the overlay's bottom left; on a turned one x runs up the picture and y from its right
-        let (x, y) = geometry::surface_point(p.vert(), w - 1.0, m.x, m.y);
+        let (x, y) = geometry::surface_point(p.vert(), w - 1.0, pe.x, pe.y);
         let y = geometry::from_top(h - 1.0, y);
         let (x, y) = (x.clamp(0.0, w - 1.0) as f64, y.clamp(0.0, h - 1.0) as f64);
-        match e.eventType {
-            sys::EVREventType_VREvent_MouseMove => p.mouse(PTR_FLAGS_MOVE, x, y),
-            t @ (sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp) => {
-                let b = match m.button {
-                    sys::EVRMouseButton_VRMouseButton_Right => PTR_FLAGS_BUTTON2,
-                    sys::EVRMouseButton_VRMouseButton_Middle => PTR_FLAGS_BUTTON3,
+        match pe.kind {
+            P::Move => p.mouse(PTR_FLAGS_MOVE, x, y),
+            P::Down(b) | P::Up(b) => {
+                let b = match b {
+                    Button::Right => PTR_FLAGS_BUTTON2,
+                    Button::Middle => PTR_FLAGS_BUTTON3,
                     _ => PTR_FLAGS_BUTTON1,
                 };
-                let down = if t == sys::EVREventType_VREvent_MouseButtonDown { PTR_FLAGS_DOWN } else { 0 };
+                let down = if matches!(pe.kind, P::Down(_)) { PTR_FLAGS_DOWN } else { 0 };
                 p.mouse(b | down, x, y);
             }
-            sys::EVREventType_VREvent_ScrollDiscrete | sys::EVREventType_VREvent_ScrollSmooth => {
-                let dy = unsafe { e.data.scroll.ydelta };
-                if dy != 0.0 {
-                    p.wheel(false, dy as f64);
-                }
-            }
+            P::Scroll { dy, .. } if dy != 0.0 => p.wheel(false, dy as f64),
             _ => {}
         }
     }
     (n, worked)
 }
 
+/// SteamVR's own events since the last tick (PollNextEvent): it quitting, the dashboard opening
+/// or closing, a real controller's button, a relocalization or a new universe, and the headset
+/// coming off or going on. `universe`, `on_head` and `last_event` (the last one's name, the core's
+/// own: SessionEvent::name) are the main loop's, kept up to date here. Returns how many events
+/// there were.
+fn steamvr_events(machines: &mut control::machines::Machines, grab: &mut grab::Grab, universe: &mut u64, on_head: &mut bool, last_event: &mut String) -> i32 {
+    use crate::events::SessionEvent as S;
+    use poll::SessionEvents;
+    let (mut queue, mut events) = (poll::Queue::new(*universe), 0);
+    while let Some(ev) = queue.next_event() {
+        // every event counts and is the last, Other too; nothing else here looks at Other
+        (events, *last_event) = (events + 1, ev.name());
+        match ev {
+            S::Quit => close_desktop("SteamVR quit it"), // e.g. a game launched over the Desktop
+            S::DashboardShown(true) => {
+                crate::kvm::lock().set_engaged(false, "dashboard opened"); // click to type: typing goes to it
+                control::dashtab::dashboard(true);
+            }
+            S::DashboardShown(false) => control::dashtab::dashboard(false),
+            S::ControllerUsed(_) => controller_pressed(), // anywhere, not only on our panels
+            // the Frame relocalized (vrserver.txt: "Standing origin changed. Sending reset standing zero pose event")
+            S::Relocalized => {
+                machines.relocalized();
+                grab.relocalized(); // aligned monitors' snap buttons switch to align
+            }
+            // a new universe, like the dummy one's first localization at start, doesn't move any saved spot
+            S::RoomChanged(now) => {
+                eprintln!("tracking: universe {universe} -> {now}");
+                *universe = now;
+                // ponytail: the workspace is picked at start. A room change mid-session shows
+                // on the Workspace page (Use / Load there) instead of switching under you
+                config::UNIVERSE.store(cc_proto::conf::room(now), Relaxed);
+            }
+            // the headset's proximity sensor: off the head, every stream pauses
+            S::Worn(on) if on != *on_head => {
+                *on_head = on;
+                eprintln!("headset: {}", if on { "on" } else { "off" });
+            }
+            S::Worn(_) => {}  // it already was
+            S::State(_) => {} // OpenXR's; an OpenVR overlay app is always running
+            S::Other(_) => {} // counted and kept as the last event above, and nothing else
+        }
+    }
+    events
+}
+
 /// A real controller's button was pressed, so it's the primary device now.
 fn controller_pressed() {
-    let mut k = KVM.lock().unwrap();
+    let mut k = crate::kvm::lock();
     if k.awake {
         eprintln!("controller button: the controller has the pointer");
         k.set_awake(false);
@@ -472,15 +575,15 @@ fn distance(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 /// Puts the cursor overlay where the KVM's cursor is, and works out each panel's pixels
 /// per degree from where the head is now.
 fn update_pointer(cursor: vr::Handle, beam: &mut laser::Beam) {
-    let eye = vr::head_position();
-    let mut k = KVM.lock().unwrap();
+    let eye = crate::stage::Live.head();
+    let mut k = crate::kvm::lock();
     for (i, p) in panels().iter().enumerate() {
         let d = distance(&k.place[i].c, &eye).max(0.2);
         k.ppd[i] = p.size().0 as f64 / (2.0 * (k.place[i].width / 2.0 / d).atan()).to_degrees();
     }
     let hidden = HIDDEN.load(Relaxed);
     if !k.awake || hidden {
-        call!(ov, HideOverlay, cursor);
+        crate::overlay::Live.hide(cursor);
         beam.tick(false, [0.0; 3], false);
         return;
     }
@@ -488,10 +591,10 @@ fn update_pointer(cursor: vr::Handle, beam: &mut laser::Beam) {
     let (at, on_ours) = k.cursor();
     let dot = beam.tick(true, at, on_ours);
     if dot == laser::Dot::Hidden {
-        call!(ov, HideOverlay, cursor); // SteamVR's own laser dot is the cursor there
+        crate::overlay::Live.hide(cursor); // SteamVR's own laser dot is the cursor there
     }
     let (r, g, b) = if dot == laser::Dot::Amber { (1.0, 0.7, 0.2) } else { (1.0, 1.0, 1.0) };
-    call!(ov, SetOverlayColor, cursor, r, g, b);
+    crate::overlay::Live.color(cursor, [r, g, b]);
     let (p, pl) = (panel(k.active), k.place[k.active]);
     // The dot always faces you so it's round from any angle, just in front of what it's on.
     // Off a panel (on a taskbar, or floating) it's pulled 6 mm toward you, because Plasma's bar
@@ -512,7 +615,7 @@ fn update_pointer(cursor: vr::Handle, beam: &mut laser::Beam) {
     // 0.4 degrees across at any distance
     overlay::apply(&mut overlay::Live, cursor, &overlay::Place::new(overlay::At::Room(m), 2.0 * d * 0.2f64.to_radians().tan()));
     if dot != laser::Dot::Hidden {
-        call!(ov, ShowOverlay, cursor);
+        crate::overlay::Live.show(cursor);
     }
 }
 
@@ -523,7 +626,7 @@ fn update_pointer(cursor: vr::Handle, beam: &mut laser::Beam) {
 /// shows and your input refine it.
 fn attend(att: &mut [attention::Attention], seen: &attention::Seen, grab: &grab::Grab, now: Instant) {
     use attention::Level;
-    let k = KVM.lock().unwrap(); // held throughout; the input thread never takes a window's lock under it
+    let k = crate::kvm::lock(); // held throughout; the input thread never takes a window's lock under it
     let theater = THEATER.load(Relaxed);
     for p in panels() {
         let i = p.index;
@@ -621,10 +724,24 @@ impl Pace {
         p
     }
 
+    /// The refresh rates Pace takes as the display's. A known ceiling: a real display over 240 Hz
+    /// starts at 90 Hz (`new`), and mid-session keeps its previous rate rather than follow it
+    /// (`follow`). Raise it when one turns up.
+    const RATES: std::ops::RangeInclusive<f32> = 30.0..=240.0;
+
     /// Sets the display's refresh rate (90 when SteamVR doesn't say).
     fn set_rate(&mut self, hz: f32) {
-        let hz = if (30.0..=240.0).contains(&hz) { hz } else { 90.0 };
+        let hz = if Self::RATES.contains(&hz) { hz } else { 90.0 };
         self.frame = Duration::from_secs_f64(1.0 / hz as f64);
+    }
+
+    /// The rate read again mid-session: one the runtime can't tell (None), or one outside RATES
+    /// (0, negative, NaN, absurdly high), keeps the current one, so a passing error doesn't drop it
+    /// to 90 Hz until the next read. 90 Hz is only the start's fallback (`new`).
+    fn follow(&mut self, hz: Option<f32>) {
+        if let Some(hz) = hz.filter(|hz| Self::RATES.contains(hz)) {
+            self.set_rate(hz);
+        }
     }
 
     /// After a tick that began at `start`, sets the next one's deadline. `why` is what's moving now.
@@ -679,6 +796,10 @@ fn load_tag(path: &str) -> Option<(usize, usize, Vec<u8>)> {
 /// next to nothing (session/cc-rest). A signal (a restart, systemctl stop) quits without this,
 /// and the session stays up.
 pub fn close_desktop(how: &str) {
+    #[cfg(test)]
+    if vr::fake::here() {
+        return tests::CLOSED.lock().unwrap().push(how.to_string()); // not the real file, and not QUIT, which the RDP threads read
+    }
     eprintln!("closing Desktop ({how}): its session stops too");
     let _ = std::fs::write(format!("{}/.cache/control-center/desktop-closed", config::home_dir()), how);
     QUIT.store(true, Relaxed);
@@ -693,9 +814,11 @@ extern "C" fn on_signal(_: libc::c_int) {
 struct GiveBack;
 impl Drop for GiveBack {
     fn drop(&mut self) {
-        laser::hide();
-        KVM.lock().unwrap_or_else(|e| e.into_inner()).return_devices();
+        laser::Live.hide();
+        crate::kvm::lock().return_devices();
         kwin::restore();
+        power::stop(); // the profile it found, back
+        trace::flush();
     }
 }
 
@@ -705,6 +828,23 @@ fn main() -> std::process::ExitCode {
     if args.get(1).is_some_and(|a| a == "--assets") && args.len() >= 4 {
         assets::draw(&args[2], &args[3], &args[4..]); // `--assets <dir> <font> tag=...` draws the Machines window's new tags
         return std::process::ExitCode::SUCCESS;
+    }
+    // The dashboard tab on its own while the Desktop is closed, and its manifest (tab.rs). None
+    // of these is the Desktop, so they don't take its lock.
+    let one_off = match args.get(1).map(String::as_str) {
+        Some("--tab") => Some(tab::run()),
+        Some("--register-tab") => Some(tab::register(true)),
+        Some("--unregister-tab") => Some(tab::register(false)),
+        _ => None,
+    };
+    if let Some(r) = one_off {
+        return r.map_or_else(
+            |e| {
+                eprintln!("{e}");
+                std::process::ExitCode::FAILURE
+            },
+            |_| std::process::ExitCode::SUCCESS,
+        );
     }
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -720,20 +860,21 @@ fn main() -> std::process::ExitCode {
 fn connect(p: &'static Panel, after: Duration) -> std::thread::JoinHandle<()> {
     p.set_live(true);
     // (its sort order: painted back to front with the others, grab.rs paint_order)
-    call!(ov, ShowOverlay, p.overlay);
+    crate::overlay::Live.show(p.overlay);
     std::thread::spawn(move || {
         std::thread::sleep(after);
         if p.v.vnc.is_some() { vnc::run(p) } else { rdp::run(p) }
     })
 }
 
-/// Places a remote at its saved spot, or else a metre and a half in front of you. Returns its
-/// pose and whether it was saved. Used at start and when Add machine fills one.
+/// Places a remote at its saved spot, or else where every new surface opens (geometry.rs
+/// `new_pose`), 1.2 m wide. Returns its pose and whether it was saved. Used at start and when Add
+/// machine fills one.
 pub fn place_remote(p: &Panel) -> (Pose, bool) {
     let saved = config::home_pose(&p.v.name, Some(p.v.screen));
-    let pose = saved.unwrap_or(Pose { centre: [0.0, 1.5, -1.5], width: 1.2, ..Default::default() });
+    let pose = saved.unwrap_or_else(|| geometry::new_pose(&crate::stage::Live.head_now().unwrap_or(geometry::STAND_IN_HEAD), 1.2, 0.0, 0.0));
     p.set_vert(pose.vert); // curved top to bottom means turned (kvm.rs set_place)
-    KVM.lock().unwrap().set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve);
+    crate::kvm::lock().set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve);
     (pose, saved.is_some())
 }
 
@@ -741,7 +882,7 @@ pub fn place_remote(p: &Panel) -> (Pose, bool) {
 /// RDP thread woken from its wait. It ends within a second (main.rs joins it). Connect starts fresh.
 pub fn disconnect(p: &Panel) {
     p.set_live(false);
-    call!(ov, HideOverlay, p.overlay);
+    crate::overlay::Live.hide(p.overlay);
     rdp::poke(p);
     eprintln!("{}: disconnecting", p.v.name);
 }
@@ -755,14 +896,17 @@ fn run() -> Result<(), String> {
     if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err("cc-panels is already running".into());
     }
+    // The dashboard tab's own process watches this one to hand the tab over (tab.rs).
+    let _desktop = tab::hold(&tab::desktop_lock()).map_err(|e| eprintln!("the tab's handover lock: {e}; the dashboard tab may take a moment to come over")).ok();
     // A panic anywhere gives the laser's hand back before anything else, unless it's in a callback
     // from C, which ffi::guard catches, so cc-panels carries on and keeps its laser.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if !ffi::guarded() {
-            laser::hide();
+            laser::Live.hide();
         }
         default_hook(info);
+        trace::flush(); // what led up to it
     }));
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
@@ -792,42 +936,56 @@ fn run() -> Result<(), String> {
     let mut look = theme::init();
     let assets = format!("{cache}/assets");
     let font = theme::font();
+    let stamp = format!("{font}\nmono: {}", assets::MONO); // both families the cached pictures were drawn in
     // Windows' tags are cached by app (windows.rs), and assets.rs only draws the glyphs when
     // they're missing, so they get redrawn for a new font (or the first time masks are drawn, with no stamp yet).
-    if std::fs::read_to_string(format!("{assets}/font")).ok().as_deref() != Some(font.as_str()) {
+    if std::fs::read_to_string(format!("{assets}/font")).ok().as_deref() != Some(stamp.as_str()) {
         for e in std::fs::read_dir(&assets).into_iter().flatten().flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
-            if n.starts_with("tag-app-") || n == "glyphs.rgba" {
+            if n.starts_with("tag-app-") || n == "glyphs.rgba" || n == "ascii.rgba" {
                 let _ = std::fs::remove_file(e.path());
             }
         }
     }
     let all = config::viewers(&[]);
-    let tags: Vec<String> = viewers.iter().flat_map(|v| remote_tags(v, &all)) // each panel's border tag and its taskbar chip's label
-        .chain(control::machines::LABELS.iter().chain(&control::prefs::LABELS).chain(&control::workspace::LABELS).chain(&control::dashtab::LABELS).chain(&taskbar::LABELS).map(|(k, text)| format!("tag=ui-{k},{text},frame,0,0,0"))) // the Machines and Preferences windows'
+    let tags: Vec<String> = viewers
+        .iter()
+        .flat_map(|v| remote_tags(v, &all)) // each panel's border tag and its taskbar chip's label
+        .chain(
+            control::machines::LABELS
+                .iter()
+                .chain(&control::prefs::LABELS)
+                .chain(&control::workspace::LABELS)
+                .chain(&control::dashtab::LABELS)
+                .chain(&taskbar::LABELS)
+                .map(|(k, text)| format!("tag=ui-{k},{text},frame,0,0,0")),
+        ) // the Machines and Preferences windows'
         .collect();
     assets::draw(&assets, &font, &tags);
-    let _ = std::fs::write(format!("{assets}/font"), &font);
+    let _ = std::fs::write(format!("{assets}/font"), &stamp);
     {
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         if let Some(s) = std::env::var("CC_SENSITIVITY").ok().and_then(|s| s.parse().ok()) {
             k.sensitivity = s;
         }
         k.gaze_lock = std::env::var("CC_GAZE").is_ok_and(|v| v == "1");
+        k.ungather = crate::kvm::ungather_key();
         k.rescan();
     }
     let _give_back = GiveBack;
 
     vr::init().map_err(|e| format!("SteamVR: {e}"))?;
+    tab::ensure_registered(); // in this connection, not one of its own (the binding-load budget)
+    power::start("desktop");
     let dev = gpu::device().ok_or("no GPU buffers (GBM on renderD128)")?;
     // The workspace for this room (its SteamVR tracking universe). Its spots place the panels.
-    let mut err = 0;
-    let mut universe = call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
+    // 0, the fallback for a runtime that can't tell, is "no room yet": choose_workspace logs it and
+    // lets the workspace hint decide. (OpenVR always tells: its own 0, for a bad index or type, is
+    // the same "no room yet".)
+    let mut universe = poll::Live.universe_id().unwrap_or(0); // it logs what SteamVR said
     let (workspace, new) = config::choose_workspace(universe);
-    eprintln!(
-        "workspace: {workspace}{}",
-        if new { " (made for this room: the Workspace window's Save as workspace keeps it)" } else { "" }
-    );
+    eprintln!("workspace: {workspace} in room {}{}", cc_proto::conf::room(universe), if new { " (made for this room: the Workspace window's Save as workspace keeps it)" } else { "" });
+    config::load_dominant(); // before anything points, on any runtime
     let mut list = Vec::new();
     for v in viewers {
         let tag = load_tag(&format!("{assets}/tag-{}.rgba", v.name));
@@ -849,13 +1007,27 @@ fn run() -> Result<(), String> {
     }
     let first_window = list.len();
     for n in 1..=windows::SLOTS {
-        let v = config::Viewer { name: format!("win-{n}"), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1280, h: 800, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None, no_audio: false };
+        let v = config::Viewer {
+            name: format!("win-{n}"),
+            user: String::new(),
+            host: String::new(),
+            port: 0,
+            screen: 0,
+            w: 1280,
+            h: 800,
+            auto: false,
+            machine: String::new(),
+            label: String::new(),
+            pop: None,
+            vnc: None,
+            no_audio: false,
+        };
         list.push(Panel::new(list.len(), v, Source::Window(Mutex::new(None)), grab::VIOLET, None)?);
     }
     let _ = PANELS.set(list);
     clipboard::start(); // the Frame session's clipboard; each RDP session brings its own channel
     {
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         k.place = vec![geometry::Placement::from_matrix(&[[0.0; 4]; 3], 1.0, 1.0, 0.0); panels().len()];
         k.ppd = vec![30.0; panels().len()];
     }
@@ -880,18 +1052,15 @@ fn run() -> Result<(), String> {
         }
         // one remote a second, not all at once, because their first full screens are the heaviest decode of start-up
         threads.push((p.index, connect(p, Duration::from_secs(p.index as u64))));
-        eprintln!(
-            "{}: {}:{} -> overlay controlcenter.panel.{}, {:.2} m wide{}",
-            p.v.name, p.v.host, p.v.port, p.v.name, pose.width, if saved { "" } else { " (no saved spot)" }
-        );
+        eprintln!("{}: {}:{} -> overlay controlcenter.panel.{}, {:.2} m wide{}", p.v.name, p.v.host, p.v.port, p.v.name, pose.width, if saved { "" } else { " (no saved spot)" });
     }
     let mut windows = windows::Windows::start(first_window);
 
-    let cursor = surface::create(surface::Kind::Cursor, None, "controlcenter.cursor", "Command Center cursor").unwrap_or(0);
-    vr::set_from_file(cursor, &format!("{assets}/cursor.png"));
-    call!(ov, SetOverlaySortOrder, cursor, 200);
+    let cursor = surface::create(surface::Kind::Cursor, None, "controlcenter.cursor", "Command Center cursor").unwrap_or(crate::vr::Handle::NONE);
+    crate::overlay::Live.picture_file(cursor, &format!("{assets}/cursor.png"));
+    crate::overlay::Live.order(cursor, 200);
     {
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         let (w, h) = panel(0).size();
         (k.x, k.y) = (w as f64 / 2.0, h as f64 / 2.0);
         if k.device_count() > 0 {
@@ -918,28 +1087,28 @@ fn run() -> Result<(), String> {
         eprintln!("running until stopped; Right Ctrl + Esc ends it");
     }
     let mut grab = grab::Grab::new(panels().len());
+    grab.docking = config::settings()["docking"] == true; // off until there are targets you can see (docs/steamvr-integration.md)
     let mut bar = taskbar::Taskbar::new(&assets);
     let mut machines = control::machines::Machines::new(&assets);
     let mut prefs = control::prefs::Prefs::new(&assets);
     let mut dashtab = control::dashtab::Dashtab::new(&assets);
+    let mut keys = osk::Keys::new(&assets);
     let mut workspace_win = control::workspace::Workspace::new(&assets);
     let mut buffers: Vec<gpu::Buffers> = panels().iter().map(|_| gpu::Buffers::default()).collect();
     let mut status = Instant::now();
     let mut ticks = 0u64;
     let mut att: Vec<attention::Attention> = panels().iter().map(|_| Default::default()).collect();
-    let mut on_head = true; // ponytail: assume it's worn at start; the first take-off (VREvent 104) says otherwise
+    let mut on_head = poll::Live.worn().unwrap_or(true); // as SteamVR says at start, else worn; VREvent 103/104 keep it up to date
     let mut gaze_seen: Option<([f64; 3], [f64; 3], Instant)> = None; // the last valid gaze sample
-    let display_hz = || {
-        let mut err = 0;
-        call!(sys, GetFloatTrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &mut err)
-    };
-    let mut pace = Pace::new(display_hz(), Instant::now());
+    // at start, 0.0, the fallback for a runtime that can't tell, is "no rate": Pace runs at 90 Hz
+    // then (its test); OpenVR can't tell when it sets the property's error (poll.rs)
+    let mut pace = Pace::new(poll::Live.display_hz().unwrap_or(0.0), Instant::now());
     let _ = vr::MAIN.set(std::thread::current()); // vr::wake ends the wait between ticks
     let mut gaze_tried: Option<Instant> = None;
     let mut gaze_off = false; // a game is running, so the gaze's action set is let go
     let mut hand = handoff::Handoff::default(); // who has the input, with a VR or a 2D game running (handoff.rs)
     handoff::start();
-    let mut last_event = 0; // the last SteamVR event's type, for the loop's status line
+    let mut last_event = String::from("none"); // the last SteamVR event's name, for the loop's status line
     let mut was_away = false; // hidden or under a game last tick
     while !QUIT.load(Relaxed) {
         let mut laps = Laps::new();
@@ -954,14 +1123,14 @@ fn run() -> Result<(), String> {
         }
         if status.elapsed() > Duration::from_secs(5) {
             status = Instant::now();
-            let k = KVM.lock().unwrap();
+            let k = crate::kvm::lock();
             for (p, b) in panels()[..first_window].iter().zip(&mut buffers).filter(|(p, _)| p.used()) {
                 eprintln!(
                     "{}: {}, {:.1} frames/s, visible {}, {}, {:.0} px/deg",
                     p.v.name,
                     if p.connected.load(Relaxed) { "connected" } else { "not connected" },
                     b.uploads as f64 / 5.0,
-                    call!(ov, IsOverlayVisible, p.overlay) as i32,
+                    crate::overlay::Live.visible(p.overlay) as i32,
                     format!("{:?}", p.level()).to_lowercase(),
                     k.ppd[p.index]
                 );
@@ -969,7 +1138,7 @@ fn run() -> Result<(), String> {
             }
             drop(k);
             windows.status();
-            let mut k = KVM.lock().unwrap();
+            let mut k = crate::kvm::lock();
             eprintln!(
                 "kvm: {} on {} at {:.0},{:.0}, typing to {}, looking at {} (gaze lock {}); sent {} moves, {} clicks, {} keys, {} wheel; {} devices",
                 match (k.awake, k.engaged) {
@@ -992,7 +1161,7 @@ fn run() -> Result<(), String> {
             );
             (k.moves, k.clicks, k.keystrokes, k.wheels) = (0, 0, 0, 0);
             drop(k);
-            pace.set_rate(display_hz()); // (changed in SteamVR's settings)
+            pace.follow(poll::Live.display_hz()); // (changed in SteamVR's settings)
             let (all, fast) = std::mem::take(&mut pace.ticks);
             eprintln!(
                 "loop: {:.1} ticks/s, {}% at {:.0} Hz; last kept there by {}{}",
@@ -1000,56 +1169,16 @@ fn run() -> Result<(), String> {
                 fast * 100 / all.max(1),
                 1.0 / pace.frame.as_secs_f64(),
                 pace.why,
-                if pace.why == "SteamVR events" { format!(" (type {last_event})") } else { String::new() }
+                if pace.why == "SteamVR events" { format!(" (the last {last_event})") } else { String::new() }
             );
         }
         laps.lap("status");
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
-        let mut events = 0;
-        while call!(sys, PollNextEvent, &mut e, size_of::<vr::VREvent_t>() as u32) {
-            (events, last_event) = (events + 1, e.eventType);
-            if e.eventType == sys::EVREventType_VREvent_Quit {
-                close_desktop("SteamVR quit it"); // e.g. a game launched over the Desktop
-            }
-            if e.eventType == sys::EVREventType_VREvent_DashboardActivated {
-                KVM.lock().unwrap().set_engaged(false, "dashboard opened"); // click to type: typing goes to it
-                control::dashtab::dashboard(true);
-            }
-            if e.eventType == sys::EVREventType_VREvent_DashboardDeactivated {
-                control::dashtab::dashboard(false);
-            }
-            if e.eventType == sys::EVREventType_VREvent_ButtonPress && vr::is_real_controller(e.trackedDeviceIndex) {
-                controller_pressed(); // anywhere, not only on our panels
-            }
-            // the Frame relocalized (vrserver.txt: "Standing origin changed. Sending reset standing zero pose event")
-            // (a new universe, like the dummy one's first localization at start, doesn't move any saved spot)
-            if e.eventType == sys::EVREventType_VREvent_StandingZeroPoseReset {
-                let now = call!(sys, GetUint64TrackedDeviceProperty, 0, sys::ETrackedDeviceProperty_Prop_CurrentUniverseId_Uint64, &mut err);
-                if now == universe {
-                    machines.relocalized();
-                    grab.relocalized(); // aligned monitors' snap buttons switch to align
-                } else {
-                    eprintln!("tracking: universe {universe} -> {now}");
-                    universe = now;
-                    // ponytail: the workspace is picked at start. A room change mid-session shows
-                    // on the Workspace page (Use / Load there) instead of switching under you
-                    config::UNIVERSE.store(cc_proto::conf::room(now), Relaxed);
-                }
-            }
-            // the headset's (device 0) proximity sensor: off the head, every stream pauses
-            let worn = match e.eventType {
-                sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted => Some(true),
-                sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded => Some(false),
-                _ => None,
-            };
-            if let Some(on) = worn.filter(|&on| e.trackedDeviceIndex == 0 && on != on_head) {
-                on_head = on;
-                eprintln!("headset: {}", if on { "on" } else { "off" });
-            }
-        }
+        let events = steamvr_events(&mut machines, &mut grab, &mut universe, &mut on_head, &mut last_event);
         laps.lap("events");
+        power::want(!on_head); // the headset's off: nobody's using the Desktop (power.rs)
+        power::game(bar.game() || handoff::flat_game());
         let now = Instant::now();
-        let head = vr::head().map(|m| ([0, 1, 2].map(|r| m[r][3] as f64), [0, 1, 2].map(|r| -m[r][2] as f64)));
+        let head = crate::stage::Live.head_now().map(|m| ([0, 1, 2].map(|r| m[r][3] as f64), [0, 1, 2].map(|r| -m[r][2] as f64)));
         let gaze_ray = gaze_seen.filter(|g| now - g.2 < kvm::GAZE_STALE).map(|g| (g.0, g.1));
         // A game, VR or 2D, is Command Center's cue to step aside (handoff.rs). The dashboard tab can take it back.
         hand.step(bar.game(), handoff::flat_game(), dashtab.selected());
@@ -1058,14 +1187,20 @@ fn run() -> Result<(), String> {
         // click to type: the Desktop hidden or a game starting gives the keyboards back, once on the change
         let away = seen.hidden || seen.game;
         if away && !was_away {
-            KVM.lock().unwrap().set_engaged(false, if seen.hidden { "Desktop hidden" } else { "game running" });
+            crate::kvm::lock().set_engaged(false, if seen.hidden { "Desktop hidden" } else { "game running" });
         }
         // A game: Command Center steps aside. The mice go to it as well as the keyboards (the line
         // above), every panel hides, and the panels are paused (attention.rs), until it ends, or
         // until you take it back on the dashboard tab (control/dashtab.rs). Choosing "Steam / game"
         // there gives the input away without a game too, but leaves the panels showing.
-        let why = if seen.game { "game running" } else if hand.yielded() { "Steam / game chosen on the dashboard tab" } else { "no game" };
-        KVM.lock().unwrap().set_yielded(hand.yielded(), why);
+        let why = if seen.game {
+            "game running"
+        } else if hand.yielded() {
+            "Steam / game chosen on the dashboard tab"
+        } else {
+            "no game"
+        };
+        crate::kvm::lock().set_yielded(hand.yielded(), why);
         match hand.panels(HIDDEN.load(Relaxed)) {
             Some(false) => {
                 control::show_panels(false);
@@ -1087,7 +1222,7 @@ fn run() -> Result<(), String> {
         }
         gpu::raw_tick(); // UI overlays' pictures that waited a tick (gpu::show_raw)
         laps.lap("uploads");
-        let mut mouse_has_it = KVM.lock().unwrap().awake;
+        let mut mouse_has_it = crate::kvm::lock().awake;
         let mut lasered = 0;
         for p in panels() {
             let (n, worked) = laser(p, &mut mouse_has_it, &mut grab);
@@ -1098,7 +1233,7 @@ fn run() -> Result<(), String> {
         }
         laps.lap("lasers");
         {
-            let mut k = KVM.lock().unwrap(); // the input thread may hold it
+            let mut k = crate::kvm::lock(); // the input thread may hold it
             laps.lap("kvm-lock");
             grab.poll(&mut k);
             grab.game = bar.game(); // as of its last tick
@@ -1106,6 +1241,7 @@ fn run() -> Result<(), String> {
         }
         laps.lap("grab");
         windows.tick(&mut grab);
+        keys.tick(&mut grab);
         laps.lap("windows");
         bar.tick(&mut grab, &mut windows);
         laps.lap("taskbar");
@@ -1121,9 +1257,23 @@ fn run() -> Result<(), String> {
         prefs.tick(&mut grab, &mut windows, &mut bar);
         laps.lap("prefs");
         dashtab.tick(&mut hand);
+        notify::tick(dashtab.page());
         laps.lap("dashtab");
         workspace_win.tick(&mut grab, &mut windows, &mut bar);
         laps.lap("workspace");
+        // the dashboard tab's button or Right Ctrl + B, and the ungather key's or Right Ctrl + Shift + B's undo
+        let asked = if gather::ASKED.swap(false, Relaxed) {
+            Some(gather::gather(&mut grab, &mut windows))
+        } else if gather::UNDO_ASKED.swap(false, Relaxed) {
+            Some(gather::ungather(&mut grab))
+        } else {
+            None
+        };
+        match asked {
+            Some(Ok(_)) => bar.refix(),
+            Some(Err(e)) => eprintln!("gather: {e}"),
+            None => {}
+        }
         if let Some(s) = &control {
             control::handle(s, &mut grab, &mut windows, &mut bar);
             for i in control::to_connect() {
@@ -1139,25 +1289,25 @@ fn run() -> Result<(), String> {
                 threads.push((i, connect(&panels()[i], Duration::ZERO)));
             }
         }
-        popout::tick(&mut KVM.lock().unwrap());
+        popout::tick(&mut crate::kvm::lock());
         laps.lap("control");
         // Not under a game: the gaze's action set is global priority, so it took the game's controllers.
         if bar.game() != gaze_off {
             gaze_off = bar.game();
             if let (true, Some(g)) = (gaze_off, &gaze) {
-                g.release();
-                KVM.lock().unwrap().gaze(None);
+                g.pause();
+                crate::kvm::lock().gaze(None);
             }
         }
         if let Some(g) = gaze.as_ref().filter(|_| !gaze_off)
             && gaze_tried.is_none_or(|t| laps.start.duration_since(t) >= GAZE_EVERY)
         {
             gaze_tried = Some(laps.start);
-            let sample = g.sample();
+            let sample = g.gaze();
             if let Some((o, d)) = sample {
                 gaze_seen = Some((o, d, Instant::now())); // where you look decides the levels (attend)
             }
-            KVM.lock().unwrap().gaze(sample);
+            crate::kvm::lock().gaze(sample);
         }
         laps.lap("gaze");
         update_pointer(cursor, &mut beam);
@@ -1167,17 +1317,19 @@ fn run() -> Result<(), String> {
             last_slow = Instant::now();
         }
         // The start-up warm-up (attention::WARM, every panel at 5 frames/s) ends once the ticks calm down.
-        let settled = || panels().iter().all(|p| match &p.src {
-            // or not connected at start (autoconnect), so there's nothing to wait for
-            Source::Rdp => p.connected.load(Relaxed) || !p.live(),
-            // a paused window sends no frames until you look (live: a tray app's never came)
-            Source::Window(w) => w.lock().unwrap().is_none() || p.live() || p.level() == attention::Level::Paused,
-        });
+        let settled = || {
+            panels().iter().all(|p| match &p.src {
+                // or not connected at start (autoconnect), so there's nothing to wait for
+                Source::Rdp => p.connected.load(Relaxed) || !p.live(),
+                // a paused window sends no frames until you look (live: a tray app's never came)
+                Source::Window(w) => w.lock().unwrap().is_none() || p.live() || p.level() == attention::Level::Paused,
+            })
+        };
         if attention::WARM.load(Relaxed) && attention::warm_over(start.elapsed(), last_slow.elapsed(), settled()) {
             attention::WARM.store(false, Relaxed);
             eprintln!("warm-up over after {:.1} s: panels at their own rates", start.elapsed().as_secs_f64());
         }
-        let awake = KVM.lock().unwrap().awake;
+        let awake = crate::kvm::lock().awake;
         let why = [
             (awake, "the pointer (awake)"),
             (lasered > 0, "a laser on a panel"),
@@ -1189,6 +1341,7 @@ fn run() -> Result<(), String> {
             (machines.moving(), "the Machines window"),
             (prefs.moving(), "the Preferences window"),
             (dashtab.moving(), "the dashboard tab"),
+            (keys.moving(), "the key strip"),
             (workspace_win.moving(), "the Workspace window"),
             (windows.plasma_moving(), "Plasma's bar"),
             (kvm::POKED.swap(false, Relaxed), "input"),
@@ -1212,7 +1365,7 @@ fn run() -> Result<(), String> {
     let _ = leases.join(); // it sends the driver "hide" as it ends
     {
         // give the devices back straight away, not after slow sessions have ended
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         k.set_awake(false);
         k.set_engaged(false, "closing");
         k.return_devices();
@@ -1222,6 +1375,7 @@ fn run() -> Result<(), String> {
     machines.destroy();
     prefs.destroy();
     dashtab.destroy();
+    keys.destroy();
     workspace_win.destroy();
     windows.stop();
     for (_, t) in threads {
@@ -1240,6 +1394,89 @@ fn run() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a test's `close_desktop` was asked (it doesn't write the file or set QUIT).
+    pub static CLOSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    /// Golden (golden.rs): SteamVR's own events, one at a time, through main's handling of them:
+    /// Quit, the dashboard opening and closing, a button on a real controller and on our virtual
+    /// pointer, a relocalization in the same universe and a change of universe, and the headset off
+    /// and on (and another device's interaction, which doesn't count). Phase 0 checked this against
+    /// a copy of the loop from before it; phase 1 named the last event (SessionEvent::name), which
+    /// that copy can't, so the copy went and the fixture is the record.
+    #[test]
+    fn golden_steamvr_events() {
+        use openvr_sys as sys;
+        const POINTER: u32 = 9;
+        let _vr = crate::trace::fake_vr();
+        crate::vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).types = vec![(POINTER, "cc_pointer".into())];
+        let dir = std::env::temp_dir().join(format!("cc-golden-events-{}", std::process::id()));
+        let mut machines = control::machines::Machines::new(dir.to_str().unwrap());
+        let mut grab = grab::Grab::with_backdrop(0, crate::vr::Handle::NONE);
+        grab.scanned_for_test(2); // two aligned places, so a relocalization shows
+        let room = config::UNIVERSE.load(Relaxed);
+        config::UNIVERSE.store(0, Relaxed); // the room as start-up left it, here none
+        let was = {
+            let k = kvm::lock();
+            (k.engaged, k.awake)
+        };
+        {
+            let mut k = kvm::lock();
+            (k.engaged, k.awake) = (true, true);
+        }
+        crate::vr::fake::take_calls();
+        let (mut universe, mut on_head) = (7u64, true);
+        let mut log = crate::golden::Log::default();
+        let ev = |t: u32, dev: u32| {
+            let mut e: vr::VREvent_t = Default::default();
+            (e.eventType, e.trackedDeviceIndex) = (t, dev);
+            e
+        };
+        let (started, ended) = (sys::EVREventType_VREvent_TrackedDeviceUserInteractionStarted, sys::EVREventType_VREvent_TrackedDeviceUserInteractionEnded);
+        let steps: Vec<(&str, Vec<vr::VREvent_t>, u64)> = vec![
+            ("SteamVR quits", vec![ev(sys::EVREventType_VREvent_Quit, 0)], 7),
+            ("the dashboard opens", vec![ev(sys::EVREventType_VREvent_DashboardActivated, 0)], 7),
+            ("the dashboard closes", vec![ev(sys::EVREventType_VREvent_DashboardDeactivated, 0)], 7),
+            ("our virtual pointer's button", vec![ev(sys::EVREventType_VREvent_ButtonPress, POINTER)], 7),
+            ("a real controller's button", vec![ev(sys::EVREventType_VREvent_ButtonPress, 3)], 7),
+            // one main.rs has no arm for: still counted, and still the last event
+            ("a device turns on", vec![ev(sys::EVREventType_VREvent_TrackedDeviceActivated, 3)], 7),
+            ("relocalized, same universe", vec![ev(sys::EVREventType_VREvent_StandingZeroPoseReset, 0)], 7),
+            ("relocalized into universe 8", vec![ev(sys::EVREventType_VREvent_StandingZeroPoseReset, 0)], 8),
+            ("the headset comes off", vec![ev(ended, 0)], 8),
+            ("a controller's interaction ends", vec![ev(ended, 3)], 8),
+            // only the headset's (device 0) counts: a controller's start mustn't put it back on
+            ("a controller's interaction starts, the headset still off", vec![ev(started, 3)], 8),
+            // nothing this tick: no events, and the last type and the state as they were
+            ("a pass with nothing", vec![], 8),
+            ("the headset goes back on", vec![ev(started, 0)], 8),
+            ("one pass: the dashboard opens and the headset comes off", vec![ev(sys::EVREventType_VREvent_DashboardActivated, 0), ev(ended, 0)], 8),
+        ];
+        let mut last = String::from("none");
+        for (what, events, now) in steps {
+            log.step(what);
+            {
+                let mut s = crate::vr::fake::SCRIPT.lock().unwrap();
+                let s = s.get_or_insert_with(Default::default);
+                (s.universe, s.sys_events) = (now, events.into());
+            }
+            let n = steamvr_events(&mut machines, &mut grab, &mut universe, &mut on_head, &mut last);
+            log.vr_calls();
+            for c in std::mem::take(&mut *CLOSED.lock().unwrap()) {
+                log.line(format!("close_desktop({c:?})"));
+            }
+            let k = kvm::lock();
+            log.line(format!("events {n}, last {last}, universe {universe}, room {}, on head {on_head}", config::UNIVERSE.load(Relaxed)));
+            log.line(format!("engaged {}, mouse has the pointer {}, dashboard open {}", k.engaged, k.awake, control::dashtab::dashboard_open()));
+            log.line(format!("machines relocalized {}, grab's stale places {}", machines.relocs(), grab.scanned_for_test(0).1));
+        }
+        config::UNIVERSE.store(room, Relaxed);
+        control::dashtab::dashboard(false);
+        let mut k = kvm::lock();
+        (k.engaged, k.awake) = was;
+        drop(k);
+        crate::golden::check("main-steamvr-events", &log.0);
+    }
 
     #[test]
     fn remote_tags_show_the_label_without_breaking_assets_fields() {
@@ -1260,6 +1497,24 @@ mod tests {
         l.laps = vec![("grab", ms(18)), ("taskbar", ms(33))];
         l.split("plasmabar", ms(2));
         assert_eq!(slow_tick(ms(412), &l.laps).unwrap(), "slow tick 412ms: grab 18 taskbar 31 plasmabar 2");
+    }
+
+    /// Mid-session, a rate the runtime can't tell, or one that isn't a rate, keeps the one Pace
+    /// has, 120 Hz here, rather than dropping to 90; a real one is set as at start.
+    #[test]
+    fn a_rate_read_again_that_cant_tell_keeps_the_current_one() {
+        let mut p = Pace::new(120.0, Instant::now());
+        p.follow(None);
+        assert_eq!(p.frame, Duration::from_secs_f64(1.0 / 120.0), "can't tell: still 120 Hz");
+        p.follow(Some(144.0));
+        assert_eq!(p.frame, Duration::from_secs_f64(1.0 / 144.0), "changed in SteamVR's settings");
+        p.follow(None);
+        assert_eq!(p.frame, Duration::from_secs_f64(1.0 / 144.0), "can't tell: still 144 Hz");
+        p.follow(Some(120.0));
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY, 1000.0] {
+            p.follow(Some(bad));
+            assert_eq!(p.frame, Duration::from_secs_f64(1.0 / 120.0), "{bad} isn't a rate: still 120 Hz");
+        }
     }
 
     #[test]

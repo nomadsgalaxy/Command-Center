@@ -278,7 +278,23 @@ Instead, a press only goes through once its window is known to be on top:
 2. cc-panels takes a slot and starts the stream.
 3. The overlay is shown on the **first imported frame**, so there's no black flash.
 4. The pose comes from the first of these that exists: the grace map, `win-poses.json`, the
-   `app:` spot, or 1.2 m ahead of the head with an 8 cm cascade.
+   `app:` spot, or 1.4 m ahead of the head (geometry.rs `new_pose`) with an 8 cm cascade. Windows
+   that go ahead within 3 s of each other (windows.rs `AHEAD_RUN`; at start KWin reports each open
+   window in turn) go side by side on that arc instead, right, left, right of the first (gather.rs
+   `side_by_side`), and none moves for a later one. A run ends 10 s after its first window
+   (`RUN_MAX`), however steadily more come, since they're all placed for the head as it was then. One that would go past 90° either way starts
+   a new row from the middle, above, then below, so a dozen at start never wrap round behind you.
+   There are three rows at most (gather.rs `ROWS`): once the one below is full too, the rest
+   stack on the last one placed, turned the same way, 8 cm further down its face and across it
+   for each (one to five steps, then round again a fifth of a step further across) toward the
+   middle of your view, so 40 at start don't go a metre below your eyes or up over your head.
+   Moved only by those steps, no two of 25 in a row land on the same spot. Each is 2 mm nearer
+   than the one before, since the Frame draws by depth, so the newest is on top. One too big for
+   its spot moves down until its top is under the eye-level row, and across until none of its
+   corners is past 90°. A window moved that way can land near another one's spot, though it's
+   still drawn on top. Nothing bounds a stacked window from below, so a tall late one on a deep
+   stack can reach below the bottom row. A floor or a limit on its tilt is an option for later,
+   if that shows up in the headset.
 5. The tag is fetched (§9).
 
 **Idle windows**
@@ -401,7 +417,7 @@ arrived 300 ms after `created`, the script nudges the window (a 1 px resize and 
 |---|---|
 | `fixed` (default) | Locked in the world, 0.25 m below the lowest krdp panel at its home spot, centred under their span.<br>Recomputed when a spot is applied or a panel is dropped, never during a drag.<br>Carrying it by an edge saves `spots.home.taskbar`, which wins from then on.<br>With no krdp panels, it takes the `follow` pose once at startup and freezes there. |
 | `follow` | 0.7 m out, 0.45 m below eye height, tilted 25° toward you, yaw only.<br>When your head yaw is more than 35° off for over 0.6 s, or you've walked more than 0.5 m, it eases over about 0.4 s (critically damped) to face you again. |
-| `wrist` | `SetOverlayTransformTrackedDeviceRelative` on the non-dominant controller (`laser.rs::dominant_hand()`), 0.22 m wide, over the back of the wrist.<br>Fades in when `dot(wrist normal, toward head) > 0.6`. |
+| `wrist` | `SetOverlayTransformTrackedDeviceRelative` on the non-dominant controller (`config.rs::dominant()`), 0.22 m wide, over the back of the wrist.<br>Fades in when `dot(wrist normal, toward head) > 0.6`. |
 
 - **Reading the setting:** at startup.
 - **Switching:** `taskbar fixed|follow|wrist` on `@controlcenter` switches live and writes
@@ -745,7 +761,11 @@ fake_input motion and buttons with no raise gate.
 - Overlays: +1.
 
 Still open (needs a live run): popups as KWin script windows with geometry (risk 4); the bounds'
-v direction, and SteamVR taking the overlay's aspect and mouse from the bounds; the output's
+v direction, and SteamVR taking the overlay's aspect and mouse from the bounds (traced in the
+headset on Oct 29 and 30: across, its point matched the picture; up and down it was squeezed
+toward the middle by the texture's height over its width, as if its hit quad were as tall as the
+bounds' v range over their u range times the width. plasmabar.rs drawn_fy undoes that on the
+fallback path, fitted from the traces and not yet tested in the headset); the output's
 first frame without damage; the park click closing Kickoff. Also whether KWin streams the dock (a
 layer-shell window) by its internalId, and whether that stream matches the output's crop (its
 size, a floating panel's margins, translucency under IgnoreTextureAlpha).

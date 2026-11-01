@@ -3,7 +3,12 @@ name = "cc-hello"
 version = "0.1.0"
 description = "Stage A check: OpenVR bindings work (one overlay up for a few seconds)"
 edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 license-file.workspace = true
 
 [dependencies]
 openvr-sys = { path = "../openvr-sys" }
+
+[lints]
+workspace = true

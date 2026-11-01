@@ -14,12 +14,12 @@
 use super::ui::{self, BTN_H, GAP, MPP, PAD, Px, ROW, Rect, SCALE, SORT, TITLE, text, typed, typed_w};
 use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, over, tint};
-use crate::kvm::KVM;
-use crate::laser::{self, Hand};
+use crate::ids::Hand;
+use crate::overlay::{Flag, InputMode, Surfaces};
+use crate::stage::Stage;
 use crate::taskbar::{Mode, Taskbar, tex_scale};
 use crate::windows::Windows;
-use crate::{HIDDEN, call, config, theme, vr};
-use openvr_sys as sys;
+use crate::{HIDDEN, config, theme, vr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
@@ -289,7 +289,11 @@ impl Prefs {
         if show != self.shown {
             self.shown = show;
             grab.set_extra_shown(show);
-            if show { call!(ov, ShowOverlay, h) } else { call!(ov, HideOverlay, h) };
+            if show {
+                crate::overlay::Live.show(h)
+            } else {
+                crate::overlay::Live.hide(h)
+            };
         }
         if show {
             self.paint(h, windows, bar);
@@ -309,9 +313,9 @@ impl Prefs {
                 return;
             }
         };
-        call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlaySortOrder, h, SORT);
+        crate::overlay::Live.input(h, InputMode::Pointer);
+        crate::overlay::Live.flag(h, Flag::Interactive, true);
+        crate::overlay::Live.order(h, SORT);
         let pose = ui::spot("prefs", W * MPP);
         self.precise = super::machines::precise(); // whatever settings.json says now
         let pl = Placement::from_matrix(&panel_matrix(&pose), pose.width, H / W, pose.curve);
@@ -322,18 +326,18 @@ impl Prefs {
 
     /// Laser events: hovering, and presses on a control.
     fn events(&mut self, h: vr::Handle, grab: &mut grab::Grab, windows: &mut Windows, bar: &mut Taskbar) {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
-        while ui::next_event(h, &mut e) {
-            let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
-            let at = held(self.hover, m.x as f64, from_top(H, m.y as f64)); // window units; events count from the bottom left
+        while let Some(ev) = ui::next_event(h) {
+            use crate::events::{Button, PointerKind as P, SurfaceEvent as S};
             // its card fades in, and a release ends a carry (even one pressed elsewhere and let go over it)
-            grab.panel_event(grab.slot(), &e, &mut KVM.lock().unwrap());
-            match e.eventType {
-                sys::EVREventType_VREvent_MouseMove => self.hover = at,
-                sys::EVREventType_VREvent_FocusLeave => self.hover = None,
-                sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
-                    if vr::is_real_controller(dev) {
-                        let mut k = KVM.lock().unwrap();
+            grab.panel_event(grab.slot(), &ev, &mut crate::kvm::lock());
+            let S::Pointer(pe) = ev else { continue }; // nothing else does anything here
+            let at = held(self.hover, pe.x as f64, from_top(H, pe.y as f64)); // window units; events count from the bottom left
+            match pe.kind {
+                P::Move => self.hover = at,
+                P::Leave => self.hover = None,
+                P::Down(Button::Left) => {
+                    if crate::stage::Live.is_controller(pe.from) {
+                        let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed becomes primary (R-2)
                         }
@@ -343,7 +347,7 @@ impl Prefs {
                     }
                 }
                 // a press on Plasma's bar that was let go over it (taskbar.rs)
-                sys::EVREventType_VREvent_MouseButtonUp => windows.plasma_release(),
+                P::Up(_) => windows.plasma_release(),
                 _ => {}
             }
         }
@@ -353,7 +357,7 @@ impl Prefs {
     fn act(&mut self, a: Hit, windows: &mut Windows, bar: &mut Taskbar) {
         let same = match a {
             Hit::Taskbar(k) => MODES[k] == bar.mode(), // skip it, since set_mode would restart its placement
-            Hit::Hand(k) => (k == 0) == (laser::dominant() == Hand::Left),
+            Hit::Hand(k) => (k == 0) == (config::dominant() == Hand::Left),
             Hit::Align(k) => (k == 1) == self.precise,
             Hit::Minus | Hit::Plus => false,
         };
@@ -373,7 +377,7 @@ impl Prefs {
             Hit::Hand(k) => {
                 let h = [Hand::Left, Hand::Right][k];
                 eprintln!("prefs: pointing hand {h:?}");
-                laser::set_dominant(h);
+                config::set_dominant(h);
                 config::set_setting("dominant_hand", serde_json::json!(["left", "right"][k]))
             }
             Hit::Align(k) => {
@@ -391,7 +395,7 @@ impl Prefs {
         let key = Key {
             taskbar: MODES.iter().position(|&m| m == bar.mode()).unwrap_or(0),
             pct: pct_of(windows.px_per_m()),
-            left: laser::dominant() == Hand::Left,
+            left: config::dominant() == Hand::Left,
             precise: self.precise,
             hover: self.hover,
             status: self.status.clone(),
@@ -492,13 +496,16 @@ mod tests {
         ];
         let mut cases: Vec<(Key, Key)> = hovers.into_iter().map(|(a, b)| (key(a), key(b))).collect();
         let h = Some(Hit::Taskbar(0));
-        cases.extend([
-            Key { taskbar: 0, ..key(h) },
-            Key { pct: 150, ..key(h) },
-            Key { left: true, ..key(None) },
-            Key { precise: false, ..key(None) },
-            Key { status: "settings.json: a much longer error than it was".into(), ..key(Some(Hit::Plus)) },
-        ].map(|b| (key(h), b)));
+        cases.extend(
+            [
+                Key { taskbar: 0, ..key(h) },
+                Key { pct: 150, ..key(h) },
+                Key { left: true, ..key(None) },
+                Key { precise: false, ..key(None) },
+                Key { status: "settings.json: a much longer error than it was".into(), ..key(Some(Hit::Plus)) },
+            ]
+            .map(|b| (key(h), b)),
+        );
         let draw = |k: &Key| {
             let sc = Scene { k, p, ui: &ui };
             grab::draw(tw, th, |x, y| sc.pixel(x / s, y / s))

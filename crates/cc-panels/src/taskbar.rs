@@ -46,15 +46,18 @@
 //! wrist still show, since they're nearer than the backdrop; fixed hides because the Frame
 //! draws by depth, not sort order.
 //! ponytail: no file watch; hand edits to settings.json apply on restart.
+use crate::events::{Button, PointerKind, SurfaceEvent};
 use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, direction, dot, from_top, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta};
-use crate::limits::{BAR_SCALE, CURVE_NOTCH};
-use crate::overlay::{At, Live, Overlays, Place, apply};
 use crate::grab::{self, Look, TagImg, average, line, over, rbox, tint};
+use crate::ids::{Dev, Hand};
+use crate::limits::{BAR_SCALE, CURVE_NOTCH};
+use crate::overlay::{At, Flag, InputMode, Live, Overlays, Place, Surfaces, apply};
+use crate::poll::Session;
+use crate::stage::Stage;
 use crate::theme::{self, Accent, Tokens};
-use crate::kvm::KVM;
-use crate::laser::{self, Hand};
 use crate::windows::Windows;
-use crate::{HIDDEN, Source, call, config, panel, panels, vr};
+use crate::{HIDDEN, Source, config, panel, panels, vr};
+#[cfg(test)]
 use openvr_sys as sys;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -137,6 +140,7 @@ const LOOK: f64 = 0.6; // wrist: shown while dot(its front, toward the eyes) is 
 enum Chip {
     Panel(usize), // a remote machine's (cyan) or a Frame window's (violet) panel, by index
     More(usize),  // windows waiting for a slot
+    Gather,       // "Bring all here": every panel in front of you (gather.rs)
     Workspace,    // the Workspace window (and its Machines page): lit while either's open
     Prefs,        // the Preferences window's gear: lit while it's open
     Power,        // Close Desktop: lit (magenta, "Close?") while armed
@@ -218,13 +222,13 @@ fn anchor_of(mode: Mode) -> crate::surface::Anchor {
     }
 }
 
-/// What the frame was last placed as: its matrix, the device it's on (MAX means the room), and its
+/// What the frame was last placed as: its matrix, the device it's on (None is the room), and its
 /// width and curve radius in millimetres, which is how far it has to move to count as changed.
-type Placed = Option<(Mat, u32, u32, u32)>;
+type Placed = Option<(Mat, Option<Dev>, u32, u32)>;
 
-/// Places overlay `ov` as a frame `width` wide bent to radius `r` at `local` on device `dev` (MAX
+/// Places overlay `ov` as a frame `width` wide bent to radius `r` at `local` on device `dev` (None
 /// for the room), unless it's already placed that way to the millimetre.
-fn put_frame(o: &mut impl Overlays, ov: vr::Handle, placed: &mut Placed, width: f64, r: f64, local: &Mat, dev: u32) {
+fn put_frame(o: &mut impl Overlays, ov: vr::Handle, placed: &mut Placed, width: f64, r: f64, local: &Mat, dev: Option<Dev>) {
     let now = Some((*local, dev, (width * 1000.0).round() as u32, (r * 1000.0).round() as u32));
     if *placed != now {
         *placed = now;
@@ -308,8 +312,20 @@ fn part_at(f: &Frame, x: f64, y: f64) -> Option<Part> {
         return Some(Part::Chip(c));
     }
     let near = REACH + CORNER;
-    let sx = if x < near { -1.0 } else if x > f.w - near { 1.0 } else { 0.0 };
-    let sy = if y < near { 1.0 } else if y > f.h - near { -1.0 } else { 0.0 };
+    let sx = if x < near {
+        -1.0
+    } else if x > f.w - near {
+        1.0
+    } else {
+        0.0
+    };
+    let sy = if y < near {
+        1.0
+    } else if y > f.h - near {
+        -1.0
+    } else {
+        0.0
+    };
     Some(grab::CORNER_SIGN.iter().position(|&c| c == (sx, sy)).map_or(Part::Edge, Part::Corner))
 }
 
@@ -396,7 +412,7 @@ fn chip_pixel(it: &Item, t: &Tokens, acc: &Accent, glyphs: Option<&TagImg>, x: f
         Chip::Panel(_) if s.lit => cw,
         Chip::Panel(_) => 0.4 * cw,
         Chip::Workspace | Chip::Prefs | Chip::Power if s.lit => cw,
-        Chip::More(_) | Chip::Workspace | Chip::Prefs | Chip::Power => 0.0,
+        Chip::More(_) | Chip::Gather | Chip::Workspace | Chip::Prefs | Chip::Power => 0.0,
     };
     let ind = if iw > 0.0 { (0.5 - rbox(x - cw / 2.0, y - (ROW + TILE) / 2.0 + 1.5, iw / 2.0, 1.5, 1.5)).clamp(0.0, 1.0) * inside } else { 0.0 };
     let ink = if s.dim && !s.hover { t.wdim } else { t.wtext }; // on the panel's surface, so Window's colours
@@ -406,6 +422,7 @@ fn chip_pixel(it: &Item, t: &Tokens, acc: &Accent, glyphs: Option<&TagImg>, x: f
             _ if s.chip == Chip::Power && !(s.lit && it.label.is_some()) => ([255.0, 0.0, 0.0], power(x - cw / 2.0, y - ROW / 2.0)),
             Some(img) => label_pixel(img, x, y, cw),
             None if s.chip == Chip::Prefs => ([255.0, 0.0, 0.0], gear(x - cw / 2.0, y - ROW / 2.0)), // a tag's text colour
+            None if s.chip == Chip::Gather => ([255.0, 0.0, 0.0], gather(x - cw / 2.0, y - ROW / 2.0)),
             None => text_pixel(glyphs, GLYPHS, &it.text, x, y, cw),
         },
         ink,
@@ -420,6 +437,22 @@ fn gear(x: f64, y: f64) -> f64 {
     let r = x.hypot(y);
     let outer = 6.5 + 3.0 * (8.0 * y.atan2(x)).cos().clamp(-0.5, 0.5); // 5 in a gap, 8 on a tooth
     (outer - r + 0.5).clamp(0.0, 1.0) * (r - 2.5 + 0.5).clamp(0.0, 1.0)
+}
+
+/// "Bring all here"'s glyph at (x, y) units from its centre: a small panel's outline, with four
+/// arrows coming in at it from the corners, the way gather pulls everything in.
+fn gather(x: f64, y: f64) -> f64 {
+    let panel = line(rbox(x, y, 3.2, 2.4, 0.8), 0.7);
+    let (ax, ay) = (x.abs(), y.abs()); // the four corners are one corner, mirrored
+    // a stroke from (8.5, 7.5) in to (5, 4.5), and its head: two short strokes back from its tip
+    let seg = |(x0, y0): (f64, f64), (x1, y1): (f64, f64)| {
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let t = (((ax - x0) * dx + (ay - y0) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        line((ax - x0 - t * dx).hypot(ay - y0 - t * dy), 0.7)
+    };
+    let tip = (5.0, 4.5);
+    let arrow = seg((8.5, 7.5), tip).max(seg(tip, (7.6, 4.6))).max(seg(tip, (5.1, 7.0)));
+    panel.max(arrow)
 }
 
 /// The power glyph's coverage at (x, y) units from its centre (y down): a ring 1.6 thick
@@ -456,9 +489,9 @@ impl<'a> Scene<'a> {
     }
 
     /// One pixel at (x, y) units from the top left. From the bottom up: Plasma's panel surface,
-/// opaque, inside a 1 u border with RADIUS corners (violet and glowing when lit, 2 u when
-/// carried or resized); the corner under a laser thickened into a grip; a 1 u outline round
-/// Plasma's bar; the chips; the knob.
+    /// opaque, inside a 1 u border with RADIUS corners (violet and glowing when lit, 2 u when
+    /// carried or resized); the corner under a laser thickened into a grip; a 1 u outline round
+    /// Plasma's bar; the chips; the knob.
     fn pixel(&self, x: f64, y: f64) -> ([f64; 3], f64) {
         let (f, t, acc, lk) = (self.f, self.t, &self.acc, self.lk);
         let (cx, cy) = (x - f.w / 2.0, y - f.h / 2.0);
@@ -522,7 +555,7 @@ fn widths(items: &[Item], glyphs: Option<&TagImg>) -> Vec<(Chip, f64)> {
             let w = match it.s.chip {
                 Chip::Panel(_) | Chip::Workspace => it.label.as_ref().map_or(120.0, |l| (l.0 as f64 - TAG_ROOM) * LABEL + 2.0 * CHIP_PAD).min(MAX_CHIP),
                 Chip::More(_) => it.text.len() as f64 * cell + 2.0 * CHIP_PAD,
-                Chip::Prefs => GEAR,
+                Chip::Prefs | Chip::Gather => GEAR,
                 // same width armed or not, so arming moves no chip (or what was under the laser) and only repaints this one
                 Chip::Power => it.label.as_ref().map_or(GEAR, |l| ((l.0 as f64 - TAG_ROOM) * LABEL + 2.0 * CHIP_PAD).max(GEAR)),
             };
@@ -573,8 +606,8 @@ struct Follow {
 
 impl Follow {
     /// One frame with the head at `at` looking at (yaw, pitch). Returns what the bar is placed
-/// for now. Past SLACK the head becomes the target every frame until it's caught up, and the
-/// spring is the lag. `held` means a laser (or a press) is on it, so it stays put under it.
+    /// for now. Past SLACK the head becomes the target every frame until it's caught up, and the
+    /// spring is the lag. `held` means a laser (or a press) is on it, so it stays put under it.
     fn step(&mut self, yaw: f64, pitch: f64, at: V3, dt: f64, held: bool) -> (f64, f64, V3) {
         let Some((ty, tp, tat)) = self.target else {
             (self.target, self.yaw, self.pitch, self.at) = (Some((yaw, pitch, at)), yaw, pitch, at);
@@ -612,10 +645,7 @@ fn follow_pose(yaw: f64, pitch: f64, at: &V3) -> Pose {
 /// ponytail: uses the flat panel's corners (a curved one's are a little nearer), and the span
 /// can't wrap behind you.
 fn under(panels: &[Placement], eye: &V3) -> Option<Pose> {
-    let corners: Vec<V3> = panels
-        .iter()
-        .flat_map(|p| [-1.0, 1.0].map(|s| [0, 1, 2].map(|k| p.c[k] + s * p.x[k] * p.width / 2.0 - p.y[k] * p.height / 2.0)))
-        .collect();
+    let corners: Vec<V3> = panels.iter().flat_map(|p| [-1.0, 1.0].map(|s| [0, 1, 2].map(|k| p.c[k] + s * p.x[k] * p.width / 2.0 - p.y[k] * p.height / 2.0))).collect();
     let yaw = |c: &V3| angles(&[c[0] - eye[0], c[1] - eye[1], c[2] - eye[2]]).0; // more is further left
     let left = corners.iter().max_by(|a, b| yaw(a).total_cmp(&yaw(b)))?;
     let right = corners.iter().min_by(|a, b| yaw(a).total_cmp(&yaw(b)))?;
@@ -638,11 +668,7 @@ fn off_hand(pointing: Hand) -> Hand {
 /// controller's raw pose, not its grip component (the Frame's tip is angled, vr.rs); the knob
 /// covers the difference.
 fn wrist_local(hand: Hand) -> Mat {
-    let k = config::settings()["taskbar_wrist"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_f64()).collect::<Vec<_>>())
-        .filter(|v| v.len() == 4)
-        .unwrap_or(vec![-0.04, 0.0, 0.15, 0.0]);
+    let k = config::settings()["taskbar_wrist"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect::<Vec<_>>()).filter(|v| v.len() == 4).unwrap_or(vec![-0.04, 0.0, 0.15, 0.0]);
     let sx = if hand == Hand::Left { 1.0 } else { -1.0 };
     let (c, s) = (k[3].to_radians().cos(), k[3].to_radians().sin());
     // columns: x (0,0,-sx), y (0,-1,0) and z (-sx,0,0), turned by tilt about x
@@ -660,7 +686,7 @@ fn facing(m: &Mat, eye: &V3) -> bool {
 /// A press held on the frame: which device, and what it's doing. `lost` is when that device
 /// went untracked; it lets go after grab::LOST.
 struct Hold {
-    dev: u32,
+    dev: Dev,
     kind: Kind,
     lost: Option<Instant>,
 }
@@ -676,30 +702,30 @@ pub struct Taskbar {
     ov: vr::Handle,
     mode: Mode,
     glyphs: Option<TagImg>,
-    pub(crate) names: Vec<Option<Arc<TagImg>>>, // each remote machine's chip label, by panel index
-    machines: Option<Arc<TagImg>>,   // the Workspace chip's label
-    close: Option<Arc<TagImg>>,      // the power chip's label while armed
-    armed: Option<Instant>,          // the power chip was clicked then: a second click within ARM closes
+    pub(crate) names: Vec<Option<Arc<TagImg>>>,                       // each remote machine's chip label, by panel index
+    machines: Option<Arc<TagImg>>,                                    // the Workspace chip's label
+    close: Option<Arc<TagImg>>,                                       // the power chip's label while armed
+    armed: Option<Instant>,                                           // the power chip was clicked then: a second click within ARM closes
     drawn: Option<(Vec<State>, Option<(i32, i32)>, Looks, u32, u32)>, // what was last drawn: the chips, Plasma's bar's size, the looks, the theme (theme::generation), the scale in quarters
-    px: Vec<u8>,       // the texture as uploaded (empty if refused), patched one chip at a time
-    drawn_at: Option<Instant>, // its last full draw
-    pub plasma_time: Duration, // time spent on Plasma's bar this tick (plasmabar in the slow-tick line)
-    frame: Frame,      // as uploaded
-    mpp: f64,          // metres per unit right now
-    pose: Option<Mat>, // fixed: where it is in the room (None until placed)
+    px: Vec<u8>,                                                      // the texture as uploaded (empty if refused), patched one chip at a time
+    drawn_at: Option<Instant>,                                        // its last full draw
+    pub plasma_time: Duration,                                        // time spent on Plasma's bar this tick (plasmabar in the slow-tick line)
+    frame: Frame,                                                     // as uploaded
+    mpp: f64,                                                         // metres per unit right now
+    pose: Option<Mat>,                                                // fixed: where it is in the room (None until placed)
     follow: Follow,
-    wrist: [Mat; 2],                   // on the left hand, then the right (wrist_local)
-    wrist_dev: Option<(Hand, Option<u32>)>, // the controller it's on, as last logged
+    wrist: [Mat; 2],                                    // on the left hand, then the right (wrist_local)
+    wrist_dev: Option<(Hand, Option<crate::ids::Ctl>)>, // the controller it's on, as last logged
     hold: Option<Hold>,
     scale: f64,          // the user's size for both rows (settings.json taskbar_scale)
     curve: f64,          // the rows' curve radius in metres, 0 for flat (taskbar_curve)
     hover: Option<Part>, // the part under a laser (Plasma's bar included)
     placed: Placed,
     shown: bool,
-    alpha: f32,    // wrist: fading in while you look at it
-    game: bool,    // a VR game is running
-    carried: bool, // a krdp panel was being carried last frame
-    moving: bool,  // held, hovered, moved or fading this frame (main.rs keeps the display's rate)
+    alpha: f32,               // wrist: fading in while you look at it
+    game: bool,               // a VR game is running
+    carried: bool,            // a krdp panel was being carried last frame
+    moving: bool,             // held, hovered, moved or fading this frame (main.rs keeps the display's rate)
     game_at: Option<Instant>, // when we last polled for a VR game
     last: Instant,
 }
@@ -708,12 +734,12 @@ impl Taskbar {
     pub fn new(assets: &str) -> Taskbar {
         let h = crate::surface::create(crate::surface::Kind::Taskbar, None, "controlcenter.taskbar", "Command Center taskbar").unwrap_or_else(|e| {
             eprintln!("taskbar: no overlay: {e}"); // SteamVR's 128 are shared, and they're used up
-            0
+            crate::vr::Handle::NONE
         });
-        call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
-        call!(ov, SetOverlaySortOrder, h, SORT);
+        crate::overlay::Live.input(h, InputMode::Pointer);
+        crate::overlay::Live.flag(h, Flag::Interactive, true);
+        crate::overlay::Live.flag(h, Flag::DiscreteScroll, true);
+        crate::overlay::Live.order(h, SORT);
         let mode = match config::settings()["taskbar"].as_str() {
             None => Mode::Fixed,
             Some(s) => Mode::parse(s).unwrap_or_else(|| {
@@ -723,10 +749,7 @@ impl Taskbar {
         };
         eprintln!("taskbar: {}", mode.name());
         crate::surface::set_anchor(h, anchor_of(mode));
-        let names = panels()
-            .iter()
-            .map(|p| matches!(p.src, Source::Rdp).then(|| crate::load_tag(&format!("{assets}/tag-chip-{}.rgba", p.v.name)).map(Arc::new)).flatten())
-            .collect();
+        let names = panels().iter().map(|p| matches!(p.src, Source::Rdp).then(|| crate::load_tag(&format!("{assets}/tag-chip-{}.rgba", p.v.name)).map(Arc::new)).flatten()).collect();
         Taskbar {
             ov: h,
             mode,
@@ -780,7 +803,7 @@ impl Taskbar {
     fn set_mode(&mut self, m: Mode) {
         (self.mode, self.hold, self.placed, self.pose, self.follow) = (m, None, None, None, Follow::default());
         self.alpha = if m == Mode::Wrist { 0.0 } else { 1.0 };
-        call!(ov, SetOverlayAlpha, self.ov, self.alpha);
+        crate::overlay::Live.alpha(self.ov, self.alpha);
         crate::surface::set_anchor(self.ov, anchor_of(m));
         eprintln!("taskbar: {}", m.name());
     }
@@ -811,15 +834,15 @@ impl Taskbar {
         if let Some(p) = config::home_pose("taskbar", None) {
             return self.set_fixed(&p);
         }
-        let eye = vr::head_position();
+        let eye = crate::stage::Live.head();
         let rdp: Vec<Placement> = {
-            let k = KVM.lock().unwrap();
+            let k = crate::kvm::lock();
             panels().iter().filter(|p| matches!(p.src, Source::Rdp) && p.used()).map(|p| k.place[p.index]).collect()
         };
         let pose = match under(&rdp, &eye) {
             Some(p) => p,
             None => {
-                let Some(h) = vr::head() else { return }; // no headset pose yet: place_now asks again
+                let Some(h) = crate::stage::Live.head_now() else { return }; // no headset pose yet: place_now asks again
                 follow_pose(yaw_of(&h), 0.0, &eye)
             }
         };
@@ -834,7 +857,7 @@ impl Taskbar {
     /// Fixed: scales its units for its distance, so it looks as big as follow's.
     fn fit(&mut self) {
         let Some(m) = self.pose else { return };
-        let eye = vr::head_position();
+        let eye = crate::stage::Live.head();
         let d = norm(&[m[0][3] as f64 - eye[0], m[1][3] as f64 - eye[1], m[2][3] as f64 - eye[2]]);
         self.mpp = MPP * (d / OUT).max(1.0) * self.scale;
     }
@@ -858,7 +881,8 @@ impl Taskbar {
         let before = (self.placed, self.alpha);
         if self.game_at.is_none_or(|t| now - t >= GAME_EVERY) {
             self.game_at = Some(now); // by time, since the idle loop only ticks every 40 ms
-            let game = call!(apps, GetCurrentSceneProcessId) != 0;
+            // false, the fallback on any runtime that can't tell, is "no game": the taskbar stays
+            let game = crate::poll::Live.scene_app_running().unwrap_or(false);
             if game != self.game {
                 self.game = game;
                 eprintln!("taskbar: {}", if game { "a VR game is running: hidden" } else { "no VR game: back" });
@@ -870,14 +894,14 @@ impl Taskbar {
         if !grab.released.is_empty() {
             windows.plasma_release();
         }
-        let released: Vec<u32> = grab.released.drain(..).chain(windows.plasma_released()).collect();
+        let released: Vec<crate::ids::Dev> = grab.released.drain(..).chain(windows.plasma_released()).collect();
         if self.hold.as_ref().is_some_and(|h| released.contains(&h.dev)) {
             self.let_go();
         }
         self.holding(now);
         // The mouse's cursor on it: its hover, and its clicks.
         let (on, clicks) = {
-            let mut k = KVM.lock().unwrap();
+            let mut k = crate::kvm::lock();
             (k.on_bar.filter(|_| self.shown), std::mem::take(&mut k.bar_clicks)) // (stale while it's hidden)
         };
         let mouse = on.and_then(|(u, v)| chip_at(&self.frame, u / self.mpp + self.frame.w / 2.0, self.frame.h / 2.0 - v / self.mpp));
@@ -912,30 +936,41 @@ impl Taskbar {
         self.plasma_time = t.elapsed();
         if at.is_some() != self.shown {
             self.shown = at.is_some();
-            if self.shown { call!(ov, ShowOverlay, self.ov) } else { call!(ov, HideOverlay, self.ov) };
+            if self.shown {
+                crate::overlay::Live.show(self.ov)
+            } else {
+                crate::overlay::Live.hide(self.ov)
+            };
         }
         let (w, h) = (self.frame.w, self.frame.h);
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         k.bar = at.map(|(m, ..)| Placement::from_matrix(&m, w * self.mpp, h / w, r));
         k.bar_inset = REACH * self.mpp; // for the cursor; the clear reach does nothing for it
+        drop(k);
+        if crate::trace::on() {
+            let v = serde_json::json!({"bar": at.map(|(m, ..)| m), "width": w * self.mpp, "aspect": h / w, "curve": r, "plasma": windows.plasma_size()});
+            crate::trace::changed("taskbar", v);
+        }
         self.moving = self.hold.is_some() || self.hover.is_some() || (self.placed, self.alpha) != before;
     }
 
     /// Laser events on it: hovering, clicking a chip, taking an edge, a corner or the knob.
     fn events(&mut self, grab: &mut grab::Grab, windows: &mut Windows) {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
-        while call!(ov, PollNextOverlayEvent, self.ov, &mut e, size_of::<vr::VREvent_t>() as u32) {
-            let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
-            let y = from_top(self.frame.h, m.y as f64); // its units, from the top
-            let mut part = part_at(&self.frame, m.x as f64, y);
+        use crate::poll::Pointing;
+        crate::trace::tick("taskbar");
+        while let Some(ev) = crate::trace::Traced("taskbar").next(self.ov) {
+            // only a pointer does anything on the frame: anything else went through and matched nothing
+            let SurfaceEvent::Pointer(pe) = ev else { continue };
+            let y = from_top(self.frame.h, pe.y as f64); // its units, from the top
+            let mut part = part_at(&self.frame, pe.x as f64, y);
             // Plasma's bar is 2 mm in front of us (FRONT), so a slanted laser goes through it a
             // few pixels from where it hits our well, or over its edge while it hits our padding.
             // On it and where goes by that, the way the mouse's ray sees it (plasmabar.rs).
-            let pointer = [sys::EVREventType_VREvent_MouseMove, sys::EVREventType_VREvent_MouseButtonDown, sys::EVREventType_VREvent_MouseButtonUp].contains(&e.eventType);
-            let bar = if pointer && self.frame.well.is_some() { KVM.lock().unwrap().bar } else { None }; // (unlocked again: laser_on_panel takes it)
+            let pointer = matches!(pe.kind, PointerKind::Move | PointerKind::Down(_) | PointerKind::Up(_));
+            let bar = if pointer && self.frame.well.is_some() { crate::kvm::lock().bar } else { None }; // (unlocked again: laser_on_panel takes it)
             if let Some(bar) = bar
-                && let Some(l) = vr::laser_pose(dev)
-                && let Some(on) = crate::plasmabar::laser_on_panel(&[l[0][3] as f64, l[1][3] as f64, l[2][3] as f64], &frame_point(&bar, &self.frame, m.x as f64, m.y as f64))
+                && let Some(l) = crate::trace::laser_pose(pe.from)
+                && let Some(on) = crate::plasmabar::laser_on_panel(&[l[0][3] as f64, l[1][3] as f64, l[2][3] as f64], &frame_point(&bar, &self.frame, pe.x as f64, pe.y as f64))
             {
                 part = match (on, part) {
                     (Some((fx, fy)), _) => Some(Part::Plasma(fx, fy)),
@@ -945,18 +980,17 @@ impl Taskbar {
             }
             let was = matches!(self.hover, Some(Part::Plasma(..)));
             // on Plasma's bar, pass its events on (a scroll goes by where the laser last was)
-            match (e.eventType, part, self.hover) {
-                (sys::EVREventType_VREvent_ScrollDiscrete, _, Some(Part::Plasma(fx, fy)))
-                | (sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_MouseButtonDown | sys::EVREventType_VREvent_MouseButtonUp, Some(Part::Plasma(fx, fy)), _) => {
-                    windows.plasma_laser(&e, fx, fy)
+            match (pe.kind, part, self.hover) {
+                (PointerKind::Scroll { smooth: false, .. }, _, Some(Part::Plasma(fx, fy))) | (PointerKind::Move | PointerKind::Down(_) | PointerKind::Up(_), Some(Part::Plasma(fx, fy)), _) => {
+                    windows.plasma_laser(&pe, fx, fy)
                 }
                 _ => {}
             }
-            match e.eventType {
-                sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_FocusLeave => {
-                    self.hover = part.filter(|_| e.eventType == sys::EVREventType_VREvent_MouseMove);
+            match pe.kind {
+                PointerKind::Move | PointerKind::Leave => {
+                    self.hover = part.filter(|_| pe.kind == PointerKind::Move);
                     if was && !matches!(self.hover, Some(Part::Plasma(..))) {
-                        let up = e.eventType == sys::EVREventType_VREvent_MouseMove && self.frame.well.is_some_and(|r| y < r[1]);
+                        let up = pe.kind == PointerKind::Move && self.frame.well.is_some_and(|r| y < r[1]);
                         if up && crate::plasmabar::OPEN.load(Relaxed) {
                             crate::plasmabar::TIP.store(true, Relaxed); // moved up into its tooltip (a preview), which Plasma's overlay takes
                         } else {
@@ -964,9 +998,9 @@ impl Taskbar {
                         }
                     }
                 }
-                sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
-                    if vr::is_real_controller(dev) {
-                        let mut k = KVM.lock().unwrap();
+                PointerKind::Down(Button::Left) => {
+                    if crate::stage::Live.is_controller(pe.from) {
+                        let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed is primary (R-2)
                         }
@@ -978,7 +1012,7 @@ impl Taskbar {
                         Some(Part::Chip(c)) => self.click(c, grab, windows),
                         Some(p) if self.hold.is_none() => {
                             if let Some(t) = hold_for(p, self.mode) {
-                                self.take(t, dev);
+                                self.take(t, pe.from);
                             }
                         }
                         _ => {}
@@ -986,16 +1020,16 @@ impl Taskbar {
                 }
                 // SteamVR sends a release to the overlay under the laser, not the one pressed, so a
                 // press on Plasma's bar or a panel that's let go over the frame ends here too
-                sys::EVREventType_VREvent_MouseButtonUp => {
+                PointerKind::Up(_) => {
                     windows.plasma_release();
-                    grab.end_by(dev, &KVM.lock().unwrap());
-                    if self.hold.as_ref().is_some_and(|h| h.dev == dev) {
+                    grab.end_by(pe.from, &crate::kvm::lock());
+                    if self.hold.as_ref().is_some_and(|h| h.dev == pe.from) {
                         self.let_go();
                     }
                 }
                 // the wheel or joystick while bending: 3 cm more (or less) curve per notch
-                sys::EVREventType_VREvent_ScrollDiscrete => {
-                    let n = unsafe { e.data.scroll.ydelta } as f64;
+                PointerKind::Scroll { dy, smooth: false, .. } => {
+                    let n = dy as f64;
                     if let Some(Hold { kind: Kind::Curve { from, .. }, .. }) = self.hold.as_mut() {
                         *from = (*from + CURVE_NOTCH * n).max(0.0);
                     }
@@ -1020,6 +1054,12 @@ impl Taskbar {
         if c == Chip::Prefs {
             crate::control::show(&crate::control::prefs::OPEN, !crate::control::prefs::OPEN.load(Relaxed));
         }
+        if c == Chip::Gather {
+            match crate::gather::gather(grab, windows) {
+                Ok(_) => self.refix(), // fixed, it goes back under them, as after a spot
+                Err(e) => eprintln!("taskbar: gather: {e}"),
+            }
+        }
         if c == Chip::Power {
             let quit;
             (self.armed, quit) = press_power(self.armed, Instant::now());
@@ -1040,11 +1080,11 @@ impl Taskbar {
     }
 
     /// A press on an edge, a corner or the knob by a device's laser: held from now.
-    fn take(&mut self, t: Take, dev: u32) {
-        let Some(pl) = KVM.lock().unwrap().bar else { return };
+    fn take(&mut self, t: Take, dev: Dev) {
+        let Some(pl) = crate::kvm::lock().bar else { return };
         let kind = match t {
             Take::Carry => {
-                let (Some(d), Some(b)) = (grab::pose_of(dev), self.pose) else { return };
+                let (Some(d), Some(b)) = (crate::stage::Live.device(dev), self.pose) else { return };
                 Kind::Carry { rel: mul(&inv_rigid(&d), &b) }
             }
             Take::Resize(k) => {
@@ -1058,7 +1098,7 @@ impl Taskbar {
                 Kind::Curve { local, z0, from }
             }
         };
-        eprintln!("taskbar: {t:?} by device {dev}");
+        eprintln!("taskbar: {t:?} by device {}", crate::stage::Live.label(dev));
         self.hold = Some(Hold { dev, kind, lost: None });
     }
 
@@ -1066,7 +1106,7 @@ impl Taskbar {
     /// by how far the grabbed point has come toward you (along the frame's normal).
     fn holding(&mut self, now: Instant) {
         let Some(h) = self.hold.as_mut() else { return };
-        let Some(d) = grab::pose_of(h.dev) else {
+        let Some(d) = crate::stage::Live.device(h.dev) else {
             if now - *h.lost.get_or_insert(now) > grab::LOST {
                 self.let_go(); // lost tracking: put it down where it was
             }
@@ -1074,7 +1114,7 @@ impl Taskbar {
         };
         h.lost = None;
         let (dev, kind) = (h.dev, h.kind);
-        let Some(pl) = KVM.lock().unwrap().bar else { return };
+        let Some(pl) = crate::kvm::lock().bar else { return };
         match kind {
             Kind::Carry { rel } => self.pose = Some(mul(&d, &rel)),
             Kind::Resize { k, gx, gy, s0, w0 } => {
@@ -1119,13 +1159,13 @@ impl Taskbar {
     /// ponytail: labels are app names (tags); no Icon= icons, and no caption on hover yet.
     fn paint(&mut self, windows: &Windows, mouse: Option<Chip>, mouse_on: bool) {
         let (kbd, engaged) = {
-            let k = KVM.lock().unwrap();
+            let k = crate::kvm::lock();
             (if k.kbd_shell { usize::MAX } else { k.kbd }, k.engaged)
         };
         let mut chips = Vec::new();
         for p in panels() {
             let slotted = match &p.src {
-                Source::Rdp => p.used() && crate::config::member(&p.v), // (not a spare or removed, machines.rs, and in this workspace)
+                Source::Rdp => p.used() && crate::config::member(&p.v),                      // (not a spare or removed, machines.rs, and in this workspace)
                 Source::Window(w) => w.lock().unwrap().as_ref().is_some_and(|w| !w.popup()), // a menu gets no chip
             };
             if slotted {
@@ -1135,6 +1175,7 @@ impl Taskbar {
         if windows.waiting() > 0 {
             chips.push(Chip::More(windows.waiting()));
         }
+        chips.push(Chip::Gather);
         chips.push(Chip::Workspace);
         chips.push(Chip::Prefs);
         chips.push(Chip::Power);
@@ -1151,7 +1192,7 @@ impl Taskbar {
                         let p = panel(i);
                         (p.tag().0, p.away() || !p.live(), engaged && kbd == i && p.live() && !p.away())
                     }
-                    Chip::More(_) => (0, false, false),
+                    Chip::More(_) | Chip::Gather => (0, false, false),
                     Chip::Workspace => (0, false, crate::control::machines::OPEN.load(Relaxed) || crate::control::workspace::OPEN.load(Relaxed)),
                     Chip::Prefs => (0, false, crate::control::prefs::OPEN.load(Relaxed)),
                     Chip::Power => (0, false, armed),
@@ -1190,8 +1231,8 @@ impl Taskbar {
                     }
                     Chip::More(n) => (grab::VIOLET, None, format!("+{n}")),
                     Chip::Workspace => (grab::REMOTE, self.machines.clone(), String::new()),
-                    Chip::Prefs => (grab::VIOLET, None, String::new()),
-                    Chip::Power => (if s.lit { theme::MAGENTA } else { grab::VIOLET }, self.close.clone(), String::new()),
+                    Chip::Prefs | Chip::Gather => (grab::VIOLET, None, String::new()),
+                    Chip::Power => (if s.lit { theme::get().alert } else { grab::VIOLET }, self.close.clone(), String::new()),
                 };
                 Item { s, accent, label, text }
             })
@@ -1222,8 +1263,7 @@ impl Taskbar {
         self.drawn_at = Some(now);
         self.px = vr::timed(|| format!("taskbar: drawn {tw}x{th}"), || scene.draw(s));
         if grab::set_raw(self.ov, &self.px, tw, th) {
-            let mut scale = sys::HmdVector2_t { v: [f.w as f32, f.h as f32] }; // events in its units
-            call!(ov, SetOverlayMouseScale, self.ov, &mut scale);
+            crate::overlay::Live.mouse_scale(self.ov, [f.w as f32, f.h as f32]); // events in its units
             self.frame = f;
         } else {
             self.px.clear();
@@ -1234,60 +1274,65 @@ impl Taskbar {
     /// Where the frame goes this frame: its matrix in the room, its matrix on the device it's on,
     /// and that device (MAX for the room). None means it isn't shown now (the wrist is out of
     /// sight, or untracked).
-    fn place_now(&mut self, dt: f64, mouse_on: bool) -> Option<(Mat, Mat, u32)> {
+    fn place_now(&mut self, dt: f64, mouse_on: bool) -> Option<(Mat, Mat, Option<Dev>)> {
         Some(match self.mode {
             Mode::Fixed => {
                 if self.pose.is_none() {
                     self.refix();
                 }
                 let m = self.pose?;
-                (m, m, u32::MAX)
+                (m, m, None)
             }
             Mode::Follow => {
                 self.mpp = MPP * self.scale;
-                let h = vr::head()?;
+                let h = crate::stage::Live.head_now()?;
                 let (yaw, pitch) = gaze(&h);
                 // also hold still under the mouse's cursor, since chips sliding under it would each repaint
                 let held = self.hover.is_some() || self.hold.is_some() || mouse_on;
                 let (yaw, pitch, at) = self.follow.step(yaw, pitch, [h[0][3] as f64, h[1][3] as f64, h[2][3] as f64], dt, held);
                 let m = panel_matrix(&follow_pose(yaw, pitch, &at));
-                (m, m, u32::MAX)
+                (m, m, None)
             }
             Mode::Wrist => {
                 self.mpp = (WRIST_W / self.frame.w).max(WRIST_MPP); // its own size, not the fixed bar's corner scale
-                // the off hand (laser::dominant, which Preferences changes live)
-                let hand = off_hand(laser::dominant());
-                let role = if hand == Hand::Left {
-                    sys::ETrackedControllerRole_TrackedControllerRole_LeftHand
-                } else {
-                    sys::ETrackedControllerRole_TrackedControllerRole_RightHand
-                };
-                let dev = call!(sys, GetTrackedDeviceIndexForControllerRole, role);
-                // (not our cc_pointer, which takes that hand's role while the mouse borrows it)
-                let real = dev != sys::k_unTrackedDeviceIndexInvalid as u32 && vr::is_real_controller(dev);
-                if self.wrist_dev != Some((hand, real.then_some(dev))) {
-                    self.wrist_dev = Some((hand, real.then_some(dev)));
-                    if real { eprintln!("taskbar: wrist on device {dev} ({hand:?} hand)") } else { eprintln!("taskbar: wrist: no {hand:?} controller") };
+                // the off hand (config::dominant, which Preferences changes live)
+                let hand = off_hand(config::dominant());
+                let ctl = crate::stage::Live.in_hand(hand);
+                if self.wrist_dev != Some((hand, ctl)) {
+                    self.wrist_dev = Some((hand, ctl));
+                    if let Some(c) = ctl {
+                        eprintln!("taskbar: wrist on device {} ({hand:?} hand)", crate::stage::Live.label(Dev::Controller(c)))
+                    } else {
+                        eprintln!("taskbar: wrist: no {hand:?} controller")
+                    };
                 }
                 let local = self.wrist[(hand == Hand::Right) as usize];
-                let world = real.then(|| grab::pose_of(dev)).flatten().map(|d| mul(&d, &local));
-                let facing = world.is_some_and(|m| facing(&m, &vr::head_position()));
+                let world = ctl.and_then(|c| crate::stage::Live.device(Dev::Controller(c))).map(|d| mul(&d, &local));
+                let facing = world.is_some_and(|m| facing(&m, &crate::stage::Live.head()));
                 let alpha = (self.alpha + if facing { 0.15 } else { -0.08 }).clamp(0.0, 1.0);
                 if alpha != self.alpha {
                     self.alpha = alpha;
-                    call!(ov, SetOverlayAlpha, self.ov, alpha);
+                    crate::overlay::Live.alpha(self.ov, alpha);
                 }
                 // fully faded it's hidden, not just see-through, because an invisible overlay still catches lasers
                 if alpha <= 0.0 {
                     return None;
                 }
-                (world?, local, dev)
+                (world?, local, ctl.map(Dev::Controller))
             }
         })
     }
 
-    /// Puts the frame at `local` on device `dev` (MAX for the room), only when that changed.
-    fn put(&mut self, local: &Mat, dev: u32) {
+    /// One wrist frame's placement, for a test: which controller it's on now (golden.rs).
+    #[cfg(test)]
+    pub(crate) fn wrist_frame(&mut self) -> Option<u32> {
+        self.mode = Mode::Wrist;
+        self.place_now(1.0 / 90.0, false);
+        self.wrist_dev.and_then(|w| w.1).map(|c| c.raw())
+    }
+
+    /// Puts the frame at `local` on device `dev` (None for the room), only when that changed.
+    fn put(&mut self, local: &Mat, dev: Option<Dev>) {
         let (width, r) = (self.frame.w * self.mpp, self.radius());
         put_frame(&mut Live, self.ov, &mut self.placed, width, r, local, dev);
     }
@@ -1298,10 +1343,94 @@ impl Taskbar {
     }
 }
 
+/// Replays a trace (trace.rs) through the real events() and the fake SteamVR (vr::fake), the
+/// taskbar's side of plasmabar.rs's Plasma::replay: its lines set the frame and Plasma's bar up
+/// as their ticks left them, and each taskbar pass's events go through in one go
+/// (docs/vr-harness.md). The frame is laid out with Plasma's bar and no chips, since the trace
+/// doesn't carry them.
+#[cfg(test)]
+impl Taskbar {
+    fn replay(&mut self, trace: &str, grab: &mut grab::Grab, windows: &mut Windows) {
+        let lines: Vec<serde_json::Value> = trace.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+        let mut i = 0;
+        while i < lines.len() {
+            let l = &lines[i];
+            i += 1;
+            if let Some(v) = l.get("taskbar") {
+                let plasma: Option<(f64, f64)> = serde_json::from_value(v["plasma"].clone()).ok().flatten();
+                self.frame = frame(plasma, &[]);
+                let bar: Option<Mat> = serde_json::from_value(v["bar"].clone()).ok().flatten();
+                let (width, aspect, curve) = (v["width"].as_f64().unwrap(), v["aspect"].as_f64().unwrap(), v["curve"].as_f64().unwrap());
+                crate::kvm::lock().bar = bar.map(|m| Placement::from_matrix(&m, width, aspect, curve));
+            } else if let Some(v) = l.get("plasma") {
+                windows.plasma_mut().replay_placed(v);
+            } else if let Some((dev, m)) = crate::trace::pose_from(l) {
+                let mut s = vr::fake::SCRIPT.lock().unwrap();
+                let s = s.get_or_insert_with(Default::default);
+                s.poses.retain(|p| p.0 != dev);
+                s.poses.extend(m.map(|m| (dev, m)));
+            } else if l["tick"] == "taskbar" {
+                while i < lines.len() && lines[i].get("tick").is_none() && lines[i].get("taskbar").is_none() && lines[i].get("plasma").is_none() {
+                    if lines[i]["ev"] == "taskbar"
+                        && let Some(e) = crate::trace::event_from(&lines[i])
+                    {
+                        vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).events.push_back(e);
+                    }
+                    i += 1;
+                }
+                self.events(grab, windows);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::geometry::bend;
+
+    #[test]
+    fn a_laser_on_plasmas_bar_through_the_frame_replays_onto_the_panel() {
+        use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_DOWN, PTR_FLAGS_MOVE};
+        let _vr = crate::trace::fake_vr();
+        let dir = std::env::temp_dir().join(format!("cc-taskbar-replay-{}", std::process::id()));
+        let mut bar = Taskbar::new(dir.to_str().unwrap()); // no assets there: no labels, which events() doesn't need
+        let mut windows = Windows::for_test(0);
+        let mut grab = grab::Grab::with_backdrop(0, crate::vr::Handle::NONE);
+        // Plasma's 891x50 bar in the frame's well, nothing open, and the frame in the room
+        let panel = [514, 1770, 891, 50];
+        let m = panel_matrix(&Pose { centre: [0.0, 1.0, -1.0], ..Default::default() });
+        let f = frame(Some((891.0, 50.0)), &[]);
+        let plasma = serde_json::json!({"crop": panel, "panel": panel, "bounds": [0.0, 0.0, 1.0, 1.0], "world": m, "width": 891.0 * MPP, "aspect": 50.0 / 891.0, "curve": 0.0, "clickable": false});
+        let taskbar = serde_json::json!({"bar": m, "width": f.w * MPP, "aspect": f.h / f.w, "curve": 0.0, "plasma": [891, 50]});
+        // a laser with no pose (the frame's own point counts) a tenth of the way along the bar, halfway up
+        let r = f.well.unwrap();
+        let (x, y) = (r[0] + 0.1 * r[2], f.h - (r[1] + 0.5 * r[3])); // events count from the bottom left
+        let ev = |t: u32| {
+            let mut e: vr::VREvent_t = Default::default();
+            (e.eventType, e.trackedDeviceIndex) = (t, 3);
+            e.data.mouse = sys::VREvent_Mouse_t { x: x as f32, y: y as f32, button: sys::EVRMouseButton_VRMouseButton_Left, cursorIndex: 0 };
+            crate::trace::event_line("taskbar", &e).unwrap().to_string()
+        };
+        let trace = [
+            serde_json::json!({ "plasma": plasma }).to_string(),
+            serde_json::json!({ "taskbar": taskbar }).to_string(),
+            serde_json::json!({"tick": "taskbar"}).to_string(),
+            ev(sys::EVREventType_VREvent_MouseMove),
+            ev(sys::EVREventType_VREvent_MouseButtonDown),
+            ev(sys::EVREventType_VREvent_MouseButtonUp),
+        ]
+        .join("\n");
+        bar.replay(&trace, &mut grab, &mut windows);
+        let sent = std::mem::take(&mut *crate::windows::SHELL_SENT.lock().unwrap());
+        let flags: Vec<u32> = sent.iter().map(|s| s.0).collect();
+        assert_eq!(flags, [PTR_FLAGS_MOVE, PTR_FLAGS_BUTTON1 | PTR_FLAGS_DOWN, PTR_FLAGS_BUTTON1], "a move, the press, its release: {sent:?}");
+        let want = (514.0 + 0.1 * 890.0, 1770.0 + 0.5 * 49.0);
+        for (_, at) in &sent {
+            let at = at.unwrap();
+            assert!((at.0 - want.0).abs() < 1.0 && (at.1 - want.1).abs() < 1.0, "{at:?}, the bar's point is {want:?}");
+        }
+    }
 
     const PLASMA: (f64, f64) = (891.0, 50.0); // Plasma's floating panel as measured
 
@@ -1824,7 +1953,7 @@ mod tests {
         use crate::geometry::bend;
         use crate::overlay::fake::{Call, Writes};
 
-        const OV: vr::Handle = 5;
+        const OV: vr::Handle = crate::vr::Handle(5);
 
         fn at(x: f64) -> Mat {
             panel_matrix(&Pose { centre: [x, 1.0, -1.0], ..Default::default() })
@@ -1833,30 +1962,30 @@ mod tests {
         #[test]
         fn the_frame_is_written_once_in_the_room_and_not_again_until_something_moves_a_millimetre() {
             let (mut w, mut placed) = (Writes::default(), None);
-            put_frame(&mut w, OV, &mut placed, 1.2341, 2.0, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2341, 2.0, &at(0.0), None);
             assert_eq!(w.0, vec![Call::Width(OV, 1.2341), Call::Curvature(OV, bend(1.2341, 2.0)), Call::Room(OV, at(0.0))]);
             let n = w.0.len();
-            put_frame(&mut w, OV, &mut placed, 1.2341, 2.0, &at(0.0), u32::MAX);
-            put_frame(&mut w, OV, &mut placed, 1.2343, 2.0, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2341, 2.0, &at(0.0), None);
+            put_frame(&mut w, OV, &mut placed, 1.2343, 2.0, &at(0.0), None);
             assert_eq!(w.0.len(), n, "the same, and the same to the millimetre: nothing");
-            put_frame(&mut w, OV, &mut placed, 1.2360, 2.0, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2360, 2.0, &at(0.0), None);
             assert_eq!(w.0.len(), 2 * n, "2 mm wider: written");
-            put_frame(&mut w, OV, &mut placed, 1.2360, 2.0004, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2360, 2.0004, &at(0.0), None);
             assert_eq!(w.0.len(), 2 * n, "a curve within a millimetre: nothing");
-            put_frame(&mut w, OV, &mut placed, 1.2360, 2.01, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2360, 2.01, &at(0.0), None);
             assert_eq!(w.0.len(), 3 * n, "a curve 1 cm different: written");
-            put_frame(&mut w, OV, &mut placed, 1.2360, 2.01, &at(0.1), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 1.2360, 2.01, &at(0.1), None);
             assert_eq!(w.0.len(), 4 * n, "moved: written");
         }
 
         #[test]
         fn a_frame_on_the_wrist_is_placed_on_the_controller_not_in_the_room() {
             let (mut w, mut placed) = (Writes::default(), None);
-            put_frame(&mut w, OV, &mut placed, 0.4, 0.0, &at(0.0), 3);
+            put_frame(&mut w, OV, &mut placed, 0.4, 0.0, &at(0.0), Some(Dev::Controller(crate::ids::Ctl::new(3))));
             assert_eq!(w.0.last(), Some(&Call::Device(OV, 3, at(0.0))));
             assert_eq!(w.room_of(OV), None);
             assert_eq!(w.curvature_of(OV), Some(0.0), "flat");
-            put_frame(&mut w, OV, &mut placed, 0.4, 0.0, &at(0.0), u32::MAX);
+            put_frame(&mut w, OV, &mut placed, 0.4, 0.0, &at(0.0), None);
             assert_eq!(w.room_of(OV), Some(at(0.0)), "the same matrix on the room is a different place");
         }
     }

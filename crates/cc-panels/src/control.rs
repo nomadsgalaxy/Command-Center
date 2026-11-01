@@ -1,4 +1,5 @@
-//! The control socket: datagrams on @controlcenter, with replies going back to the sender.
+//! The control socket: datagrams on @controlcenter, with replies going back to the sender. Only
+//! datagrams from our own user are taken (recv_ours), since an abstract socket has no permissions.
 //!   panels    -> "ok", then one line per shown panel:
 //!                <name> cx cy cz  xx xy xz  zx zy zz  width height curve
 //!                (a window's name is its spot key, app:<desktop file name>)
@@ -12,6 +13,12 @@
 //!   hide | show
 //!   summon    brings every panel back in sight: nothing minimized (in KWin too), theater
 //!             mode off, nothing hidden
+//!   gather    -> "ok gather <n>": summon, then every panel showing and the open Machines,
+//!             Preferences or Workspace window moved in front of you, not saved (gather.rs; the
+//!             taskbar's "Bring all here", the dashboard tab, Right Ctrl + B, cc-home gather).
+//!             "error ..." with the headset untracked, and then nothing changes
+//!   ungather  -> "ok ungather <n>": puts back what the last gather moved, except a panel you've
+//!             moved since (Left or Right Ctrl + Shift + B, cc-home ungather); "error ..." with nothing to undo
 //!   viewer connect <name>   connects a remote that wasn't connected at start (autoconnect)
 //!   viewer disconnect <name>   ends a remote's session (connect starts it again)
 //!   machines show|hide   the Machines window (control/machines.rs), same as its taskbar chip
@@ -38,6 +45,9 @@
 //!   hud hide  hides both
 //!   taskbar [fixed|follow|wrist]   sets the taskbar's placement, now and in settings.json
 //!                (with no argument: "ok <placement>")
+//!   notify test [text]   sends a notification the way pairing and host health do (notify.rs: the
+//!                Frame's user bus, or SteamVR's toast if that refuses it)
+//!   notify toast [text]   shows SteamVR's own toast straight away, the fallback on its own
 //!   quit      closes Desktop, same as the taskbar's power chip or Right Ctrl + Esc. cc-panels ends
 //!                and the desktop session stops (session/cc-rest; programs named in `rest_nice` keep running at nice 10).
 //!                The next open restores your apps but not their contents (cc-home hibernate)
@@ -54,9 +64,10 @@ pub mod workspace;
 const HUD_USAGE: &str = "error usage: hud <rgba file> <w> <h> [skip=x0,y0,x1,y1] | hud mark <rgba file> <w> <h> <width> <12 numbers> | hud hide";
 
 use crate::geometry::{Pose, panel_matrix};
-use crate::kvm::KVM;
+use crate::overlay::Surfaces;
+use crate::stage::Stage;
 use crate::surface;
-use crate::{HIDDEN, Source, call, panels, taskbar};
+use crate::{HIDDEN, Source, panels, taskbar};
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::sync::OnceLock;
@@ -124,7 +135,7 @@ fn wake_on_request(s: &UnixDatagram) {
 pub fn open() -> Option<UnixDatagram> {
     START.get_or_init(Instant::now);
     let s = SocketAddr::from_abstract_name(b"controlcenter").and_then(|a| UnixDatagram::bind_addr(&a));
-    match s.and_then(|s| s.set_nonblocking(true).map(|_| s)) {
+    match s.and_then(|s| s.set_nonblocking(true).and_then(|_| passcred(&s)).map(|_| s)) {
         Ok(s) => {
             wake_on_request(&s);
             Some(s)
@@ -136,13 +147,97 @@ pub fn open() -> Option<UnixDatagram> {
     }
 }
 
+/// `summon`: every panel back in sight. Nothing minimized (its window un-minimized in KWin too),
+/// theater mode off, and nothing hidden. Gather does this first (gather.rs).
+pub fn summon(grab: &mut crate::grab::Grab, windows: &mut crate::windows::Windows) {
+    windows.summon(grab); // un-minimizes its windows in KWin too
+    for p in panels() {
+        p.set_minimized(false);
+    }
+    show_panels(true);
+}
+
 pub fn handle(s: &UnixDatagram, grab: &mut crate::grab::Grab, windows: &mut crate::windows::Windows, bar: &mut taskbar::Taskbar) {
     hud::tick(); // once a frame, so a HUD whose scan died goes away
     let mut buf = [0u8; 1024];
-    while let Ok((n, from)) = s.recv_from(&mut buf) {
-        let reply = command(&String::from_utf8_lossy(&buf[..n]), grab, windows, bar);
-        let _ = s.send_to_addr(reply.as_bytes(), &from);
+    loop {
+        match recv_ours(s, &mut buf) {
+            Ok(Some((n, from))) => {
+                let reply = command(&String::from_utf8_lossy(&buf[..n]), grab, windows, bar);
+                from.reply(s, reply.as_bytes());
+            }
+            Ok(None) => {
+                static SAID: AtomicBool = AtomicBool::new(false);
+                if !SAID.swap(true, Relaxed) {
+                    eprintln!("control socket: ignored a command from another user (once)");
+                }
+            }
+            Err(_) => break, // drained (WouldBlock) or broken
+        }
     }
+}
+
+// ------------------------------------------------------------------ who's asking
+
+/// The socket is abstract (@controlcenter), so it has no file permissions: any process on the
+/// machine can reach it. The kernel's credentials on each datagram (SO_PASSCRED) are the gate, and
+/// only our own user's commands are taken.
+fn passcred(s: &UnixDatagram) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let on: libc::c_int = 1;
+    let r = unsafe { libc::setsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PASSCRED, (&on as *const libc::c_int).cast(), size_of::<libc::c_int>() as libc::socklen_t) };
+    if r == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
+/// Where a datagram came from, to answer it.
+struct Sender {
+    addr: libc::sockaddr_un,
+    len: libc::socklen_t,
+}
+
+impl Sender {
+    fn reply(&self, s: &UnixDatagram, data: &[u8]) {
+        use std::os::fd::AsRawFd;
+        // If it's busy or gone, it asks again; nothing here waits on it.
+        unsafe { libc::sendto(s.as_raw_fd(), data.as_ptr().cast(), data.len(), libc::MSG_DONTWAIT, (&self.addr as *const libc::sockaddr_un).cast(), self.len) };
+    }
+}
+
+/// Whether a datagram's sender is us: the credentials the kernel attached say so. None (no
+/// credentials) isn't.
+fn ours(uid: Option<u32>) -> bool {
+    uid == Some(unsafe { libc::getuid() })
+}
+
+/// The next datagram, if it's from our own user: its length and who sent it. Ok(None) is one from
+/// someone else, dropped. Err ends the drain (WouldBlock when there's nothing left).
+fn recv_ours(s: &UnixDatagram, buf: &mut [u8]) -> std::io::Result<Option<(usize, Sender)>> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: sockaddr_un is an integer family and a byte array: all zeros is valid (and an empty path, filled in below).
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let mut ctrl = [0u64; 8]; // room for one cmsghdr with a ucred, aligned
+    let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };
+    // SAFETY: msghdr is integers and pointers that may be null: all zeros is an empty message, filled in below.
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_name = (&mut addr as *mut libc::sockaddr_un).cast();
+    msg.msg_namelen = size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = ctrl.as_mut_ptr().cast();
+    msg.msg_controllen = size_of_val(&ctrl) as _; // usize on glibc, u32 on musl
+    let n = unsafe { libc::recvmsg(s.as_raw_fd(), &mut msg, libc::MSG_DONTWAIT) };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut uid = None;
+    let mut c = unsafe { libc::CMSG_FIRSTHDR(&msg) };
+    while !c.is_null() {
+        if unsafe { (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_CREDENTIALS } {
+            uid = Some(unsafe { std::ptr::read_unaligned(libc::CMSG_DATA(c) as *const libc::ucred) }.uid);
+        }
+        c = unsafe { libc::CMSG_NXTHDR(&msg, c) };
+    }
+    Ok(ours(uid).then_some((n as usize, Sender { addr, len: msg.msg_namelen })))
 }
 
 /// A panel slot as the surface registry describes it (surface.rs).
@@ -163,9 +258,9 @@ pub fn show_panels(show: bool) {
     HIDDEN.store(!show, Relaxed);
     for p in panels() {
         if show && p.live() && !p.away() {
-            call!(ov, ShowOverlay, p.overlay);
+            crate::overlay::Live.show(p.overlay);
         } else {
-            call!(ov, HideOverlay, p.overlay);
+            crate::overlay::Live.hide(p.overlay);
         }
     }
 }
@@ -174,13 +269,25 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
     let words: Vec<&str> = cmd.split_whitespace().collect();
     match words.first().copied() {
         Some("panels") => {
-            let k = KVM.lock().unwrap();
+            let k = crate::kvm::lock();
             let mut out = String::from("ok");
             for (p, l) in panels().iter().zip(&k.place).filter(|(p, _)| p.live()) {
                 out += &format!(
                     "\n{} {:.4} {:.4} {:.4}  {:.5} {:.5} {:.5}  {:.5} {:.5} {:.5}  {:.4} {:.4} {:.3} {:.3}",
-                    p.spot_key(), l.c[0], l.c[1], l.c[2], l.x[0], l.x[1], l.x[2], l.z[0], l.z[1], l.z[2], l.width, l.height,
-                    if l.vert { 0.0 } else { l.curve }, if l.vert { l.curve } else { 0.0 } // curve, vcurve
+                    p.spot_key(),
+                    l.c[0],
+                    l.c[1],
+                    l.c[2],
+                    l.x[0],
+                    l.x[1],
+                    l.x[2],
+                    l.z[0],
+                    l.z[1],
+                    l.z[2],
+                    l.width,
+                    l.height,
+                    if l.vert { 0.0 } else { l.curve },
+                    if l.vert { l.curve } else { 0.0 } // curve, vcurve
                 );
             }
             out
@@ -191,10 +298,7 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
                 return "error usage: place <name> cx cy cz yaw pitch roll width curve [height [vcurve]]".into();
             }
             let vcurve = n.get(9).copied().filter(|&v| v > 0.0);
-            let pose = Pose {
-                centre: [n[0], n[1], n[2]], yaw: n[3], pitch: n[4], roll: n[5], width: n[6],
-                curve: vcurve.unwrap_or(n[7]), vert: vcurve.is_some(),
-            };
+            let pose = Pose { centre: [n[0], n[1], n[2]], yaw: n[3], pitch: n[4], roll: n[5], width: n[6], curve: vcurve.unwrap_or(n[7]), vert: vcurve.is_some() };
             if words[1] == "taskbar" {
                 bar.place(&pose);
                 return "ok".into();
@@ -206,12 +310,13 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
             match panels().iter().find(|p| p.live() && p.spot_key() == words[1]) {
                 Some(p) => {
                     grab.cancel(p.index); // a recall beats a carry
+                    crate::gather::placed(p.index); // and it's a place of its own again, saved as usual
                     // a window's height comes from the save (its window follows, windows.rs); a
                     // remote screen's comes from its monitor's shape
                     p.set_vert(pose.vert && matches!(p.src, Source::Rdp)); // set_pose turns the panel for that
                     match (n.get(8).filter(|&&h| h > 0.0), &p.src) {
-                        (Some(&h), Source::Window(_)) => KVM.lock().unwrap().set_place(p.index, &panel_matrix(&pose), pose.width, h, pose.curve),
-                        _ => KVM.lock().unwrap().set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve),
+                        (Some(&h), Source::Window(_)) => crate::kvm::lock().set_place(p.index, &panel_matrix(&pose), pose.width, h, pose.curve),
+                        _ => crate::kvm::lock().set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve),
                     }
                     if matches!(p.src, Source::Rdp) {
                         bar.refix(); // a spot was applied, so the fixed taskbar goes back under the panels
@@ -274,11 +379,14 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
                 if win == "machines" && w == "show" {
                     machines::scope(None); // back to the active workspace's
                 }
-                show(match win {
-                    "prefs" => &prefs::OPEN,
-                    "workspace" => &workspace::OPEN,
-                    _ => &machines::OPEN,
-                }, w == "show");
+                show(
+                    match win {
+                        "prefs" => &prefs::OPEN,
+                        "workspace" => &workspace::OPEN,
+                        _ => &machines::OPEN,
+                    },
+                    w == "show",
+                );
                 format!("ok {win} {w}")
             }
             _ => format!("error usage: {win} show|hide"),
@@ -288,7 +396,7 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
             None => "error no such Frame controller tracked".into(),
         },
         Some("devices") => format!("ok\n{}", crate::vr::devices().join("\n")),
-        Some("head") => match crate::vr::head() {
+        Some("head") => match crate::stage::Live.head_now() {
             Some(m) => head_line(&m, START.get_or_init(Instant::now).elapsed().as_millis()),
             None => "error head untracked".into(),
         },
@@ -298,13 +406,23 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
         }
         Some("surfaces") => surface::report(panel_now),
         Some("summon") => {
-            windows.summon(grab); // un-minimizes its windows in KWin too
-            for p in panels() {
-                p.set_minimized(false);
-            }
-            show_panels(true);
+            summon(grab, windows);
             "ok summon".into()
         }
+        Some("gather") => match crate::gather::gather(grab, windows) {
+            Ok(n) => {
+                bar.refix(); // the fixed taskbar goes back under them, as after a spot
+                format!("ok gather {n}")
+            }
+            Err(e) => format!("error {e}"),
+        },
+        Some("ungather") => match crate::gather::ungather(grab) {
+            Ok(n) => {
+                bar.refix();
+                format!("ok ungather {n}")
+            }
+            Err(e) => format!("error {e}"),
+        },
         Some("taskbar") => match words.get(1) {
             None => format!("ok {}", bar.mode().name()),
             Some(w) => match taskbar::Mode::parse(w) {
@@ -314,6 +432,18 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
                 },
                 None => "error usage: taskbar fixed|follow|wrist".into(),
             },
+        },
+        Some("notify") => match words.get(1..) {
+            Some(["toast", text @ ..]) => {
+                crate::notify::toast(&or_test(text));
+                "ok".into()
+            }
+            Some(["test", text @ ..]) => {
+                let t = or_test(text);
+                crate::notify::send(&format!("test {t}"), &t); // a test says the same thing at most every 30 s, like any subject
+                "ok sent: it shows unless settings.json has notifications off, and the log says if the bus refused it".into()
+            }
+            _ => "error usage: notify test|toast [text]".into(),
         },
         Some("quit") => {
             crate::close_desktop("control");
@@ -327,10 +457,36 @@ pub fn command(cmd: &str, grab: &mut crate::grab::Grab, windows: &mut crate::win
     }
 }
 
+/// The words after `notify test|toast`, or a line saying it's a test.
+fn or_test(words: &[&str]) -> String {
+    if words.is_empty() { "Command Center: a test notification".into() } else { words.join(" ") }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{head_line, machines, prefs, show};
+    use super::{SocketAddr, SocketAddrExt, UnixDatagram, head_line, machines, ours, passcred, prefs, recv_ours, show};
     use std::sync::atomic::Ordering::Relaxed;
+
+    /// Our own datagram comes through with its credentials and gets its answer back; a sender
+    /// with no credentials, or another user's, isn't taken.
+    #[test]
+    fn only_our_user_drives_it() {
+        let name = format!("cc-panels-test-peer-{}", std::process::id());
+        let srv = UnixDatagram::bind_addr(&SocketAddr::from_abstract_name(name.as_bytes()).unwrap()).unwrap();
+        passcred(&srv).unwrap();
+        let cli = UnixDatagram::bind_addr(&SocketAddr::from_abstract_name(format!("{name}-c").as_bytes()).unwrap()).unwrap();
+        cli.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+        cli.send_to_addr(b"ping", &SocketAddr::from_abstract_name(name.as_bytes()).unwrap()).unwrap();
+        let mut buf = [0u8; 64];
+        let (n, from) = recv_ours(&srv, &mut buf).unwrap().expect("our own uid");
+        assert_eq!(&buf[..n], b"ping");
+        from.reply(&srv, b"ok pong");
+        let got = cli.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..got], b"ok pong");
+        assert!(recv_ours(&srv, &mut buf).is_err(), "drained");
+        let me = unsafe { libc::getuid() };
+        assert!(ours(Some(me)) && !ours(Some(me + 1)) && !ours(None));
+    }
 
     #[test]
     fn showing_one_window_closes_the_other() {
@@ -347,9 +503,6 @@ mod tests {
     #[test]
     fn head_reply_is_twelve_row_major_numbers_then_milliseconds() {
         let m = [[1.0, 0.0, 0.0, 0.25], [0.0, 1.0, 0.0, 1.7], [0.0, 0.0, 1.0, -0.5]];
-        assert_eq!(
-            head_line(&m, 1234),
-            "ok 1.000000 0.000000 0.000000 0.250000 0.000000 1.000000 0.000000 1.700000 0.000000 0.000000 1.000000 -0.500000 1234"
-        );
+        assert_eq!(head_line(&m, 1234), "ok 1.000000 0.000000 0.000000 0.250000 0.000000 1.000000 0.000000 1.700000 0.000000 0.000000 1.000000 -0.500000 1234");
     }
 }

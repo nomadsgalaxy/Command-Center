@@ -37,6 +37,7 @@ impl Canvas {
     }
 
     /// Draws text centred in the box (x, y, w, h) at `size` px, shrunk to fit the width and blended over what's there.
+    #[allow(clippy::too_many_arguments)] // the text, its box and its look: grouping them would only rename them
     pub fn text(&mut self, s: &str, bx: i64, by: i64, bw: i64, bh: i64, size: f32, c: u32) {
         let font = fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default()).expect("the bundled font");
         let width = |sz: f32| s.chars().map(|ch| font.metrics(ch, sz).advance_width).sum::<f32>();
@@ -203,6 +204,6 @@ mod tests {
         assert_eq!(&ADDR_TAG_BITS[..], &cc_scan::dict::CODES[cc_scan::ADDR_BASE..cc_scan::ADDR_BASE + 256]);
         assert_eq!(&KEY_TAG_BITS[..], &cc_scan::dict::CODES[cc_scan::KEY_BASE..cc_scan::KEY_BASE + 100]);
         assert_eq!(&TAG_BITS[..], &cc_scan::dict::CODES[..250]);
-        assert!(cc_scan::ADDR_BASE + 256 <= 900 && cc_scan::ADDR_BASE >= 250, "clear of align's and the key's ids");
+        const { assert!(cc_scan::ADDR_BASE + 256 <= 900 && cc_scan::ADDR_BASE >= 250, "clear of align's and the key's ids") };
     }
 }

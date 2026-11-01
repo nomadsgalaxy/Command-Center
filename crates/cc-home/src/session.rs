@@ -13,6 +13,8 @@
 //!   cc-home rest                session/cc-rest: hibernate save, the session stopped, and the
 //!                               programs named in `rest_nice` at nice 10 and idle-ish IO
 //!   cc-home session             session/cc-desktop: Plasma in a headless KWin (the cc-desktop unit)
+//!   cc-home tab                 session/cc-tab: what SteamVR starts with itself, the dashboard tab
+//!                               while the Desktop is closed (cc-panels --tab in cc-box)
 //!   cc-home box <cmd> [args...] cc-box: a command in the control-center container, or right
 //!                               here when the build is native (native())
 //! With CC_DRY=1, desktop, panels, rest and box print the commands that would change something
@@ -39,6 +41,7 @@ pub fn dispatch(name: &str, args: &[OsString]) -> Option<i32> {
         "panels" | "cc-panels" => panels(rest),
         "rest" | "cc-rest" => rest_now(),
         "session" | "cc-desktop" => session(),
+        "tab" | "cc-tab" => tab(),
         "box" | "cc-box" => boxed(&args[usize::from(name == "cc-home")..]),
         "kwin_wayland_wrapper" => kwin_wrapper(args),
         "flatpak-bwrap" => flatpak_bwrap(args),
@@ -176,9 +179,10 @@ fn panels_running(proc: &Path) -> Vec<u32> {
 /// The transient unit the session runs as. On a stop its apps get 10 s to quit before they're
 /// killed. Its output goes to /tmp/cc-desktop.log, fresh each start.
 pub fn session_unit(exe: &Path) -> Vec<String> {
-    let mut v: Vec<String> = ["systemd-run", "--user", "--collect", "--quiet", "--unit", "cc-desktop", "-p", "TimeoutStopSec=10", "-p", "StandardOutput=truncate:/tmp/cc-desktop.log", "-p", "StandardError=inherit"]
-        .map(String::from)
-        .into();
+    let mut v: Vec<String> =
+        ["systemd-run", "--user", "--collect", "--quiet", "--unit", "cc-desktop", "-p", "TimeoutStopSec=10", "-p", "StandardOutput=truncate:/tmp/cc-desktop.log", "-p", "StandardError=inherit"]
+            .map(String::from)
+            .into();
     v.extend([exe.display().to_string(), "session".into()]);
     v
 }
@@ -219,7 +223,7 @@ fn desktop(args: &[String]) -> i32 {
     // A native build (the sysext image) against a SteamOS it wasn't built on: it starts if its
     // libraries still load, and says what's wrong if they don't (steamos.rs).
     if native(&root) {
-        if let Err(msg) = crate::steamos::check_abi(&root) {
+        if let Err(msg) = crate::steamos::check_release().and_then(|_| crate::steamos::check_abi(&root)) {
             eprintln!("{msg}");
             return 1;
         }
@@ -227,6 +231,7 @@ fn desktop(args: &[String]) -> i32 {
         // from somewhere else, register the driver with vrpathreg (once; steamos.rs).
         crate::steamos::check_steamvr(register_driver);
     }
+    crate::binding::check(); // the bumper's right click, back if a steamreset or a deleted file lost it
     let runtime = format!("{}/cc-desktop", var_or("XDG_RUNTIME_DIR", &format!("/run/user/{}", uid())));
     // A Desktop closed a moment ago may still be stopping because an app is slow to quit. Let it
     // finish, or the new session can't start and cc-panels comes up without one (live,
@@ -275,6 +280,35 @@ fn desktop(args: &[String]) -> i32 {
         rest_now();
     }
     status
+}
+
+// ---- cc-tab
+
+/// session/cc-tab: what SteamVR starts with itself (command-center.vrmanifest): `cc-panels --tab`,
+/// the dashboard tab while the Desktop is closed (crates/cc-panels/src/tab.rs). It goes through
+/// cc-box like the Desktop's cc-panels, its output in ~/.cache/control-center/cc-tab.log. It execs,
+/// so on a native build SteamVR's own child is the tab.
+fn tab() -> i32 {
+    let (root, cache) = (root(), PathBuf::from(cache("")));
+    let _ = fs::create_dir_all(&cache);
+    let log = cache.join("cc-tab.log");
+    if fs::metadata(&log).map_or(0, |m| m.len()) > 1_000_000 {
+        let _ = fs::rename(&log, cache.join("cc-tab.log.1"));
+    }
+    let mut c = Command::new(root.join("cc-box"));
+    c.env("CC_NICE", "0").arg(root.join("target/release/cc-panels")).arg("--tab");
+    if DRY.load(Relaxed) {
+        println!("dry: {c:?} >> {}", log.display());
+        return 0;
+    }
+    if let Ok(f) = fs::OpenOptions::new().append(true).create(true).open(&log)
+        && let Ok(g) = f.try_clone()
+    {
+        c.stdout(f).stderr(g);
+    }
+    let e = c.exec();
+    eprintln!("{}: {e}", root.join("cc-box").display());
+    127
 }
 
 // ---- cc-rest
@@ -351,6 +385,7 @@ pub fn start_log(cache: &Path, stamp: &str) -> std::io::Result<fs::File> {
 fn stamp() -> String {
     unsafe {
         let t = libc::time(std::ptr::null_mut());
+        // SAFETY: libc::tm is plain integers (and a nullable zone pointer): all zeros is a valid value, which localtime_r then fills.
         let mut tm: libc::tm = std::mem::zeroed();
         libc::localtime_r(&t, &mut tm);
         let mut buf = [0u8; 32];
@@ -394,7 +429,16 @@ fn panels(args: &[String]) -> i32 {
     if args.first().map(String::as_str) == Some("stop") {
         let found = panels_running(proc);
         let sent = !DRY.load(Relaxed) && found.iter().filter(|&&p| unsafe { libc::kill(p as i32, libc::SIGINT) } == 0).count() > 0;
-        println!("{}", if sent { "stopped" } else if DRY.load(Relaxed) && !found.is_empty() { "dry: would stop" } else { "not running" });
+        println!(
+            "{}",
+            if sent {
+                "stopped"
+            } else if DRY.load(Relaxed) && !found.is_empty() {
+                "dry: would stop"
+            } else {
+                "not running"
+            }
+        );
         for _ in 0..50 {
             if DRY.load(Relaxed) || panels_running(proc).is_empty() {
                 break;
@@ -421,12 +465,14 @@ fn panels(args: &[String]) -> i32 {
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     let envloop = {
         let (stop, cache, xdg) = (stop.clone(), cache.clone(), xdg.clone());
-        thread::spawn(move || loop {
-            sleep_s(5);
-            if stop.load(Relaxed) {
-                break;
+        thread::spawn(move || {
+            loop {
+                sleep_s(5);
+                if stop.load(Relaxed) {
+                    break;
+                }
+                session_env(Path::new("/proc"), &cache, &xdg);
             }
-            session_env(Path::new("/proc"), &cache, &xdg);
         })
     };
     let mut log = start_log(&cache, &stamp()).ok();
@@ -488,10 +534,8 @@ fn setup_done(name: &str) -> bool {
 fn boxed(args: &[OsString]) -> i32 {
     let name = var_or("CC_CONTAINER", "control-center");
     let native = native(&root());
-    if !native {
-        if let Err(c) = container_up(&name) {
-            return c;
-        }
+    if !native && let Err(c) = container_up(&name) {
+        return c;
     }
     // Gentle by default for builds and tools, since the headset is rendering VR too. cc-panels
     // passes CC_NICE=0.
@@ -846,7 +890,8 @@ mod tests {
 
     #[test]
     fn steam_env() {
-        for v in ["LD_LIBRARY_PATH", "LD_PRELOAD", "STEAM_RUNTIME", "STEAM_", "SteamAppId", "SRT_X", "PRESSURE_VESSEL_A", "MANGOHUD_CONFIG", "ENABLE_VK_LAYER_VALVE_steam_overlay_1", "STEAMVIDEOTOKEN"] {
+        for v in ["LD_LIBRARY_PATH", "LD_PRELOAD", "STEAM_RUNTIME", "STEAM_", "SteamAppId", "SRT_X", "PRESSURE_VESSEL_A", "MANGOHUD_CONFIG", "ENABLE_VK_LAYER_VALVE_steam_overlay_1", "STEAMVIDEOTOKEN"]
+        {
             assert!(steam_var(v, false) && steam_var(v, true), "{v}");
         }
         for v in ["ENABLE_GAMESCOPE_WSI", "XDG_DESKTOP_PORTAL_DIR"] {
@@ -859,8 +904,20 @@ mod tests {
 
     #[test]
     fn process_tree() {
-        let p = fake_proc("tree", &[(1, 0, "systemd", &[], ""), (50, 1, "worker", &[], ""), (51, 50, "bash", &[], ""), (60, 51, "job", &[], ""),
-            (52, 50, "bash", &[], ""), (70, 1, "bash", &[], ""), (71, 70, "job", &[], ""), (80, 1, "workerx", &[], ""), (90, 1, "worker", &[], "")]);
+        let p = fake_proc(
+            "tree",
+            &[
+                (1, 0, "systemd", &[], ""),
+                (50, 1, "worker", &[], ""),
+                (51, 50, "bash", &[], ""),
+                (60, 51, "job", &[], ""),
+                (52, 50, "bash", &[], ""),
+                (70, 1, "bash", &[], ""),
+                (71, 70, "job", &[], ""),
+                (80, 1, "workerx", &[], ""),
+                (90, 1, "worker", &[], ""),
+            ],
+        );
         assert_eq!(named(&p, "worker"), [50, 90]);
         assert_eq!(tree(&p, 50), [50, 51, 60, 52]);
         assert_eq!(tree(&p, 90), [90]);
@@ -870,18 +927,37 @@ mod tests {
 
     #[test]
     fn panels_match_and_session_env() {
-        assert!(is_panels(b"/home/u/control-center/target/release/cc-panels\0--for\00\0"));
-        assert!(!is_panels(b"/home/u/control-center/cc-panels\0--for\00\0")); // the wrapper itself
-        assert!(!is_panels(b"nice\0-n\00\0/x/distrobox\0enter\0control-center\0--\0/x/target/release/cc-panels\0"));
+        assert!(is_panels(b"/home/u/control-center/target/release/cc-panels\0--for\x000\0"));
+        assert!(!is_panels(b"/home/u/control-center/cc-panels\0--for\x000\0")); // the wrapper itself
+        assert!(!is_panels(b"nice\0-n\x000\0/x/distrobox\0enter\0control-center\0--\0/x/target/release/cc-panels\0"));
         assert!(!is_panels(b"/bin/sh\0/x/target/release/cc-panels\0"));
-        let p = fake_proc("env", &[
-            (10, 1, "plasmashell", &["XDG_RUNTIME_DIR=/run/user/1000/other", "WAYLAND_DISPLAY=wrong"], ""),
-            (20, 1, "plasmashell", &["HOME=/h", "WAYLAND_DISPLAY=wayland-0", "XDG_RUNTIME_DIR=/run/user/1000/cc-desktop", "DISPLAY=:1", "DBUS_SESSION_BUS_ADDRESS=unix:path=/x", "XAUTHORITY=/a", "XDG_RUNTIME_DIRX=no"], ""),
-        ]);
+        let p = fake_proc(
+            "env",
+            &[
+                (10, 1, "plasmashell", &["XDG_RUNTIME_DIR=/run/user/1000/other", "WAYLAND_DISPLAY=wrong"], ""),
+                (
+                    20,
+                    1,
+                    "plasmashell",
+                    &[
+                        "HOME=/h",
+                        "WAYLAND_DISPLAY=wayland-0",
+                        "XDG_RUNTIME_DIR=/run/user/1000/cc-desktop",
+                        "DISPLAY=:1",
+                        "DBUS_SESSION_BUS_ADDRESS=unix:path=/x",
+                        "XAUTHORITY=/a",
+                        "XDG_RUNTIME_DIRX=no",
+                    ],
+                    "",
+                ),
+            ],
+        );
         let cache = temp("cache");
         session_env(&p, &cache, "/run/user/1000");
-        assert_eq!(fs::read_to_string(cache.join("desktop-session.env")).unwrap(),
-            "WAYLAND_DISPLAY=wayland-0\nXDG_RUNTIME_DIR=/run/user/1000/cc-desktop\nDISPLAY=:1\nDBUS_SESSION_BUS_ADDRESS=unix:path=/x\nXAUTHORITY=/a\n");
+        assert_eq!(
+            fs::read_to_string(cache.join("desktop-session.env")).unwrap(),
+            "WAYLAND_DISPLAY=wayland-0\nXDG_RUNTIME_DIR=/run/user/1000/cc-desktop\nDISPLAY=:1\nDBUS_SESSION_BUS_ADDRESS=unix:path=/x\nXAUTHORITY=/a\n"
+        );
         session_env(&p, &cache, "/run/user/1001"); // no such session: the file goes
         assert!(!cache.join("desktop-session.env").exists());
         let _ = (fs::remove_dir_all(p), fs::remove_dir_all(cache));
@@ -908,8 +984,7 @@ mod tests {
         let a = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
         let args = a(&["--args", "44", "--", "vivaldi"]);
         let app = b"--tmpfs\0/run/user/1000\0--bind\0/run/user/1000/cc-desktop/doc/by-app/x\0/run/flatpak/doc\0";
-        assert_eq!(doc_link(&args, app, 1000),
-            a(&["--args", "44", "--symlink", "/run/flatpak/doc", "/run/user/1000/cc-desktop/doc", "--", "vivaldi"]));
+        assert_eq!(doc_link(&args, app, 1000), a(&["--args", "44", "--symlink", "/run/flatpak/doc", "/run/user/1000/cc-desktop/doc", "--", "vivaldi"]));
         // the D-Bus proxy's sandbox, the host's own portal, no --args: unchanged
         assert_eq!(doc_link(&args, b"--bind\0/run\0/run\0", 1000), args);
         assert_eq!(doc_link(&args, b"--bind\0/run/user/1000/doc/by-app/x\0/run/flatpak/doc\0", 1000), args);
@@ -919,8 +994,10 @@ mod tests {
     #[test]
     fn commands() {
         // session/cc-launch's systemd-run, its bash -c "exec ... > /tmp/cc-desktop.log 2>&1" as unit properties
-        assert_eq!(session_unit(Path::new("/r/target/aarch64-unknown-linux-musl/release/cc-home")).join(" "),
-            "systemd-run --user --collect --quiet --unit cc-desktop -p TimeoutStopSec=10 -p StandardOutput=truncate:/tmp/cc-desktop.log -p StandardError=inherit /r/target/aarch64-unknown-linux-musl/release/cc-home session");
+        assert_eq!(
+            session_unit(Path::new("/r/target/aarch64-unknown-linux-musl/release/cc-home")).join(" "),
+            "systemd-run --user --collect --quiet --unit cc-desktop -p TimeoutStopSec=10 -p StandardOutput=truncate:/tmp/cc-desktop.log -p StandardError=inherit /r/target/aarch64-unknown-linux-musl/release/cc-home session"
+        );
         let a: Vec<OsString> = ["/r/target/release/cc-panels", "--for", "0"].map(OsString::from).into();
         assert_eq!(box_argv("0", "/h", Some("control-center"), &a), ["nice", "-n", "0", "/h/.local/bin/distrobox", "enter", "control-center", "--", "/r/target/release/cc-panels", "--for", "0"]);
         assert_eq!(box_argv("10", "/h", None, &a), ["nice", "-n", "10", "/r/target/release/cc-panels", "--for", "0"]);

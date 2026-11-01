@@ -14,7 +14,9 @@
 //! even with gaze lock on, because looking down at the keyboard to find a key is looking away,
 //! and typing would land on the Frame mid-word.
 use crate::config::Viewer;
+use crate::events::Button;
 use crate::geometry::{self, Placement, angles, direction, norm, rotate};
+use crate::laser::MouseLaser;
 use crate::limits::{KEY_NOTCH, KEY_PUSH_RANGE, MAX_WIDTH, MIN_WIDTH};
 use crate::overlay::{At, Live, Place, apply};
 use crate::stage::Stage;
@@ -47,9 +49,104 @@ const KEY_F1: u16 = 59;
 const KEY_F4: u16 = 62;
 const KEY_F12: u16 = 88;
 const KEY_RIGHTCTRL: u16 = 97;
+/// How a panel takes text from SteamVR's keyboard (Panel::text_mode).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TextMode {
+    Unicode, // characters as themselves, whatever the host's layout
+    UsKeys,  // only as a US keyboard's keys, which the strip says before you type
+    Unknown, // not connected yet (RDP's capability isn't in): keys if anything, but nothing's said
+}
+
+/// How one character from SteamVR's keyboard goes out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Route {
+    Key(u16, bool), // a key (and Shift): Backspace, Enter and Tab, a shortcut, or a US keyboard's
+    Char,           // the character itself
+    Missed,         // neither can type it
+}
+
+/// Text is characters, shortcuts are keys: a control character (Backspace, Enter, Tab) is always
+/// its key, and so is anything typed with a sticky Ctrl, Alt or Super held, since a shortcut means
+/// a key. The rest goes as itself where the panel can take that, else as a US keyboard's keys.
+fn route(c: char, modified: bool, mode: TextMode) -> Route {
+    let key = || crate::control::ui::key_for(c).map_or(Route::Missed, |(k, s)| Route::Key(k, s));
+    match mode {
+        _ if c.is_control() || modified => key(),
+        TextMode::Unicode => Route::Char,
+        TextMode::UsKeys | TextMode::Unknown => key(),
+    }
+}
+
+/// The key strip's sticky modifiers (osk.rs), in its order: Ctrl, Alt, Super.
+pub const MODS: [u16; 3] = [29, 56, 125];
 const KEY_HOME: u16 = 102;
 const KEY_G: u16 = 34;
+const KEY_B: u16 = 48;
 const KEY_D: u16 = 32;
+
+/// The modifiers a key combination can name, each with its keys (evdev codes).
+const COMBO_MODS: [(&str, &[u16]); 5] = [("leftctrl", &[29]), ("rightctrl", &[KEY_RIGHTCTRL]), ("shift", &[KEY_LEFTSHIFT, KEY_RIGHTSHIFT]), ("alt", &[56, 100]), ("super", &[125, 126])];
+
+/// One key with an exact set of modifiers (bit i is COMBO_MODS[i]): settings.json's
+/// `ungather_key`, such as "LeftCtrl+Shift+B".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Combo {
+    mods: u8,
+    key: u16,
+}
+
+/// Left Ctrl + Shift + B, since not every keyboard has a Right Ctrl.
+pub const UNGATHER_KEY: Combo = Combo { mods: 0b101, key: KEY_B };
+
+/// The keys key() takes with Right Ctrl held, whatever else is: a combo with Right Ctrl and one of
+/// them would shadow that shortcut, since the combo is checked first. Keep it in step with key().
+const RCTRL_KEYS: [u16; 10] = [KEY_ESC, KEY_HOME, KEY_F1, 60, 61, KEY_F4, KEY_SPACE, KEY_D, KEY_B, KEY_G];
+
+impl Combo {
+    /// Modifiers and one key, joined by +, in any case: a letter, a digit or F1 to F12, and at
+    /// least one modifier, so a plain key never stops reaching the remote. Not one of Right Ctrl's
+    /// own shortcuts (RCTRL_KEYS). Err says why not.
+    pub fn parse(text: &str) -> Result<Combo, &'static str> {
+        let c = Self::parse_keys(text).ok_or("isn't modifiers and a key (like \"LeftCtrl+Shift+B\")")?;
+        if c.mods & 0b10 != 0 && RCTRL_KEYS.contains(&c.key) {
+            return Err("is one of Right Ctrl's own shortcuts");
+        }
+        Ok(c)
+    }
+
+    fn parse_keys(text: &str) -> Option<Combo> {
+        let (mut mods, mut key) = (0u8, None);
+        for part in text.split('+').map(|p| p.trim().to_ascii_lowercase()) {
+            if let Some(i) = COMBO_MODS.iter().position(|(name, _)| *name == part) {
+                mods |= 1 << i;
+                continue;
+            }
+            let code = match part.strip_prefix('f').and_then(|n| n.parse::<u16>().ok()) {
+                Some(n @ 1..=10) => KEY_F1 + n - 1,
+                Some(n @ 11..=12) => 87 + n - 11,
+                _ => match part.as_bytes() {
+                    [c] if c.is_ascii_alphanumeric() => crate::control::ui::key_for(*c as char)?.0,
+                    _ => return None,
+                },
+            };
+            if key.replace(code).is_some() {
+                return None; // two keys
+            }
+        }
+        Some(Combo { mods, key: key? }).filter(|c| c.mods != 0)
+    }
+}
+
+/// settings.json's `ungather_key`, or Left Ctrl + Shift + B when it's missing or doesn't parse.
+pub fn ungather_key() -> Combo {
+    match crate::config::settings()["ungather_key"].as_str() {
+        None => UNGATHER_KEY,
+        Some(t) => Combo::parse(t).unwrap_or_else(|why| {
+            eprintln!("settings.json: ungather_key {t:?} {why}; using Left Ctrl + Shift + B");
+            UNGATHER_KEY
+        }),
+    }
+}
 const BTN_MOUSE: u16 = 0x110;
 const BTN_LEFT: u16 = 0x110;
 const BTN_RIGHT: u16 = 0x111;
@@ -75,6 +172,9 @@ const RESUME_PAUSE: Duration = Duration::from_millis(1500);
 const IDLE: Duration = Duration::from_secs(30);
 /// Input this recent makes its panel the one you're working in (D-042: full rate wherever you look).
 const WORKING: Duration = Duration::from_secs(2);
+/// Calibration knob: a physical key pressed this recently means you're typing on a real keyboard,
+/// so a text field doesn't pop up SteamVR's keyboard over it.
+const KEYBOARD_IN_USE: Duration = Duration::from_secs(60);
 
 /// How far out (m) the cursor floats before it's been on any panel.
 const FREE_DISTANCE: f64 = 1.5;
@@ -163,13 +263,13 @@ pub struct Kvm {
     pub place: Vec<Placement>, // where each panel is (the pointer's geometry)
     pub ppd: Vec<f64>,         // each panel's pixels per degree from where the head is now
     devices: Vec<Device>,
-    pub engaged: bool, // keyboards are ours and type into a remote (click to type, or a Right Ctrl tap)
-    yielded: bool,     // a game is running, so the mice are the Frame's too, not only the keyboards
-    pub awake: bool,   // the cursor shows (mouse motion wakes it, IDLE puts it to sleep)
-    pub active: usize, // the panel the cursor is on, where mouse input goes
-    pub kbd: usize,    // the panel you clicked last, where typing goes
+    pub engaged: bool,   // keyboards are ours and type into a remote (click to type, or a Right Ctrl tap)
+    yielded: bool,       // a game is running, so the mice are the Frame's too, not only the keyboards
+    pub awake: bool,     // the cursor shows (mouse motion wakes it, IDLE puts it to sleep)
+    pub active: usize,   // the panel the cursor is on, where mouse input goes
+    pub kbd: usize,      // the panel you clicked last, where typing goes
     pub kbd_shell: bool, // ...unless that was Plasma's bar, then typing goes to the session (Kickoff's search)
-    pub x: f64, // the cursor in the active panel's pixels (where it last was on a panel)
+    pub x: f64,          // the cursor in the active panel's pixels (where it last was on a panel)
     pub y: f64,
     // The 3D pointer: a ray from where the head was at the last
     // recenter (anchor), turned by the mouse (yaw, pitch). It lands on the panel it meets as
@@ -182,14 +282,14 @@ pub struct Kvm {
     // panel covers it, and the cursor floats on it (free). Its left clicks get counted for the
     // taskbar to pick up, never sent through SteamVR's laser.
     pub bar: Option<Placement>,
-    pub bar_inset: f64, // its clear laser reach around the frame (m), which isn't the cursor's
+    pub bar_inset: f64,             // its clear laser reach around the frame (m), which isn't the cursor's
     pub on_bar: Option<(f64, f64)>, // where the cursor is on it: u right, v up from its middle (m)
     pub bar_clicks: u32,
     // The Machines or Preferences window (grab.rs Extra) while it's shown, and its card's
     // margins around it (sides, below, above, m). It's nearer than panels and bars, so the ray
     // takes it. The cursor floats on it, and SteamVR's laser, starting just short of it, gives
     // it and its card their events like on a panel's card. That's why clicks need the laser
-    // (laser::HEALTHY).
+    // (MouseLaser::working).
     // ponytail: the laser, not the taskbar's on_bar/bar_clicks, because one path already gives
     // the card's bar, corners, carry and wheel, plus both windows' hover, drags and sliders,
     // their events like a controller's. Doing it the taskbar's way would copy all of that for
@@ -199,12 +299,12 @@ pub struct Kvm {
     // next_event: extra_at, extra_mouse).
     pub extra: Option<(Placement, [f64; 3])>,
     pub on_extra: bool,
-    on_card: bool, // the cursor is on the active panel's card (to_card)
-    card_held: bool, // left button pressed on a card or the Extra with no laser, so grab has it
+    on_card: bool,                      // the cursor is on the active panel's card (to_card)
+    card_held: bool,                    // left button pressed on a card or the Extra with no laser, so grab has it
     pub card_mouse: Vec<(usize, bool)>, // ...its presses (slot, or usize::MAX for the Extra) and releases, for grab.rs poll
-    pub card_wheel: f64, // ...and the wheel's notches meanwhile (push, bend, zoom)
-    extra_held: bool, // left button pressed on the Extra's window with no laser
-    pub extra_mouse: Vec<bool>, // ...its presses and releases, for ui.rs next_event
+    pub card_wheel: f64,                // ...and the wheel's notches meanwhile (push, bend, zoom)
+    extra_held: bool,                   // left button pressed on the Extra's window with no laser
+    pub extra_mouse: Vec<bool>,         // ...its presses and releases, for ui.rs next_event
     // Each panel's card margins, same idea (grab.rs): past its picture but on its card, and
     // nearer than the panels behind, the ray takes it (like a pop-out's frame in front of its
     // monitor).
@@ -213,10 +313,10 @@ pub struct Kvm {
     // and wheel go to the session at that point.
     pub plasma: Option<Placement>,
     on_plasma: bool,
-    shell_buttons: u32, // mouse buttons held there
-    plasma_at: (f64, f64), // the cursor's point in the session there, as last sent
+    shell_buttons: u32,              // mouse buttons held there
+    plasma_at: (f64, f64),           // the cursor's point in the session there, as last sent
     sent: Option<(usize, i32, i32)>, // the last move sent (re-landing every frame only sends changes)
-    depth: f64, // how far along the ray the last panel was, so off panels the cursor floats that far out
+    depth: f64,                      // how far along the ray the last panel was, so off panels the cursor floats that far out
     // Eye tracking: the panel you're looking at owns the pointer. Mouse motion can't take it
     // past that panel's edges, and looking at another panel moves it there on the next motion.
     // A quick glance (under GAZE_DWELL) or a look between panels changes nothing.
@@ -224,23 +324,29 @@ pub struct Kvm {
     pub focus: Option<usize>,
     gaze_on: Option<(usize, Instant, f64, f64)>, // the panel under the gaze now, since when, and u, v
     gaze_at: Option<Instant>,                    // the last valid sample
-    pub sensitivity: f64, // degrees per mouse count
-    keys: Vec<u16>,       // keys (evdev codes) held down on the typing panel's machine or window
-    field: Option<&'static str>,       // the window whose text field has the keyboards (focus_field)
-    field_keys: Vec<(u16, i32, bool)>, // ...and keys typed there since it last checked: code, value, Shift
-    field_held: Vec<u16>,              // keys pressed there, so their repeats and release stay out of a remote
-    buttons: u32,         // mouse buttons held there
-    beam_buttons: u32,    // mouse buttons held through the SteamVR laser (off our panels)
-    beam_depth: f64,      // ...and how far out the cursor was then, which it keeps until the release
-    dx: f64,              // motion since the last report
+    pub sensitivity: f64,                        // degrees per mouse count
+    keys: Vec<u16>,                              // keys (evdev codes) held down on the typing panel's machine or window
+    field: Option<&'static str>,                 // the window whose text field has the keyboards (focus_field)
+    field_keys: Vec<(u16, i32, bool)>,           // ...and keys typed there since it last checked: code, value, Shift
+    field_held: Vec<u16>,                        // keys pressed there, so their repeats and release stay out of a remote
+    buttons: u32,                                // mouse buttons held there
+    beam_buttons: u32,                           // mouse buttons held through the SteamVR laser (off our panels)
+    beam_depth: f64,                             // ...and how far out the cursor was then, which it keeps until the release
+    dx: f64,                                     // motion since the last report
     dy: f64,
-    last_used: Option<Instant>,       // the mouse's last use while awake, for the idle sleep
+    last_used: Option<Instant>,      // the mouse's last use while awake, for the idle sleep
     typed: Option<Instant>,          // the last key typed into a panel
+    pub key_at: Option<Instant>,     // the last physical key pressed, wherever it went
+    pub latched: [bool; 3],          // the key strip's Ctrl, Alt and Super (MODS), for the next key or click
+    synth: Vec<u16>,                 // modifiers we're holding down on the typing panel for a click
     pending: (f64, Option<Instant>), // motion counted toward waking, and since when
-    rctrl: Option<Instant>, // when Right Ctrl went down, to spot the tap
+    rctrl: Option<Instant>,          // when Right Ctrl went down, to spot the tap
     rctrl_clean: bool,
     shift: bool,
-    pub moves: u32, // sent since the last status line
+    held_mods: Vec<u16>,     // the COMBO_MODS keys held down
+    pub ungather: Combo,     // the key that puts back what a gather moved (ungather_key)
+    combo_held: Option<u16>, // a combo's key while it's down, so its repeats and release stay ours
+    pub moves: u32,          // sent since the last status line
     pub clicks: u32,
     pub keystrokes: u32,
     pub wheels: u32,
@@ -248,9 +354,19 @@ pub struct Kvm {
     // shows up meanwhile or right after (a browser tab dragged out) gets its panel there
     // (windows.rs adopt).
     pub window_drag: Option<([f64; 3], Instant)>,
+    /// The laser that takes the mouse's clicks off our panels (laser::Live; the tests' stand-in).
+    pub laser: &'static (dyn MouseLaser + Sync),
 }
 
 pub static KVM: Mutex<Kvm> = Mutex::new(Kvm::idle());
+
+/// KVM, recovered if a caught panic (a C callback's, ffi::guard) poisoned it: the input loop,
+/// the main loop and the session threads all lock it, and one bad callback mustn't take the
+/// mice and keyboards down with it. Every lock of KVM goes through here (docs/ARCHITECTURE.md,
+/// "Locks").
+pub fn lock() -> std::sync::MutexGuard<'static, Kvm> {
+    crate::ffi::lock(&KVM)
+}
 
 impl Kvm {
     /// A Kvm with nothing set. It's const so KVM can be a static, and tests make their own.
@@ -306,15 +422,22 @@ impl Kvm {
             dy: 0.0,
             last_used: None,
             typed: None,
+            key_at: None,
+            latched: [false; 3],
+            synth: Vec::new(),
             pending: (0.0, None),
             rctrl: None,
             rctrl_clean: false,
             shift: false,
+            held_mods: Vec::new(),
+            ungather: UNGATHER_KEY,
+            combo_held: None,
             moves: 0,
             clicks: 0,
             keystrokes: 0,
             wheels: 0,
             window_drag: None,
+            laser: &laser::Live,
         }
     }
 
@@ -324,9 +447,9 @@ impl Kvm {
 
     /// Let go of the mouse buttons held on the cursor's machine, since it's moving to another panel.
     fn release_buttons(&mut self) {
-        for (b, bit) in [(PTR_FLAGS_BUTTON1, laser::TRIGGER), (PTR_FLAGS_BUTTON2, laser::B), (PTR_FLAGS_BUTTON3, laser::X)] {
+        for (b, button) in [(PTR_FLAGS_BUTTON1, Button::Left), (PTR_FLAGS_BUTTON2, Button::Right), (PTR_FLAGS_BUTTON3, Button::Middle)] {
             if self.beam_buttons & b != 0 {
-                laser::press(bit, false);
+                self.laser.press(button, false);
             }
         }
         self.beam_buttons = 0;
@@ -350,15 +473,47 @@ impl Kvm {
         self.buttons = 0;
     }
 
-    /// Let go of the keys held on the typing machine, because typing moves or we're releasing.
+    /// Let go of the keys held on the typing machine, because typing moves or we're releasing,
+    /// the modifiers we held for a click among them.
     pub fn release_keys(&mut self) {
+        self.release_synth();
         for code in std::mem::take(&mut self.keys) {
             self.send_key(code, 0);
         }
     }
 
+    /// Lets go of the modifiers we're holding for a click. Called when the click ends, when typing
+    /// moves, and when the panel keyboard closes (osk.rs, which also clears `latched`).
+    pub fn release_synth(&mut self) {
+        for code in std::mem::take(&mut self.synth).into_iter().rev() {
+            self.send_key(code, 0);
+        }
+    }
+
+    /// How the typing panel takes text. The session's focused window (Plasma's bar) is evdev keys.
+    fn text_mode(&self) -> TextMode {
+        #[cfg(test)]
+        return tests::MODE.with(|m| m.get());
+        #[cfg(not(test))]
+        return if self.kbd_shell { TextMode::UsKeys } else { panel(self.kbd).text_mode() };
+    }
+
+    /// Send a character as itself to the typing panel.
+    fn send_char(&self, c: char) -> bool {
+        #[cfg(test)]
+        return tests::CHARS.with(|s| {
+            s.borrow_mut().push(c);
+            true
+        });
+        #[cfg(not(test))]
+        return panel(self.kbd).text(c);
+    }
+
     /// Send a key to the typing panel, or to the session after a click on Plasma's bar.
     fn send_key(&self, code: u16, value: i32) {
+        #[cfg(test)]
+        tests::SENT.with(|s| s.borrow_mut().push((code, value)));
+        #[cfg(not(test))]
         if self.kbd_shell { windows::key(code, value) } else { panel(self.kbd).key(code, value) }
     }
 
@@ -369,6 +524,79 @@ impl Kvm {
         if self.kbd != i || self.kbd_shell {
             self.release_keys();
             (self.kbd, self.kbd_shell) = (i, false);
+        }
+    }
+
+    /// Whether a physical keyboard is being typed on (KEYBOARD_IN_USE).
+    pub fn keyboard_in_use(&self) -> bool {
+        self.key_at.is_some_and(|t| t.elapsed() < KEYBOARD_IN_USE)
+    }
+
+    /// Whether SteamVR's keyboard may open now. You `asked` for it (a panel's keyboard button)
+    /// always opens it; only a popup nobody asked for (a field's) waits out a real keyboard.
+    pub fn popup_ok(&self, asked: bool) -> bool {
+        asked || !self.keyboard_in_use()
+    }
+
+    /// Types text to panel i (SteamVR's keyboard, osk.rs), each character the way `route` says.
+    /// "\b" is Backspace and "\n" Enter. Returns how many characters it couldn't type, a refused
+    /// character among them (it's never sent again as keys). It never logs the text, which may be
+    /// a password.
+    pub fn type_text(&mut self, i: usize, text: &str) -> usize {
+        self.type_to(i);
+        let (mut missed, mut cr) = (0, false);
+        for c in text.chars() {
+            if std::mem::replace(&mut cr, c == '\r') && c == '\n' {
+                continue; // \r\n is one Enter
+            }
+            match route(c, self.latched.contains(&true), self.text_mode()) {
+                Route::Key(code, shift) => self.tap(code, shift),
+                Route::Char if self.send_char(c) => self.keystrokes += 1,
+                Route::Char | Route::Missed => missed += 1,
+            }
+        }
+        self.typed = Some(Instant::now());
+        missed
+    }
+
+    /// A key from the key strip (Esc, Tab, an arrow) to panel i.
+    pub fn strip_key(&mut self, i: usize, code: u16) {
+        self.type_to(i);
+        self.tap(code, false);
+        self.typed = Some(Instant::now());
+    }
+
+    /// Presses and lets go of code, with Shift if asked and the sticky modifiers, which it uses up.
+    /// Every modifier pressed here is let go here, so none is left down.
+    fn tap(&mut self, code: u16, shift: bool) {
+        let latched = std::mem::take(&mut self.latched);
+        let mods: Vec<u16> = MODS.iter().zip(latched).filter(|(_, on)| *on).map(|(m, _)| *m).chain(shift.then_some(KEY_LEFTSHIFT)).collect();
+        for &m in &mods {
+            self.send_key(m, 1);
+        }
+        self.send_key(code, 1);
+        self.send_key(code, 0);
+        for &m in mods.iter().rev() {
+            self.send_key(m, 0);
+        }
+        self.keystrokes += 1;
+    }
+
+    /// A laser click on panel i starts (down) or ends while the panel keyboard is open there: the
+    /// sticky modifiers are held down through it (a Ctrl-click), and let go when it ends.
+    pub fn click_mods(&mut self, i: usize, down: bool) {
+        if !down {
+            return self.release_synth();
+        }
+        if !self.latched.contains(&true) {
+            return;
+        }
+        self.type_to(i);
+        for (m, on) in MODS.iter().zip(std::mem::take(&mut self.latched)) {
+            if on {
+                self.send_key(*m, 1);
+                self.synth.push(*m);
+            }
         }
     }
 
@@ -384,6 +612,15 @@ impl Kvm {
     fn release_held(&mut self) {
         self.release_buttons();
         self.release_keys();
+        self.forget_combo();
+    }
+
+    /// Forgets the modifiers held and a combo's key, for when a release may never come (the
+    /// keyboard handed back, a device gone), so a lost one can't swallow the next B. Modifiers
+    /// still down through it are forgotten too, so the combo goes to the remote until they're
+    /// pressed again: the safe way round.
+    fn forget_combo(&mut self) {
+        (self.held_mods, self.combo_held) = (Vec::new(), None);
     }
 
     /// Give the keyboards to a Command Center window's text field (owner is the window),
@@ -438,6 +675,7 @@ impl Kvm {
         }
         if !on {
             self.release_keys();
+            self.forget_combo();
         }
         self.engaged = on;
         self.grab_keyboards();
@@ -470,8 +708,7 @@ impl Kvm {
     /// keyboard or another panel meanwhile.
     pub fn working(&self, i: usize) -> bool {
         let recent = |t: Option<Instant>| t.is_some_and(|t| t.elapsed() < WORKING);
-        (self.awake && self.free.is_none() && self.active == i && (self.buttons != 0 || recent(self.last_used)))
-            || (self.engaged && !self.kbd_shell && self.kbd == i && recent(self.typed))
+        (self.awake && self.free.is_none() && self.active == i && (self.buttons != 0 || recent(self.last_used))) || (self.engaged && !self.kbd_shell && self.kbd == i && recent(self.typed))
     }
 
     /// Awake means the cursor shows, straight ahead when it wakes. The mice are ours either way.
@@ -528,7 +765,7 @@ impl Kvm {
     /// The ray as a device pose (origin at the anchor, -z along it, no roll), so grab.rs can
     /// carry cards on it (MOUSE).
     pub fn ray(&self) -> crate::geometry::Mat {
-        let (x, y, z) = laser::aim_basis(&direction(self.yaw, self.pitch));
+        let (x, y, z) = geometry::aim_basis(&direction(self.yaw, self.pitch));
         [0, 1, 2].map(|r| [x[r] as f32, y[r] as f32, z[r] as f32, self.anchor[r] as f32])
     }
 
@@ -727,7 +964,13 @@ impl Kvm {
         if self.shell_buttons != 0 {
             if let Some(pl) = self.plasma
                 && let Some((t, u, v)) = pl.hit(&o, &d)
-                && let Some(at) = { let (fx, fy) = { let (cu, cv) = pl.clamped(u, v); pl.fraction(cu, cv) }; plasmabar::at(fx, fy) }
+                && let Some(at) = {
+                    let (fx, fy) = {
+                        let (cu, cv) = pl.clamped(u, v);
+                        pl.fraction(cu, cv)
+                    };
+                    plasmabar::at(fx, fy)
+                }
             {
                 (self.on_plasma, self.free, self.depth) = (true, Some(point(t)), t);
                 self.to_plasma(at);
@@ -765,7 +1008,10 @@ impl Kvm {
         if keep.is_none()
             && let Some(pl) = self.plasma
             && let Some((t, u, v)) = geometry::bar_hit(Some(pl), 0.0, &o, &d, hit)
-            && let Some(at) = { let (fx, fy) = pl.fraction(u, v); plasmabar::at(fx, fy) }
+            && let Some(at) = {
+                let (fx, fy) = pl.fraction(u, v);
+                plasmabar::at(fx, fy)
+            }
         {
             (self.on_plasma, self.free, self.depth) = (true, Some(point(t)), t);
             self.to_plasma(at);
@@ -990,6 +1236,9 @@ impl Kvm {
 
     /// A key or button. `ours` means its device is grabbed (otherwise the Frame gets it too).
     fn key(&mut self, code: u16, value: i32, ours: bool) {
+        if value == 1 && code < 0x100 {
+            self.key_at = Some(Instant::now()); // a key, not a mouse button (BTN_MISC and up)
+        }
         // Right Ctrl on its own toggles; used with other keys it's just Right Ctrl.
         let rctrl_down = self.rctrl.is_some();
         if code == KEY_ESC && value == 1 && rctrl_down {
@@ -1017,6 +1266,12 @@ impl Kvm {
         if code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT {
             self.shift = value != 0;
         }
+        if COMBO_MODS.iter().any(|(_, keys)| keys.contains(&code)) {
+            self.held_mods.retain(|&k| k != code);
+            if value != 0 {
+                self.held_mods.push(code);
+            }
+        }
         if !ours {
             return; // the Frame's (a keyboard while released, or one not grabbed yet)
         }
@@ -1034,6 +1289,19 @@ impl Kvm {
             self.last_used = Some(Instant::now());
         } else if !self.keyboards() {
             return; // a mouse's own keys go to the Frame while it has the typing
+        }
+        // The ungather key (Left Ctrl + Shift + B unless settings.json says otherwise) is ours, its
+        // repeats and release too, even after its modifiers let go; they went out as themselves.
+        if self.combo_held == Some(code) {
+            if value == 0 {
+                self.combo_held = None;
+            }
+            return;
+        }
+        if value == 1 && code == self.ungather.key && self.mods_down() == self.ungather.mods {
+            self.combo_held = Some(code);
+            crate::gather::ask(true);
+            return;
         }
         // Right Ctrl + Home sends every panel home; + F1..F4 recalls that preset; + Shift saves it.
         let spot_key = code == KEY_HOME || (KEY_F1..=KEY_F4).contains(&code);
@@ -1053,8 +1321,16 @@ impl Kvm {
         }
         // Right Ctrl + D opens the SteamVR dashboard through the laser's system button.
         if rctrl_down && code == KEY_D {
-            if value == 1 && laser::HEALTHY.load(Relaxed) {
-                laser::pulse(laser::SYSTEM);
+            if value == 1 && self.laser.working() {
+                self.laser.dashboard();
+            }
+            return;
+        }
+        // Right Ctrl + B brings every panel in front of you (gather.rs), on the main loop's next tick,
+        // and Right Ctrl + Shift + B puts them back, as the ungather key does.
+        if rctrl_down && code == KEY_B {
+            if value == 1 {
+                crate::gather::ask(self.shift);
             }
             return;
         }
@@ -1078,10 +1354,10 @@ impl Kvm {
             }
             // Off our panels the click goes out through the SteamVR laser (if it works), and the
             // button stays held there until you let go, wherever the cursor is by then.
-            let bit = match b {
-                PTR_FLAGS_BUTTON1 => laser::TRIGGER,
-                PTR_FLAGS_BUTTON2 => laser::B,
-                _ => laser::X,
+            let button = match b {
+                PTR_FLAGS_BUTTON1 => Button::Left,
+                PTR_FLAGS_BUTTON2 => Button::Right,
+                _ => Button::Middle,
             };
             if value == 0 && b == PTR_FLAGS_BUTTON1 && self.card_held {
                 self.card_held = false;
@@ -1093,7 +1369,7 @@ impl Kvm {
             }
             if value == 0 && self.beam_buttons & b != 0 {
                 self.beam_buttons &= !b;
-                return laser::press(bit, false);
+                return self.laser.press(button, false);
             }
             if value == 0 && self.shell_buttons & b != 0 {
                 self.shell_buttons &= !b;
@@ -1123,9 +1399,9 @@ impl Kvm {
                 }
                 let (f, a) = (self.free.unwrap(), self.anchor);
                 let depth = norm(&[f[0] - a[0], f[1] - a[1], f[2] - a[2]]);
-                if laser::HEALTHY.load(Relaxed) {
+                if self.laser.working() {
                     (self.beam_depth, self.beam_buttons) = (depth, self.beam_buttons | b);
-                    laser::press(bit, true);
+                    self.laser.press(button, true);
                     self.clicks += 1;
                 } else if b == PTR_FLAGS_BUTTON1 && self.extra_at().is_some() {
                     self.extra_held = true; // it's the window's, like the laser's click would be (ui.rs next_event)
@@ -1149,7 +1425,11 @@ impl Kvm {
                     self.set_engaged(true, &format!("clicked {}", panel(self.active).v.name));
                 }
             }
-            if value != 0 { self.buttons |= b } else { self.buttons &= !b }
+            if value != 0 {
+                self.buttons |= b
+            } else {
+                self.buttons &= !b
+            }
             panel(self.active).mouse(b | if value != 0 { PTR_FLAGS_DOWN } else { 0 }, self.x, self.y);
             if self.buttons == 0 {
                 self.reaim(); // a drag let go between monitors: put the ray back on the cursor
@@ -1185,6 +1465,11 @@ impl Kvm {
         }
     }
 
+    /// The COMBO_MODS held down now, as a Combo's bits.
+    fn mods_down(&self) -> u8 {
+        COMBO_MODS.iter().enumerate().filter(|(_, (_, keys))| keys.iter().any(|k| self.held_mods.contains(k))).fold(0, |m, (i, _)| m | 1 << i)
+    }
+
     fn wheel(&mut self, notches: i32, horizontal: bool) {
         if self.rctrl.is_some() {
             self.rctrl_clean = false;
@@ -1209,8 +1494,8 @@ impl Kvm {
             return;
         }
         if self.free.is_some() {
-            if laser::HEALTHY.load(Relaxed) && !horizontal {
-                laser::scroll(notches as f64); // off our panels it's SteamVR's scrolling
+            if self.laser.working() && !horizontal {
+                self.laser.scroll(notches as f64); // off our panels it's SteamVR's scrolling
             }
             return;
         }
@@ -1351,22 +1636,22 @@ pub fn input_loop() {
                 again = true;
             }
             if again {
-                let known = KVM.lock().unwrap().paths();
+                let known = crate::kvm::lock().paths();
                 let (found, busy) = probe(INPUT, &known, &mut rejected);
                 again = busy;
                 if !found.is_empty() {
-                    KVM.lock().unwrap().take_in(found);
+                    crate::kvm::lock().take_in(found);
                 }
             }
         }
         let mut fds: Vec<libc::pollfd> = {
-            let k = KVM.lock().unwrap();
+            let k = crate::kvm::lock();
             k.devices.iter().map(|d| libc::pollfd { fd: d.file.as_raw_fd(), events: libc::POLLIN, revents: 0 }).collect()
         };
         // 500 ms: a timeout only runs tick (the 30 s idle sleep) and the rescan's 2 s check. A
         // key coming up (a keyboard waiting to be grabbed) is an event anyway (efficiency-plan.md 5)
         let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 500) };
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         k.tick();
         if ready <= 0 {
             continue;
@@ -1425,6 +1710,137 @@ pub fn input_loop() {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    thread_local! {
+        /// The keys send_key sent on this test's thread: code, value.
+        pub static SENT: std::cell::RefCell<Vec<(u16, i32)>> = const { std::cell::RefCell::new(Vec::new()) };
+        /// How the typing panel takes text, as this test says (a US keyboard unless it sets it).
+        pub static MODE: std::cell::Cell<TextMode> = const { std::cell::Cell::new(TextMode::UsKeys) };
+        /// The characters send_char sent as themselves.
+        pub static CHARS: std::cell::RefCell<Vec<char>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    #[test]
+    fn text_goes_as_characters_and_shortcuts_and_controls_as_keys() {
+        use TextMode::*;
+        assert_eq!(route('é', false, Unicode), Route::Char);
+        assert_eq!(route('a', false, Unicode), Route::Char, "even ASCII: the host's layout can't move it");
+        assert_eq!(route('a', false, UsKeys), Route::Key(KEY_A, false));
+        assert_eq!(route('é', false, UsKeys), Route::Missed, "never a guess at another key");
+        assert_eq!(route('\u{8}', false, Unicode), Route::Key(14, false), "Backspace is a key");
+        assert_eq!(route('\n', false, Unicode), Route::Key(28, false));
+        assert_eq!(route('c', true, Unicode), Route::Key(46, false), "Ctrl+C is a shortcut, so keys");
+        assert_eq!(route('é', true, Unicode), Route::Missed, "a shortcut with a key no US keyboard has");
+    }
+
+    #[test]
+    fn a_unicode_panel_gets_the_characters_and_a_shortcut_gets_keys() {
+        MODE.with(|m| m.set(TextMode::Unicode));
+        let mut k = Kvm::idle();
+        assert_eq!(k.type_text(0, "zé€😀"), 0);
+        assert_eq!(CHARS.with(|c| std::mem::take(&mut *c.borrow_mut())), ['z', 'é', '€', '😀']);
+        assert!(sent().is_empty(), "no keys for text");
+        k.latched = [true, false, false]; // Ctrl
+        k.type_text(0, "c");
+        assert_eq!(sent(), [(29, 1), (46, 1), (46, 0), (29, 0)], "Ctrl+C as keys");
+        assert!(CHARS.with(|c| c.borrow().is_empty()));
+        MODE.with(|m| m.set(TextMode::UsKeys));
+    }
+
+    fn sent() -> Vec<(u16, i32)> {
+        SENT.with(|s| std::mem::take(&mut *s.borrow_mut()))
+    }
+
+    /// Every key pressed was let go again.
+    fn all_up(keys: &[(u16, i32)]) -> bool {
+        let mut down = std::collections::HashSet::new();
+        for &(k, v) in keys {
+            if v == 1 {
+                down.insert(k)
+            } else {
+                down.remove(&k)
+            };
+        }
+        down.is_empty()
+    }
+
+    #[test]
+    fn a_sticky_modifier_and_shift_wrap_the_next_key_and_are_let_go() {
+        let mut k = Kvm::idle();
+        k.latched = [true, false, false]; // Ctrl
+        assert_eq!(k.type_text(0, "A"), 0);
+        assert_eq!(sent(), [(29, 1), (KEY_LEFTSHIFT, 1), (KEY_A, 1), (KEY_A, 0), (KEY_LEFTSHIFT, 0), (29, 0)]);
+        assert_eq!(k.latched, [false; 3], "used up");
+        k.strip_key(0, KEY_ESC);
+        assert_eq!(sent(), [(KEY_ESC, 1), (KEY_ESC, 0)]);
+    }
+
+    #[test]
+    fn a_held_modifier_is_let_go_when_the_click_ends_or_typing_moves() {
+        let mut k = Kvm::idle();
+        k.latched = [false, true, true]; // Alt and Super
+        k.click_mods(0, true);
+        assert_eq!(sent(), [(56, 1), (125, 1)]);
+        k.click_mods(0, false);
+        assert_eq!(sent(), [(125, 0), (56, 0)]);
+        k.latched = [true, false, false];
+        k.click_mods(0, true);
+        k.type_to(1); // the click never ended here, and typing went elsewhere
+        let keys = sent();
+        assert!(keys.contains(&(29, 0)) && all_up(&keys), "{keys:?}");
+        k.click_mods(0, false);
+        assert!(sent().is_empty(), "nothing held twice");
+    }
+
+    #[test]
+    fn a_line_end_is_one_enter_however_its_written() {
+        let mut k = Kvm::idle();
+        let enters = |keys: Vec<(u16, i32)>| keys.iter().filter(|&&(c, v)| c == 28 && v == 1).count();
+        k.type_text(0, "\r\n");
+        assert_eq!(enters(sent()), 1, "\\r\\n");
+        k.type_text(0, "\n");
+        assert_eq!(enters(sent()), 1);
+        k.type_text(0, "\r");
+        assert_eq!(enters(sent()), 1);
+        k.type_text(0, "\n\n");
+        assert_eq!(enters(sent()), 2, "two lines");
+    }
+
+    #[test]
+    fn typing_on_steamvrs_keyboard_isnt_a_real_keyboard() {
+        let mut k = Kvm::idle();
+        k.type_text(0, "h");
+        k.type_text(0, "i"); // two characters in a row, as osk::event hands them over
+        assert!(k.key_at.is_none() && !k.keyboard_in_use(), "it doesn't close itself after a letter");
+        k.strip_key(0, KEY_ESC);
+        assert!(k.key_at.is_none(), "nor does the key strip");
+    }
+
+    #[test]
+    fn what_a_us_keyboard_cant_type_is_counted_not_sent() {
+        let mut k = Kvm::idle();
+        // AltGr on other layouts: ¤ € £ é ß. None is guessed at as some other key.
+        assert_eq!(k.type_text(0, "€£é¤ß"), 5);
+        assert!(sent().is_empty());
+        assert_eq!(k.type_text(0, "a@é"), 1);
+        let keys = sent();
+        assert!(keys.contains(&(KEY_LEFTSHIFT, 1)) && keys.contains(&(3, 1)) && all_up(&keys), "@ is Shift+2 on a US keyboard: {keys:?}");
+    }
+
+    #[test]
+    fn a_real_keyboard_holds_off_a_field_s_popup_but_not_the_button() {
+        let mut k = Kvm::idle();
+        assert!(k.popup_ok(false) && k.popup_ok(true));
+        k.key(KEY_A, 1, false); // typed on a real keyboard just now
+        assert!(!k.popup_ok(false), "a field doesn't pop it up");
+        assert!(k.popup_ok(true), "the panel's button still opens it");
+        k.key(0x110, 1, false); // a mouse button (BTN_LEFT) isn't typing
+        let mut m = Kvm::idle();
+        m.key(0x110, 1, false);
+        assert!(m.popup_ok(false));
+    }
+
     #[test]
     fn ioctl_numbers_match_linux() {
         assert_eq!(super::EVIOCGRAB, 0x40044590);
@@ -1438,7 +1854,21 @@ mod tests {
     #[test]
     fn a_held_drag_goes_on_to_another_monitor_of_its_machine() {
         use super::Viewer;
-        let v = |host: &str, user: &str, machine: &str| Viewer { name: String::new(), user: user.into(), host: host.into(), port: 0, screen: 0, w: 1920, h: 1080, auto: false, machine: machine.into(), label: String::new(), pop: None, vnc: None, no_audio: false };
+        let v = |host: &str, user: &str, machine: &str| Viewer {
+            name: String::new(),
+            user: user.into(),
+            host: host.into(),
+            port: 0,
+            screen: 0,
+            w: 1920,
+            h: 1080,
+            auto: false,
+            machine: machine.into(),
+            label: String::new(),
+            pop: None,
+            vnc: None,
+            no_audio: false,
+        };
         let (a, b) = (v("desk", "me", ""), v("desk", "me", ""));
         assert_eq!(super::drag_to((0, (&a, false)), Some((1, (&b, false)))), 1, "same host and user: on to it");
         assert_eq!(super::drag_to((0, (&a, false)), None), 0, "between panels: stays, clamped");
@@ -1456,7 +1886,21 @@ mod tests {
     #[test]
     fn a_held_drag_goes_on_to_another_window_panel() {
         use super::Viewer;
-        let win = |n: u32| Viewer { name: format!("win-{n}"), user: String::new(), host: String::new(), port: 0, screen: 0, w: 1280, h: 800, auto: false, machine: String::new(), label: String::new(), pop: None, vnc: None, no_audio: false };
+        let win = |n: u32| Viewer {
+            name: format!("win-{n}"),
+            user: String::new(),
+            host: String::new(),
+            port: 0,
+            screen: 0,
+            w: 1280,
+            h: 800,
+            auto: false,
+            machine: String::new(),
+            label: String::new(),
+            pop: None,
+            vnc: None,
+            no_audio: false,
+        };
         let desk = Viewer { host: "desk".into(), ..win(0) };
         let (a, b) = (win(1), win(2));
         assert_eq!(super::drag_to((0, (&a, true)), Some((1, (&b, true)))), 1, "another window: on to it (a tab into another browser)");
@@ -1490,7 +1934,8 @@ mod tests {
     #[test]
     fn a_nearer_panel_covers_the_bar() {
         use crate::geometry::{Placement, Pose, panel_matrix};
-        let mut k = super::KVM.lock().unwrap();
+        let _vr = crate::trace::fake_vr(); // the global Kvm, which the fake-SteamVR replays use too: one at a time
+        let mut k = super::lock();
         let pose = Pose { centre: [0.0, 1.0, -1.0], width: 0.5, ..Default::default() };
         k.bar = Some(Placement::from_matrix(&panel_matrix(&pose), 0.5, 0.1, 0.0));
         let (o, d) = ([0.0, 1.0, 0.0], [0.0, 0.0, -1.0]);
@@ -1506,10 +1951,75 @@ mod tests {
         k.bar = None;
     }
 
+    use crate::laser::fake::StandIn;
+
+    /// A Kvm off our panels (nothing under the ray, no Extra window), awake, with a stand-in laser.
+    fn off_the_panels(working: bool) -> (Kvm, &'static StandIn) {
+        let laser = StandIn::leak(working);
+        let mut k = Kvm::idle();
+        (k.laser, k.awake, k.free) = (laser, true, Some([0.0, 1.0, -2.0]));
+        (k, laser)
+    }
+
+    fn calls(l: &StandIn) -> Vec<String> {
+        l.take()
+    }
+
+    /// Right Ctrl + D, with Right Ctrl held (so it isn't a tap) and the keys going to the remotes.
+    fn ctrl_d(k: &mut Kvm) {
+        (k.rctrl, k.engaged) = (Some(Instant::now()), true);
+        k.key(KEY_D, 1, true);
+        k.key(KEY_D, 0, true);
+        k.rctrl = None;
+    }
+
+    #[test]
+    fn with_no_working_laser_a_click_a_scroll_and_ctrl_d_off_the_panels_go_nowhere() {
+        let (mut k, laser) = off_the_panels(false);
+        ctrl_d(&mut k);
+        k.key(BTN_LEFT, 1, true);
+        k.key(BTN_LEFT, 0, true);
+        k.wheel(1, false);
+        assert_eq!(calls(laser), Vec::<String>::new());
+        assert_eq!((k.clicks, k.beam_buttons), (0, 0), "the press isn't counted or held");
+    }
+
+    #[test]
+    fn with_a_working_laser_each_goes_through_it_and_letting_go_releases_left_right_middle() {
+        let (mut k, laser) = off_the_panels(true);
+        ctrl_d(&mut k);
+        k.key(BTN_LEFT, 1, true);
+        k.key(BTN_LEFT, 0, true);
+        k.wheel(-1, false);
+        assert_eq!(calls(laser), ["dashboard", "press Left true", "press Left false", "scroll -1"]);
+        assert_eq!(k.clicks, 1);
+        // held through the laser, then the cursor moves to another panel: release_buttons
+        for b in [BTN_MIDDLE, BTN_RIGHT, BTN_LEFT] {
+            k.key(b, 1, true);
+        }
+        assert_eq!(calls(laser), ["press Middle true", "press Right true", "press Left true"]);
+        k.release_buttons();
+        assert_eq!(calls(laser), ["press Left false", "press Right false", "press Middle false"]);
+        assert_eq!(k.beam_buttons, 0);
+    }
+
+    #[test]
+    fn a_button_held_when_the_laser_stops_working_is_still_let_go_through_it() {
+        let (mut k, laser) = off_the_panels(true);
+        k.key(BTN_LEFT, 1, true);
+        k.key(BTN_RIGHT, 1, true);
+        laser.working.store(false, Relaxed); // the claim lapsed (Degraded) while they're held
+        k.key(BTN_LEFT, 0, true);
+        assert_eq!(calls(laser), ["press Left true", "press Right true", "press Left false"]);
+        k.release_buttons();
+        assert_eq!(calls(laser), ["press Right false"], "and a move to another panel lets go of the rest");
+    }
+
     #[test]
     fn the_extra_window_and_its_card_take_the_ray() {
         use crate::geometry::{Placement, Pose, panel_matrix};
-        let mut k = super::KVM.lock().unwrap();
+        let _vr = crate::trace::fake_vr(); // the global Kvm, which the fake-SteamVR replays use too: one at a time
+        let mut k = super::lock();
         let pose = Pose { centre: [0.0, 1.0, -0.6], width: 0.5, ..Default::default() };
         let pl = Placement::from_matrix(&panel_matrix(&pose), 0.5, 0.6, 0.0); // 0.3 high
         k.extra = Some((pl, [0.02, 0.05, 0.03])); // its card: 2 cm each side, 5 below, 3 above
@@ -1560,7 +2070,8 @@ mod tests {
     #[test]
     fn a_panels_card_in_front_of_another_takes_the_ray() {
         use crate::geometry::{Placement, Pose, panel_matrix};
-        let mut k = super::KVM.lock().unwrap();
+        let _vr = crate::trace::fake_vr(); // the global Kvm, which the fake-SteamVR replays use too: one at a time
+        let mut k = super::lock();
         let place = |z: f64, w: f64, aspect: f64| Placement::from_matrix(&panel_matrix(&Pose { centre: [0.0, 1.0, z], width: w, ..Default::default() }), w, aspect, 0.0);
         // a pop-out (0.4 by 0.2) in front of its monitor (1 by 0.6), both with 2 cm card sides
         let saved = (std::mem::take(&mut k.place), std::mem::take(&mut k.cards), k.anchor, k.yaw, k.pitch, k.free, k.active, k.depth);
@@ -1628,7 +2139,8 @@ mod tests {
 
     #[test]
     fn a_window_field_takes_the_keyboards_until_typing_goes_to_a_remote() {
-        let mut k = super::KVM.lock().unwrap();
+        let _vr = crate::trace::fake_vr(); // the global Kvm, which the fake-SteamVR replays use too: one at a time
+        let mut k = super::lock();
         let (engaged, kbd) = (k.engaged, k.kbd);
         k.engaged = false;
         k.focus_field("machines", true);
@@ -1659,10 +2171,149 @@ mod tests {
         (k.engaged, k.kbd, k.kbd_shell) = (engaged, kbd, false);
     }
 
+    /// Right Ctrl + B asks the main loop for a gather, and Right Ctrl + Shift + B for its undo,
+    /// while the keyboards are ours (like Right Ctrl + Home); neither key reaches the remote.
+    #[test]
+    fn right_ctrl_b_gathers_and_with_shift_ungathers() {
+        use crate::gather::{ASKED, UNDO_ASKED};
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut k = Kvm::idle();
+        k.engaged = true;
+        let press = |k: &mut Kvm, code| {
+            k.key(code, 1, true);
+            k.key(code, 0, true);
+        };
+        k.key(KEY_RIGHTCTRL, 1, true);
+        press(&mut k, KEY_B);
+        assert!(ASKED.swap(false, Relaxed) && !UNDO_ASKED.load(Relaxed), "a gather");
+        k.key(KEY_LEFTSHIFT, 1, true);
+        press(&mut k, KEY_B);
+        k.key(KEY_LEFTSHIFT, 0, true);
+        assert!(UNDO_ASKED.swap(false, Relaxed) && !ASKED.load(Relaxed), "an ungather");
+        k.key(KEY_RIGHTCTRL, 0, true);
+        let sent = tests::SENT.with(|s| std::mem::take(&mut *s.borrow_mut()));
+        assert!(!sent.iter().any(|&(c, _)| c == KEY_B), "B never went to the remote: {sent:?}");
+        press(&mut k, KEY_B);
+        assert!(!ASKED.load(Relaxed), "B alone is just B");
+    }
+
+    /// Left Ctrl + Shift + B (the ungather key) asks for the undo, and only B stays ours: Left
+    /// Ctrl and Shift, and every other key with Left Ctrl, go to the remote as they are. B's
+    /// release stays ours even after the modifiers let go first.
+    #[test]
+    fn left_ctrl_shift_b_ungathers_and_everything_else_with_left_ctrl_goes_through() {
+        use crate::gather::{ASKED, UNDO_ASKED};
+        use std::sync::atomic::Ordering::Relaxed;
+        const LCTRL: u16 = 29;
+        let mut k = Kvm::idle();
+        k.engaged = true;
+        let sent = || tests::SENT.with(|s| std::mem::take(&mut *s.borrow_mut()));
+        sent();
+        k.key(LCTRL, 1, true);
+        k.key(KEY_LEFTSHIFT, 1, true);
+        k.key(KEY_B, 1, true);
+        k.key(KEY_B, 2, true);
+        k.key(KEY_LEFTSHIFT, 0, true);
+        k.key(LCTRL, 0, true);
+        k.key(KEY_B, 0, true);
+        assert!(UNDO_ASKED.swap(false, Relaxed) && !ASKED.load(Relaxed), "an ungather");
+        assert_eq!(sent(), [(LCTRL, 1), (KEY_LEFTSHIFT, 1), (KEY_LEFTSHIFT, 0), (LCTRL, 0)], "the modifiers went out, B didn't");
+        assert!(k.keys.is_empty() && k.combo_held.is_none());
+        // the keyboard handed back with the combo held: its release never comes, and the next B
+        // after taking it again is just B
+        k.key(LCTRL, 1, true);
+        k.key(KEY_LEFTSHIFT, 1, true);
+        k.key(KEY_B, 1, true);
+        k.set_engaged(false, "test");
+        k.set_engaged(true, "test");
+        sent();
+        k.key(KEY_B, 1, true);
+        k.key(KEY_B, 0, true);
+        assert_eq!(sent(), [(KEY_B, 1), (KEY_B, 0)], "B after a lost release goes out");
+        assert!(UNDO_ASKED.swap(false, Relaxed));
+        // Left Ctrl + B (the bookmarks bar without Shift), Left Ctrl + Shift + C, and
+        // Left Ctrl + Alt + Shift + B: none of them is the combo, so all of it goes out
+        for (mods, key) in [(&[LCTRL][..], KEY_B), (&[LCTRL, KEY_LEFTSHIFT], 46), (&[LCTRL, 56, KEY_LEFTSHIFT], KEY_B)] {
+            let mut want = Vec::new();
+            for &m in mods {
+                k.key(m, 1, true);
+                want.push((m, 1));
+            }
+            k.key(key, 1, true);
+            k.key(key, 0, true);
+            want.extend([(key, 1), (key, 0)]);
+            for &m in mods.iter().rev() {
+                k.key(m, 0, true);
+                want.push((m, 0));
+            }
+            assert_eq!(sent(), want, "{mods:?} + {key}");
+            assert!(!UNDO_ASKED.load(Relaxed), "{mods:?} + {key} isn't the ungather key");
+        }
+        // Right Shift counts as Shift
+        k.key(LCTRL, 1, true);
+        k.key(KEY_RIGHTSHIFT, 1, true);
+        k.key(KEY_B, 1, true);
+        k.key(KEY_B, 0, true);
+        k.key(KEY_RIGHTSHIFT, 0, true);
+        k.key(LCTRL, 0, true);
+        assert!(UNDO_ASKED.swap(false, Relaxed), "with Right Shift too");
+        assert!(!sent().iter().any(|&(c, _)| c == KEY_B));
+    }
+
+    /// RCTRL_KEYS is a hand-kept copy of key()'s Right Ctrl table, so it's checked against key()
+    /// itself: with Right Ctrl held, every key code's release goes in, and exactly the listed ones
+    /// are kept from the remote. A release takes the same branch as its press there, without
+    /// doing it (a press of Home or F1 to F4 would run cc-home apply). Esc is the exception: only
+    /// its press is Right Ctrl's (closing the Desktop), so it's pressed, with the fake SteamVR in
+    /// so close_desktop only records it.
+    #[test]
+    fn rctrl_keys_are_exactly_the_keys_right_ctrl_takes() {
+        let _vr = crate::trace::fake_vr(); // so close_desktop only records Esc
+        let mut k = Kvm::idle();
+        k.engaged = true;
+        let sent = || tests::SENT.with(|s| std::mem::take(&mut *s.borrow_mut()));
+        k.key(KEY_RIGHTCTRL, 1, true);
+        sent();
+        let mut taken = Vec::new();
+        for code in 1..=248u16 {
+            if COMBO_MODS.iter().any(|(_, keys)| keys.contains(&code)) {
+                continue; // the modifiers themselves, Right Ctrl among them
+            }
+            k.key(code, if code == KEY_ESC { 1 } else { 0 }, true);
+            if sent().is_empty() {
+                taken.push(code);
+            }
+        }
+        k.key(KEY_RIGHTCTRL, 0, true);
+        let mut want = RCTRL_KEYS.to_vec();
+        want.sort();
+        assert_eq!(taken, want, "key()'s Right Ctrl table and RCTRL_KEYS differ");
+        assert_eq!(crate::tests::CLOSED.lock().unwrap().pop().as_deref(), Some("Right Ctrl + Esc"));
+    }
+
+    #[test]
+    fn an_ungather_key_is_modifiers_and_one_key() {
+        assert_eq!(Combo::parse("LeftCtrl+Shift+B"), Ok(UNGATHER_KEY));
+        assert_eq!(Combo::parse(" leftctrl + SHIFT + b "), Ok(UNGATHER_KEY), "any case and spacing");
+        assert_eq!(Combo::parse("B+Shift+LeftCtrl"), Ok(UNGATHER_KEY), "any order");
+        assert_eq!(Combo::parse("Alt+Super+F12"), Ok(Combo { mods: 0b11000, key: KEY_F12 }));
+        assert_eq!(Combo::parse("RightCtrl+F10"), Ok(Combo { mods: 0b10, key: 68 }));
+        assert_eq!(Combo::parse("Alt+1"), Ok(Combo { mods: 0b1000, key: 2 }));
+        // one of Right Ctrl's own shortcuts, with or without more modifiers, would shadow it
+        for taken in ["RightCtrl+G", "RightCtrl+Shift+B", "RightCtrl+D", "Alt+RightCtrl+F1", "RightCtrl+F4"] {
+            assert_eq!(Combo::parse(taken), Err("is one of Right Ctrl's own shortcuts"), "{taken:?}");
+        }
+        assert!(Combo::parse("LeftCtrl+G").is_ok() && Combo::parse("RightCtrl+F5").is_ok(), "the same keys without Right Ctrl, or past F4, are free");
+        for bad in ["", "B", "Shift", "LeftCtrl+B+C", "Ctrl+B", "LeftCtrl+F13", "LeftCtrl+Home", "LeftCtrl+?", "LeftCtrl++B"] {
+            assert!(Combo::parse(bad).is_err(), "{bad:?}");
+        }
+    }
+
     #[test]
     fn click_to_type() {
         use super::*;
-        let mut k = KVM.lock().unwrap();
+        let _vr = crate::trace::fake_vr(); // the global Kvm, which the fake-SteamVR replays use too: one at a time
+        let mut k = crate::kvm::lock();
         let saved = (k.engaged, k.kbd, k.kbd_shell, k.awake, k.free, k.on_plasma, k.on_card, k.on_extra, k.gaze_lock);
         // kbd_shell sends keys to the session (none in tests), since a panel's need a live panel
         (k.engaged, k.kbd_shell, k.awake) = (false, true, true);
@@ -1909,7 +2560,7 @@ mod tests {
             // a panel nearer than the bar covers it
             let near = panel(0.1, 1.4, -0.5, 1.0);
             k.place.push(near);
-            f.panels.push(crate::stage::PanelFacts { overlay: 101, size: (1920, 1080), vert: false });
+            f.panels.push(crate::stage::PanelFacts { overlay: crate::vr::Handle(101), size: (1920, 1080), vert: false });
             aim(&mut k, EYE, surface(&near, 0.0, 0.0));
             k.land_with(&mut f);
             assert!(k.on_bar.is_none() && k.active == 1, "the panel in front has it");

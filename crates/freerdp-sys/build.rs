@@ -4,9 +4,7 @@ use std::path::PathBuf;
 
 fn main() {
     let here = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let prefix = std::env::var("FREERDP_PREFIX")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| here.join("../../panels/third_party/prefix").canonicalize().expect("no FreeRDP build: run install.sh"));
+    let prefix = std::env::var("FREERDP_PREFIX").map(PathBuf::from).unwrap_or_else(|_| here.join("../../panels/third_party/prefix").canonicalize().expect("no FreeRDP build: run install.sh"));
     let lib = prefix.join("lib64");
     println!("cargo:rustc-link-search=native={}", lib.display());
     for l in ["freerdp-client3", "freerdp3", "winpr3"] {
@@ -18,7 +16,7 @@ fn main() {
         .header("wrapper.h")
         .clang_arg(format!("-I{}", inc.join("freerdp3").display()))
         .clang_arg(format!("-I{}", inc.join("winpr3").display()))
-        .allowlist_file(".*/(freerdp3|winpr3)/.*")  // FreeRDP's and WinPR's own declarations
+        .allowlist_file(".*/(freerdp3|winpr3)/.*") // FreeRDP's and WinPR's own declarations
         .derive_default(true)
         .layout_tests(false)
         .generate()

@@ -84,6 +84,10 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `stage.rs` | What the manipulation code reads: `Stage` is `Overlays` plus a device's pose and laser, the head, and a panel's overlay, size and whether it's turned. `Live` reads SteamVR and the panel list; `stage::fake::Fake` is a stand-in for tests. `Kvm::set_pose_with`/`set_place_with`/`land_with`/`mv_with`/`recenter_with`/`swing_with`/`scale_with` and `Grab`'s `start`/`carry`/`push`/`put` take one. It also sends the pointer move to a panel (`move_pointer`). |
 | `surface.rs` | The surface registry: every overlay we place, listed once with its kind, what its place is relative to (`Anchor`), where it's saved (`Store`) and how it's moved (`Manip`). Everything is made through `surface::create` and destroyed through `surface::destroy`, and a test reads the sources to keep it that way. `surfaces` on the control socket prints it. A record of today, not a new mechanism. |
 | `grab.rs` | Each panel's card (Breeze-like frame, tabs, grab bar, knobs): drawing, hit-testing, carrying, resizing, curving, snap-back, the `Extra` slot the control windows share, saving the "home" spot on release. |
+| `tab.rs` | `cc-panels --tab`: the dashboard tab while the Desktop is closed (SteamVR starts it from command-center.vrmanifest), and registering that manifest (`--register-tab`, `ensure_registered` at the Desktop's start). |
+| `power.rs` | The Frame's performance profile through steamos-manager (`PerformanceProfile1`, user bus): Powersave while the Desktop is closed (the tab's process) or the headset's off (the Desktop), never in a game, the found profile put back, hands off when someone else changes it (thread `cc-power`). |
+| `osk.rs` | SteamVR's keyboard for typing to a panel from a controller (the card's keyboard button), and the key strip with the keys it lacks. |
+| `notify.rs` | Notifications: pairing results, errors and host health, sent to org.freedesktop.Notifications on the Frame's main user bus (thread `cc-notify`), rate-limited, with SteamVR's toast as the fallback. |
 | `back.rs` | Dim backs for panels seen from behind, one flat overlay each. |
 | `kvm.rs` | Our mice and keyboards (evdev grab, `input_loop` thread `cc-input`): the 3D pointer ray (`mv`, `land`), click to type (`set_engaged`, `type_to`), Right Ctrl chords, gaze lock, text fields for the control windows. |
 | `laser.rs` | The SteamVR laser off our panels: which hand to lease, raw-space poses, the lease protocol to cc_pointer (`lease_thread`, thread `cc-lease`), `Beam` for the dot. |
@@ -93,7 +97,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `gpu.rs` | GBM buffers imported into SteamVR (`Buffers::present`), `write`/`write_frame` from decode threads, `show_raw` (two buffers, no blink) for UI overlays. |
 | `rdp.rs` | One FreeRDP session per remote panel (`run`, reconnect loop), `session` (asks the agent for this Frame's server), `agent` (one agent call), input out (`mouse`, `key`, `wheel`), cliprdr attach. |
 | `vnc.rs` | One libvncclient session per `proto=vnc` panel, same panel/GPU/wake model as rdp.rs (`run`, `connect`, keysyms, pinning). Callbacks reach the session's state only through `with_state`, and teardown clears the client's pointer to it before freeing it (`Session`'s `Drop`). |
-| `ffi.rs` | `guard`, which every callback from FreeRDP and libvncclient runs in: a panic there is logged and the callback fails, instead of aborting cc-panels and every panel with it. `lock` takes a lock even after a caught panic poisoned it. |
+| `ffi.rs` | `guard`, which every callback from FreeRDP and libvncclient runs in: a panic there is logged (once per callback per session) and the callback fails, instead of aborting cc-panels and every panel with it, and the session ends and reconnects (`session_failed`). `lock` takes a lock even after a caught panic poisoned it; `lock_or_reset` starts shared state over instead (the clipboard's `HUB` and `CHANS`). |
 | `popout.rs` | Remote windows popped out into a spare panel (`pop`). Parked (docs/remote-windows.md). |
 | `session.rs` | The cc-desktop session over Wayland: finding it (`discover`), the screencast (`stream_window`, `stream_output`), fake_input (`pointer_to`, `button`, `key`, `axis`). |
 | `capture.rs` | One PipeWire thread for every screencast stream, DMA-BUF import on the main thread (`Shown::tick`). |
@@ -108,7 +112,7 @@ root. When this file and the code disagree, the code wins, and this file should 
 | `control/workspace.rs` | The Workspace window: rows per workspace, Use/Load/Save as/Rename/Forget, machines per workspace; `switched` reconnects to match. |
 | `control/ui.rs` | The drawing kit those windows share (chrome, buttons, switches, typed text), window placement. |
 | `control/hud.rs` | The camera scan's status strip and tag outlines in the headset. |
-| `theme.rs` | Reads the session's Plasma colour scheme (KConfig cascade) into the tokens everything paints with; `poll` redraws on a theme switch. |
+| `theme.rs` | The tokens everything paints with: SteamVR's palette (`steamvr`, the default), or with settings.json `"look": "plasma"` the session's Plasma colour scheme (KConfig cascade), where `poll` redraws on a theme switch. |
 | `assets.rs` | Draws the cursor, border tags, glyphs and UI labels into `~/.cache/control-center/assets`. |
 | `config.rs` | The Frame's files as cc-panels sees them: `Viewer` and viewers.conf parsing, home.json spots, workspaces, settings, passwords, pins, autoconnect. |
 | `clipboard/mod.rs` | The clipboard hub (`HUB`): who owns the copy, echo suppression, lazy fetch on paste. |
@@ -150,7 +154,9 @@ root. When this file and the code disagree, the code wins, and this file should 
   Frame key, `trusted`. `server.rs`: the host half of the login. `pair.rs`: SPAKE2 pairing
   (`frame_pair`, `host_one`). `lan.rs`: the host's route-source address and the private-address check. `conf.rs`: viewers.conf editing, `write_pairing`, unpairing,
   home.json (`read_home`, `write_home`), workspaces (`choose_workspace`, `load_workspace`,
-  `TEMPORARY`), a Python-compatible `Json`.
+  `TEMPORARY`), a Python-compatible `Json`. `paths.rs`: `home_dir`, `config`, `conf_dir` and
+  `cache`, the folders by `$HOME` (never `$XDG_CONFIG_HOME`, which the Desktop session points
+  elsewhere), used by cc-home and cc-panels alike.
 - `cc-scan/src`: `camera.rs` (/dev/video99, the VR mirror), `aruco.rs` + `contours.rs` +
   `image.rs` + `dict.rs` (OpenCV's detector, ported pixel-exact), `pattern.rs` (tag layouts),
   `solve.rs` (camera intrinsics and monitor poses), `lag.rs`, `hud.rs` (drawn here, shown by
@@ -224,6 +230,20 @@ VNC is the same shape: `vnc.rs:run` → libvncclient update callbacks → `gpu::
 5. Click to type: a click on a panel engages the keyboards (`kvm.rs:set_engaged`, `type_to`). A
    click off our panels, the dashboard opening, the Desktop hidden or a game gives them back.
    Keys go through `Panel::key` (RDP scancodes, VNC keysyms, or fake_input).
+6. SteamVR's keyboard: the keyboard button on a live panel's card (`grab.rs` `Part::Keys`, queued for
+   `take_keyboards`) opens it in minimal mode on the panel's overlay (`osk.rs`). Its
+   `KeyboardCharInput` events come in with the panel's own user value, and `kvm.rs:type_text`
+   sends each character the way `route` says: as itself through `Panel::text` (RDP Unicode input
+   when the server's input capability has INPUT_FLAG_UNICODE, `rdp::unicode`; VNC keysyms,
+   Unicode ones past Latin-1), or as US-layout keys through the same `Panel::key` for control
+   characters, sticky-modifier shortcuts and panels that only take keys (`Panel::text_mode`). A physical key
+   (`Kvm::key_at`) closes it. While it's open, `osk::Keys` draws a key strip (`Kind::Keys`) under the
+   panel's card: Esc, Tab and the arrows (`Kvm::strip_key`), and sticky Ctrl, Alt and Super
+   (`Kvm::latched`) that `tap` wraps around the next key, or `click_mods` holds through the next
+   click. Held modifiers (`synth`) are let go when the click ends, typing moves, the laser leaves
+   the panel, the session drops, or the keyboard closes. The Machines and Workspace fields skip
+   SteamVR's keyboard while `keyboard_in_use` (a physical key in the last 60 s, `popup_ok(false)`);
+   the panel's button always opens it (`popup_ok(true)`).
 
 ### Window panels
 
@@ -310,6 +330,7 @@ spec has some work to do: the same kind of thing is saved in different places.
 | Taskbar frame | Room (fixed), Head (follow), Device (wrist) | fixed carry: `spots.home.taskbar`; mode, size and curve: settings.json `taskbar`, `taskbar_scale`, `taskbar_curve` (global, not per workspace) | its own Hold (taskbar.rs); carried in fixed mode only |
 | Plasma's bar and popups | Parent: the taskbar frame | nothing | nothing; input is forwarded |
 | A panel's back | Parent: its panel | nothing | a press carries its panel |
+| Key strip | Parent: its panel (under its card, while SteamVR's keyboard types to it) | nothing | nothing (it rides its panel) |
 | Scan HUD strip / tag outlines | Head / Room | nothing | nothing |
 | Theater backdrop | Head | nothing | nothing |
 | Cursor | Room (faces the head each frame) | nothing | nothing |
@@ -322,7 +343,7 @@ spot may be under its screen number, which saving removes.
 
 ### The dashboard tab
 
-1. `Dashtab::tick` (`control/dashtab.rs`, called from the main loop) makes the tab once at start with
+1. `Dashtab::tick` (`control/dashtab.rs`, called from the main loop) makes the tab at start (again every 2 s while its key is taken) with
    `vr::create_dashboard_overlay` (key `controlcenter.dashboard`, icon `packaging/command-center.png`).
    After that it polls the page's laser events and redraws it with the Preferences window's kit
    (`control/ui.rs`).
@@ -333,7 +354,21 @@ spot may be under its screen number, which saving removes.
    `yielded()` for kvm's one `set_yielded` call, and `panels()` to hide the panels for a game and
    show only what it hid. With no game, Steam / game just gives the keyboards and mice back to the
    Frame and leaves the panels where they are.
-4. **2D games.** A flat Steam game runs in gamescope (`--backend openvr`) as a SteamVR system
+4. **SteamVR's control bar.** The tab sets `VROverlayFlags_EnableControlBar` and
+   `EnableControlBarClose`, so SteamVR draws its own bar under it. Its close sends the tab
+   `VREvent_OverlayClosed`, and that calls `close_desktop`. settings.json `"steamvr_bar": false`
+   turns the bar off. The floating windows don't get it: see
+   [steamvr-integration.md](steamvr-integration.md).
+5. **While the Desktop is closed** (`tab.rs`): SteamVR starts `session/cc-tab` with itself, from
+   `command-center.vrmanifest` (`is_dashboard_overlay`, auto-launch), and that's `cc-panels --tab`,
+   the same `Dashtab` with `closed` set: Show runs `cc-home desktop` as a systemd unit on the host.
+   A Desktop cc-panels holds an flock on `/run/user/<uid>/control-center-desktop.lock` for as long
+   as it runs (`tab::hold`); the tab tries it, shared and without waiting, every 250 ms
+   (`desktop_running`), lets go of the key the moment it's taken and makes it again once it's free.
+   The Desktop's tab tries every 500 ms until the key is free. SteamVR's close on the tab counts
+   only while the dashboard shows our tab (`IsDashboardVisible`, `IsActiveDashboardOverlay`): then
+   it closes the Desktop, or ends the tab process; any other close just makes the tab again.
+6. **2D games.** A flat Steam game runs in gamescope (`--backend openvr`) as a SteamVR system
    overlay, so the scene process id stays 0. `handoff::start` runs a thread that reads
    GAMESCOPE_FOCUSED_APP from gamescope's X server on :0, with a small hand-written X11 client
    because no X crate is in the tree, and falls back to a `reaper SteamLaunch AppId=` process. A real
@@ -342,7 +377,7 @@ spot may be under its screen number, which saving removes.
    mice go back to the Frame. Picking our tab (`IsActiveDashboardOverlay`, only the moment it's
    picked) or pressing Command Center takes the Desktop back for the rest of that game, and Steam /
    game hands it to the game again. When the game ends, only what it hid comes back.
-5. Not built yet: handing the input to Steam by itself when the dashboard merely opens. main.rs
+7. Not built yet: handing the input to Steam by itself when the dashboard merely opens. main.rs
    already calls `dashtab::dashboard` on `DashboardActivated`/`DashboardDeactivated`, which is where
    it goes.
 
@@ -352,6 +387,9 @@ spot may be under its screen number, which saving removes.
   On a Frame, `cc-install` clones/pulls `~/control-center` and runs `install.sh container`,
   `install.sh cc-home`, `cc-home install` and `cc-home install desktop`
   (`crates/cc-install/src/plan.rs`). On a host it downloads `cc-host` and runs `cc-host install`.
+  The download goes into a fresh work folder only this user can open (0700, in `$XDG_RUNTIME_DIR`
+  or `~/.cache/control-center`), never a shared `/tmp` path, so nobody can swap cc-host between
+  its checksum check and the step that runs it.
 - Frame build from source: `install.sh` (container, cc-home with the cc-rust toolchain) then
   `install.rs:build` (FreeRDP 3.31.1 into `panels/third_party/prefix`, `tools/build-libvncclient.sh`
   into `vnc-prefix`, `cargo build --release` in the container, the pointer driver).
@@ -364,15 +402,31 @@ spot may be under its screen number, which saving removes.
   `.github/workflows/release.yml` builds static musl cc-install and cc-host for both arches on a
   `v*` tag. The signing key's public half is `packaging/command-center.asc`.
 
+### Locks: what a poisoned one does
+
+A panic inside a C callback is caught (`ffi::guard`) and the program carries on, so a lock held at
+that moment can be poisoned. Each piece of shared state has one rule for that, used at every place
+it's locked:
+
+| Rule | Means | State |
+| --- | --- | --- |
+| recover | take the state as it is (`ffi::lock`) | `KVM` (only through `kvm::lock()`), laser.rs `SNAP`, vnc.rs `INPUT`, osk.rs `MISSED`, popout.rs `FOCUS`, gpu.rs `GBM`, clipboard `LOCAL`, `NEWS`, `PENDING`, `PIPES`, `SIZED`, `STAGED`; cc-pointer's `DEVICE`, `SHARED` and `LISTENER` (its own `lock()`: a panic must never take vrserver down) |
+| reset | put it back to a known start, then go on (`ffi::lock_or_reset`) | clipboard `HUB` (a new hub), cliprdr.rs `CHANS` (none), frame.rs `FRAME` (no connection; its thread connects again), since their fields only make sense together |
+| fail | `.lock().unwrap()`: a poisoned lock is a bug, and that thread stops | everything else: state only the main loop or one thread touches (`REGISTRY`, `TOASTS`, `THEME`, `OPEN`, windows.rs `INPUT`, ...) |
+
+A new piece of shared state that a C callback or another thread can reach takes recover or reset,
+and goes in this table. cc-host's work.rs is all `.lock().unwrap()`: it has no C callbacks, so a
+panic there is a bug that ends that connection's thread, which is the rule it follows.
+
 ## Files on disk
 
 **Frame, `~/.config/control-center/`** (always under `$HOME`, never `XDG_CONFIG_HOME`):
 
 | File | Format / owner |
 | --- | --- |
-| `viewers.conf` | One remote monitor a line: `<name> <user>@<host>:<port> <screen> <w>x<h> [key=value ...]` (curve, radius, autoconnect, machine, label, proto, pin, tls). Parsed in `cc-panels config.rs:parse_viewers` and `cc_proto::conf::viewers`, edited by `conf::set_options`. `viewers.removed` keeps removed lines. |
+| `viewers.conf` | One remote monitor a line: `<name> <user>@<host>:<port> <screen> <w>x<h> [key=value ...]` (curve, radius, autoconnect, machine, label, proto, pin, tls). Parsed in `cc-panels config.rs:parse_viewers` and `cc_proto::conf::viewers`, edited by `conf::set_options`, and written only through `conf::edit_viewers` (pairing, `cc-home machine`, a VNC panel's first pin), which locks `.viewers.conf.lock` so two writers at once both keep their change, and keeps the file's mode (0600 for a new one). `viewers.removed` keeps removed lines. |
 | `home.json` | `{"workspace", "workspaces": {name: {spots, universe, primary, known_networks, machines}}}`. Spots map a spot name to `{panel key: pose}`. See `cc_proto::conf::read_home` and docs/workspaces.md. |
-| `settings.json` | User settings (taskbar, window_px_per_m, align, rest_nice, session_links, ...): `config::settings`, `control/prefs.rs`. |
+| `settings.json` | User settings (taskbar, window_px_per_m, align, rest_nice, session_links, rdp_codec and rdp_avc444 (docs/rdp-text.md), ...): `config::settings`, `control/prefs.rs`. |
 | `trusted-hosts/<id>.json`, `passwords/<id>`, `password`, `frame-key` | Pairing results and this Frame's Ed25519 key (`cc_proto::conf`, `agent::frame_key`). `pair-tries.json` limits retries. |
 | `mirror-camera.json` | The mirror camera fit (`cc-home refit`). |
 | `hibernate-allow` | Apps hibernate may reopen. |
@@ -389,6 +443,9 @@ spot may be under its screen number, which saving removes.
 `/usr/lib/command-center` when packaged).
 
 **The control socket**: `@controlcenter`, an abstract datagram socket, replies to the sender.
+An abstract socket has no file permissions, so cc-panels asks the kernel for each datagram's
+sender (`SO_PASSCRED`) and only takes commands from its own user; another user's are dropped, and
+the log says so once. cc-pointer's driver socket checks the same way.
 The command list is the `//!` header of `crates/cc-panels/src/control.rs`. Clients (cc-home,
 cc-scan) honour `CC_PANELS_SOCKET=<name>`. cc-panels itself always binds `@controlcenter`.
 

@@ -66,6 +66,14 @@ pub struct Facts {
     pub announcing: bool,
 }
 
+/// Whether Command Center's system image is installed (`image`: command-center.raw or .raw.v in
+/// /var/lib/extensions) but not loaded (`release`: its extension-release file isn't under
+/// /usr/lib/extension-release.d). Then nothing of it runs, so only something outside it, like this
+/// installer, can say so.
+pub fn unmerged(image: bool, release: bool) -> bool {
+    image && !release
+}
+
 /// The Frame is aarch64 SteamOS with SteamVR; anything else is a host.
 pub fn kind(arch: &str, os_release: &str, steamvr: bool) -> Kind {
     let steamos = os_release.lines().any(|l| l.trim() == "ID=steamos" || l.trim() == "ID=\"steamos\"");
@@ -146,7 +154,11 @@ pub fn plan(f: &Facts, action: Action, share: &[usize], announce: bool, work: &P
             let sh = f.repo.join("install.sh");
             vec![
                 step("Get the code", code, "Check the Frame's Wi-Fi, then run the installer again."),
-                step("Set up the build container (the first time takes a while)", run(&sh, &["container"]), "The log says what failed. Run the installer again: a download that broke halfway usually works the second time."),
+                step(
+                    "Set up the build container (the first time takes a while)",
+                    run(&sh, &["container"]),
+                    "The log says what failed. Run the installer again: a download that broke halfway usually works the second time.",
+                ),
                 step("Build cc-home", run(&sh, &["cc-home"]), again),
                 step("Build Command Center: FreeRDP, the Desktop and the pointer", run(&f.repo.join("cc-home"), &["install"]), again),
                 step("Add Command Center to the SteamVR launcher", run(&f.repo.join("cc-home"), &["install", "desktop"]), again),
@@ -161,7 +173,11 @@ pub fn plan(f: &Facts, action: Action, share: &[usize], announce: bool, work: &P
             let mut cmd = vec![host.display().to_string()];
             cmd.extend(args);
             vec![
-                step("Download cc-host", Do::Download(host), "Check that this machine is online, then run the installer again. If the checksum doesn't match twice, the release itself is broken: please open an issue on GitHub."),
+                step(
+                    "Download cc-host",
+                    Do::Download(host),
+                    "Check that this machine is online, then run the installer again. If the checksum doesn't match twice, the release itself is broken: please open an issue on GitHub.",
+                ),
                 step("Install and start cc-host", Do::Run(cmd), "The log says what failed. Fix that and run the installer again."),
             ]
         }
@@ -284,11 +300,12 @@ fn running(name: &str) -> bool {
 
 fn free_gb(p: &Path) -> u64 {
     let Ok(c) = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()) else { return u64::MAX };
+    // SAFETY: libc::statvfs is plain integers: all zeros is a valid value, which statvfs then fills.
     let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statvfs(c.as_ptr(), &mut s) } != 0 {
         return u64::MAX; // can't tell, so don't block on it
     }
-    s.f_bavail as u64 * s.f_frsize as u64 >> 30
+    (s.f_bavail as u64 * s.f_frsize as u64) >> 30
 }
 
 /// The package command for this distro, worded the way cc-host's need() says it.
@@ -312,7 +329,20 @@ pub fn look() -> Facts {
     };
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_owned();
     let repo = std::env::var_os("CC_DIR").map(PathBuf::from).unwrap_or_else(|| home.join("control-center"));
-    let mut f = Facts { kind, arch, host, home: home.clone(), installed: None, missing: vec![], repo: repo.clone(), repo_state: Repo::Missing, desktop_open: false, monitors: vec![], shared: vec![], announcing: false };
+    let mut f = Facts {
+        kind,
+        arch,
+        host,
+        home: home.clone(),
+        installed: None,
+        missing: vec![],
+        repo: repo.clone(),
+        repo_state: Repo::Missing,
+        desktop_open: false,
+        monitors: vec![],
+        shared: vec![],
+        announcing: false,
+    };
     let mut miss = |what: &str, fix: String| f.missing.push((what.into(), fix));
     if unsafe { libc::geteuid() } == 0 {
         miss("You're running it as root", "Run it as your own user, without sudo.".into());
@@ -349,6 +379,11 @@ pub fn look() -> Facts {
                 f.installed = Some(git(&["describe", "--tags", "--match", "v*", "--always", "--dirty"]).unwrap_or_else(|| "a build from source".into()));
             }
             f.desktop_open = running("cc-panels");
+            let ext = Path::new("/var/lib/extensions");
+            let image = ext.join("command-center.raw").exists() || ext.join("command-center.raw.v").exists();
+            if unmerged(image, Path::new("/usr/lib/extension-release.d/extension-release.command-center").exists()) {
+                miss("Command Center's system image isn't loaded", "load it with: cd / && sudo systemd-sysext refresh && sudo systemctl try-restart polkit (or restart the Frame)".into());
+            }
         }
         Kind::Host => {
             for (c, p) in [("krdpserver", "krdp"), ("kscreen-doctor", "libkscreen"), ("systemctl", "systemd")] {
@@ -381,8 +416,27 @@ pub fn look() -> Facts {
 pub mod tests {
     use super::*;
 
+    #[test]
+    fn an_installed_image_that_isnt_loaded_is_said() {
+        assert!(unmerged(true, false), "there, but not loaded: say so");
+        assert!(!unmerged(true, true) && !unmerged(false, false) && !unmerged(false, true));
+    }
+
     pub fn frame() -> Facts {
-        Facts { kind: Kind::Frame, arch: "aarch64".into(), host: "frame".into(), home: "/home/u".into(), installed: None, missing: vec![], repo: "/home/u/control-center".into(), repo_state: Repo::Missing, desktop_open: false, monitors: vec![], shared: vec![], announcing: false }
+        Facts {
+            kind: Kind::Frame,
+            arch: "aarch64".into(),
+            host: "frame".into(),
+            home: "/home/u".into(),
+            installed: None,
+            missing: vec![],
+            repo: "/home/u/control-center".into(),
+            repo_state: Repo::Missing,
+            desktop_open: false,
+            monitors: vec![],
+            shared: vec![],
+            announcing: false,
+        }
     }
 
     pub fn host() -> Facts {
@@ -439,7 +493,10 @@ pub mod tests {
         assert_eq!(p[3].what, Do::Run(vec!["/home/u/control-center/cc-home".into(), "install".into()]));
         let mut f = frame();
         f.repo_state = Repo::Pull;
-        assert_eq!(plan(&f, Action::Update, &[], false, Path::new("/w"))[0].what, Do::Run(vec!["git".into(), "-C".into(), "/home/u/control-center".into(), "pull".into(), "--ff-only".into(), "-q".into()]));
+        assert_eq!(
+            plan(&f, Action::Update, &[], false, Path::new("/w"))[0].what,
+            Do::Run(vec!["git".into(), "-C".into(), "/home/u/control-center".into(), "pull".into(), "--ff-only".into(), "-q".into()])
+        );
         f.repo_state = Repo::Keep("on a branch".into());
         assert_eq!(plan(&f, Action::Update, &[], false, Path::new("/w"))[0].what, Do::Skip("on a branch".into()));
         assert_eq!(plan(&f, Action::Remove, &[], false, Path::new("/w")).len(), 1);
@@ -457,8 +514,21 @@ pub mod tests {
 
     #[test]
     fn picks_out_what_needs_the_user() {
-        let log: Vec<String> = ["sharing as user u on desk: ports 3400", "firewall: to add the pairing and paired-Frame ports, run (or pass --firewall):", "  sudo ufw allow 3399:3449/tcp", "checklist:", "  ok   krdpserver", "  need avahi-publish: sudo pacman -S --needed avahi", "  note linger off"].map(String::from).to_vec();
-        assert_eq!(needs_you(&log), vec!["firewall: to add the pairing and paired-Frame ports, run (or pass --firewall):", "  sudo ufw allow 3399:3449/tcp", "  avahi-publish: sudo pacman -S --needed avahi"]);
+        let log: Vec<String> = [
+            "sharing as user u on desk: ports 3400",
+            "firewall: to add the pairing and paired-Frame ports, run (or pass --firewall):",
+            "  sudo ufw allow 3399:3449/tcp",
+            "checklist:",
+            "  ok   krdpserver",
+            "  need avahi-publish: sudo pacman -S --needed avahi",
+            "  note linger off",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            needs_you(&log),
+            vec!["firewall: to add the pairing and paired-Frame ports, run (or pass --firewall):", "  sudo ufw allow 3399:3449/tcp", "  avahi-publish: sudo pacman -S --needed avahi"]
+        );
     }
 
     #[test]

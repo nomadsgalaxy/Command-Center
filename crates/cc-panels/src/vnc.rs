@@ -56,6 +56,16 @@ pub enum Ev {
     Mouse(u32, f64, f64),
     Wheel(bool, f64),
     Key(u16, i32),
+    Sym(u32), // a character as itself (SteamVR's keyboard): its keysym pressed and let go
+}
+
+/// The X keysym that types c whatever the host's layout: Latin-1 is its code point, anything else
+/// the Unicode keysym 0x01000000 + its code point.
+pub fn char_keysym(c: char) -> u32 {
+    match c as u32 {
+        cp @ (0x20..=0x7e | 0xa0..=0xff) => cp,
+        cp => 0x0100_0000 + cp,
+    }
 }
 
 /// The soft cursor (the cursor pseudo-encodings): the server sends its shape, and we draw it
@@ -150,9 +160,7 @@ unsafe extern "C" fn get_password(cl: *mut rfbClient) -> *mut c_char {
 }
 
 unsafe extern "C" fn get_credential(cl: *mut rfbClient, kind: c_int) -> *mut rfbCredential {
-    crate::ffi::guard("get_credential", std::ptr::null_mut(), || {
-        unsafe { with_state(cl, |st| credential(cl, st, kind)) }.unwrap_or(std::ptr::null_mut())
-    })
+    crate::ffi::guard("get_credential", std::ptr::null_mut(), || unsafe { with_state(cl, |st| credential(cl, st, kind)) }.unwrap_or(std::ptr::null_mut()))
 }
 
 unsafe fn credential(cl: *mut rfbClient, st: &mut State, kind: c_int) -> *mut rfbCredential {
@@ -161,10 +169,11 @@ unsafe fn credential(cl: *mut rfbClient, st: &mut State, kind: c_int) -> *mut rf
         return c;
     }
     if kind as u32 == rfbCredentialTypeX509 {
-        // No CA file: the certificate is checked against the pin (an unpinned one goes to
-        // on_certificate). A pinned one that's also valid for the system CAs passes without
-        // the pin, which a LAN host's self-signed certificate never is.
+        // No CA file. libvncclient takes a certificate that's valid for the system CAs without
+        // looking at the pin, so connect checks the pin itself afterwards (settle_pin).
         if let Some(pin) = st.opts.pin {
+            // libvncclient frees this with the rest of the credential once TLS is set up
+            // (FreeX509Credential in tls_openssl.c), so it's malloc'd, not ours to free.
             let fp = unsafe { libc::malloc(32) as *mut u8 };
             if !fp.is_null() {
                 unsafe { std::ptr::copy_nonoverlapping(pin.as_ptr(), fp, 32) };
@@ -184,42 +193,99 @@ unsafe fn credential(cl: *mut rfbClient, st: &mut State, kind: c_int) -> *mut rf
     c
 }
 
-/// The certificate isn't the pinned one, or there's no pin. With a pin that's a refusal. Without
-/// one it's trust on first use: this certificate becomes the line's pin= (cc_proto::conf), and only
-/// it is taken from then on. If the pin can't be saved, it doesn't connect, since an unsaved first
-/// use would trust whatever shows up next time too.
+/// libvncclient's question when the certificate isn't CA-valid and isn't the pinned one: with a pin
+/// that's a refusal. Without one it goes on, and the certificate is pinned (or not) by connect once
+/// the session proved it checks a password over TLS (settle_pin).
 unsafe extern "C" fn on_certificate(cl: *mut rfbClient, subject: *const c_char, _: libc::time_t, _: libc::time_t, fp: *const u8, len: usize) -> rfbBool {
     crate::ffi::guard("on_certificate", 0, || {
-        let hex: String = unsafe { std::slice::from_raw_parts(fp, len) }.iter().map(|b| format!("{b:02x}")).collect();
+        // SAFETY: libvncclient's fingerprint for this callback, len bytes. A null one is no bytes
+        // (a slice can't be built from null even when it's empty), which `certificate` refuses.
+        let fp = if fp.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(fp, len) } };
+        let hex: String = fp.iter().map(|b| format!("{b:02x}")).collect();
         let subject = if subject.is_null() { String::new() } else { unsafe { CStr::from_ptr(subject) }.to_string_lossy().into_owned() };
         unsafe {
-            with_state(cl, |st| {
-                if st.opts.pin.is_some() {
+            with_state(cl, |st| match certificate(fp, st.opts.pin.is_some()) {
+                Cert::NoFingerprint => {
+                    eprintln!("vnc {}: the server sent no certificate fingerprint, so it isn't trusted", st.opts.host);
+                    st.refused = Some("the server sent no certificate fingerprint");
+                    0
+                }
+                Cert::NotThePin => {
                     eprintln!("vnc {}: the host's certificate changed ({subject}, sha256 {hex}); not connecting", st.opts.host);
                     st.refused = Some("the host's certificate isn't the pinned one");
-                    return 0;
+                    0
                 }
-                match cc_proto::conf::pin_first_use(&st.opts.conf, &st.opts.name, &hex) {
-                    Ok(cc_proto::conf::FirstPin::Saved) => {
-                        eprintln!("vnc {}: first connect, pinned its certificate ({subject}, sha256 {hex}) as pin= on {}'s line", st.opts.host, st.opts.name);
-                        1
-                    }
-                    Ok(cc_proto::conf::FirstPin::Same) => 1,
-                    Ok(cc_proto::conf::FirstPin::Other(pin)) => {
-                        eprintln!("vnc {}: certificate {subject}, sha256 {hex}, isn't its pin {pin}; not connecting", st.opts.host);
-                        st.refused = Some("the host's certificate isn't the pinned one");
-                        0
-                    }
-                    Err(e) => {
-                        eprintln!("vnc {}: can't save its certificate's pin ({e}); not connecting", st.opts.host);
-                        st.refused = Some("couldn't save the host's certificate pin");
-                        0
-                    }
-                }
+                Cert::GoOn => 1,
             })
         }
         .unwrap_or(0)
     })
+}
+
+/// on_certificate's answer, before anything is compared or pinned. libvncclient (OpenSSL backend,
+/// src/libvncclient/tls_openssl.c) only asks from cert_verify_callback, when the certificate isn't
+/// valid for the system CAs and doesn't match x509ExpectedFingerprint, which is our pin (credential):
+/// a pinned host that matches is taken without asking, so a question with a pin is always a
+/// mismatch. Its fingerprint is always X509_digest's 32 bytes, and anonymous TLS never asks (the
+/// verify callback is only set without anonTLS), so an empty one never comes in practice; it's
+/// refused all the same.
+#[derive(Debug, PartialEq)]
+enum Cert {
+    NoFingerprint, // nothing to know it by: never trusted
+    NotThePin,     // there's a pin, and libvncclient only asks when the certificate isn't it
+    GoOn,          // no pin yet: connect's checks decide (settle_pin), from the TLS session's own certificate
+}
+
+fn certificate(fingerprint: &[u8], pinned: bool) -> Cert {
+    match (fingerprint.is_empty(), pinned) {
+        (true, _) => Cert::NoFingerprint,
+        (false, true) => Cert::NotThePin,
+        (false, false) => Cert::GoOn,
+    }
+}
+
+/// The server's own certificate's SHA-256, from the TLS session. None without TLS.
+unsafe fn peer_sha256(cl: *mut rfbClient) -> Option<[u8; 32]> {
+    let ssl = unsafe { (*cl).tlsSession };
+    if ssl.is_null() {
+        return None;
+    }
+    let cert = unsafe { SSL_get1_peer_certificate(ssl as *const c_void) };
+    if cert.is_null() {
+        return None;
+    }
+    let (mut out, mut len) = ([0u8; 32], 0u32);
+    let ok = unsafe { X509_digest(cert, EVP_sha256(), out.as_mut_ptr(), &mut len) } == 1 && len == 32;
+    unsafe { X509_free(cert) };
+    ok.then_some(out)
+}
+
+/// What connect checks once the server took us in, in this order: that it checked a password, that
+/// it's TLS (unless tls=no), and then the pin. A pinned certificate has to match, whether or not it's
+/// also CA-valid. An unpinned one is pinned now (trust on first use), and only now, so a server that
+/// didn't ask for a password or did it without TLS never gets its certificate trusted.
+fn settle_pin(opts: &Opts, no_password: bool, tls: bool, cert: Option<[u8; 32]>) -> Result<(), String> {
+    if no_password {
+        return Err("the host asked for no password".into());
+    }
+    if !opts.insecure && !tls {
+        return Err("no TLS (tls=no allows that)".into());
+    }
+    let Some(cert) = cert else { return Ok(()) }; // tls=no, so there's nothing to pin
+    let hex: String = cert.iter().map(|b| format!("{b:02x}")).collect();
+    match opts.pin {
+        Some(pin) if pin == cert => Ok(()),
+        Some(_) => Err(format!("the host's certificate (sha256 {hex}) isn't the pinned one")),
+        None => match cc_proto::conf::pin_first_use(&opts.conf, &opts.name, &hex) {
+            Ok(cc_proto::conf::FirstPin::Saved) => {
+                eprintln!("vnc {}: first connect, pinned its certificate (sha256 {hex}) as pin= on {}'s line", opts.host, opts.name);
+                Ok(())
+            }
+            Ok(cc_proto::conf::FirstPin::Same) => Ok(()),
+            Ok(cc_proto::conf::FirstPin::Other(pin)) => Err(format!("the host's certificate (sha256 {hex}) isn't its pin {pin}")),
+            Err(e) => Err(format!("can't save its certificate's pin ({e})")),
+        },
+    }
 }
 
 unsafe extern "C" fn malloc_fb(cl: *mut rfbClient) -> rfbBool {
@@ -259,18 +325,32 @@ unsafe extern "C" fn finished_update(cl: *mut rfbClient) {
     })
 }
 
+/// libvncclient's own check stops at 1024 px; this is ours, so the size can't come from it alone.
+const CURSOR_MAX: c_int = 1024;
+
+/// How many pixels a server's cursor shape has, if it's one we draw: 4 bytes a pixel, a side under
+/// CURSOR_MAX and no bigger than the framebuffer. Anything else hides the cursor. The size is
+/// multiplied in usize with a check, since w*h in i32 wraps for 16-bit sides (ARITHOFL-002).
+fn cursor_len(w: c_int, h: c_int, bpp: c_int, (fw, fh): (c_int, c_int)) -> Option<usize> {
+    if bpp != 4 || w <= 0 || h <= 0 || w >= CURSOR_MAX || h >= CURSOR_MAX || w > fw || h > fh {
+        return None;
+    }
+    (w as usize).checked_mul(h as usize)
+}
+
 unsafe extern "C" fn cursor_shape(cl: *mut rfbClient, xhot: c_int, yhot: c_int, w: c_int, h: c_int, bpp: c_int) {
     crate::ffi::guard("cursor_shape", (), || unsafe {
         with_state(cl, |st| {
             restore(cl, st);
-            let n = (w.max(0) * h.max(0)) as usize;
+            let n = cursor_len(w, h, bpp, ((*cl).width, (*cl).height)).unwrap_or(0);
             let (src, mask) = ((*cl).rcSource, (*cl).rcMask);
-            if bpp != 4 || n == 0 || src.is_null() || mask.is_null() {
+            if n == 0 || src.is_null() || mask.is_null() {
                 st.cursor.w = 0; // an empty shape hides it
                 return;
             }
             let c = &mut st.cursor;
             (c.w, c.h, c.hot) = (w, h, (xhot, yhot));
+            // SAFETY: libvncclient's cursor shape, valid during this callback; both are checked for null above and are n (w × h) pixels long.
             c.px = std::slice::from_raw_parts(src as *const u32, n).to_vec();
             c.mask = std::slice::from_raw_parts(mask, n).to_vec();
             draw(cl, st);
@@ -283,7 +363,10 @@ unsafe extern "C" fn lock_area(cl: *mut rfbClient, x: c_int, y: c_int, w: c_int,
     crate::ffi::guard("lock_area", (), || unsafe {
         with_state(cl, |st| {
             if let Some(d) = st.cursor.drawn
-                && x < d[2] && x + w > d[0] && y < d[3] && y + h > d[1]
+                && x < d[2]
+                && x + w > d[0]
+                && y < d[3]
+                && y + h > d[1]
             {
                 restore(cl, st);
             }
@@ -312,8 +395,11 @@ unsafe fn move_cursor(cl: *mut rfbClient, st: &mut State, x: i32, y: i32) {
     unsafe { draw(cl, st) };
 }
 
+/// Puts back the pixels under the cursor. `drawn` is only cleared once they're all back, so a
+/// restore that stopped partway (a panic) is tried again by the next one, instead of leaving the
+/// cursor's pixels in the picture.
 unsafe fn restore(cl: *mut rfbClient, st: &mut State) {
-    let Some([x0, y0, x1, y1]) = st.cursor.drawn.take() else { return };
+    let Some([x0, y0, x1, y1]) = st.cursor.drawn else { return };
     let (fb, w) = unsafe { ((*cl).frameBuffer as *mut u32, (*cl).width) };
     let mut i = 0;
     for y in y0..y1 {
@@ -322,6 +408,7 @@ unsafe fn restore(cl: *mut rfbClient, st: &mut State) {
             i += 1;
         }
     }
+    st.cursor.drawn = None;
     st.grow(x0, y0, x1, y1);
 }
 
@@ -354,9 +441,9 @@ unsafe fn draw(cl: *mut rfbClient, st: &mut State) {
 /// One connection to an RFB server.
 pub struct Session {
     cl: *mut rfbClient,
-    mask: i32,          // the buttons held
-    at: (i32, i32),     // where we last put the pointer
-    notches: [f64; 2],  // wheel turns not yet a whole click (vertical, horizontal)
+    mask: i32,               // the buttons held
+    at: (i32, i32),          // where we last put the pointer
+    notches: [f64; 2],       // wheel turns not yet a whole click (vertical, horizontal)
     keys: HashMap<u16, u32>, // the keysym each held key went down as
 }
 
@@ -365,6 +452,7 @@ unsafe impl Send for Session {}
 impl Session {
     pub fn connect(opts: &Opts) -> Result<Session, String> {
         unsafe {
+            crate::ffi::new_session();
             let cl = rfbGetClient(8, 3, 4);
             if cl.is_null() {
                 return Err("out of memory".into());
@@ -406,12 +494,7 @@ impl Session {
             // Nothing goes to a session without TLS unless tls=no said so, and never to one that
             // didn't check a password, since a fake desktop would get every keystroke.
             let none = (*cl).authScheme == rfbNoAuth || matches!((*cl).subAuthScheme, rfbNoAuth | rfbVeNCryptTLSNone | rfbVeNCryptX509None);
-            if none {
-                return Err("the host asked for no password".into());
-            }
-            if !opts.insecure && !secure(cl) {
-                return Err("no TLS (tls=no allows that)".into());
-            }
+            settle_pin(opts, none, secure(cl), peer_sha256(cl))?;
             Ok(s)
         }
     }
@@ -469,8 +552,9 @@ impl Session {
     }
 
     /// Reads and decodes one server message. False when the connection's gone.
+    /// A callback that panicked ends it too (ffi::session_failed), so it reconnects from a clean start.
     pub fn handle(&mut self) -> bool {
-        unsafe { HandleRFBServerMessage(self.cl) != 0 }
+        unsafe { HandleRFBServerMessage(self.cl) != 0 && !crate::ffi::session_failed() }
     }
 
     /// What changed since the last take: the region, D-045's change, and how many updates ended.
@@ -493,7 +577,11 @@ impl Session {
                 self.at = (((u * w as f64) as i32).clamp(0, (w - 1).max(0)), ((v * h as f64) as i32).clamp(0, (h - 1).max(0)));
                 // RDP's buttons 1, 2, 3 are left, right, middle; RFB's mask bits 0, 1, 2 are left, middle, right
                 let bit = [(PTR_FLAGS_BUTTON1, 1), (PTR_FLAGS_BUTTON2, 4), (PTR_FLAGS_BUTTON3, 2)].iter().filter(|(f, _)| flags & f != 0).fold(0, |m, (_, b)| m | b);
-                if flags & PTR_FLAGS_DOWN != 0 { self.mask |= bit } else { self.mask &= !bit }
+                if flags & PTR_FLAGS_DOWN != 0 {
+                    self.mask |= bit
+                } else {
+                    self.mask &= !bit
+                }
                 let at = self.at;
                 unsafe { with_state(cl, |st| move_cursor(cl, st, at.0, at.1)) };
                 unsafe { SendPointerEvent(cl, self.at.0, self.at.1, self.mask) != 0 }
@@ -512,6 +600,13 @@ impl Session {
                 };
                 let bit = 1 << (button - 1);
                 (0..n.abs() as i32).all(|_| unsafe { SendPointerEvent(cl, self.at.0, self.at.1, self.mask | bit) != 0 && SendPointerEvent(cl, self.at.0, self.at.1, self.mask) != 0 })
+            }
+            Ev::Sym(sym) => {
+                let sent = unsafe { SendKeyEvent(cl, sym, 1) != 0 && SendKeyEvent(cl, sym, 0) != 0 };
+                if !sent {
+                    crate::osk::missed(1); // queued as typed (vnc::text), but the connection went: the strip counts it
+                }
+                sent
             }
             Ev::Key(code, value) => {
                 let down = value != 0;
@@ -577,43 +672,53 @@ fn keysym(code: u16, shift: bool) -> u32 {
         }
     }
     match code {
-        1 => 0xFF1B,             // Escape
-        14 => 0xFF08,            // BackSpace
-        15 => 0xFF09,            // Tab
-        28 => 0xFF0D,            // Return
-        29 => 0xFFE3,            // Control_L
-        42 => 0xFFE1,            // Shift_L
-        54 => 0xFFE2,            // Shift_R
-        55 => 0xFFAA,            // KP_Multiply
-        56 => 0xFFE9,            // Alt_L
-        58 => 0xFFE5,            // Caps_Lock
+        1 => 0xFF1B,                            // Escape
+        14 => 0xFF08,                           // BackSpace
+        15 => 0xFF09,                           // Tab
+        28 => 0xFF0D,                           // Return
+        29 => 0xFFE3,                           // Control_L
+        42 => 0xFFE1,                           // Shift_L
+        54 => 0xFFE2,                           // Shift_R
+        55 => 0xFFAA,                           // KP_Multiply
+        56 => 0xFFE9,                           // Alt_L
+        58 => 0xFFE5,                           // Caps_Lock
         59..=68 => 0xFFBE + (code - 59) as u32, // F1-F10
-        69 => 0xFF7F,            // Num_Lock
-        70 => 0xFF14,            // Scroll_Lock
-        71 => 0xFFB7, 72 => 0xFFB8, 73 => 0xFFB9, 74 => 0xFFAD, // KP 7 8 9 -
-        75 => 0xFFB4, 76 => 0xFFB5, 77 => 0xFFB6, 78 => 0xFFAB, // KP 4 5 6 +
-        79 => 0xFFB1, 80 => 0xFFB2, 81 => 0xFFB3, 82 => 0xFFB0, 83 => 0xFFAE, // KP 1 2 3 0 .
-        87 => 0xFFC8,            // F11
-        88 => 0xFFC9,            // F12
-        96 => 0xFF8D,            // KP_Enter
-        97 => 0xFFE4,            // Control_R
-        98 => 0xFFAF,            // KP_Divide
-        99 => 0xFF61,            // Print
-        100 => 0xFFEA,           // Alt_R
-        102 => 0xFF50,           // Home
-        103 => 0xFF52,           // Up
-        104 => 0xFF55,           // Prior
-        105 => 0xFF51,           // Left
-        106 => 0xFF53,           // Right
-        107 => 0xFF57,           // End
-        108 => 0xFF54,           // Down
-        109 => 0xFF56,           // Next
-        110 => 0xFF63,           // Insert
-        111 => 0xFFFF,           // Delete
-        119 => 0xFF13,           // Pause
-        125 => 0xFFEB,           // Super_L
-        126 => 0xFFEC,           // Super_R
-        127 => 0xFF67,           // Menu
+        69 => 0xFF7F,                           // Num_Lock
+        70 => 0xFF14,                           // Scroll_Lock
+        71 => 0xFFB7,
+        72 => 0xFFB8,
+        73 => 0xFFB9,
+        74 => 0xFFAD, // KP 7 8 9 -
+        75 => 0xFFB4,
+        76 => 0xFFB5,
+        77 => 0xFFB6,
+        78 => 0xFFAB, // KP 4 5 6 +
+        79 => 0xFFB1,
+        80 => 0xFFB2,
+        81 => 0xFFB3,
+        82 => 0xFFB0,
+        83 => 0xFFAE,  // KP 1 2 3 0 .
+        87 => 0xFFC8,  // F11
+        88 => 0xFFC9,  // F12
+        96 => 0xFF8D,  // KP_Enter
+        97 => 0xFFE4,  // Control_R
+        98 => 0xFFAF,  // KP_Divide
+        99 => 0xFF61,  // Print
+        100 => 0xFFEA, // Alt_R
+        102 => 0xFF50, // Home
+        103 => 0xFF52, // Up
+        104 => 0xFF55, // Prior
+        105 => 0xFF51, // Left
+        106 => 0xFF53, // Right
+        107 => 0xFF57, // End
+        108 => 0xFF54, // Down
+        109 => 0xFF56, // Next
+        110 => 0xFF63, // Insert
+        111 => 0xFFFF, // Delete
+        119 => 0xFF13, // Pause
+        125 => 0xFFEB, // Super_L
+        126 => 0xFFEC, // Super_R
+        127 => 0xFF67, // Menu
         _ => 0,
     }
 }
@@ -623,11 +728,20 @@ fn keysym(code: u16, shift: bool) -> u32 {
 /// Input waiting for each panel's session thread.
 static INPUT: Mutex<Vec<(usize, Ev)>> = Mutex::new(Vec::new());
 
-fn queue(p: &Panel, e: Ev) {
-    if p.connected.load(Acquire) {
-        crate::ffi::lock(&INPUT).push((p.index, e));
+fn queue(p: &Panel, e: Ev) -> bool {
+    let queued = queue_if(p.connected.load(Acquire), p.index, e);
+    if queued {
         crate::rdp::poke(p); // its session thread may be in its wait
     }
+    queued
+}
+
+/// Queues e for panel i's session thread if it's connected. False if there's no session to take it.
+fn queue_if(connected: bool, i: usize, e: Ev) -> bool {
+    if connected {
+        crate::ffi::lock(&INPUT).push((i, e));
+    }
+    connected
 }
 
 fn take_input(i: usize) -> Vec<Ev> {
@@ -646,6 +760,11 @@ pub fn mouse(p: &Panel, flags: u32, x: f64, y: f64) {
 /// Wheel notches, positive is up or right (Panel::wheel).
 pub fn wheel(p: &Panel, horizontal: bool, notches: f64) {
     queue(p, Ev::Wheel(horizontal, notches));
+}
+
+/// A character as itself (Panel::text). VNC always can, through keysyms.
+pub fn text(p: &Panel, c: char) -> bool {
+    queue(p, Ev::Sym(char_keysym(c))) // a panel that's disconnected says so, and the character counts as missed
 }
 
 /// An evdev key: 0 up, 1 down, 2 repeat (Panel::key).
@@ -693,7 +812,16 @@ pub fn run(p: &'static Panel) {
         // the line's pin (read again each try, since a first connect may have just saved one), else the paired machine's
         let conf = std::path::PathBuf::from(config::config(""));
         let pin = if o.pin.is_empty() { cc_proto::conf::viewer_pin(&conf, &v.name).or_else(|| config::pin(&v.machine)) } else { Some(o.pin.clone()) };
-        let opts = Opts { host: v.host.clone(), port: v.port, user: v.user.clone(), password: config::password(&v.machine), pin: pin.map(|h| pin_bytes(&h)), insecure: o.insecure, name: v.name.clone(), conf };
+        let opts = Opts {
+            host: v.host.clone(),
+            port: v.port,
+            user: v.user.clone(),
+            password: config::password(&v.machine),
+            pin: pin.map(|h| pin_bytes(&h)),
+            insecure: o.insecure,
+            name: v.name.clone(),
+            conf,
+        };
         let mut s = match Session::connect(&opts) {
             Ok(s) => s,
             Err(why) => {
@@ -763,25 +891,73 @@ pub fn run(p: &'static Panel) {
 mod tests {
     use super::*;
 
-    /// An unpinned server's first certificate is saved as its pin and taken. A different one after
-    /// that is refused, even by a session that started before the pin was saved (fails closed).
     #[test]
-    fn pins_on_first_connect_and_refuses_another() {
+    fn a_certificate_with_no_fingerprint_is_never_trusted() {
+        assert_eq!(certificate(&[], false), Cert::NoFingerprint, "no pin yet: still refused, so nothing empty is ever pinned");
+        assert_eq!(certificate(&[], true), Cert::NoFingerprint);
+        assert_eq!(certificate(&[0xab; 32], true), Cert::NotThePin);
+        assert_eq!(certificate(&[0xab; 32], false), Cert::GoOn);
+    }
+
+    #[test]
+    fn a_disconnected_panel_takes_no_characters() {
+        let before = take_input(97).len();
+        assert!(!queue_if(false, 97, Ev::Sym(0x61)), "no session: refused, so it counts as missed");
+        assert_eq!(take_input(97).len(), before);
+        assert!(queue_if(true, 97, Ev::Sym(0x61)));
+        assert_eq!(take_input(97).len(), 1);
+    }
+
+    #[test]
+    fn a_character_is_its_latin1_or_unicode_keysym() {
+        assert_eq!(char_keysym('a'), 0x61);
+        assert_eq!(char_keysym('é'), 0xe9);
+        assert_eq!(char_keysym('€'), 0x0100_20ac);
+        assert_eq!(char_keysym('😀'), 0x0101_f600);
+    }
+
+    /// A hostile 65535x65535 cursor (or any too big, or not 4 bytes a pixel) hides the cursor.
+    #[test]
+    fn huge_cursors_are_hidden() {
+        let fb = (2560, 1440);
+        assert_eq!(cursor_len(65535, 65535, 4, (65535, 65535)), None);
+        assert_eq!(cursor_len(1024, 32, 4, fb), None, "libvncclient's limit, ours too");
+        assert_eq!(cursor_len(32, 32, 4, (16, 16)), None, "bigger than the framebuffer");
+        assert_eq!(cursor_len(32, 32, 2, fb), None, "not 4 bytes a pixel");
+        assert_eq!(cursor_len(-1, 32, 4, fb), None);
+        assert_eq!(cursor_len(32, 24, 4, fb), Some(768));
+    }
+
+    /// The first certificate is pinned only once the server proved it checks a password over TLS.
+    /// A server that asked for no password, or did it without TLS, gets nothing saved. After that,
+    /// only the pinned certificate is taken, CA-valid or not, and the unpinned path doesn't ask
+    /// libvncclient's question at all.
+    #[test]
+    fn pins_only_after_the_checks_and_then_holds() {
         let d = std::env::temp_dir().join(format!("cc-panels-vnc-pin-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("viewers.conf"), "# mine\nmac  me@10.0.0.5:5900  1  2560x1440  proto=vnc\n").unwrap();
+        let opts = Opts { host: "10.0.0.5".into(), name: "mac".into(), conf: d.clone(), ..Default::default() };
+        let (first, other) = ([0xab; 32], [0xcd; 32]);
+        assert!(settle_pin(&opts, true, true, Some(first)).is_err(), "no password");
+        assert!(settle_pin(&opts, false, false, Some(first)).is_err(), "no TLS");
+        assert_eq!(cc_proto::conf::viewer_pin(&d, "mac"), None, "refused, so nothing pinned");
+        assert_eq!(settle_pin(&opts, false, true, Some(first)), Ok(()), "the first good connect");
+        assert_eq!(cc_proto::conf::viewer_pin(&d, "mac"), Some("ab".repeat(32)), "pins it");
+        assert!(settle_pin(&opts, false, true, Some(other)).is_err(), "another certificate, even before the pin's re-read");
+        let pinned = Opts { pin: Some(first), ..opts.clone() };
+        assert_eq!(settle_pin(&pinned, false, true, Some(first)), Ok(()));
+        assert!(settle_pin(&pinned, false, true, Some(other)).is_err(), "a CA-valid certificate that isn't the pin");
+        let plain = Opts { insecure: true, ..opts.clone() };
+        assert_eq!(settle_pin(&plain, false, false, None), Ok(()), "tls=no: nothing to pin");
         unsafe {
             let cl = rfbGetClient(8, 3, 4);
             let tag = &TAG as *const u8 as *mut c_void;
-            let opts = Opts { host: "10.0.0.5".into(), name: "mac".into(), conf: d.clone(), ..Default::default() };
-            let st = Box::into_raw(Box::new(State { opts, ..Default::default() }));
+            let st = Box::into_raw(Box::new(State { opts: pinned, ..Default::default() }));
             rfbClientSetClientData(cl, tag, st as *mut c_void);
-            let (first, other) = ([0xab; 32], [0xcd; 32]);
-            assert_eq!(on_certificate(cl, std::ptr::null(), 0, 0, first.as_ptr(), 32), 1, "the first one is taken");
-            assert_eq!(cc_proto::conf::viewer_pin(&d, "mac"), Some("ab".repeat(32)), "and saved");
-            assert_eq!(on_certificate(cl, std::ptr::null(), 0, 0, first.as_ptr(), 32), 1, "the same one again");
-            assert_eq!(on_certificate(cl, std::ptr::null(), 0, 0, other.as_ptr(), 32), 0, "another one fails closed");
-            assert!((*st).refused.is_some());
+            assert_eq!(on_certificate(cl, std::ptr::null(), 0, 0, other.as_ptr(), 32), 0, "with a pin, libvncclient's question is a no");
+            (*st).opts.pin = None;
+            assert_eq!(on_certificate(cl, std::ptr::null(), 0, 0, other.as_ptr(), 32), 1, "without one it goes on to settle_pin");
             rfbClientSetClientData(cl, tag, std::ptr::null_mut());
             drop(Box::from_raw(st));
             rfbClientCleanup(cl);

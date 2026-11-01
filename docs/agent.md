@@ -288,6 +288,11 @@ Frame's servers start when it connects and stop after it leaves, because always-
   its port (3400 + 10k + index) accepts a connection on localhost. It answers `{port, ready:true}`,
   or `ok:false` with `no-such-monitor`, `not-paired` (no slot), or `not-ready` (krdp didn't come
   up, with its last journal line in `detail`). Starting one that's already running just answers.
+  A server systemd has given up on (its unit is `failed`, whatever the Result, with no restart
+  coming) isn't started again: the answer is `ok:false` with `down` and the unit's Result in
+  `detail`, because every start would fail again, trip a new alert, and defeat the start limit.
+  `force: true` (the Frame sends it when you press Connect, and for every window pop-out) runs
+  `systemctl --user reset-failed` on the unit first, then starts it. `window start` works the same.
 - `session stop <index>` stops it, unless a viewer is still connected (then the idle stop takes
   care of it). It answers `{stopped: true|false}`.
 - **Idle stop:** every 30 s the agent checks each running session's port for established
@@ -297,8 +302,10 @@ Frame's servers start when it connects and stop after it leaves, because always-
   has one entry per shared monitor for this Frame's server on it (`control-center-frame@<frame>-<i>`):
   `state` (systemd's ActiveState), `restarts` (NRestarts), `recent_restarts` (in the last 10
   minutes, counted from what status saw before), `listening` (its port), and `health`. That's `down`
-  once the unit is failed (it gave up), `degraded` after more than 2 restarts in 10 minutes, `ok`
-  when it's active and listening, `starting` while it comes up, and `idle` with no session.
+  once the unit is failed (it gave up), `degraded` after more than 2 restarts in 10 minutes or
+  when it's been active for over a minute without its port listening, `ok` when it's active and
+  listening, `starting` while it comes up, `idle` with no session, and `unknown` when systemd
+  didn't answer for it (so a broken user manager doesn't look like an idle server).
 - The scope is the same as every command's: only this Frame's slot, the index checked against the
   shared monitors, and unit names built from the validated Frame name and an integer.
 

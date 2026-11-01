@@ -1,0 +1,18 @@
+{
+  "applications": [
+    {
+      "app_key": "controlcenter.tab",
+      "launch_type": "binary",
+      "binary_path_linux": "@TAB@",
+      "arguments": "",
+      "is_dashboard_overlay": true,
+      "image_path": "@ICON@",
+      "strings": {
+        "en_us": {
+          "name": "Command Center",
+          "description": "Your desktop and your computers as VR panels. This tab opens the Desktop."
+        }
+      }
+    }
+  ]
+}

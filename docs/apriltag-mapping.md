@@ -64,7 +64,8 @@ work: `Work-WiFi`). Nothing gets added to the real config automatically.
 
 The passthrough cameras can't read text on the monitors, so the scan's instructions are in the
 headset. cc-panels shows them with `hud` / `hud mark` / `hud hide` (control/hud.rs), and
-cc-scan's hud.rs draws them:
+cc-scan's hud.rs draws them. The pictures are raw RGBA files in the scan's folder, and cc-panels
+only takes a plain file inside `~/.cache/control-center` of exactly the size `hud` names:
 
 - **A status strip,** head-locked 1 m ahead and 0.6 m down, tilted 31° up towards your eyes and
   0.5 m wide. That puts it below what the mirror camera sees (about 27° down), so it can't hide

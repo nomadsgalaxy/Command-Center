@@ -30,13 +30,14 @@
 use super::ui::{self, BTN_H, Edit, GAP, MPP, PAD, Px, ROW, Rect, SCALE, SORT, TITLE, typed, typed_w};
 use crate::geometry::{Placement, from_top, panel_matrix};
 use crate::grab::{self, Look, Paint, TagImg, line, over, tint};
-use crate::kvm::KVM;
+use crate::keyboard::{self, Keyboard, KeyboardMode};
+use crate::overlay::{Flag, InputMode, Surfaces};
+use crate::stage::Stage;
 use crate::taskbar::{Taskbar, tex_scale};
+use crate::texture::Refused;
 use crate::windows::Windows;
-use crate::{HIDDEN, Source, call, config, panels, theme, vr};
+use crate::{HIDDEN, Source, config, panels, theme, vr};
 use cc_proto::conf::{self, Json, TEMPORARY};
-use openvr_sys as sys;
-use std::ffi::CString;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
@@ -90,7 +91,7 @@ struct Row {
     title: String,  // what you see (Temporary)
     detail: String, // where it belongs, how many panels
     active: bool,
-    load: bool, // bound to another room, so Load for travel instead of Use
+    load: bool,  // bound to another room, so Load for travel instead of Use
     enter: bool, // one of its monitors is connected and has a saved scan there, so it can be entered
 }
 
@@ -176,9 +177,11 @@ fn held(was: Option<Hit>, n: usize, typing: Option<usize>, x: f64, y: f64) -> Op
         Hit::SaveAs => typing != Some(n),
         _ => false, // the field's only count where hit() finds them
     };
-    hit(n, typing, x, y).or(was.filter(|&a| still(a) && {
-        let (x0, y0, x1, y1) = rect(n, a);
-        (x0..=x1).contains(&x) && (y0..=y1).contains(&y)
+    hit(n, typing, x, y).or(was.filter(|&a| {
+        still(a) && {
+            let (x0, y0, x1, y1) = rect(n, a);
+            (x0..=x1).contains(&x) && (y0..=y1).contains(&y)
+        }
     }))
 }
 
@@ -318,8 +321,20 @@ impl Scene<'_> {
         if x <= span.0 - 7.0 || x >= span.1 + 7.0 {
             return ([0.0; 3], 0.0);
         }
-        let look = if armed { Look::Carry } else if self.k.hover == Some(hit) && !off { Look::Lit } else { Look::Rest };
-        let ink = if off { t.wdim } else if armed { self.p.acc.ink } else { t.wtext };
+        let look = if armed {
+            Look::Carry
+        } else if self.k.hover == Some(hit) && !off {
+            Look::Lit
+        } else {
+            Look::Rest
+        };
+        let ink = if off {
+            t.wdim
+        } else if armed {
+            self.p.acc.ink
+        } else {
+            t.wtext
+        };
         let out = over(ui::button(&self.p, look, span, x, y, cy), tint(typed(g, "x", x, y, (span.0 + span.1 - typed_w(g, "x")) / 2.0, cy), ink, ink, ink));
         if off { (out.0, out.1 * 0.6) } else { out }
     }
@@ -364,7 +379,13 @@ impl Scene<'_> {
             let e = self.labelled(right(&BUTTONS, 0), cy, self.ui.enter.as_ref(), Hit::Enter(i), x, y);
             out = over(out, if r.enter { e } else { (e.0, e.1 * 0.6) }); // no monitor of it connected: greyed out
         }
-        let first = if r.active { &self.ui.active } else if r.load { &self.ui.load } else { &self.ui.use_ };
+        let first = if r.active {
+            &self.ui.active
+        } else if r.load {
+            &self.ui.load
+        } else {
+            &self.ui.use_
+        };
         let b0 = right(&BUTTONS, 1);
         if x > b0.0 - 7.0 && x < b0.1 + 7.0 {
             let b = self.labelled(b0, cy, first.as_ref(), Hit::Use(i), x, y);
@@ -525,7 +546,11 @@ impl Workspace {
                 self.hide_keyboard();
             }
             grab.set_extra_shown(show);
-            if show { call!(ov, ShowOverlay, h) } else { call!(ov, HideOverlay, h) };
+            if show {
+                crate::overlay::Live.show(h)
+            } else {
+                crate::overlay::Live.hide(h)
+            };
         }
         if show {
             self.paint(h);
@@ -544,9 +569,9 @@ impl Workspace {
                 return;
             }
         };
-        call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-        call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-        call!(ov, SetOverlaySortOrder, h, SORT);
+        crate::overlay::Live.input(h, InputMode::Pointer);
+        crate::overlay::Live.flag(h, Flag::Interactive, true);
+        crate::overlay::Live.order(h, SORT);
         self.refresh();
         self.n = self.rows.len();
         let pose = ui::spot("workspace", W * MPP);
@@ -560,18 +585,20 @@ impl Workspace {
         let n = self.rows.len();
         let t = typing_row(self.typing.as_ref(), n);
         let drawn = self.painter.drawn().map(|k| k.rows.len());
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
-        while ui::next_event(h, &mut e) {
-            let (m, dev) = (unsafe { e.data.mouse }, e.trackedDeviceIndex);
+        while let Some(ev) = ui::next_event(h) {
+            use crate::events::{Button, KeyboardEvent as K, PointerEvent, PointerKind as P, SurfaceEvent as S};
             // in units from the bottom left; none while the texture is drawn for a different row count
-            let at = held(self.hover, n, t, m.x as f64, from_top(height(n), m.y as f64)).filter(|_| drawn == Some(n));
-            grab.panel_event(grab.slot(), &e, &mut KVM.lock().unwrap());
-            match e.eventType {
-                sys::EVREventType_VREvent_MouseMove => self.hover = at,
-                sys::EVREventType_VREvent_FocusLeave => self.hover = None,
-                sys::EVREventType_VREvent_MouseButtonDown if m.button == sys::EVRMouseButton_VRMouseButton_Left => {
-                    if vr::is_real_controller(dev) {
-                        let mut k = KVM.lock().unwrap();
+            let at = match &ev {
+                S::Pointer(pe) => held(self.hover, n, t, pe.x as f64, from_top(height(n), pe.y as f64)).filter(|_| drawn == Some(n)),
+                _ => None,
+            };
+            grab.panel_event(grab.slot(), &ev, &mut crate::kvm::lock());
+            match ev {
+                S::Pointer(PointerEvent { kind: P::Move, .. }) => self.hover = at,
+                S::Pointer(PointerEvent { kind: P::Leave, .. }) => self.hover = None,
+                S::Pointer(PointerEvent { kind: P::Down(Button::Left), from, .. }) => {
+                    if crate::stage::Live.is_controller(from) {
+                        let mut k = crate::kvm::lock();
                         if k.awake {
                             k.set_awake(false); // the last device pressed is primary (R-2)
                         }
@@ -581,19 +608,18 @@ impl Workspace {
                         None => self.hide_keyboard(),
                     }
                 }
-                sys::EVREventType_VREvent_MouseButtonUp => windows.plasma_release(),
-                sys::EVREventType_VREvent_KeyboardCharInput | sys::EVREventType_VREvent_KeyboardDone if unsafe { e.data.keyboard }.uUserValue == OSK => {
-                    let mut buf = [0u8; 256];
-                    call!(ov, GetKeyboardText, buf.as_mut_ptr() as *mut _, buf.len() as u32);
+                S::Pointer(PointerEvent { kind: P::Up(_), .. }) => windows.plasma_release(),
+                S::Keyboard(ref k @ (K::Char { user, .. } | K::Done { user })) if user == OSK => {
+                    let buf = keyboard::Live.text();
                     if let Some(tp) = self.typing.as_mut().filter(|_| self.osk) {
                         tp.text = text_of(&buf);
-                        if e.eventType == sys::EVREventType_VREvent_KeyboardDone {
+                        if matches!(k, K::Done { .. }) {
                             self.osk = false;
                             self.act(Hit::Save, h); // Enter saves
                         }
                     }
                 }
-                sys::EVREventType_VREvent_KeyboardClosed if unsafe { e.data.keyboard }.uUserValue == OSK && self.osk => {
+                S::Keyboard(K::Closed { user }) if user == OSK && self.osk => {
                     self.osk = false;
                     self.hide_keyboard();
                 }
@@ -609,32 +635,32 @@ impl Workspace {
             return;
         }
         tp.editing = true;
-        KVM.lock().unwrap().focus_field("workspace", true);
-        let (hint, text) = (CString::new("Workspace name").unwrap_or_default(), CString::new(tp.text.clone()).unwrap_or_default());
-        let mode = sys::EGamepadTextInputMode_k_EGamepadTextInputModeNormal;
-        let lines = sys::EGamepadTextInputLineMode_k_EGamepadTextInputLineModeSingleLine;
-        let e = call!(ov, ShowKeyboardForOverlay, h, mode, lines, 0, hint.as_ptr() as *mut _, 40, text.as_ptr() as *mut _, OSK);
-        if e == 0 {
-            self.osk = true;
-        } else {
-            self.status = format!("no keyboard (SteamVR's error {e})");
+        let mut k = crate::kvm::lock();
+        k.focus_field("workspace", true);
+        if !k.popup_ok(false) {
+            return; // you're typing on a real keyboard, and it types here now
+        }
+        drop(k);
+        crate::osk::forget();
+        match keyboard::Live.open(h, KeyboardMode::Normal, false, "Workspace name", &tp.text, 40, OSK) {
+            Ok(()) => self.osk = true,
+            Err(Refused(e)) => self.status = format!("no keyboard (SteamVR's error {e})"),
         }
     }
 
     /// Leaves the field: closes SteamVR's keyboard (keeping its text) and gives the physical keyboards back.
     fn hide_keyboard(&mut self) {
         if std::mem::take(&mut self.osk) {
-            let mut buf = [0u8; 256];
-            call!(ov, GetKeyboardText, buf.as_mut_ptr() as *mut _, buf.len() as u32);
+            let buf = keyboard::Live.text();
             if let Some(tp) = self.typing.as_mut() {
                 tp.text = text_of(&buf);
             }
-            call!(ov, HideKeyboard);
+            keyboard::Live.close();
         }
         if let Some(tp) = self.typing.as_mut() {
             tp.editing = false;
         }
-        KVM.lock().unwrap().focus_field("workspace", false);
+        crate::kvm::lock().focus_field("workspace", false);
     }
 
     /// Physical keyboard keys in the field. Enter saves, Escape cancels.
@@ -642,11 +668,11 @@ impl Workspace {
         if !self.typing.as_ref().is_some_and(|t| t.editing) {
             return;
         }
-        let Some(keys) = KVM.lock().unwrap().field_keys("workspace") else { return self.hide_keyboard() };
+        let Some(keys) = crate::kvm::lock().field_keys("workspace") else { return self.hide_keyboard() };
         for (code, value, shift) in keys {
             let Some(e) = ui::edit(code, value, shift) else { continue };
             if std::mem::take(&mut self.osk) {
-                call!(ov, HideKeyboard); // the physical keyboard has it now
+                keyboard::Live.close(); // the physical keyboard has it now
             }
             let Some(tp) = self.typing.as_mut() else { return };
             match e {
@@ -673,8 +699,7 @@ impl Workspace {
                 let old = r.name.clone();
                 config::edit_workspaces(|d| conf::rename_workspace(d, &old, &name)).map(|_| format!("renamed {old} to {name}"))
             }
-            None => config::edit_workspaces(|d| conf::save_workspace_as(d, &name, config::UNIVERSE.load(Relaxed)))
-                .map(|_| format!("saved as {name}, bound to this room")),
+            None => config::edit_workspaces(|d| conf::save_workspace_as(d, &name, config::UNIVERSE.load(Relaxed))).map(|_| format!("saved as {name}, bound to this room")),
         };
         match r {
             Ok(s) => {
@@ -703,7 +728,8 @@ impl Workspace {
                 let done = if r.load {
                     let (head, yaw) = head_pose();
                     let anchors = self.anchors(&r.name);
-                    config::edit_workspaces(|d| conf::load_workspace(d, &r.name, head, yaw, &anchors)).map(|n| format!("loaded {} here: {n} panels, in Temporary ({} stays as it was)", r.title, r.title))
+                    config::edit_workspaces(|d| conf::load_workspace(d, &r.name, head, yaw, &anchors))
+                        .map(|n| format!("loaded {} here: {n} panels, in Temporary ({} stays as it was)", r.title, r.title))
                 } else {
                     config::edit_workspaces(|d| conf::use_workspace(d, &r.name)).map(|_| format!("using {}", r.title))
                 };
@@ -765,8 +791,8 @@ impl Workspace {
         match run {
             Ok(mut child) => {
                 let (tx, rx) = std::sync::mpsc::channel();
-                for (pipe, mark) in [(child.stdout.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), ""),
-                                     (child.stderr.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), "!")] {
+                for (pipe, mark) in [(child.stdout.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), ""), (child.stderr.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), "!")]
+                {
                     let tx = tx.clone();
                     std::thread::spawn(move || {
                         for l in pipe.map(|o| std::io::BufRead::lines(std::io::BufReader::new(o)).map_while(Result::ok)).into_iter().flatten() {
@@ -843,7 +869,7 @@ impl Workspace {
 
 /// Where the head is and which way it faces (yaw 0 looks down -z). If that's unknown, the room's origin.
 fn head_pose() -> ([f64; 3], f64) {
-    let m = vr::head().unwrap_or(crate::geometry::STAND_IN_HEAD);
+    let m = crate::stage::Live.head_now().unwrap_or(crate::geometry::STAND_IN_HEAD);
     ([m[0][3] as f64, m[1][3] as f64, m[2][3] as f64], (m[0][2] as f64).atan2(m[2][2] as f64).to_degrees())
 }
 
@@ -858,10 +884,13 @@ mod tests {
     use super::*;
 
     fn data() -> Json {
-        Json::parse(r#"{"workspace": "home", "workspaces": {
+        Json::parse(
+            r#"{"workspace": "home", "workspaces": {
             "home": {"spots": {"home": {"desk": {}, "app:konsole": {}, "taskbar": {}}}, "universe": "8000000000000000002"},
             "office": {"spots": {}, "universe": "222", "machines": ["desk"]},
-            "temporary": {"spots": {"home": {"desk": {}}}, "loaded": "home"}}}"#).unwrap()
+            "temporary": {"spots": {"home": {"desk": {}}}, "loaded": "home"}}}"#,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -885,9 +914,12 @@ mod tests {
     /// Enter workspace needs one of its monitors connected, with a saved scan in it.
     #[test]
     fn entering_needs_a_connected_scanned_monitor() {
-        let d = Json::parse(r#"{"workspace": "temporary", "workspaces": {"temporary": {"spots": {}},
+        let d = Json::parse(
+            r#"{"workspace": "temporary", "workspaces": {"temporary": {"spots": {}},
             "home": {"universe": "1", "spots": {"scanned": {"desk": {"centre": [0, 1, -1], "yaw": 0}, "laptop": {"centre": [1, 1, -1], "yaw": 0}}}},
-            "office": {"universe": "2", "machines": ["work"], "spots": {"scanned": {"desk": {"centre": [0, 1, -1], "yaw": 0}}}}}}"#).unwrap();
+            "office": {"universe": "2", "machines": ["work"], "spots": {"scanned": {"desk": {"centre": [0, 1, -1], "yaw": 0}}}}}}"#,
+        )
+        .unwrap();
         let live = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
         assert!(rows_of(&d, 9, &[]).iter().all(|r| !r.enter), "nothing connected");
         let on = live(&[("desk", "pc"), ("tv", "pc")]);
@@ -903,8 +935,7 @@ mod tests {
         assert_eq!(enter_line("@capture desk pct=40 samples=5 baseline_cm=1 coverage=100").as_deref(), Some("look at a monitor of it: desk 40%"));
         assert_eq!(enter_line("@prepare desk step=monitor").as_deref(), Some("getting desk ready"));
         assert_eq!(enter_line("@failed desk why=poor-fit mm=14").as_deref(), Some("desk: poor fit"));
-        assert_eq!(enter_line("@entered Home monitor=desk mm=2412 deg=90.0").as_deref(),
-                   Some("entered Home by desk: everything moved 2412 mm and 90.0 deg, and this room is its own now"));
+        assert_eq!(enter_line("@entered Home monitor=desk mm=2412 deg=90.0").as_deref(), Some("entered Home by desk: everything moved 2412 mm and 90.0 deg, and this room is its own now"));
         assert_eq!(enter_line("@mode quick"), None);
         assert_eq!(enter_line("  desk: placed"), None);
     }

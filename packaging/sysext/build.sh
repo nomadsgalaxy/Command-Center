@@ -7,6 +7,9 @@
 # Environment:
 #   CC_ROOT     the checkout whose builds go in (default: this one)
 #   CC_VERSION  the image's version (default: git describe of CC_ROOT)
+#   CC_RELEASE  1 for a release build: CC_VERSION is then required, has to be a tag's (v<version>
+#               on CC_ROOT's HEAD), and can't be -dirty or a bare commit, since sysupdate orders
+#               the images by version
 # Exits non-zero (3 on the host) when the image is built, but something in it can't load on this SteamOS (the check lists it).
 set -euo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
@@ -17,11 +20,24 @@ out=$(realpath -m "${1:-$here/out/command-center.raw}")
 # distrobox-host-exec drops the environment, so it goes on the command line.
 if ! grep -qx ID=steamos /etc/os-release 2>/dev/null; then
   command -v distrobox-host-exec >/dev/null || { echo "run this on the SteamOS host" >&2; exit 1; }
-  exec distrobox-host-exec env CC_ROOT="$root" CC_VERSION="${CC_VERSION:-}" bash "$here/build.sh" "$out"
+  exec distrobox-host-exec env CC_ROOT="$root" CC_VERSION="${CC_VERSION:-}" CC_RELEASE="${CC_RELEASE:-}" bash "$here/build.sh" "$out"
 fi
 
-name=$(basename "$out" .raw)
+# The release file is always named after the bare image name, whatever the output file's called
+# (command-center_0.9.1.raw too): that's the name sysext matches, and the one cc-install and
+# cc-launch look for. Tried on the Frame 2026-10-29 with vpick's <name>.raw.v/<name>_<N>.raw.
+name=command-center
 version=${CC_VERSION:-$(git -C "$root" describe --always --dirty 2>/dev/null || echo dev)}
+if [ "${CC_RELEASE:-}" = 1 ]; then
+  [ -n "${CC_VERSION:-}" ] || { echo "a release build needs CC_VERSION, from its tag" >&2; exit 1; }
+  case $version in
+    *-dirty* | *[!0-9A-Za-z._+~-]* | [!0-9]*) echo "CC_VERSION=$version isn't a release version (digits first, no -dirty)" >&2; exit 1 ;;
+  esac
+  git -C "$root" tag --points-at HEAD | grep -qxF "v$version" || { echo "v$version isn't a tag on $root's HEAD" >&2; exit 1; }
+  [ -z "$(git -C "$root" status --porcelain)" ] || { echo "$root has changes or files that aren't committed" >&2; exit 1; }
+  # update.rs's "up to date" compares the version in the file's name with IMAGE_VERSION byte for byte
+  [ "$(basename "$out")" = "command-center_$version.raw" ] || { echo "a release image is named command-center_$version.raw, not $(basename "$out")" >&2; exit 1; }
+fi
 lib=usr/lib/command-center
 s=$(mktemp -d)
 trap 'rm -rf "$s"' EXIT
@@ -34,15 +50,30 @@ install -Dm755 "$root/target/release/cc-panels" "$s/$lib/target/release/cc-panel
 ln -s cc-home "$s/$lib/cc-panels"
 ln -s cc-home "$s/$lib/cc-box"
 mkdir -p "$s/$lib/session" "$s/$lib/panels/third_party/prefix/lib64" "$s/$lib/crates/cc-panels/actions" "$s/usr/bin"
-for c in cc-launch cc-desktop cc-rest; do ln -s ../cc-home "$s/$lib/session/$c"; done
+for c in cc-launch cc-desktop cc-rest cc-tab; do ln -s ../cc-home "$s/$lib/session/$c"; done
 for c in cc-home cc-panels; do ln -s "../lib/command-center/$c" "$s/usr/bin/$c"; done
+# The update helper is a copy of cc-home under its own name, run as root by pkexec (update.rs), with its
+# polkit action, sysupdate's transfer, and our release key in the binary form gpgv reads (the
+# public half only, from packaging/command-center.asc).
+install -m755 "$s/$lib/cc-home" "$s/$lib/cc-sysext-update" # a copy, not a link: pkexec's exec.path and argv[0] both see this name
+install -Dm644 "$root/packaging/sysext/org.controlcenter.update.policy" "$s/usr/share/polkit-1/actions/org.controlcenter.update.policy"
+install -Dm644 "$root/packaging/sysext/50-command-center.transfer" "$s/usr/lib/sysupdate.command-center.d/50-command-center.transfer"
+install -Dm644 "$root/packaging/sysext/command-center.tmpfiles" "$s/usr/lib/tmpfiles.d/command-center.conf" # the helper's /var/lib/command-center, root's from boot
+gpg --dearmor <"$root/packaging/command-center.asc" >"$s/$lib/release-key.gpg"
+chmod 644 "$s/$lib/release-key.gpg"
 cp -P "$root"/panels/third_party/prefix/lib64/lib{freerdp3,freerdp-client3,winpr3}.so.3* "$s/$lib/panels/third_party/prefix/lib64/"
 # Says the build is native, so cc-box runs things directly (session.rs, native()). A container
 # build has none, and the check below would fail it anyway.
 [ -f "$root/panels/third_party/prefix/steamos-release" ] && install -m644 "$root/panels/third_party/prefix/steamos-release" "$s/$lib/panels/third_party/prefix/"
 install -m644 "$root"/panels/cc-windows.js "$root"/panels/cc-restore.js "$s/$lib/panels/"
 install -m644 "$root"/crates/cc-panels/actions/*.json "$s/$lib/crates/cc-panels/actions/"
-strip --strip-debug "$s/$lib/cc-home" "$s/$lib/target/release/cc-panels" "$s/$lib"/panels/third_party/prefix/lib64/*.so.*.*
+# The dashboard tab's icon (dashtab.rs reads it from root/packaging), and the manifest SteamVR
+# starts the tab from while the Desktop is closed (tab.rs). It sits at this fixed path, which the
+# Desktop's start registers with SteamVR if it isn't yet (cc-home install renders the same template).
+install -Dm644 "$root/packaging/command-center.png" "$s/$lib/packaging/command-center.png"
+sed -e "s|@TAB@|/$lib/session/cc-tab|" -e "s|@ICON@|/$lib/packaging/command-center.png|" \
+  "$root/packaging/command-center.vrmanifest.in" >"$s/$lib/command-center.vrmanifest"
+strip --strip-debug "$s/$lib/cc-home" "$s/$lib/cc-sysext-update" "$s/$lib/target/release/cc-panels" "$s/$lib"/panels/third_party/prefix/lib64/*.so.*.*
 
 # The pointer driver goes where SteamVR's own drivers are. vrserver loads every folder in
 # /opt/steamvr/drivers, so nobody runs vrpathreg.
@@ -84,6 +115,7 @@ mkdir -p "$s/usr/lib/extension-release.d"
 printf 'ID=_any\nARCHITECTURE=arm64\nIMAGE_ID=%s\nIMAGE_VERSION=%s\n' \
   "$name" "$version" >"$s/usr/lib/extension-release.d/extension-release.$name"
 
+grep -qxF "IMAGE_VERSION=$version" "$s/usr/lib/extension-release.d/extension-release.$name" || { echo "IMAGE_VERSION isn't $version" >&2; exit 1; }
 mkdir -p "$(dirname "$out")"
 mksquashfs "$s" "$out" -all-root -noappend -comp zstd -quiet -no-progress
 echo "built $out ($(du -h "$out" | cut -f1), $name $version, built on $ID $VERSION_ID, merges on any SteamOS)"

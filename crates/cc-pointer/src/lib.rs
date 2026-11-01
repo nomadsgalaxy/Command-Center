@@ -59,7 +59,28 @@ struct DriverPose {
     device_is_connected: bool,
 }
 const _: () = assert!(size_of::<DriverPose>() == 280);
-const POSE0: DriverPose = unsafe { std::mem::zeroed() };
+/// No rotation.
+const IDENTITY: Quat = Quat { w: 1., x: 0., y: 0., z: 0. };
+/// An untracked pose at the origin, with every rotation the identity (not all zeros, which isn't a
+/// rotation): the device's pose before the first update, and what every pose starts from.
+const POSE0: DriverPose = DriverPose {
+    pose_time_offset: 0.,
+    q_world_from_driver_rotation: IDENTITY,
+    vec_world_from_driver_translation: [0.; 3],
+    q_driver_from_head_rotation: IDENTITY,
+    vec_driver_from_head_translation: [0.; 3],
+    vec_position: [0.; 3],
+    vec_velocity: [0.; 3],
+    vec_acceleration: [0.; 3],
+    q_rotation: IDENTITY,
+    vec_angular_velocity: [0.; 3],
+    vec_angular_acceleration: [0.; 3],
+    result: 0,
+    pose_is_valid: false,
+    will_drift_in_yaw: false,
+    should_apply_head_model: false,
+    device_is_connected: false,
+};
 
 /// vr::PropertyWrite_t
 #[repr(C)]
@@ -194,15 +215,7 @@ const PROPS: usize = 2;
 const LOG: usize = 3;
 const INPUT: usize = 6;
 /// InitServer fetches the first six in this order and fails if one is missing. Input is fetched lazily.
-const IFACES: [&CStr; 7] = [
-    c"IVRServerDriverHost_006",
-    c"IVRSettings_003",
-    c"IVRProperties_001",
-    c"IVRDriverLog_001",
-    c"IVRDriverManager_001",
-    c"IVRResources_001",
-    c"IVRDriverInput_003",
-];
+const IFACES: [&CStr; 7] = [c"IVRServerDriverHost_006", c"IVRSettings_003", c"IVRProperties_001", c"IVRDriverLog_001", c"IVRDriverManager_001", c"IVRResources_001", c"IVRDriverInput_003"];
 static SLOTS: [AtomicPtr<c_void>; 7] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 7];
 
 /// The runtime's interface, fetched once (null if there's none).
@@ -271,12 +284,7 @@ fn guard<R>(name: &str, fail: R, body: impl FnOnce() -> R) -> R {
 
 /// What get_pose says when it couldn't work the pose out: not connected, not tracking.
 fn no_pose() -> DriverPose {
-    let mut p = POSE0;
-    p.q_world_from_driver_rotation.w = 1.;
-    p.q_driver_from_head_rotation.w = 1.;
-    p.q_rotation.w = 1.;
-    p.result = TRACKING_UNINITIALIZED;
-    p
+    DriverPose { result: TRACKING_UNINITIALIZED, ..POSE0 }
 }
 
 fn now_ms() -> i64 {
@@ -287,14 +295,7 @@ fn now_ms() -> i64 {
 
 // --- the lease and the arbiter (pure) ---------------------------------------------------------
 
-const BUTTON_PATHS: [&CStr; 6] = [
-    c"/input/trigger/click",
-    c"/input/b/click",
-    c"/input/x/click",
-    c"/input/a/click",
-    c"/input/system/click",
-    c"/input/joystick/click",
-]; // btnmask bit i
+const BUTTON_PATHS: [&CStr; 6] = [c"/input/trigger/click", c"/input/b/click", c"/input/x/click", c"/input/a/click", c"/input/system/click", c"/input/joystick/click"]; // btnmask bit i
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Lease {
@@ -306,8 +307,7 @@ struct Lease {
     sx: f32,
     sy: f32,
 }
-const LEASE0: Lease =
-    Lease { at: 0, hidden: true, hand: ROLE_RIGHT, pose: [0., 0., 0., 1., 0., 0., 0.], buttons: 0, sx: 0., sy: 0. };
+const LEASE0: Lease = Lease { at: 0, hidden: true, hand: ROLE_RIGHT, pose: [0., 0., 0., 1., 0., 0., 0.], buttons: 0, sx: 0., sy: 0. };
 
 impl Lease {
     fn finite(&self) -> bool {
@@ -325,8 +325,7 @@ struct Arbiter {
     connected: bool,
     hand: i32,
 }
-const ARBITER0: Arbiter =
-    Arbiter { init: 0, last_connect: 0, backoff_until: 0, hinted: false, connected: false, hand: ROLE_RIGHT };
+const ARBITER0: Arbiter = Arbiter { init: 0, last_connect: 0, backoff_until: 0, hinted: false, connected: false, hand: ROLE_RIGHT };
 
 impl Arbiter {
     fn start(&mut self, now: i64) {
@@ -404,8 +403,8 @@ fn parse_lease(msg: &str) -> Option<Lease> {
         return None;
     }
     l.hand = hand;
-    let clamp = |v: f32| if v < -1. { -1. } else if v > 1. { 1. } else { v }; // NaN passes; finite() rejects it
-    (l.sx, l.sy) = (clamp(l.sx), clamp(l.sy));
+    // NaN passes through clamp; finite() rejects it
+    (l.sx, l.sy) = (l.sx.clamp(-1., 1.), l.sy.clamp(-1., 1.));
     l.hidden = false;
     Some(l)
 }
@@ -439,25 +438,10 @@ struct Device {
     sy: u64,
 }
 // Host calls happen with this unlocked, because SteamVR may call back into the device from them.
-static DEVICE: Mutex<Device> = Mutex::new(Device {
-    arb: ARBITER0,
-    object_id: INVALID_DEVICE,
-    container: 0,
-    hint: -1,
-    pose: POSE0,
-    buttons: [0; 6],
-    sx: 0,
-    sy: 0,
-});
+static DEVICE: Mutex<Device> = Mutex::new(Device { arb: ARBITER0, object_id: INVALID_DEVICE, container: 0, hint: -1, pose: POSE0, buttons: [0; 6], sx: 0, sy: 0 });
 
-static DEVICE_VTBL: DeviceVtbl = DeviceVtbl {
-    activate: device_activate,
-    deactivate: device_deactivate,
-    enter_standby: noop,
-    get_component: device_get_component,
-    debug_request: device_debug_request,
-    get_pose: device_get_pose,
-};
+static DEVICE_VTBL: DeviceVtbl =
+    DeviceVtbl { activate: device_activate, deactivate: device_deactivate, enter_standby: noop, get_component: device_get_component, debug_request: device_debug_request, get_pose: device_get_pose };
 static DEVICE_OBJ: Obj<DeviceVtbl> = Obj { vtbl: &DEVICE_VTBL };
 
 unsafe extern "C" fn noop(_: This) {}
@@ -482,11 +466,7 @@ fn set_hint(role: i32) {
 unsafe extern "C" fn device_activate(_: This, object_id: u32) -> i32 {
     guard("device_activate", INIT_DRIVER_FAILED, || {
         let props = iface(PROPS);
-        let c = if props.is_null() {
-            0
-        } else {
-            unsafe { (vt::<PropertiesVtbl>(props).tracked_device_to_property_container)(props, object_id) }
-        };
+        let c = if props.is_null() { 0 } else { unsafe { (vt::<PropertiesVtbl>(props).tracked_device_to_property_container)(props, object_id) } };
         {
             let mut d = lock(&DEVICE);
             d.object_id = object_id;
@@ -540,9 +520,7 @@ unsafe extern "C" fn device_debug_request(_: This, _: *const c_char, response: *
 }
 
 unsafe extern "C" fn device_get_pose(_: This) -> DriverPose {
-    guard("device_get_pose", no_pose(), || {
-        lock(&DEVICE).pose
-    })
+    guard("device_get_pose", no_pose(), || lock(&DEVICE).pose)
 }
 
 fn device_run_frame() {
@@ -561,15 +539,11 @@ fn device_run_frame() {
     let on = d.arb.connected;
     let hint = if d.arb.hinted { d.arb.hand } else { ROLE_OPT_OUT };
 
-    let mut pose = POSE0;
-    pose.q_world_from_driver_rotation.w = 1.; // driver space = raw space
-    pose.q_driver_from_head_rotation.w = 1.;
+    let mut pose = POSE0; // driver space = raw space, both identity
     if on {
         let p = l.pose.map(f64::from);
         pose.vec_position = [p[0], p[1], p[2]];
         pose.q_rotation = Quat { w: p[3], x: p[4], y: p[5], z: p[6] };
-    } else {
-        pose.q_rotation.w = 1.;
     }
     pose.pose_is_valid = on;
     pose.result = if on { TRACKING_RUNNING_OK } else { TRACKING_UNINITIALIZED };
@@ -667,6 +641,7 @@ fn listen() {
     // SAFETY: plain socket calls on our own fd and stack buffers.
     unsafe {
         let sock = libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+        // SAFETY: sockaddr_un is an integer family and a byte array: all zeros is valid (and an empty path, filled in below).
         let mut addr: libc::sockaddr_un = std::mem::zeroed();
         addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
         let ok_name = !name.is_empty() && name.len() < addr.sun_path.len();
@@ -694,11 +669,12 @@ fn listen() {
             let mut buf = [0u8; 255];
             let mut ctrl = [0u64; 8]; // >= CMSG_SPACE(sizeof(ucred)), cmsghdr-aligned
             let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };
+            // SAFETY: msghdr is integers and pointers that may be null: all zeros is an empty message, filled in below.
             let mut msg: libc::msghdr = std::mem::zeroed();
             msg.msg_iov = &mut iov;
             msg.msg_iovlen = 1;
             msg.msg_control = ctrl.as_mut_ptr().cast();
-            msg.msg_controllen = libc::CMSG_SPACE(size_of::<libc::ucred>() as u32) as usize;
+            msg.msg_controllen = libc::CMSG_SPACE(size_of::<libc::ucred>() as u32) as _; // usize on glibc, u32 on musl
             let n = libc::recvmsg(sock, &mut msg, 0);
             if n <= 0 || msg.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 {
                 continue;
@@ -718,6 +694,10 @@ fn listen() {
 }
 
 /// The driver's entry point: SteamVR asks for the provider by interface version.
+///
+/// # Safety
+/// `interface_name` is null or a NUL-terminated string, and `return_code` is null or writable,
+/// as SteamVR passes them.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HmdDriverFactory(interface_name: *const c_char, return_code: *mut i32) -> *mut c_void {
     if !interface_name.is_null() && unsafe { CStr::from_ptr(interface_name) } == PROVIDER_VERSION {
@@ -733,6 +713,16 @@ pub unsafe extern "C" fn HmdDriverFactory(interface_name: *const c_char, return_
 mod tests {
     // Same as the C++ selftest: the arbiter and parser, no SteamVR needed.
     use super::*;
+
+    #[test]
+    fn the_starting_pose_turns_nothing() {
+        let unit = |q: Quat| ((q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z) - 1.0).abs() < 1e-12 && q.w == 1.0;
+        for q in [POSE0.q_rotation, POSE0.q_world_from_driver_rotation, POSE0.q_driver_from_head_rotation] {
+            assert!(unit(q), "every rotation the identity");
+        }
+        let n = no_pose();
+        assert!(unit(n.q_rotation) && n.result == TRACKING_UNINITIALIZED);
+    }
 
     /// A callback whose body panics gives its failure value back, and the process (vrserver) lives.
     #[test]

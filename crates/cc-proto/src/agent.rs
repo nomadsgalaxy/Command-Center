@@ -24,7 +24,7 @@ const LINE_MAX: usize = 16384;
 #[derive(Debug)]
 pub enum Error {
     Unreachable(String),
-    HostChanged,  // the certificate's key isn't the pinned one, so nothing was sent
+    HostChanged, // the certificate's key isn't the pinned one, so nothing was sent
     NotPaired(String),
     Closed,
     NoAnswer,

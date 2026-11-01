@@ -60,9 +60,9 @@ const VIEW: f64 = 60.0;
 
 /// What this tick knows about you.
 pub struct Seen {
-    pub hidden: bool,  // every panel hidden (HIDDEN)
-    pub game: bool,    // a VR game is running (taskbar.rs)
-    pub on_head: bool, // the headset is worn (VREvent 103/104)
+    pub hidden: bool,           // every panel hidden (HIDDEN)
+    pub game: bool,             // a VR game is running (taskbar.rs)
+    pub on_head: bool,          // the headset is worn (VREvent 103/104)
     pub head: Option<(V3, V3)>, // where the head is and its unit forward, while tracked
     pub gaze: Option<(V3, V3)>, // a fresh gaze ray (origin, unit direction)
 }
@@ -115,12 +115,12 @@ pub fn want(s: &Seen, minimized: bool, theater_hidden: bool, pl: &Placement) -> 
 #[derive(Default)]
 pub struct Attention {
     pub level: Level,
-    lower: Option<Instant>,  // when a lower level started being wanted
-    looked: Option<Instant>, // when it started being looked at (DWELL)
-    pub input: Option<Instant>, // its last direct input (main.rs)
+    lower: Option<Instant>,               // when a lower level started being wanted
+    looked: Option<Instant>,              // when it started being looked at (DWELL)
+    pub input: Option<Instant>,           // its last direct input (main.rs)
     changing: Option<(Instant, Instant)>, // its last QUIET_AREA change, and since when they've kept coming
-    busy: Option<Instant>,   // the last time it had been changing for SUSTAINED
-    burst: Option<Instant>,  // its last BURST_AREA change
+    busy: Option<Instant>,                // the last time it had been changing for SUSTAINED
+    burst: Option<Instant>,               // its last BURST_AREA change
 }
 
 impl Attention {

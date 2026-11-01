@@ -10,11 +10,12 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-struct Group(i32);
+struct Group(std::process::Child);
 
 impl Drop for Group {
     fn drop(&mut self) {
-        unsafe { libc::kill(-self.0, libc::SIGKILL) }; // Kill KWin and its session bus, all of it.
+        unsafe { libc::kill(-(self.0.id() as i32), libc::SIGKILL) }; // Kill KWin and its session bus, all of it.
+        let _ = self.0.wait();
     }
 }
 
@@ -27,18 +28,24 @@ fn tag_screen_survives_three_pictures() {
     let _ = std::fs::remove_file(run.join(format!("{sock}.lock")));
     let kwin = Command::new("dbus-run-session")
         .args(["--", "kwin_wayland", "--virtual", "--socket", &sock, "--width", "1920", "--height", "1080", "--no-lockscreen", "--no-global-shortcuts"])
-        .stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().expect("dbus-run-session kwin_wayland");
-    let _group = Group(kwin.id() as i32);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("dbus-run-session kwin_wayland");
+    let _group = Group(kwin);
     let up = Instant::now() + Duration::from_secs(20);
     while !run.join(&sock).exists() {
         assert!(Instant::now() < up, "KWin didn't come up");
         std::thread::sleep(Duration::from_millis(200));
     }
-    let mut screen = Command::new(env!("CARGO_BIN_EXE_cc-host")).args(["tagscreen", "Virtual-0"]).env("WAYLAND_DISPLAY", &sock)
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut screen = Command::new(env!("CARGO_BIN_EXE_cc-host")).args(["tagscreen", "Virtual-0"]).env("WAYLAND_DISPLAY", &sock).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut input = screen.stdin.take().unwrap();
-    for p in [r#"{"bg":"white","size":[1920,1080],"tags":[[3,300,300,240]]}"#, r#"{"bg":"wait","size":[1920,1080],"tags":[]}"#,
-              r#"{"bg":"white","size":[1920,1080],"tags":[[5,900,400,300],[6,1300,400,300]]}"#] {
+    for p in [
+        r#"{"bg":"white","size":[1920,1080],"tags":[[3,300,300,240]]}"#,
+        r#"{"bg":"wait","size":[1920,1080],"tags":[]}"#,
+        r#"{"bg":"white","size":[1920,1080],"tags":[[5,900,400,300],[6,1300,400,300]]}"#,
+    ] {
         writeln!(input, "{p}").unwrap();
         std::thread::sleep(Duration::from_millis(700));
     }

@@ -36,10 +36,12 @@ fn main() {
                 match mine.iter().filter(|m| m.id == id).min_by(|a, b| near(a).partial_cmp(&near(b)).unwrap()) {
                     Some(m) if near(&m) < 400.0 => {
                         both += 1;
-                        let e = (0..4).map(|k| {
-                            let (x, y) = (c[k][0].as_f64().unwrap() as f32, c[k][1].as_f64().unwrap() as f32);
-                            ((m.corners[k].0 - x).powi(2) + (m.corners[k].1 - y).powi(2)).sqrt()
-                        }).fold(0f32, f32::max);
+                        let e = (0..4)
+                            .map(|k| {
+                                let (x, y) = (c[k][0].as_f64().unwrap() as f32, c[k][1].as_f64().unwrap() as f32);
+                                ((m.corners[k].0 - x).powi(2) + (m.corners[k].1 - y).powi(2)).sqrt()
+                            })
+                            .fold(0f32, f32::max);
                         errs.push(e);
                         worst.push((e, file.rsplit('/').next().unwrap().to_owned(), id));
                     }

@@ -12,9 +12,10 @@
 //! when it's back. Plasma's own panel and popups belong to plasmabar.rs, fed from here.
 use crate::attention::{self, Level};
 use crate::geometry::{Mat, Pose, STAND_IN_HEAD, ahead_of, angles, level, level_ahead, panel_matrix};
-use crate::kvm::KVM;
+use crate::overlay::Surfaces;
 use crate::session::{self, Session, StreamEvent};
-use crate::{HIDDEN, Panel, call, capture, config, grab, kwin, panel, plasmabar, vr};
+use crate::stage::Stage;
+use crate::{HIDDEN, Panel, capture, config, grab, kwin, panel, plasmabar};
 use freerdp_sys::{PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3, PTR_FLAGS_DOWN};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
@@ -42,6 +43,12 @@ const OUTPUT: (u32, u32) = (2560, 1440); // Virtual-1, where the windows live (s
 const PARK: &str = "Virtual-2"; // an output no window is put on (session/cc-desktop): the pointer rests there when it's off our panels
 const SHELL: usize = usize::MAX; // Input.hover: on Plasma's bar (plasmabar.rs)
 const DRAGGED: Duration = Duration::from_secs(3); // a window made this soon after a window drag (a torn-off tab) goes where it was
+/// Calibration knob: windows that go `ahead` this soon after the last one (KWin reports what's open
+/// at start one window at a time) are one run, side by side instead of on top of each other.
+const AHEAD_RUN: Duration = Duration::from_secs(3);
+/// Calibration knob: a run ends this long after its first window however steadily more come, since
+/// they're all placed for the head as it was then.
+const RUN_MAX: Duration = Duration::from_secs(10);
 const LIFT: f64 = 0.02; // a popup's panel sits this far in front of its parent's, so it's nearer for the pointer and painted over it
 const POPUP_AFTER: Duration = Duration::from_secs(3); // a popup this soon after a click, a key or another popup is a menu; later, a tooltip
 
@@ -55,12 +62,12 @@ struct Input {
     raised: Option<String>, // the window last raised for us, as long as nothing else can be above it
     asked: Option<String>,  // the raise in flight: only its answer (seq) counts
     seq: u64,
-    hover: Option<usize>,   // the window panel the pointer is on (SHELL: Plasma's bar; None held: off every window, drag_off)
-    at: (f64, f64),         // where the pointer was last sent on a window
+    hover: Option<usize>, // the window panel the pointer is on (SHELL: Plasma's bar; None held: off every window, drag_off)
+    at: (f64, f64),       // where the pointer was last sent on a window
     pending: Option<Press>,
-    down: u32, // buttons down in the session (bit: code - BTN_LEFT)
-    wheel: f64, // wl_pointer units a notch (CC_WHEEL; 15 is libinput's)
-    wait: Duration, // how long a press waits for its raise (CC_RAISE_MS)
+    down: u32,             // buttons down in the session (bit: code - BTN_LEFT)
+    wheel: f64,            // wl_pointer units a notch (CC_WHEEL; 15 is libinput's)
+    wait: Duration,        // how long a press waits for its raise (CC_RAISE_MS)
     last: Option<Instant>, // the last button or key sent, or popup seen: a popup soon after is a menu, not a tooltip
 }
 
@@ -73,20 +80,8 @@ struct Press {
     since: Instant,
 }
 
-static INPUT: Mutex<Input> = Mutex::new(Input {
-    session: None,
-    cmds: None,
-    raised: None,
-    asked: None,
-    seq: 0,
-    hover: None,
-    at: (0.0, 0.0),
-    pending: None,
-    down: 0,
-    wheel: 15.0,
-    wait: Duration::from_millis(100),
-    last: None,
-});
+static INPUT: Mutex<Input> =
+    Mutex::new(Input { session: None, cmds: None, raised: None, asked: None, seq: 0, hover: None, at: (0.0, 0.0), pending: None, down: 0, wheel: 15.0, wait: Duration::from_millis(100), last: None });
 
 impl Input {
     /// Raise a window. Nothing counts as raised until its answer comes back, since a raise of
@@ -164,7 +159,11 @@ pub fn mouse(p: &Panel, flags: u32, x: f64, y: f64) {
     let under = plasmabar::covers(at.0, at.1);
     let mut s = INPUT.lock().unwrap();
     let Some(ses) = s.session.clone() else { return };
-    if s.hover.is_none() && s.down != 0 && !press && let Some(b) = button_code(flags) {
+    if s.hover.is_none()
+        && s.down != 0
+        && !press
+        && let Some(b) = button_code(flags)
+    {
         return let_go_off(&mut s, &ses, b); // a drag taken off every window (drag_off) ends there
     }
     // A drag carried here from another window panel raises this one too. KWin's own drags
@@ -209,6 +208,10 @@ pub fn key(code: u16, value: i32) {
 
 /// Wheel notches, positive up or right (evdev's way).
 pub fn wheel(horizontal: bool, notches: f64) {
+    #[cfg(test)]
+    if crate::vr::fake::here() {
+        return SHELL_OTHER.lock().unwrap().push("wheel");
+    }
     let s = INPUT.lock().unwrap();
     if let Some(ses) = &s.session {
         ses.axis(horizontal, notches * s.wheel * if horizontal { 1.0 } else { -1.0 });
@@ -218,6 +221,10 @@ pub fn wheel(horizontal: bool, notches: f64) {
 /// The pointer left every window panel, so it goes to rest on the park output, which closes
 /// tooltips and clears hover states. Not while a button is held in the session, since that's a drag.
 pub fn leave() {
+    #[cfg(test)]
+    if crate::vr::fake::here() {
+        return SHELL_OTHER.lock().unwrap().push("leave");
+    }
     let mut s = INPUT.lock().unwrap();
     if s.hover.is_none() || s.down != 0 {
         return;
@@ -272,6 +279,10 @@ fn park(ses: &Session) -> bool {
 /// session (None: wherever it is), with a button in RDP's flags. There's no raise gate because
 /// they're above every window. Coming back onto a window panel raises that window again.
 pub fn shell_mouse(flags: u32, at: Option<(f64, f64)>) {
+    #[cfg(test)]
+    if crate::vr::fake::here() {
+        return SHELL_SENT.lock().unwrap().push((flags, at)); // a replay's goes nowhere else: no session, no fake_input
+    }
     let mut s = INPUT.lock().unwrap();
     let Some(ses) = s.session.clone() else { return };
     s.hover = Some(SHELL);
@@ -283,6 +294,16 @@ pub fn shell_mouse(flags: u32, at: Option<(f64, f64)>) {
     }
 }
 
+/// What shell_mouse was asked to send, for the fake-SteamVR replays (docs/vr-harness.md).
+#[cfg(test)]
+pub static SHELL_SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
+/// One shell_mouse call: its RDP pointer flags and the session point.
+#[cfg(test)]
+pub type Sent = (u32, Option<(f64, f64)>);
+/// The session's other inputs a replay can reach, by name: "wheel", "leave", "outside".
+#[cfg(test)]
+pub static SHELL_OTHER: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
 /// A press outside Plasma's open popup (on a krdp panel, a card, our taskbar, or a window
 /// panel whose window may be under it) clicks on the park output, so Plasma closes the popup
 /// like it would for any click outside it. A window panel's press then waits for its raise
@@ -291,6 +312,10 @@ pub fn shell_mouse(flags: u32, at: Option<(f64, f64)>) {
 /// it is dropped (`mouse`), so it can't land in it.
 /// ponytail: a laser click into nothing (SteamVR's own space) leaves it open.
 pub fn shell_outside() {
+    #[cfg(test)]
+    if crate::vr::fake::here() {
+        return SHELL_OTHER.lock().unwrap().push("outside");
+    }
     if !plasmabar::OPEN.load(Relaxed) {
         return;
     }
@@ -310,9 +335,9 @@ pub struct Win {
     pub key: String, // its spot: app:<desktop file name, else resource class>
     pub app: String,
     pub caption: String,
-    pub cg: [i32; 4], // clientGeometry in the session: x, y, w, h
-    pub parent: String, // a dialog's window ("" for none)
-    pub kind: String,   // window | dialog | popup
+    pub cg: [i32; 4],    // clientGeometry in the session: x, y, w, h
+    pub parent: String,  // a dialog's window ("" for none)
+    pub kind: String,    // window | dialog | popup
     pub minimized: bool, // minimized in KWin, so its panel is hidden
 }
 
@@ -347,24 +372,24 @@ struct Slot {
     created: Option<Instant>, // KWin made its node
     nudged: u8,
     placing: Option<(Instant, (u32, u32))>, // the last size sent to the window, and when
-    tag: Option<mpsc::Receiver<()>>, // assets.rs drawing its tag
-    frames: u32,                     // shown, as of the last status line
-    arrived: u32,                    // and arrived
-    theater: Option<(Pose, f64)>,    // in theater mode: where it was before, and its height
-    anchored: bool,                  // last resized by its bottom-right corner, so it hangs from its top-left
-    fmt: ((u32, u32), (i32, i32)),   // the stream's size as last seen, and the window's then
-    stuck: Option<Instant>,          // the window resized since, but its stream hasn't
-    paused: bool,                    // its stream is paused (attention.rs), so KWin renders nothing for it
-    last_up: Option<Instant>,        // its last frame up; a peripheral panel only gets a few a second
-    fps: u32,                        // its stream's frame-rate cap, as last asked
-    edge: Option<Instant>,           // peripheral since
-    follow: Option<(Mat, f64)>,      // a popup's place on its parent's panel, as last set
+    tag: Option<mpsc::Receiver<()>>,        // assets.rs drawing its tag
+    frames: u32,                            // shown, as of the last status line
+    arrived: u32,                           // and arrived
+    theater: Option<(Pose, f64)>,           // in theater mode: where it was before, and its height
+    anchored: bool,                         // last resized by its bottom-right corner, so it hangs from its top-left
+    fmt: ((u32, u32), (i32, i32)),          // the stream's size as last seen, and the window's then
+    stuck: Option<Instant>,                 // the window resized since, but its stream hasn't
+    paused: bool,                           // its stream is paused (attention.rs), so KWin renders nothing for it
+    last_up: Option<Instant>,               // its last frame up; a peripheral panel only gets a few a second
+    fps: u32,                               // its stream's frame-rate cap, as last asked
+    edge: Option<Instant>,                  // peripheral since
+    follow: Option<(Mat, f64)>,             // a popup's place on its parent's panel, as last set
 }
 
 /// A panel centred at the cursor's point p, facing you level (like `ahead`), 10 cm nearer so
 /// it's in front of the panel the drag was on.
 fn at_cursor(p: [f64; 3]) -> Pose {
-    let eye = vr::head_position();
+    let eye = crate::stage::Live.head();
     let f = level([p[0] - eye[0], 0.0, p[2] - eye[2]]);
     let (yaw, pitch) = angles(&f);
     Pose { centre: [p[0] - f[0] * 0.1, p[1], p[2] - f[2] * 0.1], yaw, pitch, width: 1.0, ..Default::default() }
@@ -442,21 +467,36 @@ fn stuck_after(level: Level, fps: u32) -> Duration {
     STUCK.max(interval * 6)
 }
 
+/// What an `ahead` run is laid out for, from the head at its first window and where that went:
+/// the head at the eyes, looking level the way to it, and how far above the eyes it is (below,
+/// negative). The 8 cm cascade moves it right of the gaze and down, so the next sits beside it and
+/// the rows clear of it, not over it.
+fn run_start(head: &Mat, first: &Pose) -> (Mat, f64) {
+    let eye = [0, 1, 2].map(|i| head[i][3] as f64);
+    let (yaw, _) = angles(&[first.centre[0] - eye[0], 0.0, first.centre[2] - eye[2]]);
+    (panel_matrix(&Pose { centre: eye, yaw, ..Default::default() }), first.centre[1] - eye[1])
+}
+
+/// A run of windows gone `ahead`: when the last and the first went, the head the run's laid out for
+/// and the first's height off the eyes (run_start), and their sizes (width, height, curve), in order.
+type AheadRun = (Instant, Instant, (Mat, f64), Vec<(f64, f64, f64)>);
+
 pub struct Windows {
     first: usize, // panel index of slot 0
     slots: Vec<Slot>,
     unslotted: Vec<Win>, // oldest first
+    ahead_run: Option<AheadRun>,
     session: Option<Arc<Session>>,
     sessions: mpsc::Receiver<Arc<Session>>,
     kwin: kwin::Kwin,
     cap: capture::Capture,
-    saved: Map<String, Value>, // kwin-restore.json: each window's state from before we changed it
-    poses: Map<String, Value>, // win-poses.json: each window's panel, by uuid
+    saved: Map<String, Value>,   // kwin-restore.json: each window's state from before we changed it
+    poses: Map<String, Value>,   // win-poses.json: each window's panel, by uuid
     resumed: Map<String, Value>, // hibernated apps' panels by key, each taken once (take_resumed)
-    seen: HashSet<String>,     // windows the script has reported since it (re)loaded
-    lost: Option<Instant>,     // KWin's bus went
-    density: f64,              // window pixels per metre
-    plasma: plasmabar::Plasma, // Plasma's own taskbar, placed by taskbar.rs
+    seen: HashSet<String>,       // windows the script has reported since it (re)loaded
+    lost: Option<Instant>,       // KWin's bus went
+    density: f64,                // window pixels per metre
+    plasma: plasmabar::Plasma,   // Plasma's own taskbar, placed by taskbar.rs
 }
 
 pub fn win(i: usize) -> Option<Win> {
@@ -485,6 +525,13 @@ fn app_name(app: &str) -> String {
     name.replace(',', " ")
 }
 
+/// Whether a window's kept pose (win-poses.json) was put in the room SteamVR tracks now (`here`).
+/// One from another room isn't used: there it'd be somewhere else entirely. One with no room (an
+/// older file), or while SteamVR has no room yet (0), counts as here.
+fn same_room(v: &Value, here: u64) -> bool {
+    here == 0 || v["room"].as_u64().is_none_or(|r| r == here)
+}
+
 /// A file-name-safe id for an app's tag.
 fn tag_id(app: &str) -> String {
     app.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect()
@@ -510,6 +557,8 @@ fn read_map(path: &str) -> Map<String, Value> {
 
 impl Windows {
     pub fn start(first: usize) -> Windows {
+        #[cfg(test)]
+        assert!(!crate::vr::fake::on(), "a replay can't start KWin, capture or a session (Windows::for_test)");
         let (tx, sessions) = mpsc::channel();
         let kwin = kwin::Kwin::start();
         {
@@ -526,6 +575,7 @@ impl Windows {
             first,
             slots: (0..SLOTS).map(|_| Slot::default()).collect(),
             unslotted: Vec::new(),
+            ahead_run: None,
             session: None,
             sessions,
             kwin,
@@ -538,6 +588,36 @@ impl Windows {
             density,
             plasma: plasmabar::Plasma::new(),
         }
+    }
+
+    /// Windows without KWin, capture or a session, for the fake-SteamVR replays (docs/vr-harness.md):
+    /// the taskbar's events() takes one. Needs vr::fake installed, for Plasma's overlay.
+    #[cfg(test)]
+    pub fn for_test(first: usize) -> Windows {
+        let (_, sessions) = mpsc::channel();
+        Windows {
+            first,
+            slots: (0..SLOTS).map(|_| Slot::default()).collect(),
+            unslotted: Vec::new(),
+            ahead_run: None,
+            session: None,
+            sessions,
+            kwin: kwin::Kwin::idle(),
+            cap: capture::Capture::idle(),
+            saved: Map::new(),
+            poses: Map::new(),
+            resumed: Map::new(),
+            seen: HashSet::new(),
+            lost: None,
+            density: 1400.0,
+            plasma: plasmabar::Plasma::new(),
+        }
+    }
+
+    /// Plasma's bar, for a replay to set up the way its tick() left it.
+    #[cfg(test)]
+    pub fn plasma_mut(&mut self) -> &mut plasmabar::Plasma {
+        &mut self.plasma
     }
 
     fn slot_of(&self, uuid: &str) -> Option<usize> {
@@ -756,20 +836,26 @@ impl Windows {
         p.set_size(cw, ch);
         // Where it was (a restart, or a hibernated app reopened), else its app's spot (the first one open), else `ahead`.
         let app_open = (0..SLOTS).any(|j| win(self.first + j).is_some_and(|o| o.key == w.key && !o.popup()));
-        let hibernated = || self.resumed.get_mut(&w.key)?.as_array_mut().filter(|v| !v.is_empty()).map(|v| v.remove(0));
-        let (pose, zoom, from) = match self.poses.get(&w.uuid).cloned().or_else(hibernated).and_then(|v| Some((config::pose_from(&v)?, v["zoom"].as_f64()))) {
+        let here = config::UNIVERSE.load(Relaxed);
+        // cc-home hibernate's copy of a pose keeps its room stamp: one from another room isn't used
+        let hibernated = || self.resumed.get_mut(&w.key)?.as_array_mut().filter(|v| !v.is_empty()).map(|v| v.remove(0)).filter(|v| same_room(v, here));
+        let kept = self.poses.get(&w.uuid).filter(|v| same_room(v, here)).cloned();
+        let (pose, zoom, from) = match kept.or_else(hibernated).and_then(|v| Some((config::pose_from(&v)?, v["zoom"].as_f64()))) {
             Some((pose, zoom)) => (pose, zoom, "where it was"),
             None => match config::home_pose(&w.key, None).filter(|_| !app_open) {
                 Some(pose) => (pose, config::home_zoom(&w.key), "its spot"),
-                None => match KVM.lock().unwrap().window_drag.filter(|d| d.1.elapsed() < DRAGGED) {
+                None => match crate::kvm::lock().window_drag.filter(|d| d.1.elapsed() < DRAGGED) {
                     Some((p, _)) => (at_cursor(p), None, "where the drag was"),
-                    None => (self.ahead(), None, "ahead"),
+                    None => {
+                        let w = cw as f64 / self.density(p);
+                        (self.ahead(w, w * ch as f64 / cw as f64), None, "ahead")
+                    }
                 },
             },
         };
         p.set_zoom(zoom.unwrap_or(1.0));
         grab.cancel(p.index);
-        KVM.lock().unwrap().set_pose(p.index, &panel_matrix(&pose), cw as f64 / self.density(p), pose.curve);
+        crate::kvm::lock().set_pose(p.index, &panel_matrix(&pose), cw as f64 / self.density(p), pose.curve);
         eprintln!("{}: {} {:?} ({}x{}), {from}", p.v.name, w.key, w.caption, cw, ch);
         let (app, min) = (w.app.clone(), w.minimized);
         set_win(p.index, Some(w));
@@ -816,7 +902,7 @@ impl Windows {
                 _ => {
                     p.set_minimized(true);
                     // like free(): its held keys go up; typing stays put until a panel is clicked
-                    let mut k = KVM.lock().unwrap();
+                    let mut k = crate::kvm::lock();
                     if k.kbd == i {
                         k.release_keys();
                     }
@@ -835,7 +921,7 @@ impl Windows {
             _ => p.set_minimized(false),
         }
         self.end_theater(grab);
-        KVM.lock().unwrap().type_to(i);
+        crate::kvm::lock().type_to(i);
         eprintln!("{}: shown", p.v.name);
     }
 
@@ -847,18 +933,18 @@ impl Windows {
         let p = panel(self.first + i);
         p.set_minimized(on);
         if !on {
-            call!(ov, HideOverlay, p.overlay); // hide before its buffers go; it's up again on the new stream's first frame
+            crate::overlay::Live.hide(p.overlay); // hide before its buffers go; it's up again on the new stream's first frame
             p.set_live(false);
             return self.open(i);
         }
         if self.slots[i].theater.is_some() {
             self.theater(i, grab);
         }
-        call!(ov, HideOverlay, p.overlay); // hide before its buffers go
+        crate::overlay::Live.hide(p.overlay); // hide before its buffers go
         self.close_stream(i);
         p.set_live(false);
         // like free(): its held keys go up; typing stays put until a panel is clicked
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         if k.kbd == p.index {
             k.release_keys();
         }
@@ -895,12 +981,12 @@ impl Windows {
     }
 
     /// Devices whose button came up on Plasma's bar since the last call (taskbar.rs).
-    pub fn plasma_released(&mut self) -> Vec<u32> {
+    pub fn plasma_released(&mut self) -> Vec<crate::ids::Dev> {
         std::mem::take(&mut self.plasma.released)
     }
 
     /// A laser event on the taskbar's frame over Plasma's bar, at fractions of it (plasmabar.rs `on_bar`).
-    pub fn plasma_laser(&mut self, e: &vr::VREvent_t, fx: f64, fy: f64) {
+    pub fn plasma_laser(&mut self, e: &crate::events::PointerEvent, fx: f64, fy: f64) {
         self.plasma.on_bar(e, fx, fy);
     }
 
@@ -910,7 +996,7 @@ impl Windows {
     }
 
     /// Plasma's taskbar this frame, in the taskbar's frame (plasmabar.rs `tick`).
-    pub fn tick_plasma(&mut self, at: Option<(Mat, Mat, u32)>, up: f64, mpp: f64, curve: f64) {
+    pub fn tick_plasma(&mut self, at: Option<(Mat, Mat, Option<crate::ids::Dev>)>, up: f64, mpp: f64, curve: f64) {
         self.plasma.tick(self.session.as_ref(), &self.cap, at, up, mpp, curve);
     }
 
@@ -933,7 +1019,7 @@ impl Windows {
     fn theater(&mut self, i: usize, grab: &mut grab::Grab) {
         let p = panel(self.first + i);
         grab.cancel(p.index);
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         if let Some((before, height)) = self.slots[i].theater.take() {
             crate::THEATER.store(usize::MAX, Relaxed);
             k.set_place(p.index, &panel_matrix(&before), before.width, height, before.curve); // its rate comes back in tick_slot
@@ -963,10 +1049,11 @@ impl Windows {
         if let Some(w) = win(p.index) {
             self.kwin.send(json!({"c": "place", "uuid": w.uuid, "w": 1600, "h": 900}));
         }
-        let m = vr::head().unwrap_or(STAND_IN_HEAD);
+        let m = crate::stage::Live.head_now().unwrap_or(STAND_IN_HEAD);
         let (eye, f) = ([0, 1, 2].map(|i| m[i][3] as f64), level_ahead(&m));
         let (yaw, pitch) = angles(&f);
-        let pose = Pose { centre: ahead_of(&eye, &f, 1.8, 0.0, 0.0), yaw, pitch, width: 2.0, curve: 1.8, ..Default::default() };
+        let (ahead, width, curve) = crate::limits::THEATER;
+        let pose = Pose { centre: ahead_of(&eye, &f, ahead, 0.0, 0.0), yaw, pitch, width, curve, ..Default::default() };
         k.set_pose(p.index, &panel_matrix(&pose), pose.width, pose.curve);
         crate::THEATER.store(p.index, Relaxed); // tick_slot applies THEATER_FPS: a renegotiation, which the 1600x900 resize brings anyway
     }
@@ -987,14 +1074,33 @@ impl Windows {
         self.density / p.zoom()
     }
 
-    /// 1.2 m ahead of the head, level, each new one 8 cm right and down from the last.
-    fn ahead(&self) -> Pose {
-        let n = (0..SLOTS).filter(|&j| panel(self.first + j).live()).count() % 6;
-        let m = vr::head().unwrap_or(STAND_IN_HEAD);
-        let (eye, f) = ([0, 1, 2].map(|i| m[i][3] as f64), level_ahead(&m));
-        let (yaw, pitch) = angles(&f);
-        let c = 0.08 * n as f64;
-        Pose { centre: ahead_of(&eye, &f, 1.2, c, c), yaw, pitch, width: 1.0, ..Default::default() }
+    /// Where a new window with no place of its own opens (geometry.rs `new_pose`), `width` by
+    /// `height` metres: 8 cm right and down from the last for each live panel, so ones opened
+    /// apart don't cover each other. Ones opened within AHEAD_RUN of each other, like what's open
+    /// at start (none live yet, so they'd all get the same spot), go side by side from the first
+    /// instead (gather.rs `side_by_side`), for the head as it was at the first, until RUN_MAX after
+    /// the first.
+    fn ahead(&mut self, width: f64, height: f64) -> Pose {
+        let first = self.first;
+        let live = move || (0..SLOTS).filter(|&j| panel(first + j).live()).count();
+        self.ahead_at(Instant::now(), || crate::stage::Live.head_now().unwrap_or(STAND_IN_HEAD), live, width, height)
+    }
+
+    /// `ahead` at `now`, for the head and the number of live panels at a run's first.
+    fn ahead_at(&mut self, now: Instant, head: impl FnOnce() -> Mat, live: impl FnOnce() -> usize, width: f64, height: f64) -> Pose {
+        let run = self.ahead_run.take().filter(|r| now.duration_since(r.0) < AHEAD_RUN && now.duration_since(r.1) < RUN_MAX);
+        // flat (0): a window panel opens flat, new_pose's and side_by_side's curve both
+        let Some((_, began, start, mut sizes)) = run else {
+            let head = head();
+            let c = 0.08 * (live() % 6) as f64;
+            let pose = crate::geometry::new_pose(&head, 1.0, c, c); // 1 m wide; adopt sets the width
+            self.ahead_run = Some((now, now, run_start(&head, &pose), vec![(width, height, 0.0)]));
+            return pose;
+        };
+        sizes.push((width, height, 0.0));
+        let pose = crate::gather::side_by_side(&start.0, start.1, &sizes).pop().unwrap_or_default();
+        self.ahead_run = Some((now, began, start, sizes));
+        pose
     }
 
     /// Its border tag, drawn once per app by assets.rs (off the main thread) and then cached.
@@ -1037,17 +1143,17 @@ impl Windows {
         let Some(w) = win(p.index) else { return };
         if let Some((before, height)) = self.slots[i].theater.take() {
             crate::THEATER.store(usize::MAX, Relaxed);
-            KVM.lock().unwrap().set_place(p.index, &panel_matrix(&before), before.width, height, before.curve);
+            crate::kvm::lock().set_place(p.index, &panel_matrix(&before), before.width, height, before.curve);
         }
         self.keep_pose(i, &w.uuid);
-        call!(ov, HideOverlay, p.overlay); // hide before its buffers go
+        crate::overlay::Live.hide(p.overlay); // hide before its buffers go
         self.close_stream(i);
         p.set_live(false);
         p.set_minimized(false); // the slot's next window starts in sight
         p.set_tag(None);
         grab.cancel(p.index);
         {
-            let mut k = KVM.lock().unwrap();
+            let mut k = crate::kvm::lock();
             if k.active == p.index {
                 k.active = 0;
             }
@@ -1070,10 +1176,12 @@ impl Windows {
 
     fn keep_pose(&mut self, i: usize, uuid: &str) {
         let p = panel(self.first + i);
-        if p.live() && !is_popup(p.index) {
-            let pl = KVM.lock().unwrap().place[p.index];
+        // where a gather put it isn't its place (gather.rs): it's kept once it's carried or placed
+        if p.live() && !is_popup(p.index) && !crate::gather::gathered(p.index) {
+            let pl = crate::kvm::lock().place[p.index];
             let mut v = config::pose_json(&pl.pose(), pl.height);
             v["zoom"] = json!(p.zoom());
+            v["room"] = json!(config::UNIVERSE.load(Relaxed)); // where it was put: it only comes back there (same_room)
             self.poses.insert(uuid.into(), v);
         }
     }
@@ -1083,7 +1191,7 @@ impl Windows {
         let p = panel(self.first + i);
         let Some(w) = win(p.index) else { return };
         let Some(pw) = self.slot_of(&w.parent).map(|j| self.first + j).and_then(|j| Some((j, win(j)?))) else { return };
-        let mut k = KVM.lock().unwrap();
+        let mut k = crate::kvm::lock();
         let at = popup_place(&k.place[pw.0], pw.1.cg, w.cg);
         if self.slots[i].follow != Some(at) {
             self.slots[i].follow = Some(at);
@@ -1179,7 +1287,7 @@ impl Windows {
             // shown on its first frame, so there's no black flash
             p.set_live(true);
             if !HIDDEN.load(Relaxed) && !p.away() {
-                call!(ov, ShowOverlay, p.overlay);
+                crate::overlay::Live.show(p.overlay);
             }
             eprintln!("{}: first frame +{}ms", p.v.name, s.asked.map_or(0, |t| t.elapsed().as_millis()));
         }
@@ -1224,7 +1332,7 @@ impl Windows {
         let (sw, sh) = s.shown.size;
         if sw > 0 && (sw, sh) != p.size() {
             p.set_size(sw, sh);
-            let mut k = KVM.lock().unwrap();
+            let mut k = crate::kvm::lock();
             let pl = k.place[p.index];
             let asked = s.placing.is_some_and(|(t, sent)| sent != (sw, sh) && t.elapsed() < SETTLE);
             if grab.stretching(p.index) || asked {
@@ -1240,7 +1348,7 @@ impl Windows {
         // Done once the window is the panel's size (not the size sent, since a panel bigger than the
         // output snaps back to the window after SETTLE).
         let (pw, ph) = p.size();
-        let pl = KVM.lock().unwrap().place[p.index];
+        let pl = crate::kvm::lock().place[p.index];
         let fits = |m: f64, px: u32| ((m * density).round() as u32).abs_diff(px) <= 2;
         if !p.live() || (fits(pl.width, pw) && fits(pl.height, ph)) || s.theater.is_some() {
             s.placing = None;
@@ -1256,7 +1364,7 @@ impl Windows {
             Some((t, _)) => {
                 if t.elapsed() >= SETTLE {
                     s.placing = None; // it didn't take that size (a minimum, the output's edge), so snap back
-                    let mut k = KVM.lock().unwrap();
+                    let mut k = crate::kvm::lock();
                     let pl = k.place[p.index];
                     let (nw, nh) = (pw as f64 / density, ph as f64 / density);
                     k.set_pose(p.index, &resized(&pl, nw, nh, std::mem::take(&mut s.anchored)), nw, pl.curve);
@@ -1312,7 +1420,17 @@ impl Windows {
         for i in 0..SLOTS {
             let p = panel(self.first + i);
             if let Some(w) = win(p.index) {
-                out += &line(&p.v.name, &w, if p.minimized() { "minimized" } else if p.live() { "shown" } else { "waiting-for-frame" });
+                out += &line(
+                    &p.v.name,
+                    &w,
+                    if p.minimized() {
+                        "minimized"
+                    } else if p.live() {
+                        "shown"
+                    } else {
+                        "waiting-for-frame"
+                    },
+                );
             }
         }
         for w in &self.unslotted {
@@ -1338,10 +1456,160 @@ impl Windows {
 mod tests {
     use super::*;
 
+    /// An `ahead` run built the way ahead() and adopt build it: the first window from new_pose,
+    /// cascaded 0, 8 or 16 cm (right and down), at its real width and height as adopt sets them,
+    /// the rest from side_by_side for run_start, among them one far taller than the others, and
+    /// enough to fill the sides and start rows above and below. For a head turned any way, each
+    /// later one is in front of the eyes, the way the head looks, 1.4 m out like the first, and
+    /// flat; and none overlaps another, the first included as it really is (its own corners, with
+    /// the cascade's drop and shift and its turn), not where side_by_side would have put it.
+    #[test]
+    fn an_ahead_run_from_a_cascaded_first_window_keeps_clear_of_it() {
+        use crate::geometry::{level_ahead, new_pose, norm};
+        // width and height in metres, as adopt sets them (cw / density, the window's aspect); with
+        // a tall one in row 0, which pushes the row below down past the first anyway, and without,
+        // where only the first's own drop keeps that row clear of it
+        for tall_in_row_0 in [true, false] {
+            let sizes: Vec<(f64, f64, f64)> = (0..16)
+                .map(|i| match i {
+                    3 if tall_in_row_0 => (0.5, 1.1, 0.0),
+                    9 => (0.6, 0.9, 0.0), // a tall one in a row off the first
+                    i => (0.7 + 0.1 * (i % 3) as f64, 0.35 + 0.05 * (i % 4) as f64, 0.0),
+                })
+                .collect();
+            for yaw in [0.0, 70.0, -150.0] {
+                let head = panel_matrix(&Pose { centre: [0.3, 1.6, -0.2], yaw, pitch: -10.0, ..Default::default() });
+                let eye = [0, 1, 2].map(|i| head[i][3] as f64);
+                let gaze = level_ahead(&head);
+                for c in [0.0, 0.08, 0.16] {
+                    let first = Pose { width: sizes[0].0, ..new_pose(&head, 1.0, c, c) };
+                    let (run, first_dy) = run_start(&head, &first);
+                    assert!((first_dy + c).abs() < 1e-6, "the cascade's drop: {first_dy}");
+                    let poses = crate::gather::side_by_side(&run, first_dy, &sizes);
+                    let flat = |p: &Pose| [p.centre[0] - eye[0], 0.0, p.centre[2] - eye[2]];
+                    assert!((norm(&flat(&first)) - crate::limits::NEW_AHEAD).abs() < 0.02, "the first {} m out", norm(&flat(&first)));
+                    // past three rows the rest stack off the arc on purpose (gather.rs tests that);
+                    // these are the ones in the rows
+                    let k = (1..poses.len()).find(|&i| (norm(&flat(&poses[i])) - crate::limits::NEW_AHEAD).abs() > 1e-6).unwrap_or(poses.len());
+                    assert!(k > 9, "both tall ones are in the rows: {k}");
+                    let (all, all_sizes) = (&poses[..], &sizes[..]);
+                    let (poses, sizes) = (&poses[..k], &sizes[..k]);
+                    for p in &poses[1..] {
+                        let v = flat(p);
+                        assert!(v[0] * gaze[0] + v[2] * gaze[2] > 0.0, "yaw {yaw}, cascade {c}: in front, not behind: {p:?}");
+                        assert!((norm(&v) - crate::limits::NEW_AHEAD).abs() < 1e-6, "on the same arc");
+                        assert_eq!(p.curve, 0.0, "flat");
+                    }
+                    // each one's real bounds: the angles round the eye of its corners' left and right,
+                    // and its corners' lowest and highest, from its own matrix (the first's pose as it
+                    // is, the rest as side_by_side placed them)
+                    let real = std::iter::once(first).chain(all[1..].iter().copied());
+                    let bounds: Vec<((f64, f64), (f64, f64))> = real
+                        .zip(all_sizes)
+                        .map(|(p, &(w, h, _))| {
+                            let m = panel_matrix(&p);
+                            let corner = |sx: f64, sy: f64| [0, 1, 2].map(|i| m[i][3] as f64 + m[i][0] as f64 * sx * w / 2.0 + m[i][1] as f64 * sy * h / 2.0);
+                            let cs = [corner(-1.0, -1.0), corner(1.0, -1.0), corner(-1.0, 1.0), corner(1.0, 1.0)];
+                            let ang = |q: [f64; 3]| (q[0] - eye[0]).atan2(-(q[2] - eye[2])).to_degrees();
+                            let angs: Vec<f64> = cs.iter().map(|&q| ang(q)).collect();
+                            let mid = ang(p.centre);
+                            let rel: Vec<f64> = angs.iter().map(|a| (a - mid + 540.0).rem_euclid(360.0) - 180.0 + mid).collect();
+                            let (lo, hi) = rel.iter().fold((f64::MAX, f64::MIN), |(l, h), &a| (l.min(a), h.max(a)));
+                            let (b, t) = cs.iter().fold((f64::MAX, f64::MIN), |(b, t), q| (b.min(q[1]), t.max(q[1])));
+                            ((lo, hi), (b, t))
+                        })
+                        .collect();
+                    let apart = |a: (f64, f64), b: (f64, f64)| a.1 <= b.0 + 1e-9 || b.1 <= a.0 + 1e-9;
+                    let across = |a: (f64, f64), b: (f64, f64)| {
+                        // the angles taken round, so a span either side of ±180° still compares
+                        let d = (b.0 - a.0 + 540.0).rem_euclid(360.0) - 180.0;
+                        apart(a, (a.0 + d, a.0 + d + (b.1 - b.0)))
+                    };
+                    for i in 0..sizes.len() {
+                        for j in i + 1..sizes.len() {
+                            let (bi, bj) = (bounds[i], bounds[j]);
+                            assert!(across(bi.0, bj.0) || apart(bi.1, bj.1), "tall in row 0 {tall_in_row_0}, yaw {yaw}, cascade {c}: {i} and {j} overlap: {bi:?} {bj:?}");
+                        }
+                    }
+                    // and the first, as it really is, clear of the stacked ones too
+                    for (j, bj) in bounds.iter().enumerate().skip(k) {
+                        assert!(across(bounds[0].0, bj.0) || apart(bounds[0].1, bj.1), "tall in row 0 {tall_in_row_0}, yaw {yaw}, cascade {c}: the first and {j}, stacked, overlap");
+                    }
+                    assert!(bounds.len() > k, "some stacked: {k} of {}", bounds.len());
+                    let rows: std::collections::BTreeSet<i64> = poses[1..].iter().map(|p| ((p.centre[1] - eye[1]) * 100.0).round() as i64).collect();
+                    assert!(rows.iter().any(|&y| y > 0) && rows.iter().any(|&y| y < 0), "rows above and below: {rows:?}");
+                }
+            }
+        }
+    }
+
+    /// Forty going `ahead` at once fill the three rows and stack the rest. One more AHEAD_RUN
+    /// after the last starts a run of its own, where new_pose puts it for the head then, and the
+    /// one right after that goes beside it, level with the eyes on the arc, not on the old stack.
+    #[test]
+    fn a_run_after_a_stacked_one_starts_fresh() {
+        use crate::geometry::{new_pose, norm};
+        let _vr = crate::trace::fake_vr(); // for_test's Plasma overlay
+        let mut w = Windows::for_test(0);
+        let at = |yaw: f64| panel_matrix(&Pose { centre: [0.3, 1.6, -0.2], yaw, ..Default::default() });
+        let out = |p: &Pose| norm(&[p.centre[0] - 0.3, 0.0, p.centre[2] + 0.2]);
+        let t0 = Instant::now();
+        let poses: Vec<Pose> = (0..40).map(|i| w.ahead_at(t0 + Duration::from_millis(50 * i), || at(0.0), || 2, 0.7 + 0.1 * (i % 3) as f64, 0.35 + 0.05 * (i % 4) as f64)).collect();
+        assert_eq!(poses[0], new_pose(&at(0.0), 1.0, 0.16, 0.16), "the run's first from new_pose, two live: 16 cm");
+        assert!(poses[1..].iter().all(|p| p.centre[1] >= 1.6 - 1.0), "none a metre below the eyes");
+        assert!((out(&poses[39]) - crate::limits::NEW_AHEAD).abs() > 1e-6, "the last stacked, off the arc");
+        assert_eq!(w.ahead_run.as_ref().map(|r| r.3.len()), Some(40));
+        let later = t0 + Duration::from_millis(50 * 39) + AHEAD_RUN;
+        let fresh = w.ahead_at(later, || at(60.0), || 3, 0.8, 0.45);
+        assert_eq!(fresh, new_pose(&at(60.0), 1.0, 0.24, 0.24), "a new run's first from new_pose again, for the head now");
+        assert_eq!(w.ahead_run.as_ref().map(|r| r.3.len()), Some(1), "a run of its own");
+        let next = w.ahead_at(later + Duration::from_millis(50), || unreachable!(), || unreachable!(), 0.8, 0.45);
+        assert!((out(&next) - crate::limits::NEW_AHEAD).abs() < 1e-6 && (next.centre[1] - at(60.0)[1][3] as f64).abs() < 1e-9, "beside it on the arc: {next:?}");
+        assert!((next.centre[0] - fresh.centre[0]).hypot(next.centre[2] - fresh.centre[2]) > 0.4, "not on top of it: {next:?}");
+        assert_eq!(w.ahead_run.as_ref().map(|r| r.3.len()), Some(2));
+    }
+
+    /// Windows coming steadily 2 s apart, each within AHEAD_RUN of the last: one run until RUN_MAX
+    /// after its first, then the next starts a run of its own, for the head then.
+    #[test]
+    fn a_run_ends_run_max_after_its_first_however_steady() {
+        use crate::geometry::new_pose;
+        let _vr = crate::trace::fake_vr(); // for_test's Plasma overlay
+        let mut w = Windows::for_test(0);
+        let at = |yaw: f64| panel_matrix(&Pose { centre: [0.3, 1.6, -0.2], yaw, ..Default::default() });
+        let t0 = Instant::now();
+        let every = Duration::from_secs(2);
+        assert!(every < AHEAD_RUN && RUN_MAX.as_secs().is_multiple_of(every.as_secs()));
+        let last = (RUN_MAX.as_secs() / every.as_secs()) as u32; // the one RUN_MAX after the first
+        for i in 0..last {
+            w.ahead_at(t0 + every * i, || at(0.0), || 0, 0.8, 0.45);
+            assert_eq!(w.ahead_run.as_ref().map(|r| (r.1, r.3.len())), Some((t0, i as usize + 1)), "{i} still the first's run");
+        }
+        let fresh = w.ahead_at(t0 + every * last, || at(60.0), || 0, 0.8, 0.45);
+        assert_eq!(fresh, new_pose(&at(60.0), 1.0, 0.0, 0.0), "a new run, for the head now");
+        assert_eq!(w.ahead_run.as_ref().map(|r| (r.1, r.3.len())), Some((t0 + every * last, 1)));
+    }
+
+    #[test]
+    fn a_kept_window_pose_only_comes_back_in_its_own_room() {
+        let v = |room: Option<u64>| {
+            let mut v = json!({"centre": [0.0, 1.5, -1.4], "yaw": 0.0, "pitch": 0.0, "roll": 0.0, "width": 1.0});
+            if let Some(r) = room {
+                v["room"] = json!(r);
+            }
+            v
+        };
+        assert!(same_room(&v(Some(111)), 111), "same room: where it was");
+        assert!(!same_room(&v(Some(111)), 222), "somewhere new: in front of you instead");
+        assert!(same_room(&v(None), 222), "an older file's: as before");
+        assert!(same_room(&v(Some(111)), 0), "SteamVR has no room yet: can't tell, so as before");
+    }
+
     #[test]
     fn only_the_latest_raise_counts() {
         let q: kwin::Queue = Default::default();
-        let mut s = Input { session: None, cmds: Some(q.clone()), raised: None, asked: None, seq: 0, hover: None, at: (0.0, 0.0), pending: None, down: 0, wheel: 15.0, wait: Duration::ZERO, last: None };
+        let mut s =
+            Input { session: None, cmds: Some(q.clone()), raised: None, asked: None, seq: 0, hover: None, at: (0.0, 0.0), pending: None, down: 0, wheel: 15.0, wait: Duration::ZERO, last: None };
         s.raise("A");
         assert!(s.answered("A", Some(1)));
         s.raise("B"); // pointer onto B: A no longer counts as on top

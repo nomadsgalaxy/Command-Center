@@ -5,7 +5,9 @@ workflow on 2026-10-02: a design first, then an adversarial review checked again
 LibVNCServer master. Where the two disagree, the review wins, because it checked the sources.
 
 The client side got built on 2026-10-03 (branch vnc), and the next section says what's there and how
-to test it. Everything after it is the original design and review, kept as it was. Its line
+to test it. **Status (2026-10-29):** built and reviewed, but not tested against a real server. The
+first connect (trust on first use) and a reconnect against the pinned certificate are untested,
+because there's no VNC host to try them on yet. Everything after it is the original design and review, kept as it was. Its line
 references are to the code back then, when cc-home and cc-share were scripts; they're Rust now
 (`crates/cc-home`, and cc-share is a link to `crates/cc-host`), so references like cc-home:575 or
 cc-share:183 point at the old scripts, which aren't part of this repo.
@@ -52,11 +54,15 @@ newer than the patched source.
   and the sub-type is X509VNC or X509Plain, whatever the server picked, and after connecting I
   check that again.
 - The certificate has to match its pin: `pin=` on the line, or the paired machine's
-  `cert_sha256`, the same pin format RDP uses. With neither, the first connect pins it: the
-  certificate it shows is saved as `pin=` on its viewers.conf line (only that line changes, and
-  comments stay), and from then on a different certificate is refused. If the pin can't be
-  saved, it doesn't connect. To trust a new certificate on purpose, delete the `pin=` and connect
-  again.
+  `cert_sha256`, the same pin format RDP uses. A pinned certificate has to match even when it's
+  also valid for the system's CAs: libvncclient would take that one without looking at the pin,
+  so cc-panels checks the server's own certificate itself once it's connected. With no pin, the
+  first connect pins it, but only after the server checked a password over TLS, so a server that
+  asked for no password or skipped TLS never gets trusted. The certificate is saved as `pin=` on
+  its viewers.conf line (only that line changes, comments stay, and the file keeps its mode), and
+  from then on a different certificate is refused. Two first connects at once both keep their pins.
+  If the pin can't be saved, it doesn't connect. To trust a new certificate on purpose, delete the
+  `pin=` and connect again.
 - A session that didn't ask for a password is refused, since a fake desktop would get every
   keystroke.
 - `tls=no` also allows VNC's own password check and Apple's (ARD, type 30). macOS and TightVNC

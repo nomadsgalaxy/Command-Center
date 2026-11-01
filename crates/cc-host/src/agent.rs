@@ -5,15 +5,13 @@
 //! which was the reference until the conformance suite passed against both (docs/rust-host.md R1).
 //! agent.py is gone now, and tests/conformance.rs is the spec.
 use crate::platform::Platform;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as B64;
 use cc_proto::agent::{VERSION, canon};
-use cc_proto::server::{authenticate, valid_name};
+use cc_proto::server::authenticate;
 use ed25519_dalek::SigningKey;
 use ed25519_dalek::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Shutdown, TcpListener, TcpStream};
@@ -33,6 +31,33 @@ static HUP: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_hup(_: libc::c_int) {
     HUP.store(true, Relaxed);
+}
+
+/// Every file a paired Frame has on this host, relative to the config dir: its login and slot,
+/// its trusted key, and the address it last came from. Unpairing removes each of them, through the
+/// agent's unpair and cc-share unpair alike, so a file added here can't outlive either.
+pub fn frame_files(frame: &str) -> [String; 3] {
+    [format!("frames/{frame}.json"), format!("trusted-frames/{frame}.pub"), format!("frames/{frame}.last")]
+}
+
+/// systemd patterns for every server of one Frame and no other: its monitors' (`<frame>-<digit>`)
+/// and its windows' (`<frame>-<digit>-<uuid>`). A plain `<frame>-*` also matched another Frame whose
+/// name starts with this one and a dash ("steam" took "steam-frame"'s units; STRCMP-001/002).
+pub fn frame_units(frame: &str) -> [String; 2] {
+    let hex = |n: usize| "[0-9a-f]".repeat(n);
+    [format!("control-center-frame@{frame}-[0-9].service"), format!("control-center-window@{frame}-[0-9]-{}-{}-{}-{}-{}.service", hex(8), hex(4), hex(4), hex(4), hex(12))]
+}
+
+/// Whether a unit name is one of this Frame's monitor servers (the exact form frame_units stops).
+pub fn is_frame_unit(unit: &str, frame: &str) -> bool {
+    unit.strip_prefix(&format!("control-center-frame@{frame}-")).and_then(|r| r.strip_suffix(".service")).is_some_and(|m| m.len() == 1 && m.as_bytes()[0].is_ascii_digit())
+}
+
+/// Removes a Frame's files (frame_files). One that's already gone is fine.
+pub fn forget_frame_files(conf: &Path, frame: &str) {
+    for f in frame_files(frame) {
+        let _ = std::fs::remove_file(conf.join(f));
+    }
 }
 
 pub fn urandom<const N: usize>() -> [u8; N] {
@@ -68,10 +93,7 @@ pub fn host_key(conf: &Path) -> SigningKey {
 /// Writes PKCS#8 v1 (just the private key), the way pair.py does. Python's cryptography rejects
 /// ed25519-dalek's default v2 form, which embeds the public key, and both agents read these files.
 fn pkcs8_v1(k: &SigningKey) -> String {
-    ed25519_dalek::pkcs8::KeypairBytes { secret_key: k.to_bytes(), public_key: None }
-        .to_pkcs8_pem(Default::default())
-        .expect("PKCS#8")
-        .to_string()
+    ed25519_dalek::pkcs8::KeypairBytes { secret_key: k.to_bytes(), public_key: None }.to_pkcs8_pem(Default::default()).expect("PKCS#8").to_string()
 }
 
 /// Returns the host's id from host-id. It's a random UUID made once, never derived from the host's name or MAC (D-050).
@@ -148,8 +170,7 @@ impl Agent {
             .with_single_cert(certs, PrivateKeyDer::Pkcs8(der.as_bytes().to_vec().into()))
             .expect("the host's certificate and key");
         tls.send_tls13_tickets = 0; // No resumption and no early data (review M-A).
-        let agent = Arc::new(Agent { conf, plat, tls: Arc::new(tls), host_pk: key.verifying_key().to_bytes(), state: Mutex::default(),
-                                     stopping: AtomicBool::new(false), work: Mutex::default() });
+        let agent = Arc::new(Agent { conf, plat, tls: Arc::new(tls), host_pk: key.verifying_key().to_bytes(), state: Mutex::default(), stopping: AtomicBool::new(false), work: Mutex::default() });
         agent.adopt();
         agent
     }
@@ -325,7 +346,8 @@ impl Agent {
                 // A slow start shouldn't hold up this Frame's other commands.
                 let (me, f, i, out, cmd) = (self.clone(), frame.to_owned(), ip.to_owned(), out.clone(), cmd.to_owned());
                 std::thread::spawn(move || {
-                    let mut a = if cmd == "session" { me.session_start(&f, &i, &req["index"]) } else { me.window_start(&f, &i, &req["uuid"]) };
+                    let force = req["force"] == json!(true); // the user asked again (Connect), so a unit that gave up is reset first
+                    let mut a = if cmd == "session" { me.session_start(&f, &i, &req["index"], force) } else { me.window_start(&f, &i, &req["uuid"], force) };
                     a["id"] = json!(id);
                     let mut b = canon(&a);
                     b.push(b'\n');
@@ -362,10 +384,9 @@ impl Agent {
             "tags" => self.tags(frame, req),
             "imu" => self.imu(frame, req),
             "unpair" => {
-                for f in [format!("frames/{frame}.json"), format!("trusted-frames/{frame}.pub"), format!("frames/{frame}.last")] {
-                    let _ = std::fs::remove_file(self.path(&f));
-                }
-                self.plat.systemctl(&["stop", &format!("control-center-frame@{frame}-*"), &format!("control-center-window@{frame}-*")]);
+                forget_frame_files(&self.conf, frame);
+                let [mons, wins] = frame_units(frame);
+                self.plat.systemctl(&["stop", &mons, &wins]);
                 self.forget_frame(frame);
                 Ok(json!({"ok": true}))
             }
@@ -467,15 +488,54 @@ fn io_loop(mut tls: StreamOwned<ServerConnection, TcpStream>, mut buf: Vec<u8>, 
     let _ = tls.sock.shutdown(Shutdown::Both);
 }
 
-#[allow(dead_code)]
-fn _names(n: &str) -> bool {
-    valid_name(n)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[allow(dead_code)]
-fn _map(_: Map<String, Value>) {}
+    /// Unpairing `steam` stops steam's servers and leaves `steam-frame`'s and `steam-1`'s alone,
+    /// matched the way systemd matches unit patterns (fnmatch).
+    #[test]
+    fn unpair_matches_only_that_frames_units() {
+        let matches = |pat: &str, unit: &str| {
+            let (p, u) = (std::ffi::CString::new(pat).unwrap(), std::ffi::CString::new(unit).unwrap());
+            unsafe { libc::fnmatch(p.as_ptr(), u.as_ptr(), 0) == 0 }
+        };
+        let uuid = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+        let [mons, wins] = frame_units("steam");
+        assert!(matches(&mons, "control-center-frame@steam-0.service") && matches(&wins, &format!("control-center-window@steam-1-{uuid}.service")));
+        for other in ["control-center-frame@steam-frame-0.service", "control-center-frame@steam-1-0.service", "control-center-frame@steam-10.service"] {
+            assert!(!matches(&mons, other), "{other}");
+        }
+        for other in [format!("control-center-window@steam-frame-0-{uuid}.service"), format!("control-center-window@steam-1-0-{uuid}.service")] {
+            assert!(!matches(&wins, &other), "{other}");
+        }
+        assert!(is_frame_unit("control-center-frame@steam-3.service", "steam"));
+        assert!(!is_frame_unit("control-center-frame@steam-frame-3.service", "steam"));
+    }
 
-#[allow(dead_code)]
-fn _b64(b: &[u8]) -> String {
-    B64.encode(b)
+    /// Every file a Frame pair leaves, as the files cc-share's tests make for one.
+    fn paired(conf: &Path, frame: &str) {
+        for f in frame_files(frame) {
+            let p = conf.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "x").unwrap();
+        }
+    }
+
+    /// The agent's unpair removes every file in frame_files, and leaves nothing of that Frame's.
+    #[test]
+    fn unpair_removes_every_frame_file() {
+        let conf = std::env::temp_dir().join(format!("cc-host-unpair-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&conf);
+        std::fs::create_dir_all(&conf).unwrap();
+        paired(&conf, "f1");
+        paired(&conf, "f2");
+        let agent = Agent::new(conf.clone(), Box::new(crate::platform::Fake::default()));
+        assert_eq!(agent.command("f1", "10.0.0.2", "unpair", &json!({})), Ok(json!({"ok": true})));
+        let left: Vec<String> = frame_files("f1").into_iter().filter(|f| conf.join(f).exists()).collect();
+        let others = frame_files("f2").iter().all(|f| conf.join(f).exists());
+        let _ = std::fs::remove_dir_all(&conf);
+        assert!(left.is_empty(), "left behind: {left:?}");
+        assert!(others, "another Frame's files stay");
+    }
 }

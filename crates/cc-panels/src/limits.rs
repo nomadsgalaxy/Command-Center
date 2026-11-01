@@ -28,12 +28,38 @@ pub const ZOOM_NOTCH: f64 = 1.1;
 /// metres, so it has no `MIN_WIDTH` or `MAX_WIDTH` (the spec makes it metres).
 pub const BAR_SCALE: (f64, f64) = (0.5, 3.0);
 
+// ------------------------------------------------------------------ placement
+
+/// A new surface opens this far ahead of the eyes, level and facing you (the spec's rule 9,
+/// geometry.rs `new_pose`), and it stays where you then put it.
+pub const NEW_AHEAD: f64 = 1.4;
+
+// ------------------------------------------------------------------ theater mode
+
+/// A window panel in theater mode (windows.rs `theater`): this far ahead of the eyes, this wide,
+/// curved round this radius. SteamVR's own theater is `defaultTheaterScale` 2.8 at
+/// `defaultTheaterDistance` 3.0 m, flat (`theaterCurvature` 0, default.vrsettings). Its scale
+/// multiplies a page's own size, so it gives no metres. If SteamVR's scale-1 page is 1.2 m wide
+/// (unverified), its theater spans 2·atan(1.68/3.0) = 58.5°, and ours, 2·atan(1.0/1.8) = 58.1°, the
+/// same. Ours is nearer and curved where SteamVR's is far and flat; that's how it was built, and
+/// matching SteamVR's distance or flatness would change it. New windows are a separate rule.
+pub const THEATER: (f64, f64, f64) = (1.8, 2.0, 1.8); // ahead, width, curve radius (metres)
+
 // ------------------------------------------------------------------ push and pull
 
 /// Carrying a panel with the laser: the wheel or joystick moves it along the line from the head
 /// by this fraction of its distance a notch, between these distances (metres).
 pub const LASER_PUSH_STEP: f64 = 0.08;
 pub const LASER_PUSH_RANGE: (f64, f64) = (0.25, 5.0);
+/// ...and it speeds up the longer you keep at it, as SteamVR's grab handles do
+/// (grabHandleAcceleration): notches the same way, each within PUSH_STREAK of the last, take the
+/// step from 1x to PUSH_ACCEL.1 times over PUSH_ACCEL.0 seconds. A pause or a turn back starts over.
+pub const PUSH_ACCEL: (f64, f64) = (1.5, 4.0);
+pub const PUSH_STREAK: f64 = 0.3;
+/// ...and only as much as the notches come quickly: at PUSH_RATE notches a second or more, the full
+/// speed-up; slower, a share of it. A light push that sends small notches every frame doesn't
+/// race off just because it never pauses.
+pub const PUSH_RATE: f64 = 5.0;
 
 /// Right Ctrl + wheel (kvm.rs `scale`): each notch multiplies the distance (or, with Shift, the
 /// width) by this, and the distance stays between these (metres).
@@ -47,3 +73,16 @@ pub const KEY_PUSH_RANGE: (f64, f64) = (0.3, 10.0);
 pub const CURVE_NOTCH: f64 = 0.03;
 /// An arc whose edges come this little toward you (metres) is flat.
 pub const FLAT_SAG: f64 = 0.01;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theater_mode_is_as_wide_to_the_eye_as_steamvrs_own() {
+        let angle = |half_width: f64, dist: f64| 2.0 * (half_width / dist).atan().to_degrees();
+        let (ahead, width, _) = THEATER;
+        let steamvr = angle(2.8 * 1.2 / 2.0, 3.0); // defaultTheaterScale 2.8 of a 1.2 m page, at 3 m
+        assert!((angle(width / 2.0, ahead) - steamvr).abs() < 1.0, "{} vs {steamvr}", angle(width / 2.0, ahead));
+    }
+}

@@ -33,6 +33,20 @@ pub fn norm(v: &V3) -> f64 {
     dot(v, v).sqrt()
 }
 
+/// v as a unit vector, or ahead (-z) when it's too short to have a direction.
+pub fn unit(v: &V3) -> V3 {
+    let n = norm(v);
+    if n > 1e-9 { v.map(|x| x / n) } else { [0.0, 0.0, -1.0] }
+}
+
+/// A device basis pointing along aim with no roll: -z along aim, x horizontal (AimBasis).
+/// aim can't be vertical, and kvm's pitch limit makes sure it isn't.
+pub fn aim_basis(aim: &V3) -> (V3, V3, V3) {
+    let z = unit(&aim.map(|v| -v));
+    let x = unit(&cross(&[0.0, 1.0, 0.0], &z));
+    (x, cross(&z, &x), z)
+}
+
 /// Rotates v about a unit axis by an angle in radians (Rodrigues' formula).
 pub fn rotate(v: &V3, a: &V3, angle: f64) -> V3 {
     let (c, s, d) = (angle.cos(), angle.sin(), dot(a, v));
@@ -52,15 +66,20 @@ pub fn angles(d: &V3) -> (f64, f64) {
     ((-d[0]).atan2(-d[2]).to_degrees(), (d[1] / n).clamp(-1.0, 1.0).asin().to_degrees())
 }
 
-/// A panel's matrix from a saved pose.
-pub fn panel_matrix(p: &Pose) -> Mat {
-    let (yw, pt, rl) = (p.yaw.to_radians(), p.pitch.to_radians(), p.roll.to_radians());
+/// A pose's right, up and front (toward whoever it faces) before its roll, as unit vectors.
+pub fn axes(p: &Pose) -> (V3, V3, V3) {
+    let (yw, pt) = (p.yaw.to_radians(), p.pitch.to_radians());
     let f = [-yw.sin() * pt.cos(), pt.sin(), -yw.cos() * pt.cos()];
     let z = [-f[0], -f[1], -f[2]]; // the front
     let n = (z[2] * z[2] + z[0] * z[0]).sqrt() + 1e-12;
     let x0 = [z[2] / n, 0.0, -z[0] / n]; // horizontal right
-    let y0 = cross(&z, &x0);
-    let (c, s) = (rl.cos(), rl.sin());
+    (x0, cross(&z, &x0), z)
+}
+
+/// A panel's matrix from a saved pose.
+pub fn panel_matrix(p: &Pose) -> Mat {
+    let (x0, y0, z) = axes(p);
+    let (c, s) = (p.roll.to_radians().cos(), p.roll.to_radians().sin());
     let mut m = [[0f32; 4]; 3];
     for i in 0..3 {
         m[i][0] = (x0[i] * c + y0[i] * s) as f32;
@@ -314,6 +333,14 @@ pub fn level_ahead(head: &Mat) -> V3 {
 /// `aside` to the left of the line (a staircase of panels uses both).
 pub fn ahead_of(eye: &V3, f: &V3, dist: f64, drop: f64, aside: f64) -> V3 {
     [eye[0] + f[0] * dist - f[2] * aside, eye[1] - drop, eye[2] + f[2] * dist + f[0] * aside]
+}
+
+/// Where a new surface opens: limits::NEW_AHEAD ahead of the eyes, level, facing you, `width`
+/// wide. `drop` and `aside` are a staircase's steps (windows.rs), 0 for one on its own.
+pub fn new_pose(head: &Mat, width: f64, drop: f64, aside: f64) -> Pose {
+    let (eye, f) = ([0, 1, 2].map(|i| head[i][3] as f64), level_ahead(head));
+    let (yaw, pitch) = angles(&f);
+    Pose { centre: ahead_of(&eye, &f, crate::limits::NEW_AHEAD, drop, aside), yaw, pitch, width, ..Default::default() }
 }
 
 // ------------------------------------------------------------------ curves
@@ -602,6 +629,16 @@ mod tests {
         assert_eq!(level([0.0, 5.0, 0.0]), [0.0, 0.0, 0.0], "straight up has no level direction");
         assert!((norm(&level([3.0, 9.0, 4.0])) - 1.0).abs() < 1e-12);
         assert_eq!(level_ahead(&STAND_IN_HEAD), [0.0, 0.0, -1.0], "the stand-in looks down -z");
+        // a new surface: 1.4 m ahead, level, facing back at the eyes, whichever way you face
+        for yaw in [0.0f64, 70.0, -150.0] {
+            let (c, s) = (yaw.to_radians().cos() as f32, yaw.to_radians().sin() as f32);
+            let head: Mat = [[c, 0.0, s, 0.3], [0.0, 1.0, 0.0, 1.6], [-s, 0.0, c, -0.2]];
+            let p = new_pose(&head, 1.2, 0.0, 0.0);
+            let eye = [0, 1, 2].map(|i| head[i][3] as f64);
+            let to = [p.centre[0] - eye[0], p.centre[1] - eye[1], p.centre[2] - eye[2]];
+            assert!((norm(&to) - 1.4).abs() < 1e-6 && to[1].abs() < 1e-9 && p.pitch.abs() < 1e-9, "{yaw}: {to:?}");
+            assert!((p.yaw - angles(&to).0).abs() < 1e-6, "{yaw}: it faces you");
+        }
         let eye = [1.0, 1.7, 2.0];
         assert_eq!(ahead_of(&eye, &[0.0, 0.0, -1.0], 1.2, 0.0, 0.0), [1.0, 1.7, 0.8]);
         let at = ahead_of(&eye, &[0.0, 0.0, -1.0], 1.2, 0.1, 0.1);

@@ -6,15 +6,15 @@
 //!
 //! The format is BGRx, which is DRM's XRGB8888, so gpu.rs already imports it. We offer a LINEAR
 //! DMA-BUF first, since that's the only modifier SteamVR takes from us, then shared memory.
-use crate::{call, vr};
-use openvr_sys as sys;
+use crate::texture::{self, Dmabuf, Textures};
+use crate::vr;
 use pipewire as pw;
 use pw::spa;
 use pw::spa::pod::{ChoiceValue, Object, Pod, Property, PropertyFlags, Value};
 use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle, SpaTypes};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::os::fd::{BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -29,7 +29,7 @@ pub type BufId = (usize, u32);
 
 pub enum Pixels {
     Dmabuf { fd: OwnedFd, offset: u32, stride: u32, modifier: u64 }, // our own dup, since PipeWire closes its fd on remove_buffer
-    Mem(Vec<u8>),                                               // RGBA, already copied out
+    Mem(Vec<u8>),                                                    // RGBA, already copied out
 }
 
 pub struct Frame {
@@ -42,8 +42,8 @@ pub struct Frame {
 #[derive(Default)]
 struct Shared {
     newest: Option<Frame>,
-    gone: Vec<BufId>,       // removed buffers for the main thread to unref
-    bufs: Vec<BufId>,       // live buffers, so a late give-back can't queue a freed one
+    gone: Vec<BufId>, // removed buffers for the main thread to unref
+    bufs: Vec<BufId>, // live buffers, so a late give-back can't queue a freed one
 }
 
 /// One stream's hand-off between the PipeWire thread and the main thread.
@@ -76,12 +76,21 @@ pub struct Capture {
 
 impl Capture {
     pub fn start() -> Capture {
+        #[cfg(test)]
+        assert!(!crate::vr::fake::on(), "a replay can't start PipeWire capture (Capture::idle)");
         let (tx, rx) = pw::channel::channel();
         std::thread::spawn(move || {
             if let Err(e) = pw_thread(rx) {
                 eprintln!("capture: PipeWire: {e}");
             }
         });
+        Capture { tx }
+    }
+
+    /// A Capture with no PipeWire thread, for tests (docs/vr-harness.md): what it's sent goes nowhere.
+    #[cfg(test)]
+    pub fn idle() -> Capture {
+        let (tx, _) = pw::channel::channel();
         Capture { tx }
     }
 
@@ -100,7 +109,7 @@ impl Capture {
     }
 
     /// Sets a new frame-rate cap, like the theater panel's 60. It's offered again, so the stream
-/// renegotiates.
+    /// renegotiates.
     pub fn set_rate(&self, key: u64, fps: u32) {
         let _ = self.tx.send(Cmd::Rate(key, fps));
     }
@@ -130,8 +139,8 @@ struct Data {
     modifier: Option<u64>,
     maps: HashMap<BufId, (*mut libc::c_void, usize, usize)>, // memfd mmaps: base, length and data offset
     told: bool,
-    epoch: u32,  // the buffers' generation
-    stale: bool, // buffers were removed, so the next add starts a new generation
+    epoch: u32,         // the buffers' generation
+    stale: bool,        // buffers were removed, so the next add starts a new generation
     fps: Rc<Cell<u32>>, // the frame-rate cap as offered
 }
 
@@ -163,11 +172,7 @@ fn format(modifier: Option<i64>, fixed: bool, fps: u32) -> Vec<u8> {
             prop(F::VideoModifier.as_raw(), PropertyFlags::MANDATORY | PropertyFlags::DONT_FIXATE, Value::Choice(ChoiceValue::Long(c)))
         });
     }
-    let size = ChoiceEnum::Range {
-        default: Rectangle { width: 1280, height: 800 },
-        min: Rectangle { width: 1, height: 1 },
-        max: Rectangle { width: 8192, height: 8192 },
-    };
+    let size = ChoiceEnum::Range { default: Rectangle { width: 1280, height: 800 }, min: Rectangle { width: 1, height: 1 }, max: Rectangle { width: 8192, height: 8192 } };
     p.push(prop(F::VideoSize.as_raw(), none, Value::Choice(ChoiceValue::Rectangle(Choice(ChoiceFlags::empty(), size)))));
     let rate = ChoiceEnum::Range { default: Fraction { num: 0, denom: 1 }, min: Fraction { num: 0, denom: 1 }, max: Fraction { num: 1000, denom: 1 } };
     p.push(prop(F::VideoFramerate.as_raw(), none, Value::Choice(ChoiceValue::Fraction(Choice(ChoiceFlags::empty(), rate)))));
@@ -210,6 +215,7 @@ fn damage_meta() -> Vec<u8> {
 /// How much of a w x h picture a buffer's frame damaged, in thousandths, from its damage rects.
 /// When it has none it counts as all of it, and we log that once.
 fn damaged(buf: &spa::sys::spa_buffer, (w, h): (u32, u32)) -> u32 {
+    // SAFETY: the buffer is PipeWire's while we hold it; metas is checked for null, and n_metas is how many it points to.
     let metas = if buf.metas.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(buf.metas, buf.n_metas as usize) } };
     let Some(m) = metas.iter().find(|m| m.type_ == spa::sys::SPA_META_VideoDamage && !m.data.is_null()) else {
         static SAID: AtomicBool = AtomicBool::new(false);
@@ -219,8 +225,11 @@ fn damaged(buf: &spa::sys::spa_buffer, (w, h): (u32, u32)) -> u32 {
         return 1000;
     };
     let n = m.size as usize / size_of::<spa::sys::spa_meta_region>();
-    let rects = unsafe { std::slice::from_raw_parts(m.data as *const spa::sys::spa_meta_region, n) };
-    let area: u64 = rects.iter().map(|r| r.region.size).take_while(|s| s.width > 0 && s.height > 0).map(|s| s.width as u64 * s.height as u64).sum();
+    // SAFETY: m.data is non-null (the find above) and m.size bytes long, so n whole regions fit in
+    // it. Each is read unaligned: nothing promises the metadata area is aligned for the struct.
+    let base = m.data as *const spa::sys::spa_meta_region;
+    let rects = (0..n).map(|k| unsafe { base.add(k).read_unaligned() });
+    let area: u64 = rects.map(|r| r.region.size).take_while(|s| s.width > 0 && s.height > 0).map(|s| s.width as u64 * s.height as u64).sum();
     (area * 1000 / (w as u64 * h as u64).max(1)).min(1000) as u32
 }
 
@@ -284,11 +293,8 @@ fn pw_thread(rx: pw::channel::Receiver<Cmd>) -> Result<(), pw::Error> {
 
 fn open(core: &pw::core::CoreRc, node: u32, name: &str, feed: Arc<Feed>, fps: u32) -> Result<Live, pw::Error> {
     use pw::properties::properties;
-    let stream = pw::stream::StreamRc::new(
-        core.clone(),
-        &format!("cc-{name}"),
-        properties! { *pw::keys::MEDIA_TYPE => "Video", *pw::keys::MEDIA_CATEGORY => "Capture", *pw::keys::MEDIA_ROLE => "Screen" },
-    )?;
+    let stream =
+        pw::stream::StreamRc::new(core.clone(), &format!("cc-{name}"), properties! { *pw::keys::MEDIA_TYPE => "Video", *pw::keys::MEDIA_CATEGORY => "Capture", *pw::keys::MEDIA_ROLE => "Screen" })?;
     let fps = Rc::new(Cell::new(fps));
     let data = Data { name: name.into(), feed: feed.clone(), size: (0, 0), modifier: None, maps: HashMap::new(), told: false, epoch: 0, stale: false, fps: fps.clone() };
     let listener = stream
@@ -373,12 +379,22 @@ fn open(core: &pw::core::CoreRc, node: u32, name: &str, feed: Arc<Feed>, fps: u3
             }
             let stride = if chunk.stride > 0 { chunk.stride as u32 } else { w * 4 };
             let id = (b as usize, d.epoch);
-            let px = if let Some(&(base, _, off)) = d.maps.get(&id) {
+            let px = if let Some(&(base, len, off)) = d.maps.get(&id) {
+                // The chunk's offset and stride come from the compositor, so every row has to be
+                // inside what we mapped before anything is read (BOF-001).
+                if !fits(len, off, chunk.offset, stride, w, h) {
+                    unsafe { s.queue_raw_buffer(b) };
+                    return;
+                }
                 // ponytail: whole-frame copy, swizzled for SetOverlayRaw; VideoDamage rows into gpu.rs buffers in S1
                 let src = unsafe { (base as *const u8).add(off + chunk.offset as usize) };
                 let mut rgba = vec![0u8; (w * h * 4) as usize];
+                let mut row = vec![0u8; w as usize * 4];
                 for y in 0..h as usize {
-                    let row = unsafe { std::slice::from_raw_parts(src.add(y * stride as usize), w as usize * 4) };
+                    // Copied out byte for byte, with no Rust slice over the mapping: the compositor
+                    // may still be writing it (SHMRACE-001), and a torn frame is fine, a reference
+                    // into memory someone else changes isn't.
+                    unsafe { std::ptr::copy_nonoverlapping(src.add(y * stride as usize), row.as_mut_ptr(), row.len()) };
                     for (o, i) in rgba[y * w as usize * 4..][..w as usize * 4].chunks_exact_mut(4).zip(row.chunks_exact(4)) {
                         o.copy_from_slice(&[i[2], i[1], i[0], 255]);
                     }
@@ -386,7 +402,7 @@ fn open(core: &pw::core::CoreRc, node: u32, name: &str, feed: Arc<Feed>, fps: u3
                 unsafe { s.queue_raw_buffer(b) };
                 Pixels::Mem(rgba)
             } else if data.type_ == spa::sys::SPA_DATA_DmaBuf
-                && let Ok(fd) = unsafe { BorrowedFd::borrow_raw(data.fd as i32) }.try_clone_to_owned()
+                && let Some(fd) = dup_fd(data.fd)
             {
                 Pixels::Dmabuf { fd, offset: chunk.offset, stride, modifier: d.modifier.unwrap_or(LINEAR as u64) }
             } else {
@@ -409,12 +425,33 @@ fn open(core: &pw::core::CoreRc, node: u32, name: &str, feed: Arc<Feed>, fps: u3
     Ok(Live { stream, _listener: listener, feed, fps })
 }
 
+/// Our own copy of a buffer's fd, which PipeWire closes on remove_buffer. None for one that isn't an
+/// fd (a BorrowedFd can't hold -1) or that won't dup, and the frame goes back unshown either way.
+fn dup_fd(fd: i64) -> Option<OwnedFd> {
+    let fd = i32::try_from(fd).ok().filter(|&fd| fd >= 0)?;
+    unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned().ok()
+}
+
+/// Whether h rows of w BGRx pixels, `stride` bytes apart from `chunk` into the data at `off`, all
+/// sit inside a mapping `len` bytes long.
+fn fits(len: usize, off: usize, chunk: u32, stride: u32, w: u32, h: u32) -> bool {
+    let need = || -> Option<u64> {
+        let row = u64::from(w).checked_mul(4)?;
+        if h == 0 || u64::from(stride) < row {
+            return None;
+        }
+        let last = u64::from(h - 1).checked_mul(u64::from(stride))?.checked_add(row)?;
+        (off as u64).checked_add(u64::from(chunk))?.checked_add(last)
+    };
+    need().is_some_and(|n| n <= len as u64)
+}
+
 /// One overlay's view of a Feed, on the main thread. It keeps SteamVR handles per imported
 /// buffer, and holds the shown buffer plus the one before it back from PipeWire, because SteamVR
 /// may still be sampling it. Older ones go back.
 #[derive(Default)]
 pub struct Shown {
-    handles: HashMap<BufId, sys::SharedTextureHandle_t>,
+    handles: HashMap<BufId, texture::TexHandle>,
     held: [Option<BufId>; 2],
     pub size: (u32, u32),
     pub shown: u32, // frames put on the overlay
@@ -428,7 +465,7 @@ impl Shown {
         let gone = std::mem::take(&mut feed.s.lock().unwrap().gone);
         for b in gone {
             if let Some(h) = self.handles.remove(&b) {
-                call!(ipc, UnrefResource, h);
+                texture::Live.release(h);
             }
             self.held.iter_mut().filter(|x| **x == Some(b)).for_each(|x| *x = None);
         }
@@ -437,14 +474,19 @@ impl Shown {
             Pixels::Mem(rgba) => {
                 // ponytail: SetOverlayRaw refuses past ~1920x1080; gpu.rs Buffers::upload(src, stride) in S1
                 crate::back::shown(overlay, 0); // no handle, so its back is a plain sheet
-                vr::timed(|| format!("{name}: SetOverlayRaw {}x{}", f.w, f.h), || call!(ov, SetOverlayRaw, overlay, rgba.as_ptr() as *mut _, f.w, f.h, 4)) == 0
+                vr::timed(|| format!("{name}: SetOverlayRaw {}x{}", f.w, f.h), || texture::Live.present_pixels(overlay, rgba, f.w as usize, f.h as usize)).is_ok()
             }
             Pixels::Dmabuf { fd, offset, stride, modifier } => {
-                let fd = std::os::fd::AsRawFd::as_raw_fd(fd);
                 let h = match self.handles.get(&f.buf) {
                     Some(&h) => h,
                     None => {
-                        let h = vr::timed(|| format!("{name}: ImportDmabuf {}x{}", f.w, f.h), || import(fd, f.w, f.h, *offset, *stride, *modifier));
+                        let h = vr::timed(
+                            || format!("{name}: ImportDmabuf {}x{}", f.w, f.h),
+                            || {
+                                let buf = Dmabuf { fd: fd.as_fd(), width: f.w, height: f.h, fourcc: XRGB8888, modifier: *modifier, offset: *offset, stride: *stride };
+                                texture::Live.import(&buf)
+                            },
+                        );
                         if !self.imported || h.is_none() {
                             eprintln!("{name}: import {}", if h.is_some() { "ok" } else { "fail" });
                             self.imported = true;
@@ -455,7 +497,7 @@ impl Shown {
                         };
                         // removed in the meantime and its gone entry may already be handled, so don't cache
                         if !feed.s.lock().unwrap().bufs.contains(&f.buf) {
-                            call!(ipc, UnrefResource, h);
+                            texture::Live.release(h);
                             return false;
                         }
                         self.handles.insert(f.buf, h);
@@ -463,25 +505,19 @@ impl Shown {
                     }
                 };
                 // the producer's implicit fence: it's readable once rendering is done
-                let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                let mut pfd = libc::pollfd { fd: std::os::fd::AsRawFd::as_raw_fd(fd), events: libc::POLLIN, revents: 0 };
                 if unsafe { libc::poll(&mut pfd, 1, 0) } <= 0 {
                     let mut s = feed.s.lock().unwrap();
                     match s.newest {
                         None if s.bufs.contains(&f.buf) => s.newest = Some(f),
-                        None => {} // removed in the meantime, so PipeWire has it back
+                        None => {}                            // removed in the meantime, so PipeWire has it back
                         Some(_) => cap.give_back(key, f.buf), // a newer one came in the meantime
                     }
                     return false;
                 }
-                let mut h = h;
-                let mut t = sys::Texture_t {
-                    handle: &mut h as *mut _ as *mut std::ffi::c_void,
-                    eType: sys::ETextureType_TextureType_SharedTextureHandle,
-                    eColorSpace: sys::EColorSpace_ColorSpace_Gamma,
-                };
-                let ok = call!(ov, SetOverlayTexture, overlay, &mut t) == 0;
+                let ok = texture::Live.present(overlay, h).is_ok();
                 if ok {
-                    crate::back::shown(overlay, h); // its back too, if it has one
+                    crate::back::shown(overlay, h.0); // its back too, if it has one
                 }
                 if self.held[1] != Some(f.buf) {
                     if let Some(old) = self.held[0].take() {
@@ -499,30 +535,40 @@ impl Shown {
 
     pub fn free(&mut self) {
         for (_, h) in self.handles.drain() {
-            call!(ipc, UnrefResource, h);
+            texture::Live.release(h);
         }
         self.held = [None; 2];
     }
 }
 
-fn import(fd: i32, w: u32, h: u32, offset: u32, stride: u32, modifier: u64) -> Option<sys::SharedTextureHandle_t> {
-    let mut a: sys::DmabufAttributes_t = unsafe { std::mem::zeroed() };
-    a.unWidth = w;
-    a.unHeight = h;
-    (a.unDepth, a.unMipLevels, a.unArrayLayers, a.unSampleCount) = (1, 1, 1, 1);
-    a.unFormat = XRGB8888;
-    a.ulModifier = modifier;
-    a.unPlaneCount = 1;
-    a.plane[0].unOffset = offset;
-    a.plane[0].unStride = stride;
-    a.plane[0].nFd = fd;
-    let mut handle = 0;
-    call!(ipc, ImportDmabuf, sys::EVRApplicationType_VRApplication_Overlay, &mut a, &mut handle).then_some(handle)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A buffer whose fd isn't one (-1, or past what an fd can be) is skipped without touching it;
+    /// a real one is copied, and the copy is its own.
+    #[test]
+    fn only_a_real_fd_is_copied() {
+        assert!(dup_fd(-1).is_none());
+        assert!(dup_fd(i64::from(i32::MAX) + 1).is_none());
+        let f = std::fs::File::open("/dev/null").unwrap();
+        let copy = dup_fd(std::os::fd::AsRawFd::as_raw_fd(&f) as i64).expect("a real fd is copied");
+        assert_ne!(std::os::fd::AsRawFd::as_raw_fd(&copy), std::os::fd::AsRawFd::as_raw_fd(&f));
+    }
+
+    /// A compositor's chunk that would read past the mapping, or wrap while working that out, is
+    /// refused; one that fits exactly is taken.
+    #[test]
+    fn chunks_must_fit_the_mapping() {
+        let (w, h) = (4u32, 3u32);
+        let exact = 2 * 16 + 16; // the last row ends right at the end
+        assert!(super::fits(exact, 0, 0, 16, w, h));
+        assert!(!super::fits(exact - 1, 0, 0, 16, w, h), "one byte short");
+        assert!(!super::fits(exact, 0, 1, 16, w, h), "an offset pushes it out");
+        assert!(!super::fits(usize::MAX, 0, 0, 8, w, h), "a stride under a row");
+        assert!(!super::fits(usize::MAX, usize::MAX, u32::MAX, u32::MAX, w, h), "sums that would wrap");
+        assert!(!super::fits(1 << 20, 0, 0, 16, w, 0), "no rows");
+    }
 
     fn fixed(modifier: Option<i64>, w: u32, h: u32) -> Vec<u8> {
         use spa::param::format::FormatProperties as F;

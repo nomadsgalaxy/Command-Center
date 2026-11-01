@@ -3,11 +3,13 @@
 //! pixel (the taskbar's). It also decides where a window opens and uploads its texture.
 //!
 //! It's free functions, not a framework. Each window keeps its own hits, key and rows.
-use crate::geometry::{Pose, STAND_IN_HEAD, ahead_of, angles, level_ahead};
+use crate::geometry::{Pose, STAND_IN_HEAD};
 use crate::grab::{self, Look, Paint, TagImg, average, line, over, rbox, tint};
+use crate::overlay::Overlays;
+use crate::poll::Pointing;
+use crate::stage::Stage;
 use crate::taskbar::{self, LABEL, TAG_ROOM, TAG_TEXT, text_pixel};
-use crate::{call, config, vr};
-use openvr_sys as sys;
+use crate::{config, vr};
 use std::sync::mpsc;
 
 /// ascii.rgba's characters (assets.rs, `ascii`) in file order, which is printable ASCII.
@@ -20,9 +22,7 @@ pub const BTN_H: f64 = 28.0;
 pub const GAP: f64 = 8.0;
 const RADIUS: f64 = 8.0;
 pub const SCALE: f64 = 1.5; // texture pixels per unit
-pub const MPP: f64 = 0.0006; // calibration knob: metres per unit (matches the taskbar's text size at OUT)
-const OUT: f64 = 0.6; // this far ahead of the eyes (nearer than panels and follow's taskbar),
-const DROP: f64 = 0.12; // this far below them
+pub const MPP: f64 = 0.0006; // calibration knob: metres per unit (matches the taskbar's text size at 0.6 m)
 pub const SORT: u32 = 193; // over the taskbar (190, Plasma's 191) and its card (192), under the scan's HUD (195/196)
 
 pub type Px = ([f64; 3], f64);
@@ -123,7 +123,13 @@ pub fn segmented(p: &Paint, labels: &[Option<&TagImg>], chosen: usize, hover: Op
     let sw = (x1 - x0) / labels.len() as f64;
     for (k, l) in labels.iter().enumerate() {
         let (s0, s1) = (x0 + k as f64 * sw, x0 + (k + 1) as f64 * sw);
-        let look = if k == chosen { Look::Carry } else if hover == Some(k) { Look::Lit } else { Look::Rest };
+        let look = if k == chosen {
+            Look::Carry
+        } else if hover == Some(k) {
+            Look::Lit
+        } else {
+            Look::Rest
+        };
         if look != Look::Rest {
             let d = rbox(x - (s0 + s1) / 2.0, y - cy, sw / 2.0 - 2.0, BTN_H / 2.0 - 2.0, 3.0);
             out = over(out, grab::button(t, acc, look, d, 2.0, 1.0)); // keeps the glow inside the segment's edge
@@ -151,10 +157,7 @@ pub enum Edit {
 
 /// evdev codes 2 (1) to 53 (/) on a US keyboard, unshifted and shifted. 0 means it isn't a
 /// character.
-const US: [&[u8; 52]; 2] = [
-    b"1234567890-=\0\0qwertyuiop[]\0\0asdfghjkl;'`\0\\zxcvbnm,./",
-    b"!@#$%^&*()_+\0\0QWERTYUIOP{}\0\0ASDFGHJKL:\"~\0|ZXCVBNM<>?",
-];
+const US: [&[u8; 52]; 2] = [b"1234567890-=\0\0qwertyuiop[]\0\0asdfghjkl;'`\0\\zxcvbnm,./", b"!@#$%^&*()_+\0\0QWERTYUIOP{}\0\0ASDFGHJKL:\"~\0|ZXCVBNM<>?"];
 
 /// Turns an evdev key (value 1 is down, 2 is held, i.e. its repeat) into a field edit.
 /// Characters and Backspace repeat.
@@ -178,6 +181,20 @@ pub fn edit(code: u16, value: i32, shift: bool) -> Option<Edit> {
     }
 }
 
+/// The other way: the evdev key (and Shift) that types c on a US keyboard. "\b" is Backspace,
+/// "\n" Enter and "\t" Tab, as SteamVR's keyboard sends them.
+pub fn key_for(c: char) -> Option<(u16, bool)> {
+    match c {
+        ' ' => return Some((57, false)),
+        '\u{8}' => return Some((14, false)),
+        '\n' | '\r' => return Some((28, false)),
+        '\t' => return Some((15, false)),
+        _ => {}
+    }
+    let b = u8::try_from(c).ok().filter(|b| *b != 0)?;
+    (0..2).find_map(|shift| US[shift].iter().position(|&k| k == b).map(|i| (i as u16 + 2, shift == 1)))
+}
+
 pub type Rect = (f64, f64, f64, f64); // x0, y0, x1, y1 in units from the top left
 
 /// Redraws rect (x0, y0, x1, y1) in buf (tw x th at s texture pixels per unit), pixel by pixel.
@@ -192,16 +209,15 @@ pub fn patch(buf: &mut [u8], tw: usize, th: usize, s: f64, (x0, y0, x1, y1): Rec
     }
 }
 
-/// Where a window `name` w metres wide opens: where it was last put down (spots.home.<name>),
-/// else OUT ahead of the eyes and DROP below them, facing you.
+/// Where a window `name` w metres wide opens: where it was last put down in this room
+/// (spots.home.<name> of this room's workspace), else in front of you (`fresh`).
 pub fn spot(name: &str, w: f64) -> Pose {
-    config::home_pose(name, None).unwrap_or_else(|| {
-        let m = vr::head().unwrap_or(STAND_IN_HEAD);
-        let eye = [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64];
-        let centre = ahead_of(&eye, &level_ahead(&m), OUT, DROP, 0.0);
-        let (yaw, pitch) = angles(&[centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]]);
-        Pose { centre, yaw, pitch, width: w, ..Default::default() }
-    })
+    config::home_pose(name, None).unwrap_or_else(|| fresh(&crate::stage::Live.head_now().unwrap_or(STAND_IN_HEAD), w))
+}
+
+/// Where every new surface opens (geometry.rs `new_pose`: 1.4 m ahead, level, facing you), w metres wide.
+fn fresh(head: &crate::geometry::Mat, w: f64) -> Pose {
+    crate::geometry::new_pose(head, w, 0.0, 0.0)
 }
 
 /// A window's texture: px (tw x th) for a w x ht window (`size`). `full` means it was drawn whole.
@@ -257,7 +273,10 @@ impl<K: Clone + PartialEq + Send + 'static> Painter<K> {
                     (self.job, self.drawn, self.px) = (None, Some(k), t.px); // even if refused: it's tried again on the next change
                 }
                 Err(mpsc::TryRecvError::Empty) => return,
-                Err(mpsc::TryRecvError::Disconnected) => std::process::exit(101), // it panicked (and logged it), so exit like the cards' painter does
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    crate::trace::flush();
+                    std::process::exit(101) // it panicked (and logged it), so exit like the cards' painter does
+                }
             }
         }
         if self.drawn.as_ref() == Some(&key) {
@@ -282,52 +301,172 @@ pub fn upload(h: vr::Handle, px: &mut Vec<u8>, tw: usize, th: usize, (w, ht): (f
     if !grab::set_raw(h, px, tw, th) {
         px.clear();
     } else if full {
-        let mut scale = sys::HmdVector2_t { v: [w as f32, ht as f32] };
-        call!(ov, SetOverlayMouseScale, h, &mut scale);
+        crate::overlay::Live.mouse_scale(h, [w as f32, ht as f32]);
     }
 }
 
 /// The next event on the Extra's window h. SteamVR's come first. Then, with no laser (both
 /// controllers on), the mouse's events from kvm's ray, shaped like a laser's would be (a move
-/// when its point changes, a leave, its left presses) and from device grab::MOUSE. False when
-/// there are none.
-pub fn next_event(h: vr::Handle, e: &mut vr::VREvent_t) -> bool {
+/// when its point changes, a leave, its left presses) and from Dev::Mouse. None when there are
+/// none.
+pub fn next_event(h: vr::Handle) -> Option<crate::events::SurfaceEvent> {
+    use crate::events::{Button, PointerEvent, PointerKind, SurfaceEvent};
     use std::sync::Mutex;
-    static SENT: Mutex<Option<(f32, f32)>> = Mutex::new(None); // the point we last moved to
-    if call!(ov, PollNextOverlayEvent, h, e, size_of::<vr::VREvent_t>() as u32) {
-        return true;
+    // Lock order: SENT, then KVM. SENT is local to this function, so nothing else can take it,
+    // and nothing calls this holding KVM (machines.rs, prefs.rs and workspace.rs take it only
+    // inside their loops over these events): the locks below would never return on a thread that
+    // held it, and the fallback's did that before 6e too. So nothing takes them the other way
+    // round. KVM can still wait here on another thread's hold of it, as any lock of it can.
+    type Point = Option<(f32, f32)>;
+    // the point we last moved to, and where a Down this sent went while its Up hasn't
+    static SENT: Mutex<(Point, Point)> = Mutex::new((None, None));
+    if let Some(ev) = crate::poll::Live.next(h) {
+        return Some(ev);
     }
-    let mut sent = SENT.lock().unwrap();
-    if crate::laser::HEALTHY.load(std::sync::atomic::Ordering::Relaxed) {
-        *sent = None; // the laser sends its own events now
-        return false;
+    let mut guard = SENT.lock().unwrap();
+    let (sent, down_at) = &mut *guard;
+    let laser = crate::kvm::lock().laser; // KVM only for this statement
+    if laser.working() {
+        // The laser sends its own events now. Presses queued for this are dropped, not sent the
+        // next time it stops working; one whose Down already went is let go once, here, so the
+        // window isn't left holding it, at the Down's own point (the ray may have left since).
+        crate::kvm::lock().extra_mouse.clear();
+        *sent = None;
+        return down_at.take().map(|(x, y)| SurfaceEvent::Pointer(PointerEvent { kind: PointerKind::Up(Button::Left), x, y, from: crate::ids::Dev::Mouse, age: 0.0 }));
     }
-    let mut k = crate::kvm::KVM.lock().unwrap();
-    let mut scale = sys::HmdVector2_t { v: [0.0; 2] };
-    call!(ov, GetOverlayMouseScale, h, &mut scale);
-    let at = k.extra.zip(k.extra_at()).map(|((pl, _), (u, v))| (((u / pl.width + 0.5) * scale.v[0] as f64) as f32, ((v / pl.height + 0.5) * scale.v[1] as f64) as f32));
-    let (kind, (x, y), button) = if !k.extra_mouse.is_empty() {
+    // The laser can start working between that check and this lock. The HEALTHY load this
+    // replaced had the same gap, and the next call sees it.
+    let mut k = crate::kvm::lock();
+    let scale = crate::overlay::Live.mouse_scale_of(h);
+    let at = k.extra.zip(k.extra_at()).map(|((pl, _), (u, v))| (((u / pl.width + 0.5) * scale[0] as f64) as f32, ((v / pl.height + 0.5) * scale[1] as f64) as f32));
+    // an Up for a Down that was let go above (its button was still held then) is stale
+    while k.extra_mouse.first() == Some(&false) && down_at.is_none() {
+        k.extra_mouse.remove(0);
+    }
+    let (kind, (x, y)) = if !k.extra_mouse.is_empty() {
         let down = k.extra_mouse.remove(0);
-        let kind = if down { sys::EVREventType_VREvent_MouseButtonDown } else { sys::EVREventType_VREvent_MouseButtonUp };
-        (kind, at.or(*sent).unwrap_or_default(), sys::EVRMouseButton_VRMouseButton_Left)
+        let p = at.or(*sent).unwrap_or_default();
+        *down_at = down.then_some(p);
+        let kind = if down { PointerKind::Down(Button::Left) } else { PointerKind::Up(Button::Left) };
+        (kind, p)
     } else if at.is_some() && at != *sent {
-        (sys::EVREventType_VREvent_MouseMove, at.unwrap(), 0)
+        (PointerKind::Move, at.unwrap())
     } else if at.is_none() && sent.is_some() {
-        (sys::EVREventType_VREvent_FocusLeave, sent.unwrap(), 0)
+        (PointerKind::Leave, sent.unwrap())
     } else {
-        return false;
+        return None;
     };
     *sent = at;
-    *e = unsafe { std::mem::zeroed() };
-    (e.eventType, e.trackedDeviceIndex) = (kind as u32, grab::MOUSE);
-    e.data.mouse = sys::VREvent_Mouse_t { x, y, button: button as u32, cursorIndex: 0 };
-    true
+    Some(SurfaceEvent::Pointer(PointerEvent { kind, x, y, from: crate::ids::Dev::Mouse, age: 0.0 }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::theme;
+
+    #[test]
+    fn the_extra_windows_mouse_events_come_from_kvm_only_while_the_laser_isnt_working() {
+        use crate::events::{Button, PointerEvent, PointerKind as P, SurfaceEvent as S};
+        use crate::geometry::{Placement, Pose, panel_matrix};
+        // SteamVR has nothing queued for it, and says the window is 500 by 600 for the mouse
+        let _vr = crate::trace::fake_vr(); // the global Kvm, and next_event's SENT: one test at a time
+        crate::vr::fake::SCRIPT.lock().unwrap().as_mut().unwrap().mouse_scale = [500.0, 600.0];
+        let (h, laser) = (crate::ids::SurfaceId(1), crate::laser::fake::StandIn::leak(false));
+        // the global Kvm goes back however the test ends, a failed assert too (before _vr lets
+        // the next fake-SteamVR test in, since it's dropped first)
+        struct Restore(Option<crate::kvm::Kvm>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                *crate::kvm::lock() = self.0.take().unwrap();
+            }
+        }
+        let _saved = Restore(Some(std::mem::replace(&mut *crate::kvm::lock(), crate::kvm::Kvm::idle())));
+        // the mouse's ray (an idle Kvm's: from the origin, straight ahead) at the middle of an Extra
+        // window 0.6 m out
+        let on = |yes: bool| {
+            let mut k = crate::kvm::lock();
+            let pl = Placement::from_matrix(&panel_matrix(&Pose { centre: [0.0, 0.0, -0.6], width: 0.5, ..Default::default() }), 0.5, 0.6, 0.0);
+            k.laser = laser;
+            // one panel, behind you, so the ray misses it
+            k.place = vec![Placement::from_matrix(&panel_matrix(&Pose { centre: [0.0, 0.0, 3.0], width: 1.0, ..Default::default() }), 1.0, 0.6, 0.0)];
+            k.extra = yes.then_some((pl, [0.02, 0.05, 0.03]));
+            k.land();
+        };
+        let ev = |kind, x, y| Some(S::Pointer(PointerEvent { kind, x, y, from: crate::ids::Dev::Mouse, age: 0.0 }));
+        // no laser: a move to the ray's point once, then its presses there, then a leave when it goes
+        on(true);
+        assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0));
+        assert_eq!(next_event(h), None, "the same point again isn't a move");
+        crate::kvm::lock().extra_mouse.extend([true, false]);
+        assert_eq!(next_event(h), ev(P::Down(Button::Left), 250.0, 300.0));
+        assert_eq!(next_event(h), ev(P::Up(Button::Left), 250.0, 300.0));
+        on(false);
+        assert_eq!(next_event(h), ev(P::Leave, 250.0, 300.0));
+        // the laser works: it sends the window's events itself, so this sends none and forgets the point
+        on(true);
+        assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0));
+        laser.working.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(next_event(h), None, "no second Up for the press the fallback already let go");
+        // it stops working with the ray already gone: no leave for a point from before
+        on(false);
+        laser.working.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(next_event(h), None, "nothing stale replayed");
+        on(true);
+        assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0), "and the next point is a move again");
+        // a press queued just before the laser starts working is dropped, not sent the next time
+        // it stops
+        crate::kvm::lock().extra_mouse.push(true);
+        laser.working.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(next_event(h), None);
+        assert!(crate::kvm::lock().extra_mouse.is_empty(), "the queue's dropped");
+        laser.working.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0), "a move, no stale press");
+        assert_eq!(next_event(h), None);
+        // one whose Down already went is let go once when the laser starts, and its own late Up,
+        // after the laser stops again, isn't sent a second time
+        crate::kvm::lock().extra_mouse.push(true);
+        assert_eq!(next_event(h), ev(P::Down(Button::Left), 250.0, 300.0));
+        laser.working.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(next_event(h), ev(P::Up(Button::Left), 250.0, 300.0), "let go, so the window isn't left holding it");
+        assert_eq!(next_event(h), None, "once");
+        laser.working.store(false, std::sync::atomic::Ordering::Relaxed);
+        crate::kvm::lock().extra_mouse.push(false); // the button let go of at last
+        assert_eq!(next_event(h), ev(P::Move, 250.0, 300.0), "a move, not a second Up");
+        assert_eq!(next_event(h), None);
+        assert!(crate::kvm::lock().extra_mouse.is_empty());
+        // a Down, then the ray leaves the window (a leave clears the point), then the laser starts:
+        // the Up goes where the Down did, not to (0, 0)
+        crate::kvm::lock().extra_mouse.push(true);
+        assert_eq!(next_event(h), ev(P::Down(Button::Left), 250.0, 300.0));
+        on(false);
+        assert_eq!(next_event(h), ev(P::Leave, 250.0, 300.0));
+        laser.working.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(next_event(h), ev(P::Up(Button::Left), 250.0, 300.0), "at the Down's point");
+        assert_eq!(next_event(h), None, "once");
+        laser.working.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn a_window_with_no_spot_here_opens_14_m_ahead_level_and_facing_you() {
+        let head: crate::geometry::Mat = [[0.0, 0.0, 1.0, 0.4], [0.0, 1.0, 0.0, 1.6], [-1.0, 0.0, 0.0, -0.3]]; // facing -x
+        let p = fresh(&head, 0.36);
+        let eye = [0, 1, 2].map(|i| head[i][3] as f64);
+        let to = [p.centre[0] - eye[0], p.centre[1] - eye[1], p.centre[2] - eye[2]];
+        assert!((crate::geometry::norm(&to) - crate::limits::NEW_AHEAD).abs() < 1e-6 && to[1].abs() < 1e-6 && p.pitch.abs() < 1e-6, "{to:?}");
+        assert!((p.yaw - crate::geometry::angles(&to).0).abs() < 1e-6 && p.width == 0.36);
+    }
+
+    #[test]
+    fn every_printable_ascii_types_back_as_itself() {
+        for c in ' '..='~' {
+            let (code, shift) = key_for(c).unwrap_or_else(|| panic!("{c:?} has no key"));
+            assert_eq!(edit(code, 1, shift), Some(Edit::Char(c)), "{c:?}");
+        }
+        assert_eq!(key_for('\u{8}').map(|(k, s)| edit(k, 1, s)), Some(Some(Edit::Back)));
+        assert_eq!(key_for('\n').map(|(k, s)| edit(k, 1, s)), Some(Some(Edit::Submit)));
+        assert_eq!(key_for('é'), None);
+    }
 
     #[test]
     fn typed_text_sits_left_a_cell_a_character() {
@@ -353,9 +492,19 @@ mod tests {
 
     #[test]
     fn a_us_keyboard_types_ascii() {
-        let typed = |keys: &[(u16, bool)]| keys.iter().filter_map(|&(c, sh)| match edit(c, 1, sh) { Some(Edit::Char(c)) => Some(c), _ => None }).collect::<String>();
+        let typed = |keys: &[(u16, bool)]| {
+            keys.iter()
+                .filter_map(|&(c, sh)| match edit(c, 1, sh) {
+                    Some(Edit::Char(c)) => Some(c),
+                    _ => None,
+                })
+                .collect::<String>()
+        };
         assert_eq!(typed(&[(22, false), (31, false), (18, false), (19, false), (3, true), (35, false), (24, false), (31, false), (20, false), (52, false), (2, false)]), "user@host.1");
-        assert_eq!(typed(&[(2, false), (11, false), (2, true), (11, true), (12, true), (13, false), (39, true), (40, true), (43, false), (43, true), (41, true), (53, true), (57, true)]), "10!)_=:\"\\|~? ");
+        assert_eq!(
+            typed(&[(2, false), (11, false), (2, true), (11, true), (12, true), (13, false), (39, true), (40, true), (43, false), (43, true), (41, true), (53, true), (57, true)]),
+            "10!)_=:\"\\|~? "
+        );
         assert_eq!(typed(&[(16, true), (44, false), (50, true)]), "QzM");
         assert_eq!(edit(30, 2, false), Some(Edit::Char('a')), "held: repeats");
         assert_eq!(edit(30, 0, false), None, "up: nothing");

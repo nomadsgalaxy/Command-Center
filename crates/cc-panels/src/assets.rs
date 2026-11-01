@@ -15,6 +15,10 @@ const BASE: i32 = 46; // baseline in the 64 px tall tag: caps sit on 15..46, des
 const H: usize = 64;
 const SIZE: f32 = 44.0;
 
+/// Typed text's family (ascii.rgba): the system's own Source Code Pro, as SteamOS ships it.
+/// fc-match falls back to the nearest monospace font where it's missing.
+pub const MONO: &str = "Source Code Pro";
+
 /// Looks up `family` through fontconfig (fc-match) and falls back to the system's Noto Sans.
 fn font(family: &str) -> Option<fontdue::Font> {
     let matched = std::process::Command::new("fc-match").args(["-f", "%{file}", family]).output().ok();
@@ -71,13 +75,12 @@ fn mask(layers: [&[u8]; 3], w: usize, pad: usize) -> Vec<u8> {
 /// A host's name from reverse DNS without the domain, or the address itself if it has no name.
 fn host_name(host: &str) -> String {
     let Ok(ip) = host.parse::<std::net::Ipv4Addr>() else { return host.split('.').next().unwrap_or(host).to_owned() };
+    // SAFETY: sockaddr_in is integers: all zeros is a valid (unspecified) address, filled in below.
     let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
     sa.sin_family = libc::AF_INET as _;
     sa.sin_addr.s_addr = u32::from_ne_bytes(ip.octets());
     let mut name = [0 as libc::c_char; 256];
-    let r = unsafe {
-        libc::getnameinfo(&sa as *const _ as *const libc::sockaddr, std::mem::size_of_val(&sa) as _, name.as_mut_ptr(), name.len() as _, std::ptr::null_mut(), 0, libc::NI_NAMEREQD)
-    };
+    let r = unsafe { libc::getnameinfo(&sa as *const _ as *const libc::sockaddr, std::mem::size_of_val(&sa) as _, name.as_mut_ptr(), name.len() as _, std::ptr::null_mut(), 0, libc::NI_NAMEREQD) };
     if r != 0 {
         return host.to_owned();
     }
@@ -209,7 +212,7 @@ pub fn draw(dir: &str, family: &str, tags: &[String]) {
     }
     if !std::path::Path::new(&format!("{dir}/ascii.rgba")).exists() {
         let ascii: String = (32u8..127).map(char::from).collect(); // machines.rs expects this exact order
-        if let Some(mono) = font("monospace") {
+        if let Some(mono) = font(MONO) {
             write(&format!("{dir}/ascii.rgba"), &glyphs(&mono, &ascii));
         }
     }

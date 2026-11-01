@@ -13,6 +13,7 @@
 //! round to millimetres, Kvm::set_place doesn't compare at all). Moving that here would change when
 //! SteamVR gets called.
 use crate::geometry::{Mat, bend};
+use crate::ids::Dev;
 use crate::{call, vr};
 use openvr_sys as sys;
 
@@ -23,13 +24,16 @@ pub type Handle = vr::Handle;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum At {
     Room(Mat),
-    Device(u32, Mat),
+    Device(Dev, Mat),
 }
 
 impl At {
-    /// `dev` as the taskbar keeps it: u32::MAX means the room, anything else a tracked device.
-    pub fn on(dev: u32, m: Mat) -> At {
-        if dev == u32::MAX { At::Room(m) } else { At::Device(dev, m) }
+    /// `dev` as the taskbar keeps it: None is the room, anything else a tracked device.
+    pub fn on(dev: Option<Dev>, m: Mat) -> At {
+        match dev {
+            None => At::Room(m),
+            Some(d) => At::Device(d, m),
+        }
     }
 }
 
@@ -72,6 +76,122 @@ impl Place {
     }
 }
 
+/// What a surface asks of the runtime. Each is a SteamVR overlay flag today. OpenXR does without
+/// most of them (we draw our own cursor and get every scroll).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flag {
+    /// MakeOverlaysInteractiveIfVisible: the laser works it whenever it's visible.
+    Interactive,
+    /// SendVRDiscreteScrollEvents.
+    DiscreteScroll,
+    /// IgnoreTextureAlpha: alpha comes from `Surfaces::alpha`, not the picture.
+    IgnoreAlpha,
+    /// EnableControlBar and EnableControlBarClose: SteamVR's bar under the dashboard tab.
+    ControlBar,
+    ControlBarClose,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputMode {
+    None,
+    /// The runtime's laser sends this surface pointer events.
+    Pointer,
+}
+
+/// Creating, showing and ordering surfaces (surface.rs's create and destroy, and the show, hide,
+/// sort, alpha, colour, flag and input-method calls everywhere).
+pub trait Surfaces {
+    fn create(&mut self, key: &str, name: &str) -> Result<Handle, String>;
+    /// The dashboard tab and its thumbnail. `None` where there's no dashboard (OpenXR).
+    fn create_dashboard(&mut self, key: &str, name: &str) -> Option<Result<(Handle, Handle), String>>;
+    fn destroy(&mut self, s: Handle);
+    fn show(&mut self, s: Handle);
+    fn hide(&mut self, s: Handle);
+    fn visible(&self, s: Handle) -> bool;
+    fn order(&mut self, s: Handle, order: u32);
+    fn order_of(&self, s: Handle) -> u32;
+    fn alpha(&mut self, s: Handle, a: f32);
+    fn color(&mut self, s: Handle, rgb: [f32; 3]);
+    fn flag(&mut self, s: Handle, f: Flag, on: bool);
+    fn input(&mut self, s: Handle, m: InputMode);
+    fn rename(&mut self, s: Handle, name: &str);
+    /// A picture from a file (icons).
+    fn picture_file(&mut self, s: Handle, path: &str);
+}
+
+/// SteamVR, for real: each is the one OpenVR call it was where it's called from now.
+impl Surfaces for Live {
+    fn create(&mut self, key: &str, name: &str) -> Result<Handle, String> {
+        vr::create_overlay(key, name)
+    }
+
+    fn create_dashboard(&mut self, key: &str, name: &str) -> Option<Result<(Handle, Handle), String>> {
+        Some(vr::create_dashboard_overlay(key, name))
+    }
+
+    fn destroy(&mut self, h: Handle) {
+        call!(ov, DestroyOverlay, h.0);
+    }
+
+    fn show(&mut self, h: Handle) {
+        call!(ov, ShowOverlay, h.0);
+    }
+
+    fn hide(&mut self, h: Handle) {
+        call!(ov, HideOverlay, h.0);
+    }
+
+    fn visible(&self, h: Handle) -> bool {
+        call!(ov, IsOverlayVisible, h.0)
+    }
+
+    fn order(&mut self, h: Handle, order: u32) {
+        call!(ov, SetOverlaySortOrder, h.0, order);
+    }
+
+    fn order_of(&self, h: Handle) -> u32 {
+        let mut order = 0;
+        call!(ov, GetOverlaySortOrder, h.0, &mut order);
+        order
+    }
+
+    fn alpha(&mut self, h: Handle, a: f32) {
+        call!(ov, SetOverlayAlpha, h.0, a);
+    }
+
+    fn color(&mut self, h: Handle, [r, g, b]: [f32; 3]) {
+        call!(ov, SetOverlayColor, h.0, r, g, b);
+    }
+
+    fn flag(&mut self, h: Handle, f: Flag, on: bool) {
+        let f = match f {
+            Flag::Interactive => sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible,
+            Flag::DiscreteScroll => sys::VROverlayFlags_SendVRDiscreteScrollEvents,
+            Flag::IgnoreAlpha => sys::VROverlayFlags_IgnoreTextureAlpha,
+            Flag::ControlBar => sys::VROverlayFlags_EnableControlBar,
+            Flag::ControlBarClose => sys::VROverlayFlags_EnableControlBarClose,
+        };
+        call!(ov, SetOverlayFlag, h.0, f, on);
+    }
+
+    fn input(&mut self, h: Handle, m: InputMode) {
+        let m = match m {
+            InputMode::None => sys::VROverlayInputMethod_None,
+            InputMode::Pointer => sys::VROverlayInputMethod_Mouse,
+        };
+        call!(ov, SetOverlayInputMethod, h.0, m);
+    }
+
+    fn rename(&mut self, h: Handle, name: &str) {
+        let name = std::ffi::CString::new(name).unwrap_or_default();
+        call!(ov, SetOverlayName, h.0, name.as_ptr() as *mut _);
+    }
+
+    fn picture_file(&mut self, h: Handle, path: &str) {
+        vr::set_from_file(h, path);
+    }
+}
+
 /// The writes behind a placement.
 pub trait Overlays {
     fn width(&mut self, h: Handle, metres: f32);
@@ -80,7 +200,16 @@ pub trait Overlays {
     fn bounds(&mut self, h: Handle, b: [f32; 4]);
     fn mouse_scale(&mut self, h: Handle, s: [f32; 2]);
     fn place_room(&mut self, h: Handle, m: &Mat);
-    fn place_device(&mut self, h: Handle, dev: u32, m: &Mat);
+    fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat);
+    /// The stretch last set, or the runtime's default: 1.0, square texels (openvr.h, IVROverlay_027,
+    /// GetOverlayTexelAspect: "Defaults to 1.0"). A back matches its front's with it (back.rs).
+    fn texel_aspect_of(&self, h: Handle) -> f32;
+    /// The mouse scale last set; ui.rs scales the mouse's ray by it. Live asks the runtime with a
+    /// zeroed answer and ignores its error, as ui.rs did. What SteamVR gives for an overlay whose
+    /// scale was never set isn't documented (openvr.h names no default) and hasn't been checked,
+    /// so the fake's [0, 0] is its own fallback, not the runtime's. A backend that keeps this
+    /// itself needs a stated default and a fixture for it.
+    fn mouse_scale_of(&self, h: Handle) -> [f32; 2];
 }
 
 /// Sets overlay `h` to `p`: the texture bounds, width, picture stretch, curvature and mouse scale
@@ -110,34 +239,46 @@ pub struct Live;
 
 impl Overlays for Live {
     fn width(&mut self, h: Handle, metres: f32) {
-        call!(ov, SetOverlayWidthInMeters, h, metres);
+        call!(ov, SetOverlayWidthInMeters, h.0, metres);
     }
 
     fn curvature(&mut self, h: Handle, fraction: f32) {
-        call!(ov, SetOverlayCurvature, h, fraction);
+        call!(ov, SetOverlayCurvature, h.0, fraction);
     }
 
     fn texel_aspect(&mut self, h: Handle, aspect: f32) {
-        call!(ov, SetOverlayTexelAspect, h, aspect);
+        call!(ov, SetOverlayTexelAspect, h.0, aspect);
     }
 
     fn bounds(&mut self, h: Handle, b: [f32; 4]) {
         let mut t = sys::VRTextureBounds_t { uMin: b[0], vMin: b[1], uMax: b[2], vMax: b[3] };
-        call!(ov, SetOverlayTextureBounds, h, &mut t);
+        call!(ov, SetOverlayTextureBounds, h.0, &mut t);
     }
 
     fn mouse_scale(&mut self, h: Handle, s: [f32; 2]) {
         let mut scale = sys::HmdVector2_t { v: s };
-        call!(ov, SetOverlayMouseScale, h, &mut scale);
+        call!(ov, SetOverlayMouseScale, h.0, &mut scale);
     }
 
     fn place_room(&mut self, h: Handle, m: &Mat) {
         vr::place(h, m);
     }
 
-    fn place_device(&mut self, h: Handle, dev: u32, m: &Mat) {
+    fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat) {
         let mut t = sys::HmdMatrix34_t { m: *m };
-        call!(ov, SetOverlayTransformTrackedDeviceRelative, h, dev, &mut t);
+        call!(ov, SetOverlayTransformTrackedDeviceRelative, h.0, vr::index(dev), &mut t);
+    }
+
+    fn texel_aspect_of(&self, h: Handle) -> f32 {
+        let mut aspect = 1.0;
+        call!(ov, GetOverlayTexelAspect, h.0, &mut aspect);
+        aspect
+    }
+
+    fn mouse_scale_of(&self, h: Handle) -> [f32; 2] {
+        let mut scale = sys::HmdVector2_t { v: [0.0; 2] };
+        call!(ov, GetOverlayMouseScale, h.0, &mut scale);
+        scale.v
     }
 }
 
@@ -216,8 +357,18 @@ pub mod fake {
             self.0.push(Call::Room(h, *m));
         }
 
-        fn place_device(&mut self, h: Handle, dev: u32, m: &Mat) {
-            self.0.push(Call::Device(h, dev, *m));
+        fn place_device(&mut self, h: Handle, dev: Dev, m: &Mat) {
+            self.0.push(Call::Device(h, vr::index(dev), *m)); // OpenVR's index, as SteamVR gets it
+        }
+
+        /// The last one written, or 1.0 (SteamVR's documented default) and [0, 0] (the fake's own
+        /// fallback: what SteamVR gives an unset mouse scale isn't known).
+        fn texel_aspect_of(&self, h: Handle) -> f32 {
+            self.texel_of(h).unwrap_or(1.0)
+        }
+
+        fn mouse_scale_of(&self, h: Handle) -> [f32; 2] {
+            self.0.iter().rev().find_map(|c| if let Call::MouseScale(x, s) = c { (*x == h).then_some(*s) } else { None }).unwrap_or([0.0; 2])
         }
     }
 }
@@ -229,27 +380,39 @@ mod tests {
 
     const M: Mat = [[1.0, 0.0, 0.0, 0.5], [0.0, 1.0, 0.0, 1.5], [0.0, 0.0, 1.0, -2.0]];
 
+    /// The fake reads back what was last written, and before that its fallbacks.
+    #[test]
+    fn the_fake_reads_back_what_was_set() {
+        let (mut w, h, other) = (Writes::default(), crate::ids::SurfaceId(1), crate::ids::SurfaceId(2));
+        assert_eq!((w.texel_aspect_of(h), w.mouse_scale_of(h)), (1.0, [0.0; 2]), "nothing written yet");
+        w.texel_aspect(h, 0.5);
+        w.mouse_scale(h, [1920.0, 1080.0]);
+        w.mouse_scale(h, [1280.0, 720.0]);
+        w.texel_aspect(other, 2.0);
+        assert_eq!((w.texel_aspect_of(h), w.mouse_scale_of(h)), (0.5, [1280.0, 720.0]), "the last one, and only its own");
+    }
+
     #[test]
     fn a_bare_placement_writes_only_width_and_transform() {
         let mut w = Writes::default();
-        apply(&mut w, 7, &Place::new(At::Room(M), 1.25));
-        assert_eq!(w.0, vec![Call::Width(7, 1.25), Call::Room(7, M)], "no curvature, stretch, bounds or mouse scale unless asked");
+        apply(&mut w, crate::vr::Handle(7), &Place::new(At::Room(M), 1.25));
+        assert_eq!(w.0, vec![Call::Width(crate::vr::Handle(7), 1.25), Call::Room(crate::vr::Handle(7), M)], "no curvature, stretch, bounds or mouse scale unless asked");
     }
 
     #[test]
     fn everything_given_is_written_in_the_same_order_every_time() {
         let mut w = Writes::default();
-        let p = Place::new(At::Device(0, M), 0.8).curve(1.0).texel(1.5).bounds([0.1, 0.2, 0.9, 0.8]).mouse_scale([800.0, 600.0]);
-        apply(&mut w, 3, &p);
+        let p = Place::new(At::Device(Dev::Head, M), 0.8).curve(1.0).texel(1.5).bounds([0.1, 0.2, 0.9, 0.8]).mouse_scale([800.0, 600.0]);
+        apply(&mut w, crate::vr::Handle(3), &p);
         assert_eq!(
             w.0,
             vec![
-                Call::Bounds(3, [0.1, 0.2, 0.9, 0.8]),
-                Call::Width(3, 0.8),
-                Call::Texel(3, 1.5),
-                Call::Curvature(3, bend(0.8, 1.0)),
-                Call::MouseScale(3, [800.0, 600.0]),
-                Call::Device(3, 0, M),
+                Call::Bounds(crate::vr::Handle(3), [0.1, 0.2, 0.9, 0.8]),
+                Call::Width(crate::vr::Handle(3), 0.8),
+                Call::Texel(crate::vr::Handle(3), 1.5),
+                Call::Curvature(crate::vr::Handle(3), bend(0.8, 1.0)),
+                Call::MouseScale(crate::vr::Handle(3), [800.0, 600.0]),
+                Call::Device(crate::vr::Handle(3), 0, M),
             ]
         );
     }
@@ -257,31 +420,32 @@ mod tests {
     #[test]
     fn the_curve_is_written_as_steamvrs_fraction_and_a_flat_one_as_zero() {
         let mut w = Writes::default();
-        apply(&mut w, 1, &Place::new(At::Room(M), 2.0).curve(2.0));
-        assert!((w.curvature_of(1).unwrap() - 2.0 / (2.0 * std::f32::consts::PI * 2.0)).abs() < 1e-6, "width / (2 pi r)");
-        apply(&mut w, 2, &Place::new(At::Room(M), 2.0).curve(0.0));
-        assert_eq!(w.curvature_of(2), Some(0.0), "a flat panel is told it's flat, so a bent one straightens");
-        apply(&mut w, 3, &Place::new(At::Room(M), 20.0).curve(0.5));
-        assert_eq!(w.curvature_of(3), Some(1.0), "at most a closed cylinder");
+        apply(&mut w, crate::vr::Handle(1), &Place::new(At::Room(M), 2.0).curve(2.0));
+        assert!((w.curvature_of(crate::vr::Handle(1)).unwrap() - 2.0 / (2.0 * std::f32::consts::PI * 2.0)).abs() < 1e-6, "width / (2 pi r)");
+        apply(&mut w, crate::vr::Handle(2), &Place::new(At::Room(M), 2.0).curve(0.0));
+        assert_eq!(w.curvature_of(crate::vr::Handle(2)), Some(0.0), "a flat panel is told it's flat, so a bent one straightens");
+        apply(&mut w, crate::vr::Handle(3), &Place::new(At::Room(M), 20.0).curve(0.5));
+        assert_eq!(w.curvature_of(crate::vr::Handle(3)), Some(1.0), "at most a closed cylinder");
     }
 
     #[test]
     fn the_taskbars_device_number_picks_the_room_or_a_device() {
-        assert_eq!(At::on(u32::MAX, M), At::Room(M));
-        assert_eq!(At::on(5, M), At::Device(5, M));
+        let five = Dev::Controller(crate::ids::Ctl::new(5));
+        assert_eq!(At::on(None, M), At::Room(M));
+        assert_eq!(At::on(Some(five), M), At::Device(five, M));
         let mut w = Writes::default();
-        apply(&mut w, 9, &Place::new(At::on(5, M), 0.4));
-        assert_eq!(w.of(9).last(), Some(&Call::Device(9, 5, M)));
-        assert_eq!(w.room_of(9), None);
+        apply(&mut w, crate::vr::Handle(9), &Place::new(At::on(Some(five), M), 0.4));
+        assert_eq!(w.of(crate::vr::Handle(9)).last(), Some(&Call::Device(crate::vr::Handle(9), 5, M)));
+        assert_eq!(w.room_of(crate::vr::Handle(9)), None);
     }
 
     #[test]
     fn each_overlays_writes_stay_its_own() {
         let mut w = Writes::default();
-        apply(&mut w, 1, &Place::new(At::Room(M), 1.0));
-        apply(&mut w, 2, &Place::new(At::Room(M), 2.0));
-        assert_eq!(w.width_of(1), Some(1.0));
-        assert_eq!(w.width_of(2), Some(2.0));
-        assert_eq!(w.of(2).len(), 2);
+        apply(&mut w, crate::vr::Handle(1), &Place::new(At::Room(M), 1.0));
+        apply(&mut w, crate::vr::Handle(2), &Place::new(At::Room(M), 2.0));
+        assert_eq!(w.width_of(crate::vr::Handle(1)), Some(1.0));
+        assert_eq!(w.width_of(crate::vr::Handle(2)), Some(2.0));
+        assert_eq!(w.of(crate::vr::Handle(2)).len(), 2);
     }
 }

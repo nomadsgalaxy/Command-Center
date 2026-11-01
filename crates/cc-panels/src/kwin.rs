@@ -79,11 +79,20 @@ pub struct Kwin {
 
 impl Kwin {
     pub fn start() -> Kwin {
+        #[cfg(test)]
+        assert!(!crate::vr::fake::on(), "a replay can't connect to KWin (Kwin::idle)");
         let (tx, events) = mpsc::channel();
         let queue = Queue::default();
         let q = queue.clone();
         let _ = std::thread::Builder::new().name("cc-kwin".into()).spawn(move || run(tx, q));
         Kwin { events, queue }
+    }
+
+    /// A Kwin with no connection, for tests (docs/vr-harness.md): no events, and commands queue up unsent.
+    #[cfg(test)]
+    pub fn idle() -> Kwin {
+        let (_, events) = mpsc::channel();
+        Kwin { events, queue: Queue::default() }
     }
 
     pub fn send(&self, cmd: Value) {
@@ -123,8 +132,7 @@ fn load(bus: &zbus::blocking::Connection, path: &str, name: &str) -> Result<(), 
     if id < 0 {
         return Err(format!("KWin refused {path}"));
     }
-    bus.call_method(Some("org.kde.KWin"), format!("/Scripting/Script{id}").as_str(), Some("org.kde.kwin.Script"), "run", &())
-        .map_err(|e| format!("run {path}: {e}"))?;
+    bus.call_method(Some("org.kde.KWin"), format!("/Scripting/Script{id}").as_str(), Some("org.kde.kwin.Script"), "run", &()).map_err(|e| format!("run {path}: {e}"))?;
     Ok(())
 }
 

@@ -144,7 +144,12 @@ fn read_n<const N: usize>(s: &mut UnixStream) -> Result<[u8; N], ()> {
     Ok(b)
 }
 
-fn read_vec(s: &mut UnixStream, n: usize) -> Result<Vec<u8>, ()> {
+/// Reads n bytes, refusing more than `most`: n comes from the X server's reply, so a broken or
+/// hostile one can't make us allocate gigabytes (RESEXHAUST-003).
+fn read_vec(s: &mut UnixStream, n: usize, most: usize) -> Result<Vec<u8>, ()> {
+    if n > most {
+        return Err(());
+    }
     let mut b = vec![0u8; n];
     s.read_exact(&mut b).map_err(|_| ())?;
     Ok(b)
@@ -158,7 +163,7 @@ fn focused_app_at(socket: &Path) -> Result<Option<u32>, ()> {
     s.set_read_timeout(t).and_then(|_| s.set_write_timeout(t)).map_err(|_| ())?;
     s.write_all(&setup_request()).map_err(|_| ())?;
     let head: [u8; 8] = read_n(&mut s)?;
-    let body = read_vec(&mut s, u16::from_le_bytes([head[6], head[7]]) as usize * 4)?;
+    let body = read_vec(&mut s, u16::from_le_bytes([head[6], head[7]]) as usize * 4, 1 << 18)?; // a u16 of units is 256 KiB at most anyway
     let root = parse_setup(&head, &body).ok_or(())?;
     s.write_all(&intern_request("GAMESCOPE_FOCUSED_APP")).map_err(|_| ())?;
     let reply: [u8; 32] = read_n(&mut s)?;
@@ -171,7 +176,8 @@ fn focused_app_at(socket: &Path) -> Result<Option<u32>, ()> {
     if head[0] != 1 {
         return Err(());
     }
-    let data = read_vec(&mut s, u32::from_le_bytes(head[4..8].try_into().unwrap()) as usize * 4)?;
+    // We asked for one unit (property_request), so more than a few is a server not doing as asked.
+    let data = read_vec(&mut s, (u32::from_le_bytes(head[4..8].try_into().unwrap()) as usize).saturating_mul(4), 16)?;
     Ok(parse_property(&head, &data))
 }
 
@@ -244,6 +250,15 @@ impl Handoff {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reply length bigger than we'd take is refused before anything is allocated.
+    #[test]
+    fn huge_x_replies_are_refused() {
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        std::io::Write::write_all(&mut b, &[1u8; 16]).unwrap();
+        assert!(read_vec(&mut a, 16 << 30, 16).is_err(), "16 GiB asked for");
+        assert_eq!(read_vec(&mut a, 16, 16), Ok(vec![1u8; 16]));
+    }
     use std::os::unix::net::UnixListener;
 
     #[test]

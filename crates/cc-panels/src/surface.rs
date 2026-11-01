@@ -22,6 +22,7 @@
 //! | Taskbar frame | Room (fixed), Head (follow), Device (wrist) | fixed carry: spots.home.`taskbar`; mode, size and curve: settings.json `taskbar`, `taskbar_scale`, `taskbar_curve` | its own Hold (taskbar.rs), fixed mode only for carrying |
 //! | Plasma's bar and popups | Parent: the taskbar frame | nothing | nothing (input is forwarded) |
 //! | A panel's back | Parent: its panel | nothing | a press carries its panel |
+//! | Key strip | Parent: its panel (under its card, while SteamVR's keyboard types to it) | nothing | nothing (it rides its panel) |
 //! | Scan HUD strip | Head | nothing | nothing (its skip button is clicked) |
 //! | Scan HUD tag outlines | Room (from `hud mark`) | nothing | nothing |
 //! | Theater backdrop | Head | nothing | nothing |
@@ -35,6 +36,7 @@
 //! saved (windows.rs `theater`).
 //!
 //! This file is also built by the cc-win-spike binary (with back.rs), so it uses only vr.rs.
+use crate::overlay::Surfaces;
 use crate::vr;
 use std::fmt;
 use std::sync::Mutex;
@@ -57,6 +59,7 @@ pub enum Kind {
     Cursor,
     LaserMode,
     Dashtab,
+    Keys, // the key strip under a panel while SteamVR's keyboard types to it (osk.rs)
 }
 
 /// What a surface's place is relative to. Follow mode eases after the head, so it's `Head` even
@@ -202,7 +205,7 @@ fn anchor_of(kind: Kind, slot: Option<usize>) -> Anchor {
         Kind::Card if slot.is_some() => Anchor::Parent(Parent::Panel),
         Kind::Card => Anchor::Parent(Parent::Extra),
         Kind::Plasma => Anchor::Parent(Parent::Taskbar),
-        Kind::Back => Anchor::Parent(Parent::Panel),
+        Kind::Back | Kind::Keys => Anchor::Parent(Parent::Panel),
         Kind::HudStrip | Kind::Backdrop => Anchor::Head,
         Kind::Dashtab => Anchor::Dashboard,
     }
@@ -213,7 +216,7 @@ static REGISTRY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 /// Makes an overlay and lists it. `slot` is the panel slot it belongs to, if any, and `name` is
 /// the panel's or the Extra's. Every overlay in cc-panels is made through here.
 pub fn create(kind: Kind, slot: Option<usize>, key: &str, name: &str) -> Result<Handle, String> {
-    let h = vr::create_overlay(key, name)?;
+    let h = crate::overlay::Live.create(key, name)?;
     register(h, kind, slot, key, name);
     Ok(h)
 }
@@ -221,7 +224,8 @@ pub fn create(kind: Kind, slot: Option<usize>, key: &str, name: &str) -> Result<
 /// Makes the dashboard tab: its page, listed here, and its icon, which counts against SteamVR's 128
 /// overlays but isn't placed by us, so it isn't listed. (`CreateDashboardOverlay` makes both at once.)
 pub fn create_dashboard(key: &str, name: &str) -> Result<(Handle, Handle), String> {
-    let (main, thumb) = vr::create_dashboard_overlay(key, name)?;
+    // OpenVR always has a dashboard (an OpenXR backend says None)
+    let (main, thumb) = crate::overlay::Live.create_dashboard(key, name).unwrap_or_else(|| Err("no dashboard".into()))?;
     register(main, Kind::Dashtab, None, key, name);
     Ok((main, thumb))
 }
@@ -236,7 +240,7 @@ fn register(h: Handle, kind: Kind, slot: Option<usize>, key: &str, name: &str) {
 /// left alone.
 pub fn destroy(h: Handle) {
     forget(h);
-    crate::call!(ov, DestroyOverlay, h);
+    crate::overlay::Live.destroy(h);
 }
 
 /// Takes the overlay off the list.
@@ -281,7 +285,7 @@ pub fn describe(e: &Entry, now: Option<&PanelNow>) -> Surface {
         }
         Kind::Extra => (vec![Store::Spot(e.name.clone())], Manip::Grab),
         Kind::Taskbar => (vec![Store::Spot("taskbar".into()), Store::Setting("taskbar"), Store::Setting("taskbar_scale"), Store::Setting("taskbar_curve")], Manip::Own),
-        Kind::Back => (vec![], Manip::ViaParent),
+        Kind::Back | Kind::Keys => (vec![], Manip::ViaParent),
         Kind::Card | Kind::Plasma | Kind::HudStrip | Kind::HudMark | Kind::Backdrop | Kind::Cursor | Kind::LaserMode | Kind::Dashtab => (vec![], Manip::None),
     };
     Surface { entry: e.clone(), role, anchor, store, manip }
@@ -303,7 +307,7 @@ mod tests {
     use super::*;
 
     fn entry(kind: Kind, slot: Option<usize>, name: &str) -> Entry {
-        Entry { overlay: 1, key: format!("controlcenter.{name}"), kind, slot, name: name.into(), anchor: anchor_of(kind, slot) }
+        Entry { overlay: crate::vr::Handle(1), key: format!("controlcenter.{name}"), kind, slot, name: name.into(), anchor: anchor_of(kind, slot) }
     }
 
     fn now(used: bool, window: bool, popup: bool, popout: bool, spot: &str, uuid: Option<&str>) -> PanelNow {
@@ -367,6 +371,7 @@ mod tests {
             (Kind::Card, None, Anchor::Parent(Parent::Extra), Manip::None),
             (Kind::Plasma, None, Anchor::Parent(Parent::Taskbar), Manip::None),
             (Kind::Back, Some(1), Anchor::Parent(Parent::Panel), Manip::ViaParent),
+            (Kind::Keys, Some(1), Anchor::Parent(Parent::Panel), Manip::ViaParent),
             (Kind::HudStrip, None, Anchor::Head, Manip::None),
             (Kind::HudMark, None, Anchor::Room, Manip::None),
             (Kind::Backdrop, None, Anchor::Head, Manip::None),
@@ -392,36 +397,66 @@ mod tests {
     fn registering_lists_once_and_forgetting_takes_it_off() {
         // handles far from anything real, since the registry is shared with the other tests
         let (a, b) = (0xFFFF_0001, 0xFFFF_0002);
-        register(a, Kind::Taskbar, None, "controlcenter.test.a", "a");
-        register(b, Kind::Cursor, None, "controlcenter.test.b", "b");
-        register(a, Kind::Taskbar, None, "controlcenter.test.a", "a"); // a handle given out again replaces its entry
-        assert_eq!(entries().iter().filter(|e| e.overlay == a).count(), 1);
-        set_anchor(a, Anchor::Head);
-        assert_eq!(entries().iter().find(|e| e.overlay == a).unwrap().anchor, Anchor::Head);
+        register(crate::vr::Handle(a), Kind::Taskbar, None, "controlcenter.test.a", "a");
+        register(crate::vr::Handle(b), Kind::Cursor, None, "controlcenter.test.b", "b");
+        register(crate::vr::Handle(a), Kind::Taskbar, None, "controlcenter.test.a", "a"); // a handle given out again replaces its entry
+        assert_eq!(entries().iter().filter(|e| e.overlay == crate::vr::Handle(a)).count(), 1);
+        set_anchor(crate::vr::Handle(a), Anchor::Head);
+        assert_eq!(entries().iter().find(|e| e.overlay == crate::vr::Handle(a)).unwrap().anchor, Anchor::Head);
         let text = report(|_| None);
         assert!(text.contains("controlcenter.test.a Taskbar anchor=Head") && text.contains("controlcenter.test.b Cursor anchor=Room"), "{text}");
-        forget(a);
-        forget(b);
-        assert!(!entries().iter().any(|e| e.overlay == a || e.overlay == b));
+        forget(crate::vr::Handle(a));
+        forget(crate::vr::Handle(b));
+        assert!(!entries().iter().any(|e| e.overlay == crate::vr::Handle(a) || e.overlay == crate::vr::Handle(b)));
     }
 
-    /// The registry only lists what goes through it, so no other code may make an overlay itself.
-    /// This reads the sources: a new `vr::create_overlay` call anywhere but here is a bug.
-    #[test]
-    fn every_overlay_is_made_through_the_registry() {
-        fn visit(dir: &std::path::Path, bad: &mut Vec<String>) {
+    /// Whether a file takes overlays generically: a `Surfaces` or a `Backend` (which is one) as a
+    /// bound or a `dyn`, by any path (`impl crate::overlay::Surfaces`), so a method call on what
+    /// it takes can make or destroy one. Naming the trait to call Live's methods isn't taking one.
+    fn generic(file: &str) -> bool {
+        let file = ["crate::", "super::", "overlay::", "backend::"].iter().fold(file.to_string(), |f, path| f.replace(path, ""));
+        ["impl Surfaces", ": Surfaces", "dyn Surfaces", "+ Surfaces", "Surfaces +", "impl Backend", ": Backend", "dyn Backend", "+ Backend"].iter().any(|p| file.contains(p))
+    }
+
+    /// Whether a line of code makes an overlay (or with `destroy`, destroys one) itself, not
+    /// through surface::create and destroy: OpenVR's own calls, overlay::Live's by name, a
+    /// generic call by the trait's name (`Surfaces::create(&mut s, ..)`), and, in a `generic`
+    /// file, a method call on whatever it takes (`s.create(..)`).
+    fn bypasses(code: &str, generic: bool, destroy: bool) -> bool {
+        // vr's made from two pieces, so this search isn't itself a use for boundary.rs's scan
+        let vr_create = ["vr", "::create_overlay"].concat();
+        let made = [
+            vr_create.as_str(),
+            "create_dashboard_overlay",
+            "CreateOverlay,",
+            "CreateDashboardOverlay,",
+            "Live.create(",
+            "Live.create_dashboard(",
+            "Surfaces::create(",
+            "Surfaces::create_dashboard(",
+            "Backend::create(",
+            "Backend::create_dashboard(",
+        ];
+        let gone = ["DestroyOverlay", "Live.destroy(", "Surfaces::destroy(", "Backend::destroy("];
+        let (named, method): (&[&str], &[&str]) = if destroy { (&gone, &[".destroy("]) } else { (&made, &[".create(", ".create_dashboard("]) };
+        named.iter().any(|p| code.contains(p)) || (generic && method.iter().any(|p| code.contains(p)))
+    }
+
+    /// Every line in src (not src/bin, the window spike, a separate program with an overlay of
+    /// its own) outside `skip` that `bypasses` says makes or destroys an overlay itself.
+    fn bypassing(skip: &[&str], destroy: bool) -> Vec<String> {
+        fn visit(dir: &std::path::Path, skip: &[&str], destroy: bool, bad: &mut Vec<String>) {
             for e in std::fs::read_dir(dir).unwrap().flatten() {
                 let p = e.path();
                 if p.is_dir() {
-                    // src/bin is the window spike, a separate program with an overlay of its own
                     if p.file_name().is_some_and(|n| n != "bin") {
-                        visit(&p, bad);
+                        visit(&p, skip, destroy, bad);
                     }
-                } else if p.extension().is_some_and(|x| x == "rs") && !matches!(p.file_name().and_then(|n| n.to_str()), Some("vr.rs" | "surface.rs")) {
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.file_name().and_then(|n| n.to_str()).is_some_and(|n| skip.contains(&n)) {
                     let s = std::fs::read_to_string(&p).unwrap();
+                    let generic = generic(&s);
                     for (n, l) in s.lines().enumerate() {
-                        let code = l.split("//").next().unwrap_or("");
-                        if code.contains("vr::create_overlay") || code.contains("create_dashboard_overlay") || code.contains("CreateOverlay,") || code.contains("CreateDashboardOverlay,") {
+                        if bypasses(l.split("//").next().unwrap_or(""), generic, destroy) {
                             bad.push(format!("{}:{}: {}", p.display(), n + 1, l.trim()));
                         }
                     }
@@ -429,33 +464,48 @@ mod tests {
             }
         }
         let mut bad = Vec::new();
-        visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut bad);
+        visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), skip, destroy, &mut bad);
+        bad
+    }
+
+    /// The registry only lists what goes through it, so no other code may make an overlay itself.
+    /// This reads the sources: a new `vr::create_overlay` or `Live.create` call, or a generic one,
+    /// anywhere but here (and overlay.rs's Live, which makes them for it) is a bug. (boundary.rs
+    /// only lists these names, for the OpenVR ratchet.)
+    #[test]
+    fn every_overlay_is_made_through_the_registry() {
+        let bad = bypassing(&["vr.rs", "overlay.rs", "surface.rs", "boundary.rs"], false);
         assert!(bad.is_empty(), "overlays made outside surface::create:\n{}", bad.join("\n"));
     }
 
     /// ...and none destroyed without coming off the list.
     #[test]
     fn every_overlay_is_destroyed_through_the_registry() {
-        fn visit(dir: &std::path::Path, bad: &mut Vec<String>) {
-            for e in std::fs::read_dir(dir).unwrap().flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    // src/bin is the window spike, a separate program with an overlay of its own
-                    if p.file_name().is_some_and(|n| n != "bin") {
-                        visit(&p, bad);
-                    }
-                } else if p.extension().is_some_and(|x| x == "rs") && p.file_name().and_then(|n| n.to_str()) != Some("surface.rs") {
-                    let s = std::fs::read_to_string(&p).unwrap();
-                    for (n, l) in s.lines().enumerate() {
-                        if l.split("//").next().unwrap_or("").contains("DestroyOverlay") {
-                            bad.push(format!("{}:{}: {}", p.display(), n + 1, l.trim()));
-                        }
-                    }
-                }
-            }
-        }
-        let mut bad = Vec::new();
-        visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut bad);
+        let bad = bypassing(&["overlay.rs", "surface.rs", "boundary.rs"], true);
         assert!(bad.is_empty(), "overlays destroyed outside surface::destroy:\n{}", bad.join("\n"));
+    }
+
+    /// The scan catches a generic caller as well as Live by name: by the trait's name anywhere,
+    /// and by a method call in a file that takes a Surfaces or a Backend, but not a method call
+    /// named create in a file that takes neither.
+    #[test]
+    fn the_registry_scan_catches_generic_callers() {
+        let (plain, takes) = ("fn f(c: &mut Capture) {}", "fn place(s: &mut impl Surfaces) {}");
+        assert!(!generic(plain) && generic(takes) && generic("fn run<B: Backend>(b: &mut B) {}") && generic("fn f(s: &mut dyn Surfaces) {}"));
+        assert!(generic("fn f(s: &mut impl crate::overlay::Surfaces) {}") && generic("fn f<S: super::overlay::Surfaces>(s: S) {}"), "by any path");
+        assert!(!generic("use overlay::{Flag, Overlays, Surfaces};"), "an import to call Live's methods isn't taking one");
+        for (code, file, made, destroyed) in [
+            ("let h = crate::overlay::Live.create(key, name)?;", plain, true, false),
+            ("let h = Surfaces::create(&mut Live, key, name)?;", plain, true, false),
+            ("let h = Backend::create_dashboard(b, key, name);", plain, true, false),
+            ("Surfaces::destroy(&mut s, h);", plain, false, true),
+            ("let h = s.create(key, name)?;", takes, true, false),
+            ("let h = s.create_dashboard(key, name);", takes, true, false),
+            ("s.destroy(h);", takes, false, true),
+            ("let c = Capture::new(); c.create(key, name);", plain, false, false),
+            ("buf.destroy(h);", plain, false, false),
+        ] {
+            assert_eq!((bypasses(code, generic(file), false), bypasses(code, generic(file), true)), (made, destroyed), "{code} in {file}");
+        }
     }
 }

@@ -11,8 +11,17 @@
 //!                            from packaging/command-center.desktop.in), beside SteamOS's Desktop.
 //!                            An older install overrode SteamOS's own Desktop entry; that
 //!                            override is removed, so the stock Desktop is back
-//!   cc-home install remove   undoes both, and unregisters the pointer driver; the checkout,
-//!                            the container and ~/.config/control-center stay
+//!                            It also writes command-center.vrmanifest in the checkout and
+//!                            registers it with SteamVR (one connection), so Command Center's
+//!                            dashboard tab is there while the Desktop is closed (cc-panels' tab.rs).
+//!                            With SteamVR off, the Desktop's next start registers it instead
+//!                            And it makes the controller's shoulder button right click on
+//!                            SteamVR's laser (binding.rs; settings.json "bumper_right_click": false
+//!                            keeps it off)
+//!   cc-home install remove   undoes both, takes the manifest out of SteamVR, puts the shoulder
+//!                            button back to Valve's left click, and unregisters the
+//!                            pointer driver; the checkout, the container and
+//!                            ~/.config/control-center stay
 use crate::home_dir;
 use crate::session::{code, force_link, root};
 use std::path::Path;
@@ -67,6 +76,46 @@ pub fn launcher_entry(exec: &str, icon: &str, art: &str) -> String {
     include_str!("../../../packaging/command-center.desktop.in").replace("@EXEC@", exec).replace("@ICON@", icon).replace("@ART@", art)
 }
 
+/// command-center.vrmanifest's text: packaging/command-center.vrmanifest.in with what SteamVR runs
+/// (session/cc-tab) and the tab's icon. The sysext image builds the same one (packaging/sysext/build.sh).
+pub fn tab_manifest(tab: &str, icon: &str) -> String {
+    let json = |s: &str| serde_json::Value::from(s).to_string();
+    include_str!("../../../packaging/command-center.vrmanifest.in").replace("\"@TAB@\"", &json(tab)).replace("\"@ICON@\"", &json(icon))
+}
+
+/// SteamVR's list of app manifests (appconfig.json) without ours. None if it doesn't list it.
+fn without_manifest(appconfig: &str, ours: &str) -> Option<String> {
+    let mut v: serde_json::Value = serde_json::from_str(appconfig).ok()?;
+    let list = v.get_mut("manifest_paths")?.as_array_mut()?;
+    let n = list.len();
+    list.retain(|p| p.as_str() != Some(ours));
+    (list.len() != n).then(|| serde_json::to_string_pretty(&v).unwrap_or_default())
+}
+
+fn steamvr_running() -> bool {
+    !crate::session::named(Path::new("/proc"), "vrserver").is_empty()
+}
+
+/// The tab's manifest in or out of SteamVR (cc-panels' `--register-tab`). With SteamVR off, a
+/// registration waits for the Desktop's next start, and a removal edits appconfig.json, which
+/// vrserver only rewrites while it runs.
+fn tab_in_steamvr(on: bool) -> Result<(), String> {
+    let (root, manifest) = (root(), root().join("command-center.vrmanifest"));
+    if steamvr_running() {
+        let flag = if on { "--register-tab" } else { "--unregister-tab" };
+        return ok(Command::new(root.join("cc-box")).arg(root.join("target/release/cc-panels")).arg(flag), false);
+    }
+    if on {
+        println!("SteamVR isn't running: the dashboard tab registers itself the next time you open the Desktop");
+        return Ok(());
+    }
+    let conf = format!("{}/.config/openvr/config/appconfig.json", home_dir());
+    if let Some(t) = fs::read_to_string(&conf).ok().and_then(|t| without_manifest(&t, &manifest.to_string_lossy())) {
+        fs::write(&conf, t).map_err(|e| format!("{conf}: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Whether a .desktop file's text is the entry an older `install desktop` wrote over SteamOS's own Desktop.
 fn is_old_override(text: &str) -> bool {
     text.contains("Comment=Command Center") && text.contains("Name=Desktop")
@@ -97,7 +146,7 @@ fn remove() -> Result<(), String> {
     // image's driver was registered because SteamVR runs from somewhere else (steamos.rs), that goes too.
     let script = root.join("driver/cc_pointer/install.sh");
     if script.is_file() {
-        ok(&mut Command::new(script).arg("uninstall"), false)?;
+        ok(Command::new(script).arg("uninstall"), false)?;
     }
     if crate::steamos::forget_driver(crate::session::unregister_driver) {
         println!("unregistered the image's pointer driver from vrpathreg");
@@ -117,7 +166,17 @@ fn remove() -> Result<(), String> {
         fs::remove_file(&entry).map_err(|e| format!("{entry}: {e}"))?;
     }
     sycoca();
-    println!("removed: the commands, the Command Center tile (SteamOS's Desktop is untouched) and the pointer driver");
+    if let Err(e) = tab_in_steamvr(false) {
+        eprintln!("the dashboard tab: {e}"); // the rest is removed either way
+    }
+    match crate::binding::restore(true) {
+        Ok((_, say)) => println!("{say}"),
+        Err(e) => eprintln!("bumper right click: {e}"),
+    }
+    if !crate::session::native(&root) {
+        let _ = fs::remove_file(root.join("command-center.vrmanifest")); // the image's is part of the image
+    }
+    println!("removed: the commands, the Command Center tile (SteamOS's Desktop is untouched), the dashboard tab and the pointer driver");
     println!("kept: {} (the code and its builds), the control-center container, and your settings in ~/.config/control-center", root.display());
     Ok(())
 }
@@ -193,13 +252,42 @@ fn remove_lib(lib: &Path) -> io::Result<()> {
 }
 
 const FREERDP_FLAGS: &[&str] = &[
-    "-DWITH_FFMPEG=ON", "-DWITH_VIDEO_FFMPEG=ON", "-DWITH_DSP_FFMPEG=OFF", "-DWITH_SWSCALE=ON",
-    "-DWITH_OPENH264=OFF", "-DWITH_CLIENT=ON", "-DWITH_CLIENT_SDL=OFF", "-DWITH_X11=OFF", "-DWITH_WAYLAND=OFF", "-DWITH_SERVER=OFF",
-    "-DWITH_SHADOW=OFF", "-DWITH_PROXY=OFF", "-DWITH_SAMPLE=OFF", "-DWITH_MANPAGES=OFF", "-DWITH_CUPS=OFF", "-DWITH_PCSC=OFF",
-    "-DWITH_PULSE=ON", "-DWITH_ALSA=OFF", "-DWITH_OSS=OFF", "-DWITH_FUSE=OFF", "-DWITH_KRB5=OFF", "-DWITH_SMARTCARD_EMULATE=OFF",
-    "-DWITH_FDK_AAC=OFF", "-DWITH_LAME=OFF", "-DWITH_SOXR=OFF", "-DWITH_OPUS=OFF", "-DWITH_GSM=OFF", "-DWITH_FAAD2=OFF", "-DWITH_FAAC=OFF",
-    "-DWITH_AAD=OFF", "-DWITH_WEBVIEW=OFF", "-DWITH_SDL_IMAGE_DIALOGS=OFF", "-DCHANNEL_URBDRC=OFF", "-DWITH_JSONC_REQUIRED=OFF",
-    "-DBUILD_TESTING=OFF", "-DWITH_SIMD=ON",
+    "-DWITH_FFMPEG=ON",
+    "-DWITH_VIDEO_FFMPEG=ON",
+    "-DWITH_DSP_FFMPEG=OFF",
+    "-DWITH_SWSCALE=ON",
+    "-DWITH_OPENH264=OFF",
+    "-DWITH_CLIENT=ON",
+    "-DWITH_CLIENT_SDL=OFF",
+    "-DWITH_X11=OFF",
+    "-DWITH_WAYLAND=OFF",
+    "-DWITH_SERVER=OFF",
+    "-DWITH_SHADOW=OFF",
+    "-DWITH_PROXY=OFF",
+    "-DWITH_SAMPLE=OFF",
+    "-DWITH_MANPAGES=OFF",
+    "-DWITH_CUPS=OFF",
+    "-DWITH_PCSC=OFF",
+    "-DWITH_PULSE=ON",
+    "-DWITH_ALSA=OFF",
+    "-DWITH_OSS=OFF",
+    "-DWITH_FUSE=OFF",
+    "-DWITH_KRB5=OFF",
+    "-DWITH_SMARTCARD_EMULATE=OFF",
+    "-DWITH_FDK_AAC=OFF",
+    "-DWITH_LAME=OFF",
+    "-DWITH_SOXR=OFF",
+    "-DWITH_OPUS=OFF",
+    "-DWITH_GSM=OFF",
+    "-DWITH_FAAD2=OFF",
+    "-DWITH_FAAC=OFF",
+    "-DWITH_AAD=OFF",
+    "-DWITH_WEBVIEW=OFF",
+    "-DWITH_SDL_IMAGE_DIALOGS=OFF",
+    "-DCHANNEL_URBDRC=OFF",
+    "-DWITH_JSONC_REQUIRED=OFF",
+    "-DBUILD_TESTING=OFF",
+    "-DWITH_SIMD=ON",
 ];
 
 fn commands() -> Result<(), String> {
@@ -222,6 +310,18 @@ fn commands() -> Result<(), String> {
     );
     fs::write(format!("{apps}/org.controlcenter.panels.desktop"), grant).map_err(|e| format!("{apps}: {e}"))?;
     sycoca();
+    // The dashboard tab while the Desktop is closed (cc-panels' tab.rs).
+    let manifest = root.join("command-center.vrmanifest");
+    let text = tab_manifest(&root.join("session/cc-tab").to_string_lossy(), &root.join("packaging/command-center.png").to_string_lossy());
+    fs::write(&manifest, text).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    if let Err(e) = tab_in_steamvr(true) {
+        eprintln!("the dashboard tab: {e}; the Desktop's next start tries again");
+    }
+    // The bumper as right click on SteamVR's laser (binding.rs).
+    match crate::binding::apply(true) {
+        Ok((_, say)) => println!("{say}"),
+        Err(e) => eprintln!("bumper right click: {e}"),
+    }
     println!("a Nomads Galaxy project");
     Ok(())
 }
@@ -229,6 +329,25 @@ fn commands() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tab_manifest_is_a_dashboard_overlay_that_runs_cc_tab() {
+        let m: serde_json::Value = serde_json::from_str(&tab_manifest("/x/session/cc-tab", "/x/a \"b\".png")).unwrap();
+        let app = &m["applications"][0];
+        assert_eq!(app["app_key"], "controlcenter.tab", "cc-panels' tab.rs APP_KEY");
+        assert_eq!(app["is_dashboard_overlay"], true);
+        assert_eq!(app["binary_path_linux"], "/x/session/cc-tab");
+        assert_eq!(app["image_path"], "/x/a \"b\".png", "a path is a JSON string, quotes and all");
+    }
+
+    #[test]
+    fn removing_the_tab_takes_only_its_manifest_out_of_appconfig() {
+        let conf = r#"{"manifest_paths": ["/steam/steamapps.vrmanifest", "/cc/command-center.vrmanifest"]}"#;
+        let out: serde_json::Value = serde_json::from_str(&without_manifest(conf, "/cc/command-center.vrmanifest").unwrap()).unwrap();
+        assert_eq!(out["manifest_paths"], serde_json::json!(["/steam/steamapps.vrmanifest"]));
+        assert_eq!(without_manifest(conf, "/other.vrmanifest"), None, "not ours: left alone");
+        assert_eq!(without_manifest("not json", "/cc/command-center.vrmanifest"), None);
+    }
 
     #[test]
     fn the_tile_has_a_name_what_to_run_and_valves_art_keys() {

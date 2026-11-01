@@ -9,8 +9,15 @@ Short version: **sysext works on the Frame today.** The only real blocker is tha
 libraries are built in the Fedora container, so they don't load on SteamOS. cc-panels itself, cc-home
 and the pointer driver already do. Fixing that also gets rid of the distrobox runtime dependency.
 
-Everything below was checked read-only on the Frame (SteamOS 0.3.0, build 20260922.6101926,
-`VARIANT_ID=vr`, aarch64) on October 3, 2026. Nothing was enabled, merged or refreshed.
+Most of what's below was checked read-only on the Frame (SteamOS 0.3.0, build 20260922.6101926,
+`VARIANT_ID=vr`, aarch64) on October 3, 2026, with nothing enabled, merged or refreshed.
+
+**Status (2026-10-29):** the image builds, and the update helper is built and reviewed. Tried on
+the Frame with a throwaway extension on October 29: vpick picks the newest image, and polkit lets
+the user at the headset run the helper without a password (section 4). Not done yet: the first
+live merge of the real image, a full `cc-home update` from a signed release, and cc-install's
+image install. There's no GitHub release yet, and release.yml doesn't build or publish a
+`command-center_<version>.raw`, so `cc-home update` has nothing to install.
 
 ## 1. Does SteamOS on the Frame support sysext?
 
@@ -170,7 +177,9 @@ keep working without changes.
 /usr/lib/command-center/
   cc-home                                   static musl, the multi-call binary
   cc-panels, cc-box -> cc-home
-  session/cc-launch, cc-desktop, cc-rest -> ../cc-home
+  session/cc-launch, cc-desktop, cc-rest, cc-tab -> ../cc-home
+  command-center.vrmanifest                 the dashboard tab's SteamVR app manifest → session/cc-tab
+  packaging/command-center.png              the tab's icon
   target/release/cc-panels                  RUNPATH /opt/steamvr/bin/linuxarm64:$ORIGIN/../../panels/third_party/prefix/lib64
   panels/cc-windows.js, cc-restore.js       the KWin scripts
   panels/third_party/prefix/lib64/          libfreerdp3, libfreerdp-client3, libwinpr3 (.so.3, 3.31.1)
@@ -215,6 +224,26 @@ sysext, a running vrserver keeps the `.so` it mapped from the old image, and the
 next SteamVR start, same as today. `install.sh check`'s "needs a SteamVR restart" logic carries over:
 compare the mapped path's image against the merged one.
 
+### The dashboard tab's manifest
+
+Command Center's tab in SteamVR's dashboard is there even while the Desktop is closed. SteamVR
+starts a small process for it with itself: `/usr/lib/command-center/command-center.vrmanifest`
+says app `controlcenter.tab` is a dashboard overlay (`is_dashboard_overlay`) that runs
+`session/cc-tab`, which runs `cc-panels --tab` (crates/cc-panels/src/tab.rs). The path is fixed, so
+it means the same thing in every image version.
+
+A manifest only counts once SteamVR has it in its appconfig (`~/.config/openvr/config/appconfig.json`),
+and that's per user, so the image alone can't do it. The Desktop's start checks
+`IsApplicationInstalled` inside the OpenVR connection it opens anyway, and if SteamVR doesn't have
+the manifest (a first start, or after a `steamreset`) it adds it with `AddApplicationManifest` and
+turns on its auto-launch with `SetApplicationAutoLaunch`. Auto-launch is only set then, so turning
+it off in SteamVR's settings sticks. Nothing opens a connection of its own for this at launch,
+because every connection spends SteamVR's binding loads. A checkout install (`cc-home install`)
+writes the same manifest with its own paths and registers it right away if SteamVR is running, with
+one connection.
+
+`packaging/command-center.vrmanifest.in` is the one template, like the tile's.
+
 ### The launcher entry
 
 Command Center has its own tile, `command-center.desktop`, and SteamOS's Desktop is left alone. An
@@ -248,6 +277,12 @@ IMAGE_ID=command-center
 IMAGE_VERSION=<git describe>
 ```
 
+systemd-sysext loads an image only if its release file matches the running OS: `ID` (or `_any`,
+which matches every OS), then `SYSEXT_LEVEL` if both sides have one, else `VERSION_ID`, but neither
+is compared under `_any`; and `ARCHITECTURE`, if it's set. `IMAGE_ID` and `IMAGE_VERSION` aren't
+matched, they only say which image it is. So ours is matched on `ID=_any` and `ARCHITECTURE=arm64`
+only, and cc-launch refuses to start from an image without both.
+
 SteamOS has no `SYSEXT_LEVEL`, so with `ID=steamos` systemd matches `VERSION_ID` exactly, and that
 moves every few days (0.3.0 on Oct 3, 0.4.5 on Oct 7). I stamped it that way first, expecting it to
 last through a release line, and an image stamped 0.3.0 was silently ignored on 0.4.5. So the image is
@@ -264,7 +299,10 @@ something doesn't load (an FFmpeg or glibc bump), it stops and names what's miss
 the VR launcher doesn't show cc-launch's output. The code is `crates/cc-home/src/steamos.rs`.
 
 The file name has to match the image's name: `command-center.raw` (or `command-center.raw.v/`, see
-section 4) needs `extension-release.command-center`.
+section 4) needs `extension-release.command-center`. build.sh always names it that, whatever the
+output file is called, so `command-center_0.9.1.raw` carries `extension-release.command-center` too.
+The vpick test on 2026-10-29 used the same rule (`extension-release.cc-n9-test` inside each
+`cc-n9-test_<N>.raw`).
 
 ### Per-user state
 
@@ -291,79 +329,155 @@ authenticate. Valve's polkit actions (`org.valve.steamos.policy`) only cover the
 ```
 sudo install -Dm644 command-center.raw /var/lib/extensions/command-center.raw
 sudo systemctl enable systemd-sysext.service   # survives OS updates via the keep list
-sudo systemd-sysext refresh
+cd / && sudo systemd-sysext refresh            # from a directory root can read (see below)
+sudo systemctl try-restart polkit.service      # so polkit sees org.controlcenter.update
 ```
 
-cc-install does this through `pkexec` and asks first. It also cleans up a checkout install:
-unregisters the vrpathreg driver, removes the `~/.local/bin` links and the per-user `.desktop`
-overrides, and leaves `~/.config/control-center` alone.
+This first one needs the password, once: the image brings the polkit action that makes later
+updates passwordless, and polkitd doesn't know it until it restarts. Without the restart, `cc-home
+update` asks for a password until the next reboot.
+
+For now these steps are done by hand. The plan is for cc-install to do them through `pkexec`,
+asking first, and to clean up a checkout install: unregister the vrpathreg driver, remove the
+`~/.local/bin` links and the per-user `.desktop` overrides, and leave `~/.config/control-center`
+alone. It doesn't yet: the installer still builds a checkout install.
 
 **Signing:** the image runs as root, so a SHA256SUMS file from the same release isn't enough, since
-anyone who can edit the release can edit both. Releases get a detached signature (`SHA256SUMS.gpg`),
-and cc-install checks it against a key compiled into cc-install.
+anyone who can edit the release can edit both. Releases get a detached signature, `SHA256SUMS.sig`
+(release.yml makes it with `gpg --detach-sign`), and the update helper checks it with `gpgv`
+against `/usr/lib/command-center/release-key.gpg`, the public half of `packaging/command-center.asc`
+that build.sh puts in the image. That one name and that one key are used everywhere. The `install`
+script and cc-install don't check the signature yet: they only check what they download against
+`SHA256SUMS`, so for the first install the signature isn't checked by anything.
 
 ### Updates without a password after that
 
-The image can ship its own polkit action, `/usr/share/polkit-1/actions/org.controlcenter.update.policy`,
-with `allow_active=yes` for one root helper, `/usr/lib/command-center/cc-sysext-update`. That's the same
-pattern as Valve's `steamos-update`. The helper downloads only from our release URL, checks the
-signature, writes the new image to a temp file, then renames it into place. After the first install,
-updates don't need the password.
+`cc-home update` updates the image with no password, from the latest release. It asks polkit to
+run `/usr/lib/command-center/cc-sysext-update` (action `org.controlcenter.update`, in the image at
+`/usr/share/polkit-1/actions/org.controlcenter.update.policy`), which is allowed for the user at
+the device only: `allow_active=yes`, `allow_inactive` and `allow_any` no. That's the same pattern
+as Valve's `steamos-update`. The helper is a copy of cc-home under its own name (static, no
+libraries; a copy rather than a link, so polkit's `exec.path` and its own name both match, and as
+root under pkexec cc-home refuses to be anything else), and as root it does one thing, in this order (`crates/cc-home/src/update.rs`):
 
-Applying an update works like this:
+1. Its work directory, `/var/lib/command-center/update`: root's, 0700, a real directory and not a
+   symlink, emptied first; anything in it that isn't a plain file stops the update.
+2. `SHA256SUMS` and `SHA256SUMS.sig` from the release URL, which is fixed in the helper. curl only
+   speaks HTTPS, also on redirects, with a time limit and a size cap on each file.
+3. `gpgv --keyring /usr/lib/command-center/release-key.gpg` checks the signature. That keyring
+   is our release key, the public half of `packaging/command-center.asc`, put in the image by
+   build.sh; no system keyring is used or touched. Nothing in SHA256SUMS counts before this passes.
+4. The one `command-center_<version>.raw` the signed list names (letters, digits and `._+~-`
+   only, so never a path). If that version's already a file in `command-center.raw.v/` and it's
+   the one loaded, the helper stops there: "Command Center is up to date". If it's there but not
+   loaded (an earlier run found the Desktop or its dashboard tab open), it's checked against the
+   signed SHA-256 again, since an interrupted run could have left it cut short. A mismatch stops
+   the update and says to remove the file; a match skips to step 6 ("… was already installed;
+   it's loaded now"). Otherwise it's downloaded the same way and checked against its SHA-256.
+   The version in the name has to equal the image's `IMAGE_VERSION` byte for byte, which build.sh
+   makes sure of in release mode.
+5. Then `systemd-sysupdate --component=command-center --verify=no update` copies it into
+   `/var/lib/extensions/command-center.raw.v/`, with the transfer file in
+   `/usr/lib/sysupdate.command-center.d/50-command-center.transfer` (source: the work directory,
+   `InstancesMax=2`). `--verify=no` because steps 3 and 4 did the checking. A plain
+   `command-center.raw` from the first install is removed once this version is in `.raw.v/`. sysupdate
+   copies the image, so the work directory is emptied after it.
+6. `systemd-sysext refresh` only with the Desktop's lock taken (`/run/user/<uid>`, for the user
+   pkexec says asked; exclusive, never waiting) and held across the check and the refresh, so a
+   Desktop that starts meanwhile waits for it, and only if no other process's program is under
+   `/usr/lib/command-center` or a `/usr/bin/cc-*` (the dashboard tab's runs with the Desktop
+   closed), apart from the helper, its pkexec and the `cc-home update` that ran pkexec. Nothing
+   further up is skipped, so a cc-box from the image above the terminal counts. Otherwise the new image
+   is loaded at the next boot, or by running `cc-home update` again with the Desktop and its dashboard tab closed. It never
+   stops anything. One gap is left: SteamVR starting the dashboard tab's process in the few
+   milliseconds between the check and the refresh, since the tab doesn't take that lock.
+   sysupdate never installs an older version than the newest one installed unless it's asked for
+   one, which the helper never does.
+7. If that refresh brought a new or changed polkit action (the `.policy` file's bytes differ from
+   before), `systemctl try-restart polkit.service`, since polkitd only reads actions when it
+   starts. If the restart fails, the helper says so and exits with an error, even though the image
+   is loaded, because the next update would ask for a password.
 
-- `systemd-sysext refresh` right away if the Desktop isn't running (`cc-desktop` inactive). Per
-  "don't restart a closed Desktop", it never stops a running Desktop to do it.
-- Otherwise it waits for the next boot. `systemd-sysext.service` merges whatever's in
-  `/var/lib/extensions` at boot.
-- The driver updates on the next SteamVR start either way.
+Before any of that, its first act is `chdir("/")`, and it checks `/var/lib/command-center` is a real
+directory, root's, that no one else can write (the image's `tmpfiles.d` entry makes it at boot,
+and the helper makes it if it isn't there yet). Otherwise it does nothing. It holds
+`/var/lib/command-center/update.lock` for the whole run, so a second helper stops with "an update
+is already running". A Desktop that starts while the helper holds the Desktop's lock says
+"Command Center is updating; starting in a moment" in its log and waits.
 
-### systemd-sysupdate, natively
+### Releasing the image (not decided yet)
 
-It can do the whole download step, and I'd like it as phase 2. The transfer file ships inside the
-image as its own component, so removing the image removes it too:
+Nothing publishes a `command-center_<version>.raw` yet. release.yml builds cc-install, cc-host and
+cc-home on GitHub's Ubuntu runners, but the image has to be built against SteamOS's own libraries
+(build-native.sh, then build.sh), which those runners don't have. Two ways it could go:
 
-```
-# /usr/lib/sysupdate.command-center.d/50-command-center.transfer
-[Transfer]
-Verify=yes
+- **A self-hosted SteamOS runner** (a Frame or a Deck) builds the image for a `v*` tag with
+  `CC_RELEASE=1`, uploads it to the draft release, and the publish job signs the whole SHA256SUMS
+  the way it does now.
+- **A release in two stages, by hand:** CI makes the draft with its binaries, someone builds the
+  image on SteamOS and uploads it, then SHA256SUMS is made and signed over everything, and the
+  release is published.
 
-[Source]
-Type=url-file
-Path=https://github.com/nomadsgalaxy/Command-Center/releases/latest/download/
-MatchPattern=command-center_@v.raw
+Either way, SHA256SUMS is signed last, over every file. Where the signing key lives and who signs
+(CI from the `CC_SIGNING_KEY` secret, as release.yml does now, or Anthony by hand) is Anthony's
+call.
 
-[Target]
-Type=regular-file
-Path=/var/lib/extensions/command-center.raw.v/
-MatchPattern=command-center_@v.raw
-InstancesMax=2
-```
+A follow-up, not in this change: the `install` script could check `SHA256SUMS.sig` too, against a
+pinned key fingerprint, so a first install is checked the same way updates are.
 
-Run it with `/usr/lib/systemd/systemd-sysupdate --component=command-center update`, from the helper or
-a timer. Here's what I found:
+The helper takes no arguments and reads no paths from anywhere, and every program it runs is
+called by its full path with an empty environment. Signing a release stays a step done by hand,
+with the key's secret half, which nothing here touches: each release needs `SHA256SUMS.sig`, a
+detached signature over `SHA256SUMS` made with that key.
 
-- **GitHub's `releases/latest/download/`** works as the source, since sysupdate only needs a
-  `SHA256SUMS` next to the files, and that already exists. Each release just has to list its own `.raw`.
-- **Two versions can't sit loose in `/var/lib/extensions`,** because sysext would merge both. The
-  `.raw.v/` directory solves that: since systemd 256, sysext picks the newest version inside it
-  ("vpick"). **I haven't tried that on the Frame yet.** It's the first thing to test, and plain
-  `command-center.raw` replaced by the helper works without it.
-- **`Verify=yes` checks `SHA256SUMS.gpg`** against `/etc/systemd/import-pubring.gpg`, falling back to
-  `/usr/lib/systemd/import-pubring.gpg`. That's one keyring shared with `systemd-pull` and importd.
-  Ours would have to go in `/etc` (plus a keep-list line) or shadow the `/usr/lib` one from inside the
-  image. Neither is lovely. Nothing on SteamOS uses that keyring today, but I'd still rather verify in
-  our helper, which is why the helper is phase 1.
+Tried on the Frame (systemd 257, as the steamos user against a scratch `--root`): the transfer
+from a local directory works, and `update` with no version installs nothing older than the newest
+installed ("No update needed.").
+
+Tested on the Frame on October 29, 2026, with a throwaway squashfs extension (`cc-n9-test`,
+removed after):
+
+1. vpick works on 257. With `cc-n9-test_1.raw` and then `cc-n9-test_2.raw` in
+   `/var/lib/extensions/cc-n9-test.raw.v/`, the refresh said `Using extensions 'cc-n9-test_2.raw'`:
+   the newest wins, so the `.raw.v/` layout is the one to use.
+2. polkit (`allow_active=yes`): `pkcheck --action-id … --process` from a remote login session said not
+   authorized; for cc-panels' process in the headset's own session (session 2, `Remote=no`,
+   `Active=yes`) it said authorized, with no prompt. The catch: polkitd didn't see an action
+   that arrived by a sysext merge ("not registered") until `systemctl restart polkit`. That's why
+   the first install restarts it and the helper does too when the `.policy` changes (step 7).
+
+Still to do with a real image: one full `cc-home update` from a signed release.
+
+### Troubleshooting
+
+- **`Failed to read metadata …: Permission denied` from systemd-sysext:** it opens the current
+  directory first, and root can't read a user's FUSE mount (`~/Cloud`, say). Run it from `/`
+  (`cd / && sudo systemd-sysext refresh`). The helper and cc-install's hint already do.
+- **`cc-home update` asks for a password:** polkitd hasn't read the action yet. Run
+  `sudo systemctl try-restart polkit.service` once, or restart the Frame.
+- **Going back to the previous version:** `InstancesMax=2` keeps the one before. Remove the newest
+  file in `/var/lib/extensions/command-center.raw.v/`, then `cd / && sudo systemd-sysext refresh`.
+  That lasts until the next `cc-home update`, which installs the newest release again.
+
+### When the image isn't loaded
+
+If the image is in `/var/lib/extensions` but systemd-sysext didn't load it, nothing of Command
+Center is there to run, the launcher tile included, so it can't say so itself. The installer
+(cc-install, which runs from its own download) checks for that and says how to load it:
+`cd / && sudo systemd-sysext refresh && sudo systemctl try-restart polkit`, or a restart. When the image is loaded, `cc-home desktop`
+(cc-launch) checks that its extension-release file is ours before it starts anything.
 
 ### Uninstall
 
 ```
 sudo rm /var/lib/extensions/command-center.raw   # or the .raw.v directory
-sudo systemd-sysext refresh
+cd / && sudo systemd-sysext refresh
 ```
 
 That's everything system-wide gone: the commands, the driver, both `.desktop` files and the polkit
-action. `systemd-sysext.service` can stay enabled, since with nothing in the extension dirs its
+action. SteamVR's per-user list still names the tab's manifest, so run `cc-home install remove`
+first: with SteamVR running it removes it (`RemoveApplicationManifest`), and with SteamVR off it
+takes the one line out of appconfig.json. A path SteamVR can't find again just isn't listed. `systemd-sysext.service` can stay enabled, since with nothing in the extension dirs its
 conditions skip it. cc-install's Remove does this, then asks before deleting `~/.config/control-center`
 and `~/.cache/control-center`. The Desktop tile is SteamOS's again on its own.
 
@@ -406,6 +520,12 @@ packaging/sysext/steamos-buildenv.sh   # once per SteamOS version: the build con
 packaging/sysext/build-native.sh       # cc-home, FreeRDP, libvncclient, cc-panels, the driver
 packaging/sysext/build.sh              # → packaging/sysext/out/command-center.raw
 ```
+
+For a release, `CC_RELEASE=1 CC_VERSION=0.9.1 packaging/sysext/build.sh out/command-center_0.9.1.raw`.
+In release mode build.sh refuses a version that isn't from a tag (`v0.9.1` on the checkout's
+HEAD), a `-dirty` one, one that doesn't start with a digit, and a checkout with uncommitted
+changes, because sysupdate orders the images by version. Without `CC_RELEASE` the version is
+`git describe`, which is fine for testing.
 
 `build-native.sh` builds in place, into the checkout's usual paths, so don't run it in the checkout
 the Desktop is running from: it replaces that checkout's FreeRDP. I use a worktree. It reads FreeRDP's
@@ -471,7 +591,7 @@ a window stream.
 | First live test: merge on the Frame, Desktop tile, KWin grant, driver loading from `/opt`, an OS update | 1 day, plus waiting for an OS update |
 | cc-install's sysext path: pkexec install, the signed-update helper and polkit action, moving over from a checkout install, Remove | 2–3 days |
 | Releases: signing, building the `.raw` on the Frame as a runner, publishing per SteamOS minor | 1–2 days |
-| Phase 2: sysupdate transfer with `.raw.v/`, plus a timer | 1 day, after vpick is tested |
+| Phase 2: ~~sysupdate transfer with `.raw.v/`~~ (built; vpick tried on the Frame 2026-10-29), plus a timer (not built) | |
 
 All in, it's about one and a half to two weeks of work, and the first live merge on the Frame is the
 biggest unknown.
@@ -480,5 +600,5 @@ Open questions I want answered on the device:
 
 - Does the VR launcher show `command-center.desktop`, with its art, without a reboot
   (`kbuildsycoca6`)? Does a second Desktop-template entry confuse it?
-- Does `.raw.v/` vpick work for sysext on 257 here?
+- ~~Does `.raw.v/` vpick work for sysext on 257 here?~~ Yes (October 29, 2026; see section 4).
 - How does `systemd-sysext refresh` behave while vrserver has the driver mapped?

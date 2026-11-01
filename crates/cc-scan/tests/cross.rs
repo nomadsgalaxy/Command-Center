@@ -25,8 +25,7 @@ fn solve(job: &Value) -> (Vec<String>, std::collections::BTreeMap<String, Value>
 }
 
 fn fits(text: &str) -> std::collections::BTreeMap<String, Value> {
-    text.lines().filter(|l| l.starts_with('{')).map(|l| serde_json::from_str::<Value>(l).unwrap())
-        .map(|r| (r["name"].as_str().unwrap().to_owned(), r)).collect()
+    text.lines().filter(|l| l.starts_with('{')).map(|l| serde_json::from_str::<Value>(l).unwrap()).map(|r| (r["name"].as_str().unwrap().to_owned(), r)).collect()
 }
 
 /// Checks they're equal, with numbers to 1e-12, because serde_json's float parsing can be one ulp off Python's shortest repr.
@@ -87,7 +86,11 @@ fn solve_cross() {
             assert!((x["rms"].as_f64().unwrap() - y["rms"].as_f64().unwrap()).abs() < 0.05, "{name} {m}: rms {x} {y}");
         }
         n += py.len();
-        let sorted = |it: &mut dyn Iterator<Item = &str>| { let mut v: Vec<String> = it.filter(|l| l.contains("misread")).map(str::to_owned).collect(); v.sort(); v };
+        let sorted = |it: &mut dyn Iterator<Item = &str>| {
+            let mut v: Vec<String> = it.filter(|l| l.contains("misread")).map(str::to_owned).collect();
+            v.sort();
+            v
+        };
         assert_eq!(sorted(&mut py_text.lines()), sorted(&mut lines.iter().map(String::as_str)), "{name}: misreads dropped");
         let shape = name.rsplit('-').next().unwrap();
         if name.starts_with("moving") {

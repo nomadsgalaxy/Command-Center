@@ -2,8 +2,8 @@
 //! (B, G, R, then an ignored byte, which is DRM's XRGB8888), imported into SteamVR once.
 //! We go this way because ordinary SteamVR texture uploads on the Frame refuse anything over
 //! ~1920x1080, and imported buffers have no limit.
-use crate::{Panel, call, vr};
-use openvr_sys as sys;
+use crate::texture::{self, Dmabuf, TexHandle, Textures};
+use crate::{Panel, vr};
 use std::os::raw::{c_int, c_void};
 
 /// Every thread shares one GBM device (one gallium screen and context), and it isn't
@@ -47,6 +47,11 @@ const TRANSFER_WRITE: u32 = 1 << 1;
 /// That's why the turn happens in 32-pixel tiles into a cached buffer first, and dst gets whole
 /// rows in order. Live, writing pixel by pixel straight into it made each desk-portrait upload
 /// take 80-300 ms.
+///
+/// # Safety
+/// `src` has to be readable for `h` rows of `w` 4-byte pixels, `src_stride` bytes apart, and `dst`
+/// writable for its rows the same way: `h` rows of `w` pixels `dst_stride` apart, or, turned, `w`
+/// rows of `h` pixels. The two mustn't overlap. Pixels needn't be aligned.
 pub unsafe fn copy_rect(src: *const u8, src_stride: usize, dst: *mut u8, dst_stride: usize, w: usize, h: usize, turned: bool) {
     if !turned {
         for y in 0..h {
@@ -85,8 +90,19 @@ pub unsafe fn copy_rect(src: *const u8, src_stride: usize, dst: *mut u8, dst_str
 static DEV: std::sync::atomic::AtomicPtr<GbmDevice> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
 pub fn device() -> Option<*mut GbmDevice> {
-    let fd = unsafe { libc::open(c"/dev/dri/renderD128".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
-    let dev = if fd >= 0 { unsafe { gbm_create_device(fd) } } else { std::ptr::null_mut() };
+    use std::os::fd::IntoRawFd;
+    // An OwnedFd, so a gbm_create_device that fails doesn't leave the render node open (RAWFD-001).
+    let fd = std::fs::OpenOptions::new().read(true).write(true).open("/dev/dri/renderD128").ok().map(std::os::fd::OwnedFd::from);
+    let dev = match fd {
+        Some(fd) => match unsafe { gbm_create_device(std::os::fd::AsRawFd::as_raw_fd(&fd)) } {
+            d if d.is_null() => std::ptr::null_mut(), // fd closes here
+            d => {
+                let _ = fd.into_raw_fd(); // the device keeps using it for as long as cc-panels runs
+                d
+            }
+        },
+        None => std::ptr::null_mut(),
+    };
     DEV.store(dev, std::sync::atomic::Ordering::Relaxed);
     (!dev.is_null()).then_some(dev)
 }
@@ -97,11 +113,11 @@ pub fn device() -> Option<*mut GbmDevice> {
 /// main thread.
 pub struct Shared {
     bo: [*mut GbmBo; 2],
-    have: (i32, i32, bool), // the buffers' size, and whether they're turned (a vertically curved panel)
-    want: (i32, i32, bool), // what the picture needs, as the RDP thread last saw it
-    shown: usize,           // the buffer SteamVR shows; the other is the spare
-    ready: bool,            // the spare holds a newer picture
-    held: bool,             // the spare was on screen until this tick's flip; SteamVR may still read it until its next frame, so we don't write it before the next tick
+    have: (i32, i32, bool),           // the buffers' size, and whether they're turned (a vertically curved panel)
+    want: (i32, i32, bool),           // what the picture needs, as the RDP thread last saw it
+    shown: usize,                     // the buffer SteamVR shows; the other is the spare
+    ready: bool,                      // the spare holds a newer picture
+    held: bool,                       // the spare was on screen until this tick's flip; SteamVR may still read it until its next frame, so we don't write it before the next tick
     last: Option<std::time::Instant>, // the last write; a peripheral panel only gets a few a second
 }
 
@@ -149,8 +165,8 @@ impl Shared {
 /// The main loop's side of a panel's buffers: SteamVR's handles for them.
 #[derive(Default)]
 pub struct Buffers {
-    handle: [sys::SharedTextureHandle_t; 2],
-    pub uploads: u32, // since the last status line
+    handle: [u64; 2],                  // TexHandle.0s
+    pub uploads: u32,                  // since the last status line
     tried: Option<std::time::Instant>, // the last failed make, so we retry once a second instead of every tick
 }
 
@@ -165,24 +181,14 @@ impl Buffers {
                 eprintln!("{name}: no {w}x{h} GPU buffer");
                 return false;
             }
-            let mut a: sys::DmabufAttributes_t = unsafe { std::mem::zeroed() };
-            unsafe {
-                a.unWidth = w as u32;
-                a.unHeight = h as u32;
-                (a.unDepth, a.unMipLevels, a.unArrayLayers, a.unSampleCount) = (1, 1, 1, 1);
-                a.unFormat = format; // XRGB8888 for panels, since they're always opaque
-                a.ulModifier = gbm_bo_get_modifier(s.bo[k]);
-                a.unPlaneCount = 1;
-                a.plane[0].unOffset = gbm_bo_get_offset(s.bo[k], 0);
-                a.plane[0].unStride = gbm_bo_get_stride(s.bo[k]);
-                a.plane[0].nFd = gbm_bo_get_fd(s.bo[k]);
-            }
-            let ok = vr::timed(|| format!("{name}: ImportDmabuf {w}x{h}"), || call!(ipc, ImportDmabuf, sys::EVRApplicationType_VRApplication_Overlay, &mut a, &mut self.handle[k]));
-            unsafe { libc::close(a.plane[0].nFd) };
-            if !ok {
+            let (modifier, offset, stride, fd) = unsafe { (gbm_bo_get_modifier(s.bo[k]), gbm_bo_get_offset(s.bo[k], 0), gbm_bo_get_stride(s.bo[k]), gbm_bo_get_fd(s.bo[k])) };
+            // XRGB8888 for panels, since they're always opaque
+            let Some(got) = import_fd(name, (w as u32, h as u32), fd, format, modifier, offset, stride) else {
+                self.handle[k] = 0; // nothing was imported, so free() has nothing of SteamVR's to let go of
                 eprintln!("{name}: SteamVR won't import a {w}x{h} buffer");
                 return false;
-            }
+            };
+            self.handle[k] = got.0;
         }
         s.have = s.want;
         true
@@ -191,7 +197,7 @@ impl Buffers {
     pub fn free(&mut self, s: &mut Shared) {
         for k in 0..2 {
             if self.handle[k] != 0 {
-                call!(ipc, UnrefResource, self.handle[k]);
+                texture::Live.release(TexHandle(self.handle[k]));
                 self.handle[k] = 0;
             }
             if !s.bo[k].is_null() {
@@ -230,22 +236,30 @@ impl Buffers {
         let Some(k) = s.flip() else { return };
         // Still under the lock. SteamVR may read the old buffer until its next frame, so the RDP
         // thread leaves it alone until the next tick (held).
-        let mut t = sys::Texture_t {
-            handle: &mut self.handle[k] as *mut _ as *mut c_void,
-            eType: sys::ETextureType_TextureType_SharedTextureHandle,
-            eColorSpace: sys::EColorSpace_ColorSpace_Gamma,
-        };
-        match call!(ov, SetOverlayTexture, p.overlay, &mut t) {
-            0 => {
+        match texture::Live.present(p.overlay, TexHandle(self.handle[k])) {
+            Ok(()) => {
                 self.uploads += 1;
                 crate::back::shown(p.overlay, self.handle[k]); // its back too, if it has one
             }
-            e => {
+            Err(e) => {
                 s.unflip();
-                eprintln!("{}: upload failed: {}", p.v.name, vr::error_name(e));
+                eprintln!("{}: upload failed: {e}", p.v.name);
             }
         }
     }
+}
+
+/// Imports a GBM buffer's exported fd and closes it (the runtime keeps its own). None if the export
+/// failed (fd -1) or the runtime wouldn't import it, the way a failed import always went. A failed
+/// export used to reach ImportDmabuf, which refused it; a BorrowedFd can't hold -1, so it stops here.
+fn import_fd(name: &str, (w, h): (u32, u32), fd: std::os::fd::RawFd, fourcc: u32, modifier: u64, offset: u32, stride: u32) -> Option<TexHandle> {
+    if fd < 0 {
+        return None;
+    }
+    let buf = Dmabuf { fd: unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }, width: w, height: h, fourcc, modifier, offset, stride };
+    let got = vr::timed(|| format!("{name}: ImportDmabuf {w}x{h}"), || texture::Live.import(&buf));
+    unsafe { libc::close(fd) };
+    got
 }
 
 /// A UI overlay's two buffers (Command Center's windows, cards, taskbar, HUD). They're shown
@@ -307,18 +321,13 @@ pub fn show_raw(h: vr::Handle, px: &[u8], w: usize, ht: usize) -> bool {
     }
     unsafe { copy_rect(px.as_ptr(), w * 4, dst as *mut u8, stride as usize, w, ht, false) };
     gbm(|| unsafe { gbm_bo_unmap(r.s.bo[k], data) });
-    let mut t = sys::Texture_t {
-        handle: &mut r.b.handle[k] as *mut _ as *mut c_void,
-        eType: sys::ETextureType_TextureType_SharedTextureHandle,
-        eColorSpace: sys::EColorSpace_ColorSpace_Gamma,
-    };
-    match call!(ov, SetOverlayTexture, h, &mut t) {
-        0 => {
+    match texture::Live.present(h, TexHandle(r.b.handle[k])) {
+        Ok(()) => {
             (r.s.shown, r.s.held) = (k, true); // SteamVR may read the old one until its next frame
             true
         }
-        e => {
-            eprintln!("overlay {h}: upload failed: {}", vr::error_name(e));
+        Err(e) => {
+            eprintln!("overlay {h}: upload failed: {e}");
             false
         }
     }
@@ -449,6 +458,12 @@ mod tests {
             unsafe { super::copy_rect(src.as_ptr(), w * 4, dst.as_mut_ptr(), h * 4, w, h, true) };
             eprintln!("turned {w}x{h}: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
         }
+    }
+
+    #[test]
+    fn a_failed_export_imports_nothing_and_asks_steamvr_nothing() {
+        // no vr::fake here, so reaching SteamVR at all would panic
+        assert_eq!(super::import_fd("test", (64, 64), -1, super::XRGB8888, 0, 0, 256), None);
     }
 
     #[test]

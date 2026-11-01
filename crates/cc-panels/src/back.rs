@@ -22,9 +22,10 @@
 //! A laser press on a back carries its panel (grab.rs poll), so you can grab a panel that was
 //! left backwards and turn it round. The card is one-sided too, so it's no use from behind.
 use crate::geometry::{Mat, Placement, V3, chord, dot, norm};
-use crate::overlay::{At, Live, Place, apply};
-use crate::{call, vr};
-use openvr_sys as sys;
+use crate::overlay::{At, Flag, InputMode, Live, Overlays, Place, Surfaces, apply};
+use crate::poll::Pointing;
+use crate::texture::{self, TexHandle, Textures};
+use crate::vr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -50,26 +51,21 @@ pub fn shown(front: vr::Handle, tex: u64) {
     let mut t = TEX.lock().unwrap();
     let e = entry(&mut t, front);
     e.1 = tex;
-    if tex != 0 && e.2 != 0 {
+    if tex != 0 && e.2 != crate::vr::Handle::NONE {
         texture(e.2, tex);
     }
 }
 
 fn entry(t: &mut Vec<(vr::Handle, u64, vr::Handle)>, front: vr::Handle) -> &mut (vr::Handle, u64, vr::Handle) {
     let n = t.iter().position(|e| e.0 == front).unwrap_or_else(|| {
-        t.push((front, 0, 0));
+        t.push((front, 0, crate::vr::Handle::NONE));
         t.len() - 1
     });
     &mut t[n]
 }
 
-fn texture(h: vr::Handle, mut tex: u64) -> bool {
-    let mut t = sys::Texture_t {
-        handle: &mut tex as *mut _ as *mut std::ffi::c_void,
-        eType: sys::ETextureType_TextureType_SharedTextureHandle,
-        eColorSpace: sys::EColorSpace_ColorSpace_Gamma,
-    };
-    call!(ov, SetOverlayTexture, h, &mut t) == 0
+fn texture(h: vr::Handle, tex: u64) -> bool {
+    texture::Live.present(h, TexHandle(tex)).is_ok()
 }
 
 /// Does a panel (centre c, front z) face away from the eye? `was` is last time's answer, for
@@ -124,8 +120,8 @@ struct Back {
     i: usize,
     h: vr::Handle,
     front: vr::Handle,
-    tex: bool,                              // showing the panel's texture, otherwise FILL
-    tried: u64,                             // the texture last tried, so one that failed isn't tried again
+    tex: bool,                                  // showing the panel's texture, otherwise FILL
+    tried: u64,                                 // the texture last tried, so one that failed isn't tried again
     placed: Option<(Mat, i64, i64, i64, bool)>, // the picture's matrix, width, height, curve (mm) and tex it was placed for
 }
 
@@ -150,15 +146,24 @@ impl Backs {
             if a {
                 let d = norm(&[f.pl.c[0] - eye[0], f.pl.c[1] - eye[1], f.pl.c[2] - eye[2]]);
                 let has = self.pool.iter().any(|b| b.i == f.i);
-                want.push((f.i, if f.held { 0.0 } else if has { d - SWAP } else { d }));
+                want.push((
+                    f.i,
+                    if f.held {
+                        0.0
+                    } else if has {
+                        d - SWAP
+                    } else {
+                        d
+                    },
+                ));
             }
         }
         let keep = nearest(want, BACKS);
         for b in self.pool.extract_if(.., |b| !keep.contains(&b.i)) {
             crate::surface::destroy(b.h);
             let mut t = TEX.lock().unwrap();
-            t.iter_mut().filter(|e| e.2 == b.h).for_each(|e| e.2 = 0);
-            t.retain(|e| e.1 != 0 || e.2 != 0); // don't keep entries for pictures from memory, or the Extras' would pile up
+            t.iter_mut().filter(|e| e.2 == b.h).for_each(|e| e.2 = crate::vr::Handle::NONE);
+            t.retain(|e| e.1 != 0 || e.2 != crate::vr::Handle::NONE); // don't keep entries for pictures from memory, or the Extras' would pile up
         }
         for &i in &keep {
             let Some(f) = fronts.iter().find(|f| f.i == i) else { continue };
@@ -172,9 +177,8 @@ impl Backs {
                 self.failed = Some(Instant::now());
                 break;
             };
-            let mut sort = 0;
-            call!(ov, GetOverlaySortOrder, f.overlay, &mut sort);
-            call!(ov, SetOverlaySortOrder, h, sort);
+            let sort = crate::overlay::Live.order_of(f.overlay);
+            crate::overlay::Live.order(h, sort);
             self.pool.push(Back { i, h, front: f.overlay, tex: false, tried: 0, placed: None });
         }
         for b in &mut self.pool {
@@ -191,8 +195,7 @@ impl Backs {
                     b.tried = e.1;
                     b.tex = e.1 != 0 && texture(b.h, e.1);
                     if !b.tex {
-                        let mut px = FILL.repeat(16);
-                        call!(ov, SetOverlayRaw, b.h, px.as_mut_ptr() as *mut _, 4, 4, 4);
+                        let _ = texture::Live.present_pixels(b.h, &FILL.repeat(16), 4, 4);
                     }
                 }
                 b.tex
@@ -203,10 +206,7 @@ impl Backs {
             let placed = Some((o.matrix(), mm(o.width), mm(o.height), mm(o.curve), tex));
             if b.placed != placed {
                 b.placed = placed;
-                let mut front = 1.0;
-                if tex {
-                    call!(ov, GetOverlayTexelAspect, b.front, &mut front);
-                }
+                let front = if tex { Live.texel_aspect_of(b.front) } else { 1.0 };
                 apply(&mut Live, b.h, &back_place(&f.pl, front, tex));
             }
         }
@@ -215,23 +215,20 @@ impl Backs {
     /// The paint order changed (grab.rs paint_order), so each back re-sorts with its picture.
     pub fn resort(&self) {
         for b in &self.pool {
-            let mut sort = 0;
-            call!(ov, GetOverlaySortOrder, b.front, &mut sort);
-            call!(ov, SetOverlaySortOrder, b.h, sort);
+            let sort = crate::overlay::Live.order_of(b.front);
+            crate::overlay::Live.order(b.h, sort);
         }
     }
 
     /// Laser presses and releases on the backs, as (slot, device, pressed).
-    pub fn events(&self) -> Vec<(usize, u32, bool)> {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+    pub fn events(&self) -> Vec<(usize, crate::ids::Dev, bool)> {
+        use crate::events::{Button, PointerEvent, PointerKind as P, SurfaceEvent as S};
         let mut out = Vec::new();
         for b in &self.pool {
-            while call!(ov, PollNextOverlayEvent, b.h, &mut e, size_of::<vr::VREvent_t>() as u32) {
-                match e.eventType {
-                    sys::EVREventType_VREvent_MouseButtonDown if unsafe { e.data.mouse.button } == sys::EVRMouseButton_VRMouseButton_Left => {
-                        out.push((b.i, e.trackedDeviceIndex, true))
-                    }
-                    sys::EVREventType_VREvent_MouseButtonUp => out.push((b.i, e.trackedDeviceIndex, false)),
+            while let Some(ev) = crate::poll::Live.next(b.h) {
+                match ev {
+                    S::Pointer(PointerEvent { kind: P::Down(Button::Left), from, .. }) => out.push((b.i, from, true)),
+                    S::Pointer(PointerEvent { kind: P::Up(_), from, .. }) => out.push((b.i, from, false)),
                     _ => {}
                 }
             }
@@ -252,14 +249,13 @@ fn make(i: usize) -> Option<vr::Handle> {
     let h = crate::surface::create(crate::surface::Kind::Back, Some(i), &format!("controlcenter.back.{i}"), &format!("Command Center back {i}"))
         .inspect_err(|e| eprintln!("backs: no overlay for panel {i}: {e}"))
         .ok()?;
-    call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-    call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-    call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_IgnoreTextureAlpha, IGNORE_ALPHA);
-    let mut bounds = sys::VRTextureBounds_t { uMin: 1.0, vMin: 0.0, uMax: 0.0, vMax: 1.0 };
-    call!(ov, SetOverlayTextureBounds, h, &mut bounds);
-    call!(ov, SetOverlayAlpha, h, ALPHA);
-    call!(ov, SetOverlayColor, h, DIM, DIM, DIM);
-    call!(ov, ShowOverlay, h);
+    crate::overlay::Live.input(h, InputMode::Pointer);
+    crate::overlay::Live.flag(h, Flag::Interactive, true);
+    crate::overlay::Live.flag(h, Flag::IgnoreAlpha, IGNORE_ALPHA);
+    crate::overlay::Live.bounds(h, [1.0, 0.0, 0.0, 1.0]);
+    crate::overlay::Live.alpha(h, ALPHA);
+    crate::overlay::Live.color(h, [DIM, DIM, DIM]);
+    crate::overlay::Live.show(h);
     Some(h)
 }
 

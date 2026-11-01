@@ -47,8 +47,7 @@ impl std::ops::DerefMut for Host {
 
 /// Starts `cc-host pair --test` on `conf` and returns once it says it's waiting.
 fn host(conf: &Path) -> (Host, BufReader<std::process::ChildStdout>) {
-    let mut p = Command::new(env!("CARGO_BIN_EXE_cc-host")).args(["pair", "--test"]).env("CC_CONF", conf)
-        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut p = Command::new(env!("CARGO_BIN_EXE_cc-host")).args(["pair", "--test"]).env("CC_CONF", conf).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let mut out = BufReader::new(p.stdout.take().unwrap());
     let mut l = String::new();
     out.read_line(&mut l).unwrap();
@@ -124,10 +123,12 @@ fn pairing() {
     for junk in [b"not json\n".as_slice(), b"{\"v\":1}\n", b"[1,2]\n"] {
         raw(junk);
     }
-    let states: Vec<String> = (0..3).map(|_| match frame_pair(conn(), "000000", "frame9", &sk, None, false) {
-        Err(Fail::Refused(s, _)) => s,
-        other => format!("{other:?}"),
-    }).collect();
+    let states: Vec<String> = (0..3)
+        .map(|_| match frame_pair(conn(), "000000", "frame9", &sk, None, false) {
+            Err(Fail::Refused(s, _)) => s,
+            other => format!("{other:?}"),
+        })
+        .collect();
     assert_eq!(states, ["bad-key", "bad-key", "locked"]);
     assert_eq!(h.wait().unwrap().code(), Some(1));
     assert!(rest(&mut out).contains("state=locked"));

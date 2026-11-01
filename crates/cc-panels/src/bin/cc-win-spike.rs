@@ -13,20 +13,30 @@
 mod back; // capture.rs tells it what went up, so it has to be here
 #[path = "../capture.rs"]
 mod capture;
+#[path = "../events.rs"]
+#[allow(dead_code)] // the spike only reads a laser's
+mod events;
 #[path = "../geometry.rs"]
 mod geometry;
+#[path = "../ids.rs"]
+mod ids;
 #[path = "../limits.rs"]
 mod limits; // geometry.rs's numbers
 #[path = "../overlay.rs"]
 mod overlay; // back.rs places its sheets through it
+#[path = "../poll.rs"]
+mod poll; // its laser comes through it
 #[path = "../session.rs"]
 mod session;
 #[path = "../surface.rs"]
 mod surface; // back.rs makes its overlays through it
+#[path = "../texture.rs"]
+mod texture; // capture.rs and back.rs show their pictures through it
 #[path = "../vr.rs"]
 mod vr;
 
 use openvr_sys as sys;
+use poll::Pointing;
 use session::{Session, StreamEvent};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, mpsc};
@@ -171,10 +181,10 @@ fn run() -> Result<(), String> {
 
     vr::init().map_err(|e| format!("SteamVR: {e}"))?;
     let overlay = vr::create_overlay("controlcenter.spike", "Command Center spike")?;
-    call!(ov, SetOverlayWidthInMeters, overlay, 1.0);
-    call!(ov, SetOverlayInputMethod, overlay, sys::VROverlayInputMethod_Mouse);
-    call!(ov, SetOverlayFlag, overlay, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-    call!(ov, SetOverlayFlag, overlay, sys::VROverlayFlags_IgnoreTextureAlpha, true);
+    call!(ov, SetOverlayWidthInMeters, overlay.0, 1.0);
+    call!(ov, SetOverlayInputMethod, overlay.0, sys::VROverlayInputMethod_Mouse);
+    call!(ov, SetOverlayFlag, overlay.0, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+    call!(ov, SetOverlayFlag, overlay.0, sys::VROverlayFlags_IgnoreTextureAlpha, true);
     vr::place(overlay, &ahead(1.2));
 
     let cap = capture::Capture::start();
@@ -224,19 +234,19 @@ fn run() -> Result<(), String> {
                 src.first = true;
                 eprintln!("{}: first frame +{}ms", src.label, src.asked.elapsed().as_millis());
                 if key == 0 {
-                    call!(ov, ShowOverlay, overlay); // shown on its first frame, so there's no black flash
+                    call!(ov, ShowOverlay, overlay.0); // shown on its first frame, so there's no black flash
                 }
             }
         }
         if shown.size != scale {
             scale = shown.size;
             let mut v = sys::HmdVector2_t { v: [scale.0 as f32, scale.1 as f32] };
-            call!(ov, SetOverlayMouseScale, overlay, &mut v);
+            call!(ov, SetOverlayMouseScale, overlay.0, &mut v);
         }
         if let Some(src) = srcs.first() {
             mouse(overlay, src, &s, scale.1 as f64);
         }
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
+        let mut e: vr::VREvent_t = Default::default();
         while call!(sys, PollNextEvent, &mut e, size_of::<vr::VREvent_t>() as u32) {
             if e.eventType == sys::EVREventType_VREvent_Quit {
                 QUIT.store(true, Relaxed);
@@ -259,7 +269,7 @@ fn run() -> Result<(), String> {
         cap.close(key as u64);
     }
     shown.free();
-    call!(ov, DestroyOverlay, overlay);
+    call!(ov, DestroyOverlay, overlay.0);
     vr::shutdown();
     Ok(())
 }
@@ -267,12 +277,7 @@ fn run() -> Result<(), String> {
 fn report(s: &Session) {
     let g: Vec<_> = s.globals.iter().map(|g| format!("{} v{}", g.interface, g.version)).collect();
     eprintln!("globals: {}", g.join(", "));
-    eprintln!(
-        "grant: {:?}: screencast {}, fake input {}",
-        s.grant,
-        if s.screencast.is_some() { "bound" } else { "missing" },
-        if s.fake.is_some() { "bound" } else { "missing" }
-    );
+    eprintln!("grant: {:?}: screencast {}, fake input {}", s.grant, if s.screencast.is_some() { "bound" } else { "missing" }, if s.fake.is_some() { "bound" } else { "missing" });
     let o: Vec<_> = s.outputs.lock().unwrap().iter().map(|o| format!("{} {}x{}+{}+{}", o.name, o.w, o.h, o.x, o.y)).collect();
     eprintln!("outputs: {}", o.join(", "));
 }
@@ -291,24 +296,24 @@ fn ahead(d: f64) -> geometry::Mat {
 /// Passes laser moves and clicks on the overlay through to the streamed thing's place in the
 /// session.
 fn mouse(overlay: vr::Handle, src: &Src, s: &Session, h: f64) {
-    let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
-    while call!(ov, PollNextOverlayEvent, overlay, &mut e, size_of::<vr::VREvent_t>() as u32) {
+    while let Some(ev) = crate::poll::Live.next(overlay) {
+        use events::{Button, PointerKind as P, SurfaceEvent as S};
+        let S::Pointer(pe) = ev else { continue }; // only a laser does anything here
         let Some((origin, px)) = src.origin(s) else { continue };
-        let m = unsafe { e.data.mouse };
-        let (x, y) = session::to_global(origin, px, h, m.x as f64, m.y as f64);
-        let button = match m.button {
-            sys::EVRMouseButton_VRMouseButton_Right => session::BTN_RIGHT,
-            sys::EVRMouseButton_VRMouseButton_Middle => session::BTN_MIDDLE,
+        let (x, y) = session::to_global(origin, px, h, pe.x as f64, pe.y as f64);
+        let button = match pe.kind {
+            P::Down(Button::Right) | P::Up(Button::Right) => session::BTN_RIGHT,
+            P::Down(Button::Middle) | P::Up(Button::Middle) => session::BTN_MIDDLE,
             _ => session::BTN_LEFT,
         };
-        match e.eventType {
-            sys::EVREventType_VREvent_MouseMove => s.pointer_to(x, y),
-            sys::EVREventType_VREvent_MouseButtonDown => {
+        match pe.kind {
+            P::Move => s.pointer_to(x, y),
+            P::Down(_) => {
                 s.pointer_to(x, y);
                 s.button(button, true);
                 eprintln!("click {x:.0},{y:.0}");
             }
-            sys::EVREventType_VREvent_MouseButtonUp => {
+            P::Up(_) => {
                 s.pointer_to(x, y);
                 s.button(button, false);
                 eprintln!("release {x:.0},{y:.0}");
@@ -345,23 +350,13 @@ const SCRIPT: &str = r#"workspace.windowAdded.connect(function (w) {
 impl Watch {
     fn start(address: &str) -> Result<Watch, String> {
         let e = |e: zbus::Error| format!("--watch: {e}");
-        let bus = zbus::blocking::connection::Builder::address(address)
-            .map_err(e)?
-            .name("org.controlcenter.Spike")
-            .map_err(e)?
-            .serve_at("/", Events)
-            .map_err(e)?
-            .build()
-            .map_err(e)?;
+        let bus = zbus::blocking::connection::Builder::address(address).map_err(e)?.name("org.controlcenter.Spike").map_err(e)?.serve_at("/", Events).map_err(e)?.build().map_err(e)?;
         let path = format!("{}/.cache/control-center/cc-spike-watch.js", std::env::var("HOME").unwrap_or_default());
         std::fs::write(&path, SCRIPT).map_err(|err| format!("--watch: {path}: {err}"))?;
         let w = Watch { bus };
         w.unload();
-        let id: i32 = w
-            .bus
-            .call_method(Some("org.kde.KWin"), "/Scripting", Some("org.kde.kwin.Scripting"), "loadScript", &(path.as_str(), "cc-spike-watch"))
-            .and_then(|m| m.body().deserialize())
-            .map_err(e)?;
+        let id: i32 =
+            w.bus.call_method(Some("org.kde.KWin"), "/Scripting", Some("org.kde.kwin.Scripting"), "loadScript", &(path.as_str(), "cc-spike-watch")).and_then(|m| m.body().deserialize()).map_err(e)?;
         w.bus.call_method(Some("org.kde.KWin"), format!("/Scripting/Script{id}").as_str(), Some("org.kde.kwin.Script"), "run", &()).map_err(e)?;
         eprintln!("watch: script {id} loaded");
         Ok(w)

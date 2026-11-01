@@ -1,0 +1,963 @@
+//! Gather: every surface we place, brought in front of you, for when some get lost behind you or
+//! out of reach. The remote and window panels that are showing, and the Machines, Preferences or
+//! Workspace window if one's open, go on an arc limits::NEW_AHEAD from your eyes (where a new
+//! window opens), centred on where you're looking, each turned to face you. They keep their size
+//! and curve. A row that would be wider than SPAN wraps, and the rows stack above and below the
+//! first, at eye height.
+//!
+//! It does what `summon` does first (nothing minimized, theater off, nothing hidden), and a docked
+//! panel is put back in the world. Nothing is saved: where gather puts a panel isn't its home or
+//! any spot, so Right Ctrl + Home (`cc-home apply home`) still puts everything back. A panel you
+//! then carry and let go of is saved as usual.
+//!
+//! The taskbar's chip, the dashboard tab's button, Right Ctrl + B, the control socket's `gather`
+//! and `cc-home gather` all end here.
+use crate::geometry::{Mat, Placement, Pose, V3, angles, axes, direction, panel_matrix, sagitta};
+use crate::stage::Stage;
+use crate::{Source, grab, panels, vr, windows::Windows};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+
+/// How wide a row can be, in degrees round you, before it wraps.
+const SPAN: f64 = 100.0;
+/// Past this many rows the arc widens instead (WIDER), so a big desktop doesn't stack up out of
+/// sight above and below you. `side_by_side` stops at it too.
+const ROWS: usize = 3;
+const WIDER: [f64; 2] = [160.0, 220.0];
+/// The space between two panels, along a row and between rows, in metres.
+const GAP: f64 = 0.04;
+
+/// Asked for from somewhere without the main loop's state (the dashboard tab, Right Ctrl + B):
+/// the main loop runs it on its next tick. `UNDO_ASKED` is the ungather key's
+/// (kvm.rs, Left Ctrl + Shift + B unless settings.json says otherwise) or Right Ctrl + Shift + B's.
+pub static ASKED: AtomicBool = AtomicBool::new(false);
+pub static UNDO_ASKED: AtomicBool = AtomicBool::new(false);
+
+/// Asks the main loop for a gather (or, with `undo`, an ungather), and wakes it.
+pub fn ask(undo: bool) {
+    if undo { &UNDO_ASKED } else { &ASKED }.store(true, Relaxed);
+    vr::wake();
+}
+
+/// What gets gathered.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Item {
+    Panel(usize),
+    Extra(&'static str),
+}
+
+/// The panels gather put where they are now, by index. A window panel's place isn't kept for it
+/// while it's in here (windows.rs `keep_pose`), so a gather is never saved. Carrying one and letting
+/// go (grab.rs `save`), a spot or `place`, or an ungather takes it out.
+static GATHERED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// Where everything was before the last gather, for `ungather`.
+static BEFORE: Mutex<Vec<(Item, Placement)>> = Mutex::new(Vec::new());
+
+/// Whether panel i is where a gather put it, and not saved.
+pub fn gathered(i: usize) -> bool {
+    crate::ffi::lock(&GATHERED).contains(&i)
+}
+
+/// Panel i was put somewhere on purpose (a carry let go of, a spot, `place`), so it's the user's
+/// place again, saved as usual, and an ungather leaves it be.
+pub fn placed(i: usize) {
+    crate::ffi::lock(&GATHERED).retain(|&j| j != i);
+    crate::ffi::lock(&BEFORE).retain(|(it, _)| *it != Item::Panel(i));
+}
+
+/// The level direction ahead of the head. Looking straight up or down, its -z has no level part,
+/// so the top of the head stands in: it points behind you looking up, and ahead looking down.
+fn forward(head: &Mat) -> V3 {
+    let level = |v: [f64; 3]| {
+        let n = v[0].hypot(v[2]);
+        (n > 0.1).then(|| [v[0] / n, 0.0, v[2] / n])
+    };
+    let ahead = [-head[0][2] as f64, -head[1][2] as f64, -head[2][2] as f64];
+    let up = [head[0][1] as f64, head[1][1] as f64, head[2][1] as f64];
+    let s = if ahead[1] > 0.0 { -1.0 } else { 1.0 };
+    level(ahead).or_else(|| level(up.map(|v| v * s))).unwrap_or([0.0, 0.0, -1.0])
+}
+
+/// Where each of `sizes` (width and height in metres, and the curve radius, 0 flat) goes for a head
+/// at `head`, in order: the first row left to right from the middle of the gaze, then the next
+/// rows, one above, one below, and so on. A panel wider than the arc gets a row to itself. If it
+/// would take more than ROWS rows, the arc widens; past WIDER's last, the rest stack on the last
+/// one placed (`stack_on`, as `side_by_side`'s do), their tops under the eye-level row and their
+/// corners inside the arc.
+pub fn layout(head: &Mat, sizes: &[(f64, f64, f64)]) -> Vec<Pose> {
+    let span = span_for(sizes);
+    let mut rows = rows_for(sizes, span);
+    let rest: Vec<usize> = rows.drain(ROWS.min(rows.len())..).flat_map(|(row, _)| row).collect();
+    let mut out = place_rows(head, sizes, &rows);
+    let Some(&last) = rows.last().and_then(|(row, _)| row.last()) else { return out };
+    let eye: V3 = [0, 1, 2].map(|i| head[i][3] as f64);
+    let (yaw0, _) = angles(&forward(head));
+    // the eye-level row's bottom, less GAP, as the row below's tops are
+    let ceiling = -rows[0].0.iter().map(|&i| sizes[i].1).fold(0.0, f64::max) / 2.0 - GAP;
+    for (j, &i) in rest.iter().enumerate() {
+        out[i] = stack_on(&out[last], j, sizes[i], &eye, yaw0, ceiling, span / 2.0);
+    }
+    out
+}
+
+/// The arc `layout` packs `sizes` into: SPAN, or the first of WIDER they fit in ROWS rows of.
+fn span_for(sizes: &[(f64, f64, f64)]) -> f64 {
+    [SPAN].into_iter().chain(WIDER).find(|&s| rows_for(sizes, s).len() <= ROWS).unwrap_or(WIDER[WIDER.len() - 1])
+}
+
+/// A panel's width in degrees from the eye, NEW_AHEAD away. A curved one's edges come toward you
+/// (its sagitta), and it's the chord between them that you see.
+fn across(w: f64, curve: f64) -> f64 {
+    across_at(w, 0.0, curve, 0.0)
+}
+
+/// `across` for one `h` high whose middle is `dy` above the eyes (below, negative). Off the eyes'
+/// level it's turned to face them, so its edge nearest you comes closer and takes a wider angle.
+/// A tilted curved one's edges come toward you by its sagitta times the tilt's cosine, a little
+/// less than the whole sagitta taken here, so this errs wide, which only spaces it more.
+fn across_at(w: f64, h: f64, curve: f64, dy: f64) -> f64 {
+    let r = crate::limits::NEW_AHEAD;
+    let tilt = dy.atan2(r).sin().abs() * h / 2.0;
+    let half = if curve > 0.0 { curve * (w / (2.0 * curve)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
+    (2.0 * (half / (r - sagitta(w, curve) - tilt).max(0.1)).atan()).to_degrees()
+}
+
+/// The rows, as runs of indices with each one's height off the eyes, packed in order into `span`
+/// degrees: the first level with the eyes, then one above, one below, and so on, each clear of the
+/// ones before it. A row off the eyes' level is turned to face them, so it's packed by its panels'
+/// nearer edges (`across_at`), and one panel too wide for the arc still gets a row to itself.
+fn rows_for(sizes: &[(f64, f64, f64)], span: f64) -> Vec<(Vec<usize>, f64)> {
+    let gap = across(GAP, 0.0);
+    let tall = |row: &[usize]| row.iter().map(|&i| sizes[i].1).fold(0.0, f64::max);
+    // the nth row's height off the eyes for its tallest `h`, with the rows so far reaching `up` and `down`
+    let dy = |n: usize, h: f64, up: f64, down: f64| match n {
+        0 => 0.0,
+        n if n % 2 == 1 => up + GAP + h / 2.0,
+        _ => -(down + GAP + h / 2.0),
+    };
+    let width = |row: &[usize], dy: f64| row.iter().map(|&i| across_at(sizes[i].0, sizes[i].1, sizes[i].2, dy)).sum::<f64>() + gap * (row.len() - 1) as f64;
+    let (mut rows, mut row): (Vec<(Vec<usize>, f64)>, Vec<usize>) = (Vec::new(), Vec::new());
+    let mut reach = (0.0, 0.0); // how far the rows so far reach above and below the eyes
+    let close = |row: Vec<usize>, rows: &mut Vec<(Vec<usize>, f64)>, (up, down): &mut (f64, f64)| {
+        let (n, h) = (rows.len(), tall(&row));
+        let y = dy(n, h, *up, *down);
+        match n {
+            0 => (*up, *down) = (h / 2.0, h / 2.0),
+            n if n % 2 == 1 => *up = y + h / 2.0,
+            _ => *down = -y + h / 2.0,
+        }
+        rows.push((row, y));
+    };
+    for i in 0..sizes.len() {
+        let mut next = row.clone();
+        next.push(i);
+        if row.is_empty() || width(&next, dy(rows.len(), tall(&next), reach.0, reach.1)) <= span {
+            row = next;
+        } else {
+            close(std::mem::replace(&mut row, vec![i]), &mut rows, &mut reach);
+        }
+    }
+    if !row.is_empty() {
+        close(row, &mut rows, &mut reach);
+    }
+    rows
+}
+
+fn place_rows(head: &Mat, sizes: &[(f64, f64, f64)], rows: &[(Vec<usize>, f64)]) -> Vec<Pose> {
+    let r = crate::limits::NEW_AHEAD;
+    let eye: V3 = [0, 1, 2].map(|i| head[i][3] as f64);
+    let (yaw0, _) = angles(&forward(head));
+    // an eye-level angle: between a tilted row's nearer edges, (r - tilt) / r of the way out, it's
+    // a little under GAP in metres, which is meant (the panels still don't touch)
+    let gap = across(GAP, 0.0);
+    let mut out = vec![Pose::default(); sizes.len()];
+    for (row, dy) in rows {
+        let dy = *dy;
+        // a row above or below is turned to face the eyes, so it's spaced by its nearer edges
+        let a = |i: usize| across_at(sizes[i].0, sizes[i].1, sizes[i].2, dy);
+        let width: f64 = row.iter().map(|&i| a(i)).sum::<f64>() + gap * (row.len() - 1) as f64;
+        let mut left = yaw0 + width / 2.0; // a bigger yaw is further left
+        for &i in row {
+            let a = a(i);
+            let yaw = (left - a / 2.0).to_radians();
+            left -= a + gap;
+            let centre = [eye[0] - r * yaw.sin(), eye[1] + dy, eye[2] - r * yaw.cos()];
+            let (y, p) = angles(&[centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]]);
+            out[i] = Pose { centre, yaw: y, pitch: p, width: sizes[i].0, curve: sizes[i].2, ..Default::default() };
+        }
+    }
+    out
+}
+
+/// How far round from the gaze, each way, `side_by_side` goes before it starts another row.
+const BESIDE: f64 = 90.0;
+
+/// How far right and down each window that doesn't fit in ROWS steps from the last: 8 cm, like
+/// windows.rs `ahead`'s cascade.
+const STEP: f64 = 0.08;
+
+/// How much nearer each stacked window is than the one before, so it's drawn over it: the Frame
+/// draws by depth, not sort order, and this is the taskbar's FRONT for Plasma's overlay.
+const NEARER: f64 = 0.002;
+
+/// How many stacked windows keep coming NEARER: 10 cm in front of the one they stack on at most,
+/// however many open. Plain steps repeat their spots every 25 (five down, five rounds across), so
+/// up to 50 a window back on an earlier one's spot is still nearer than it. Past 50 the rest share
+/// the nearest depth, and where two of those overlap the Frame can flicker between them.
+const NEAREST: usize = 50;
+
+/// Where each of `sizes` goes when they open one after another (windows.rs `ahead`, the windows
+/// KWin reports at start): the first in the middle of the gaze, `first_dy` metres above the eyes
+/// (below if negative: ahead's cascade drops it), then each next one beside what's there, right,
+/// left, right, ..., level with the eyes on `layout`'s arc. One that would go past BESIDE degrees
+/// either way starts a new row, from the middle again: above, then below, then further above, each
+/// clear of everything already above or below it, the first included wherever it sits. Once ROWS
+/// are full, the rest stack on the last one placed, turned the same way: STEP further down its face
+/// and across it toward the gaze for each (one to five steps, then round again, each round a fifth
+/// of a step further across), and NEARER closer than the one before, so the newest is drawn on
+/// top. Moved only by those steps, no two of 25 in a row share a spot. A stacked one too tall or
+/// wide for that spot is moved down its face until its top is under the eye-level row, and across
+/// until none of its corners is past BESIDE, so it can land near another one's spot (still drawn
+/// on top). Nothing bounds one from below: a tall late one on a deep stack can reach below the
+/// bottom row. Unlike `layout`, an earlier one never moves for a later one, so each can be placed
+/// as it comes.
+pub fn side_by_side(head: &Mat, first_dy: f64, sizes: &[(f64, f64, f64)]) -> Vec<Pose> {
+    let r = crate::limits::NEW_AHEAD;
+    let eye: V3 = [0, 1, 2].map(|i| head[i][3] as f64);
+    let (yaw0, _) = angles(&forward(head));
+    let gap = across(GAP, 0.0);
+    let (mut left, mut right) = (0.0f64, 0.0f64); // this row's edges, in degrees left and right of the gaze
+    let (mut row, mut first) = (0, true); // which row, and whether nothing's in it yet
+    // how far up and down from the eyes everything placed so far reaches, and this row's reach
+    let (mut up, mut down) = (0.0f64, 0.0f64);
+    let (mut top, mut bottom) = (f64::MIN, f64::MAX);
+    let mut level_bottom = 0.0; // the eye-level row's bottom, which a stacked one stays under
+    let mut on_right = true;
+    let mut stacked = 0; // how many have gone on the last one placed, once ROWS are full
+    let mut out: Vec<Pose> = Vec::new();
+    for (n, &(w, h, c)) in sizes.iter().enumerate() {
+        // each sits on its row's edge nearest the eyes: its bottom above, its top below
+        let dy_in = |row: usize, up: f64, down: f64| match row {
+            0 if n == 0 => first_dy,
+            0 => 0.0,
+            k if k % 2 == 1 => up + GAP + h / 2.0,
+            _ => -(down + GAP + h / 2.0),
+        };
+        let wide = |dy: f64| across_at(w, h, c, dy);
+        let mut a = wide(dy_in(row, up, down));
+        let past = |edge: f64, a: f64| edge + gap + a > BESIDE;
+        let full = !first && past(if on_right { right } else { left }, a) && past(if on_right { left } else { right }, a);
+        if stacked > 0 || (full && row + 1 == ROWS) {
+            stacked += 1;
+            let from = out[n - stacked]; // the last one placed in a row
+            out.push(stack_on(&from, stacked - 1, (w, h, c), &eye, yaw0, level_bottom - GAP, BESIDE));
+            continue;
+        }
+        if full {
+            // this row's full both ways: the next one goes above (odd rows) or below (even)
+            if row == 0 {
+                (up, down, level_bottom) = (top, -bottom, bottom);
+            } else if row % 2 == 1 {
+                up = up.max(top);
+            } else {
+                down = down.max(-bottom);
+            }
+            (row, first, top, bottom) = (row + 1, true, f64::MIN, f64::MAX);
+            a = wide(dy_in(row, up, down));
+        }
+        let off = if first {
+            (left, right, first, on_right) = (a / 2.0, a / 2.0, false, true);
+            0.0
+        } else {
+            // the side it's that one's turn for, unless that side's full
+            let side = if past(if on_right { right } else { left }, a) { !on_right } else { on_right };
+            on_right = !side;
+            if side {
+                right += gap + a;
+                -(right - a / 2.0) // a bigger yaw is further left
+            } else {
+                left += gap + a;
+                left - a / 2.0
+            }
+        };
+        let dy = dy_in(row, up, down);
+        (top, bottom) = (top.max(dy + h / 2.0), bottom.min(dy - h / 2.0));
+        let yaw = (yaw0 + off).to_radians();
+        let centre = [eye[0] - r * yaw.sin(), eye[1] + dy, eye[2] - r * yaw.cos()];
+        let (y, p) = angles(&[centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]]);
+        out.push(Pose { centre, yaw: y, pitch: p, width: w, curve: c, ..Default::default() });
+    }
+    out
+}
+
+/// Where the `j`th window (from 0) to stack on `from` goes, `w` by `h` with curve `c`, for eyes at
+/// `eye` looking level at `yaw0`: turned the way `from` is, STEP further down its face and across
+/// it toward the gaze for each (one to five steps, then round again a fifth of a step further
+/// across), and NEARER closer than the one before, so the newest is drawn on top (the Frame draws
+/// by depth). Past 25 the spots repeat, each one nearer than the last time, and past NEAREST the
+/// rest stop coming nearer. One too tall or wide for that spot is moved down its face until its top is
+/// `ceiling` metres above the eyes, and across until none of its corners is more than `half_arc`
+/// degrees round from the gaze. A curved one's corners are its chord's ends, brought toward you
+/// by its sagitta.
+fn stack_on(from: &Pose, j: usize, (w, h, c): (f64, f64, f64), eye: &V3, yaw0: f64, ceiling: f64, half_arc: f64) -> Pose {
+    let (down, round) = (STEP * (1 + j % 5) as f64, STEP / 5.0 * (j / 5 % 5) as f64);
+    let (x, y, z) = axes(from);
+    let off = |p: &V3| (angles(&[p[0] - eye[0], 0.0, p[2] - eye[2]]).0 - yaw0 + 540.0).rem_euclid(360.0) - 180.0;
+    // across toward the gaze: right, unless it's right of the gaze already (a bigger yaw is further left)
+    let s = if off(&from.centre) > -1e-9 { 1.0 } else { -1.0 };
+    let mut centre: V3 = [0, 1, 2].map(|i| from.centre[i] + s * (down + round) * x[i] - down * y[i] + NEARER * (j.min(NEAREST - 1) + 1) as f64 * z[i]);
+    let move_by = |centre: &mut V3, v: &V3, d: f64| (0..3).for_each(|i| centre[i] += d * v[i]);
+    // its top under `ceiling` (a curved one's top corners come toward you by its sagitta, and up,
+    // facing up at you from below the eyes)
+    let over = centre[1] + y[1] * h / 2.0 + sagitta(w, c) * z[1] - eye[1] - ceiling;
+    if over > 0.0 {
+        // y[1] is the cosine of `from`'s pitch, and `from` faces the eyes from its row (its pitch
+        // the angle up or down to it, under 90° either way), so it's positive. It's under 0.5,
+        // tipped past 60°, only for rows taller than the view (rows of 3 m tall windows): then a
+        // step down its face hardly lowers it, so it moves no further than 60° would need, and
+        // its top can stay over the ceiling (a_window_on_rows_taller_than_the_view_still_stacks)
+        if y[1] < 0.5 {
+            eprintln!("gather: a stacked window's row is tipped {:.0}°, too far to move it all the way under the eye-level row", from.pitch);
+        }
+        move_by(&mut centre, &y, -over / y[1].max(0.5));
+    }
+    // its corners inside `half_arc` on its side: none past the upright plane through the eyes at
+    // that angle, whose normal `n` points back toward the gaze
+    let n = if off(&centre) >= 0.0 { direction(yaw0 + half_arc - 90.0, 0.0) } else { direction(yaw0 - half_arc + 90.0, 0.0) };
+    let inward = |v: &V3| v[0] * n[0] + v[2] * n[2];
+    let half = if c > 0.0 { c * (w / (2.0 * c)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
+    let least = inward(&[centre[0] - eye[0], 0.0, centre[2] - eye[2]]) + sagitta(w, c) * inward(&z) - half * inward(&x).abs() - h / 2.0 * inward(&y).abs();
+    // a step across can't help when its face is (nearly) square to `n`: then `from` faces the
+    // eyes from (nearly) straight along `n`, about the arc's radius inside the bound, and only a
+    // window curved round past the eyes (its sagitta more than that) has a corner past it. That
+    // one stays where its step put it, and says so, rather than divide by almost nothing
+    // (a_window_curved_round_past_the_eyes_stacks_where_its_step_puts_it)
+    if least < 0.0 && inward(&x).abs() > 0.1 {
+        move_by(&mut centre, &x, -least / inward(&x));
+    } else if least < 0.0 {
+        eprintln!("gather: a stacked {w:.1} m window curves round past the arc's side, and moving it across wouldn't bring it in");
+    }
+    Pose { centre, width: w, curve: c, ..*from }
+}
+
+/// Puts panel or Extra `item` at `pl` (its size and curve kept from `pl`).
+fn put(grab: &mut grab::Grab, item: Item, m: &Mat, pl: &Placement) {
+    match item {
+        Item::Panel(i) => {
+            grab.cancel(i); // carried or docked: it's in the world now
+            let mut k = crate::kvm::lock();
+            match panels()[i].src {
+                // a window keeps its height (its window follows, windows.rs); a remote screen's comes from its monitor's shape
+                Source::Window(_) => k.set_place(i, m, pl.width, pl.height, pl.curve),
+                Source::Rdp => k.set_pose(i, m, pl.width, pl.curve),
+            }
+        }
+        Item::Extra(name) => {
+            grab.cancel(grab.slot());
+            grab.place_extra(name, m, pl.width, pl.curve);
+        }
+    }
+}
+
+/// Brings everything in front of the head now, and returns how many surfaces it moved. With the
+/// headset untracked there's no "in front of you", so it changes nothing, summon included, and
+/// says so. Popups aren't moved: they follow their window (windows.rs). The fixed taskbar is the
+/// caller's to put back under them (`Taskbar::refix`), as after a spot is applied.
+pub fn gather(grab: &mut grab::Grab, windows: &mut Windows) -> Result<usize, String> {
+    let head = crate::stage::Live.head_now().ok_or("the headset isn't tracked, so nothing moved")?;
+    crate::control::summon(grab, windows);
+    let mut items: Vec<(Item, Placement)> = Vec::new();
+    {
+        let k = crate::kvm::lock();
+        for p in panels().iter().filter(|p| p.live() && !crate::windows::is_popup(p.index)) {
+            items.push((Item::Panel(p.index), k.place[p.index]));
+        }
+    }
+    if let Some((name, pl)) = grab.extra_shown() {
+        items.push((Item::Extra(name), pl));
+    }
+    let sizes: Vec<(f64, f64, f64)> = items.iter().map(|(_, pl)| (pl.width, pl.height, pl.curve)).collect();
+    let poses = layout(&head, &sizes);
+    for ((item, pl), pose) in items.iter().zip(&poses) {
+        put(grab, *item, &panel_matrix(pose), pl);
+    }
+    *crate::ffi::lock(&GATHERED) = items.iter().filter_map(|(it, _)| if let Item::Panel(i) = it { Some(*i) } else { None }).collect();
+    *crate::ffi::lock(&BEFORE) = items.clone();
+    eprintln!("gather: {} brought in front of you, not saved (the ungather key, Left Ctrl + Shift + B unless set, or Right Ctrl + Home puts them back)", items.len());
+    Ok(items.len())
+}
+
+/// Puts back what the last gather moved, where it was before (one level of undo). A panel moved
+/// since, on purpose, stays where it's been put. Returns how many went back.
+pub fn ungather(grab: &mut grab::Grab) -> Result<usize, String> {
+    let before = std::mem::take(&mut *crate::ffi::lock(&BEFORE));
+    if before.is_empty() {
+        return Err("nothing gathered to put back".into());
+    }
+    let mut n = 0;
+    for (item, pl) in &before {
+        if let Item::Panel(i) = item
+            && !panels().get(*i).is_some_and(|p| p.live())
+        {
+            continue; // gone since
+        }
+        put(grab, *item, &pl.matrix(), pl);
+        n += 1;
+    }
+    crate::ffi::lock(&GATHERED).clear();
+    eprintln!("ungather: {n} put back where they were");
+    Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::{Pose as P, norm};
+
+    /// A head at (0, 1.6, 0) looking along yaw degrees, level.
+    fn head(yaw: f64) -> Mat {
+        panel_matrix(&P { centre: [0.0, 1.6, 0.0], yaw, ..Default::default() })
+    }
+
+    /// Its eyes' height, as the f32 matrix has it.
+    fn eye_y() -> f64 {
+        head(0.0)[1][3] as f64
+    }
+
+    /// Each one's real bounds, from its corners: the angles round the eye (at the origin, level)
+    /// of their left and right, and their lowest and highest. A curved one's edges are its chord's
+    /// ends, brought toward you by its sagitta. It's right for one turned to face the eyes from a row
+    /// above or below, and for a stacked one, which keeps the turn of the one it stacks on.
+    /// Up and down it compares metres, not angles, which holds because the edges either side of
+    /// the gap between rows are the ones nearer you; it wouldn't if a far edge ever faced the gap.
+    fn corner_spans(poses: &[Pose], sizes: &[(f64, f64, f64)]) -> Vec<((f64, f64), (f64, f64))> {
+        poses
+            .iter()
+            .zip(sizes)
+            .map(|(p, &(w, h, c))| {
+                let (x, y, z) = axes(p);
+                let half = if c > 0.0 { c * (w / (2.0 * c)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
+                let corner = |sx: f64, sy: f64| [0, 1, 2].map(|i| p.centre[i] + sx * half * x[i] + sy * h / 2.0 * y[i] + sagitta(w, c) * z[i]);
+                let cs = [corner(-1.0, -1.0), corner(1.0, -1.0), corner(-1.0, 1.0), corner(1.0, 1.0)];
+                let mid = angles(&p.centre).0;
+                let ang = |q: &V3| (angles(&[q[0], 0.0, q[2]]).0 - mid + 540.0).rem_euclid(360.0) - 180.0 + mid;
+                let (lo, hi) = cs.iter().map(ang).fold((f64::MAX, f64::MIN), |(l, h), a| (l.min(a), h.max(a)));
+                let (b, t) = cs.iter().fold((f64::MAX, f64::MIN), |(b, t), q| (b.min(q[1]), t.max(q[1])));
+                ((lo, hi), (b, t))
+            })
+            .collect()
+    }
+
+    /// Where `p` is from `from`, along `from`'s right, up and front.
+    fn facing(from: &Pose, p: &Pose) -> V3 {
+        let (x, y, z) = axes(from);
+        let d = [0, 1, 2].map(|i| p.centre[i] - from.centre[i]);
+        [x, y, z].map(|v| d[0] * v[0] + d[1] * v[1] + d[2] * v[2])
+    }
+
+    /// Whether every corner of `p`, `h` high, is within BESIDE of a gaze at `yaw` from the eyes
+    /// (0, eye_y(), 0): none behind the eyes' side to side line. A curved one's corners are its
+    /// chord's ends, brought toward you by its sagitta, as in `corner_spans`.
+    fn inside_beside(p: &Pose, h: f64, yaw: f64) -> bool {
+        let (x, y, z) = axes(p);
+        let (w, c) = (p.width, p.curve);
+        let half = if c > 0.0 { c * (w / (2.0 * c)).min(std::f64::consts::FRAC_PI_2).sin() } else { w / 2.0 };
+        let fwd = [-yaw.to_radians().sin(), 0.0, -yaw.to_radians().cos()];
+        [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)].iter().all(|&(sx, sy)| {
+            let c = [0, 1, 2].map(|i| p.centre[i] + sx * half * x[i] + sy * h / 2.0 * y[i] + sagitta(w, c) * z[i]);
+            c[0] * fwd[0] + c[2] * fwd[2] >= -1e-6 // the head is f32
+        })
+    }
+
+    fn apart(a: (f64, f64), b: (f64, f64)) -> bool {
+        a.1 <= b.0 + 1e-9 || b.1 <= a.0 + 1e-9
+    }
+
+    #[test]
+    fn three_panels_sit_side_by_side_in_front_facing_you() {
+        let sizes = [(0.6, 0.34, 0.0), (0.9, 0.5, 0.0), (0.5, 0.4, 0.0)]; // 24° + 36° + 20° and two gaps: one row
+        for yaw in [0.0, 70.0, -150.0] {
+            let poses = layout(&head(yaw), &sizes);
+            let s = corner_spans(&poses, &sizes);
+            for i in 0..3 {
+                for j in i + 1..3 {
+                    assert!(apart(s[i].0, s[j].0) || apart(s[i].1, s[j].1), "{i} and {j} overlap: {s:?}");
+                }
+                let d = [poses[i].centre[0], poses[i].centre[1] - eye_y(), poses[i].centre[2]];
+                assert!((norm(&[d[0], 0.0, d[2]]) - crate::limits::NEW_AHEAD).abs() < 1e-9, "on the arc");
+                let (y, p) = angles(&d);
+                assert!((y - poses[i].yaw).abs() < 1e-9 && (p - poses[i].pitch).abs() < 1e-9, "facing the eye");
+                assert_eq!(poses[i].width, sizes[i].0, "the same size");
+                assert!(poses[i].centre[1] == eye_y() && poses[i].pitch.abs() < 1e-9, "one row: level with the eyes");
+            }
+            // left to right, and centred on the gaze
+            let off = |y: f64| (y - yaw + 540.0).rem_euclid(360.0) - 180.0;
+            assert!(off(poses[0].yaw) > off(poses[1].yaw) && off(poses[1].yaw) > off(poses[2].yaw), "in order, from the left");
+            let (l, r) = (off(s[0].0.1), off(s[2].0.0));
+            assert!((l + r).abs() < 1e-4 && l < SPAN / 2.0, "centred (to the f32 head matrix): {l} and {r}");
+        }
+    }
+
+    /// Opened one after another, the first is in the middle of the gaze and the rest go beside
+    /// it, right then left, none overlapping, each on the arc facing you, and adding one more
+    /// never moves the ones before.
+    #[test]
+    fn one_after_another_they_go_beside_each_other_from_the_middle() {
+        let sizes = [(0.6, 0.34, 0.0), (0.9, 0.5, 0.0), (0.5, 0.4, 0.0), (0.4, 0.3, 1.0)];
+        for yaw in [0.0, 70.0, -150.0] {
+            let poses = side_by_side(&head(yaw), 0.0, &sizes);
+            let s = corner_spans(&poses, &sizes);
+            let off = |y: f64| (y - yaw + 540.0).rem_euclid(360.0) - 180.0;
+            assert!(off(poses[0].yaw).abs() < 1e-4, "the first in the middle: {}", off(poses[0].yaw));
+            assert!(off(poses[1].yaw) < 0.0 && off(poses[2].yaw) > 0.0 && off(poses[3].yaw) < off(poses[1].yaw), "then right, left, right");
+            for i in 0..4 {
+                for j in i + 1..4 {
+                    assert!(apart(s[i].0, s[j].0), "{i} and {j} overlap: {s:?}");
+                }
+                let d = [poses[i].centre[0], poses[i].centre[1] - eye_y(), poses[i].centre[2]];
+                assert!((norm(&[d[0], 0.0, d[2]]) - crate::limits::NEW_AHEAD).abs() < 1e-9 && d[1] == 0.0, "on the arc, level");
+                assert!((angles(&d).0 - poses[i].yaw).abs() < 1e-9 && poses[i].pitch.abs() < 1e-9, "facing the eye");
+                assert_eq!((poses[i].width, poses[i].curve), (sizes[i].0, sizes[i].2));
+            }
+            for n in 1..4 {
+                assert_eq!(side_by_side(&head(yaw), 0.0, &sizes[..n]), poses[..n], "one more doesn't move the others");
+            }
+        }
+    }
+
+    /// More than fit in BESIDE degrees either way (twelve at start, say): none goes past it round
+    /// you, the overflow starts rows above and then below from the middle again, nothing
+    /// overlaps, and still none moves for a later one.
+    #[test]
+    fn one_after_another_past_the_sides_they_start_rows_above_and_below() {
+        let sizes: Vec<_> = (0..14).map(|i| (0.7 + 0.1 * (i % 3) as f64, 0.35 + 0.05 * (i % 4) as f64, 0.0)).collect();
+        for yaw in [0.0, 120.0] {
+            let poses = side_by_side(&head(yaw), 0.0, &sizes);
+            let s = corner_spans(&poses, &sizes);
+            let off = |y: f64| (y - yaw + 540.0).rem_euclid(360.0) - 180.0;
+            for (i, (x, _)) in s.iter().enumerate() {
+                assert!(off(x.0) >= -90.0 - 1e-6 && off(x.1) <= 90.0 + 1e-6, "{i} past the sides: {x:?}");
+            }
+            let rows: std::collections::BTreeSet<i64> = poses.iter().map(|p| ((p.centre[1] - eye_y()) * 100.0).round() as i64).collect();
+            assert!(rows.len() >= 3 && rows.iter().any(|&y| y > 0) && rows.iter().any(|&y| y < 0), "rows above and below: {rows:?}");
+            for i in 0..sizes.len() {
+                for j in i + 1..sizes.len() {
+                    assert!(apart(s[i].0, s[j].0) || apart(s[i].1, s[j].1), "{i} and {j} overlap: {:?} {:?}", s[i], s[j]);
+                }
+            }
+            assert_eq!(side_by_side(&head(yaw), 0.0, &sizes[..9]), poses[..9], "one more doesn't move the others");
+        }
+    }
+
+    /// Forty at once (a big session at start): only ROWS rows, none of them further above or below
+    /// the eyes than one row's reach, the stack under the last of them going no more than five
+    /// steps further, none past the sides, the ones in the rows where they'd be without the rest,
+    /// and each of the rest STEP-steps down and across from the last one in a row.
+    #[test]
+    fn past_three_rows_the_rest_stack_on_the_last() {
+        let mut sides = std::collections::BTreeSet::new(); // which side of the gaze the stacks start
+        for (n, yaw) in (0..4).flat_map(|n| [(n, 0.0), (n, 120.0)]) {
+            // mixed sizes end their last row left of the gaze; narrow and narrower by turns end it right,
+            // near enough the side that stacking further out would pass it
+            let width = |i: usize| match n {
+                0 | 1 => 0.7 + 0.1 * ((i + n) % 3) as f64,
+                _ => {
+                    if i % 2 == n % 2 {
+                        0.4
+                    } else {
+                        0.15
+                    }
+                }
+            };
+            let sizes: Vec<_> = (0..40).map(|i| (width(i), 0.35 + 0.05 * ((i + n) % 4) as f64, 0.0)).collect();
+            let tallest = sizes.iter().map(|z| z.1).fold(0.0, f64::max);
+            let reach = tallest + GAP; // from the eyes to the middle of the row above or below, at most
+            let poses = side_by_side(&head(yaw), 0.0, &sizes);
+            let s = corner_spans(&poses, &sizes);
+            let off = |y: f64| (y - yaw + 540.0).rem_euclid(360.0) - 180.0;
+            for (i, (x, _)) in s.iter().enumerate() {
+                assert!(off(x.0) >= -90.0 - 1e-6 && off(x.1) <= 90.0 + 1e-6, "{i} past the sides: {x:?}");
+            }
+            let dy = |p: &Pose| p.centre[1] - eye_y();
+            // one in a row is on the arc; a stacked one is moved off it
+            let on_arc = |p: &Pose| (norm(&[p.centre[0], 0.0, p.centre[2]]) - crate::limits::NEW_AHEAD).abs() < 1e-9;
+            let k = poses.iter().position(|p| !on_arc(p)).expect("some stacked");
+            assert!(poses[k..].iter().all(|p| !on_arc(p)), "once stacking, the rest stack");
+            // a row's edge nearest the eyes: its windows' bottoms above, their tops below
+            let near = |i: usize| match dy(&poses[i]) {
+                0.0 => 0.0,
+                d => d - d.signum() * sizes[i].1 / 2.0,
+            };
+            let rows: std::collections::BTreeSet<i64> = (0..k).map(|i| (near(i) * 1e6).round() as i64).collect();
+            assert_eq!(rows.len(), ROWS, "only three rows: {rows:?}");
+            for (i, p) in poses[..k].iter().enumerate() {
+                assert!(dy(p).abs() <= reach + 1e-9, "{i} more than a row up or down: {}", dy(p));
+            }
+            let from = poses[k - 1];
+            sides.insert(off(from.yaw) < 0.0);
+            for (j, p) in poses[k..].iter().enumerate() {
+                let i = k + j;
+                assert!(inside_beside(p, sizes[i].1, yaw), "{i} past the sides");
+                // the first to stack one STEP down the last one's face and across it, 2 mm nearer;
+                // the rest one to five steps, then round again a fifth of a step further across
+                let (down, round) = (STEP * (1 + j % 5) as f64, STEP / 5.0 * (j / 5 % 5) as f64);
+                let d = facing(&from, p);
+                assert!((d[0].abs() - down - round).abs() < 1e-9 && (d[1] + down).abs() < 1e-9, "{i} a stack step from {}: {d:?}", k - 1);
+                assert!((d[2] - NEARER * (j + 1) as f64).abs() < 1e-9, "{i} nearer than the one before: {d:?}");
+                assert!(dy(p).abs() <= reach + 5.0 * STEP + 1e-9, "{i} too far down: {}", dy(p));
+                assert_eq!((p.width, p.curve, p.yaw, p.pitch), (sizes[i].0, sizes[i].2, from.yaw, from.pitch));
+                // and none on another's spot, a round later included: these all take plain steps,
+                // and one the bounds move can land near another's
+                for (l, q) in poses[k..i].iter().enumerate() {
+                    let e = facing(q, p);
+                    assert!(e[0].hypot(e[1]) > STEP / 5.0 - 1e-9 || j - l >= 25, "{i} on {}'s spot", k + l);
+                }
+            }
+            // overlaps: none among the rows, and a stacked one only over the stack or the row it's on
+            // (below), whose windows beside the last it steps toward; never the row level or above
+            let c = corner_spans(&poses, &sizes);
+            let over = |i: usize, j: usize| !(apart(c[i].0, c[j].0) || apart(c[i].1, c[j].1));
+            for (i, p) in poses[..k].iter().enumerate() {
+                for j in i + 1..k {
+                    assert!(!over(i, j), "{i} and {j} in rows overlap");
+                }
+                for j in k..sizes.len() {
+                    assert!(!over(i, j) || dy(p) < 0.0, "{j}, stacked, over {i} in the row level or above");
+                }
+            }
+            assert!(over(k - 1, k), "the first stacked one is over the last in a row");
+            for n in k - 2..=k {
+                assert_eq!(side_by_side(&head(yaw), 0.0, &sizes[..n]), poses[..n], "the rest don't move the first");
+            }
+        }
+        assert_eq!(sides.len(), 2, "stacks started on both sides of the gaze");
+    }
+
+    /// Small windows fill the rows out to the sides, so the stack starts on a small one near the
+    /// edge; then a late one much taller and wider than it stacks, flat and then curved (whose
+    /// corners come toward you, and up off the up-tilted bottom row). Its real corners stay inside
+    /// 90°, its top under the eye-level row, it's still the nearest, and the one after it goes
+    /// back to the plain step.
+    #[test]
+    fn a_big_late_window_on_the_stack_keeps_inside_the_bounds() {
+        let small = (0.15, 0.1, 0.0);
+        for (yaw, curve) in [(0.0, 0.0), (120.0, 0.0), (0.0, 1.2), (120.0, 1.2)] {
+            let k = side_by_side(&head(yaw), 0.0, &[small; 120]).iter().position(|p| (norm(&[p.centre[0], 0.0, p.centre[2]]) - crate::limits::NEW_AHEAD).abs() > 1e-9).expect("some stacked");
+            let mut sizes = vec![small; k + 4];
+            let big_size = (1.2, 0.9, curve);
+            sizes[k + 2] = big_size;
+            let poses = side_by_side(&head(yaw), 0.0, &sizes);
+            let (from, big) = (poses[k - 1], poses[k + 2]);
+            let off = (from.yaw - yaw + 540.0).rem_euclid(360.0) - 180.0;
+            assert!(off.abs() > 75.0, "the stack starts near the edge: {off}");
+            // the eye-level row's bottom: its windows are the ones level with the eyes, the first too
+            let level_bottom = poses[..k].iter().filter(|p| p.centre[1] == poses[0].centre[1]).map(|p| p.centre[1] - eye_y() - small.1 / 2.0).fold(0.0, f64::min);
+            // its real top, from its corners (a curved one's come up toward you by its sagitta)
+            let top = |p: &Pose| corner_spans(&[*p], &[big_size])[0].1.1 - eye_y();
+            assert!(inside_beside(&big, 0.9, yaw), "curve {curve}: its corners inside 90°");
+            // where the plain third step would put it: past 90° and over the eye-level row
+            let (x, y, z) = axes(&from);
+            let s = facing(&from, &poses[k])[0].signum();
+            let plain = Pose { centre: [0, 1, 2].map(|i| from.centre[i] + s * 3.0 * STEP * x[i] - 3.0 * STEP * y[i] + 3.0 * NEARER * z[i]), ..big };
+            assert!(!inside_beside(&plain, 0.9, yaw), "curve {curve}: the plain step would put it past 90°");
+            assert!(top(&plain) > level_bottom - GAP, "curve {curve}: and over the eye-level row");
+            let d = facing(&from, &big);
+            assert!(d[1] < -3.0 * STEP - 0.05 && d[0] * s > 3.0 * STEP + 0.05, "curve {curve}: so it's moved further down and in, toward the gaze: {d:?}");
+            assert!((top(&big) - (level_bottom - GAP)).abs() < 1e-9, "curve {curve}: its top just under the eye-level row: {} {level_bottom}", top(&big));
+            assert!((d[2] - 3.0 * NEARER).abs() < 1e-9, "curve {curve}: still the nearest: {d:?}");
+            let (step, after) = (STEP * 4.0, facing(&from, &poses[k + 3]));
+            assert!((after[0].abs() - step).abs() < 1e-9 && (after[1] + step).abs() < 1e-9, "curve {curve}: the next back to the plain step: {after:?}");
+            for i in k..sizes.len() {
+                assert!(inside_beside(&poses[i], sizes[i].1, yaw), "curve {curve}: {i} past the sides");
+            }
+        }
+    }
+
+    #[test]
+    fn too_many_for_the_arc_wrap_into_rows_above_and_below() {
+        let sizes = vec![(1.0, 0.6, 0.0); 5]; // two to a 100° row: three rows
+        let poses = layout(&head(0.0), &sizes);
+        let s = corner_spans(&poses, &sizes);
+        for (i, (a, b)) in s.iter().enumerate() {
+            assert!(a.0 >= -SPAN / 2.0 - 1e-6 && a.1 <= SPAN / 2.0 + 1e-6, "{i} is within the arc: {a:?}");
+            for (j, (c, d)) in s.iter().enumerate().skip(i + 1) {
+                assert!(apart(*a, *c) || apart(*b, *d), "{i} and {j} overlap");
+            }
+            let _ = b;
+        }
+        let ys: Vec<f64> = poses.iter().map(|p| p.centre[1]).collect();
+        let mut rows: Vec<f64> = ys.clone();
+        rows.sort_by(f64::total_cmp);
+        rows.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        // a metre is 39° at 1.4 m, so two fit in 100° and five make three rows
+        assert_eq!(rows.len(), 3, "5 one-metre panels make three rows: {ys:?}");
+        assert!(ys[0] == eye_y() && ys[1] == eye_y(), "the first row is at eye height");
+        assert!(ys[2] > eye_y() && ys[2] == ys[3], "the next row goes above");
+        assert!(ys[4] < eye_y(), "and the one after below");
+        for p in &poses {
+            let d = [p.centre[0], p.centre[1] - eye_y(), p.centre[2]];
+            let (y, pt) = angles(&d);
+            assert!((y - p.yaw).abs() < 1e-9 && (pt - p.pitch).abs() < 1e-9, "every row faces the eye");
+        }
+    }
+
+    /// Tall and curved, on every arc: the rows above and below are turned to face the eyes, so
+    /// their nearer edges take a wider angle than at eye level, and still none overlaps another by
+    /// its real corners.
+    #[test]
+    fn tilted_rows_keep_clear_by_their_real_corners() {
+        // rows_for packs a tilted row by its nearer edges, so it fits its arc; this is only rounding
+        // (packing by eye-level width overshot 160° by 13° here)
+        const OVERSHOOT: f64 = 1e-9;
+        let (mut below, mut arcs) = (false, std::collections::BTreeSet::new());
+        for n in [5, 7, 9, 13] {
+            let sizes: Vec<_> = (0..n).map(|i| (0.9 + 0.1 * (i % 2) as f64, 0.9, if i % 3 == 0 { 1.2 } else { 0.0 })).collect();
+            let poses = layout(&head(0.0), &sizes);
+            assert!(poses.iter().any(|p| p.centre[1] > eye_y()), "{n}: a row above");
+            below |= poses.iter().any(|p| p.centre[1] < eye_y());
+            let s = corner_spans(&poses, &sizes);
+            let span = span_for(&sizes);
+            arcs.insert(span as i64);
+            for i in 0..n {
+                for j in i + 1..n {
+                    assert!(apart(s[i].0, s[j].0) || apart(s[i].1, s[j].1), "{n}: {i} and {j} overlap: {:?} {:?}", s[i], s[j]);
+                }
+                let half = span / 2.0 * (1.0 + OVERSHOOT);
+                assert!(s[i].0.0 >= -half && s[i].0.1 <= half, "{n}: {i} outside the {span}° arc: {:?}", s[i].0);
+            }
+        }
+        assert!(below, "and a row below");
+        assert_eq!(arcs, [100, 160, 220].into(), "every arc");
+    }
+
+    /// Too many for ROWS rows even on the widest arc: layout keeps WIDER's last arc and ROWS rows,
+    /// and the rest stack on the last one placed, the way side_by_side's do (stack_on). Every panel
+    /// stays inside the arc by its real corners; the rows don't overlap; a stacked one overlaps only
+    /// the row below and the stack, never the eye-level row or the one above. It runs again with a
+    /// big curved one last, too tall and too wide for its plain step, which is moved to fit; with
+    /// one tall one among the short in the eye-level row; and with both, where the tall one lowers
+    /// the ceiling the big one is pulled under.
+    #[test]
+    fn past_the_widest_arc_the_rest_stack_on_the_last() {
+        for (big, tall) in [(false, false), (true, false), (false, true), (true, true)] {
+            // 30 leaves fewer than 25 stacked, on purpose: past 25 stack_on's plain steps repeat
+            // their spots, and the "on l's spot" check below would fail (asserted below)
+            let mut sizes = vec![(1.0, 0.6, 0.0); 30];
+            if big {
+                sizes[29] = (2.6, 1.4, 1.5);
+            }
+            if tall {
+                sizes[2] = (1.0, 1.4, 0.0);
+            }
+            let span = span_for(&sizes);
+            assert_eq!(span, WIDER[WIDER.len() - 1], "the widest arc");
+            let rows = rows_for(&sizes, span);
+            assert!(rows.len() > ROWS, "more than ROWS rows' worth: {}", rows.len());
+            let poses = layout(&head(0.0), &sizes);
+            let dy = |p: &Pose| p.centre[1] - eye_y();
+            // the rows: the first ROWS of rows_for's, level, above, below
+            for (row, y) in &rows[..ROWS] {
+                for &i in row {
+                    assert!((dy(&poses[i]) - y).abs() < 1e-6, "{i} at its row's height");
+                }
+            }
+            assert!(rows[1].1 > 0.0 && rows[2].1 < 0.0, "one above, one below");
+            assert!(!tall || rows[0].0.contains(&2), "the tall one is in the eye-level row");
+            let row_of = |i: usize| rows[..ROWS].iter().position(|(row, _)| row.contains(&i));
+            let stacked: Vec<usize> = (0..sizes.len()).filter(|&i| row_of(i).is_none()).collect();
+            assert!(stacked.len() < 25, "fewer than 25 stacked: {}", stacked.len());
+            assert_eq!(stacked, (rows[..ROWS].iter().map(|(row, _)| row.len()).sum::<usize>()..sizes.len()).collect::<Vec<_>>(), "the rest, in order, stack");
+            let from = poses[*rows[ROWS - 1].0.last().unwrap()];
+            let ceiling = -rows[0].0.iter().map(|&i| sizes[i].1).fold(0.0, f64::max) / 2.0 - GAP;
+            let s = corner_spans(&poses, &sizes);
+            for (j, &i) in stacked.iter().enumerate() {
+                let d = facing(&from, &poses[i]);
+                assert!((d[2] - NEARER * (j + 1) as f64).abs() < 1e-9, "{i} nearer than the one before: {d:?}");
+                assert!(s[i].1.1 - eye_y() <= ceiling + 1e-9, "{i}'s top under the eye-level row: {} {ceiling}", s[i].1.1 - eye_y());
+                if !(big && i == 29) {
+                    let (down, round) = (STEP * (1 + j % 5) as f64, STEP / 5.0 * (j / 5 % 5) as f64);
+                    assert!((d[0].abs() - down - round).abs() < 1e-9 && (d[1] + down).abs() < 1e-9, "{i} a plain stack step: {d:?}");
+                    // and none on another's spot, a round later included
+                    for &l in &stacked[..j] {
+                        let e = facing(&poses[l], &poses[i]);
+                        assert!(e[0].hypot(e[1]) > STEP / 5.0 - 1e-9, "{i} on {l}'s spot");
+                    }
+                }
+            }
+            if big {
+                // where its plain step would have put it: over the eye-level row and past the arc
+                let j = stacked.len() - 1;
+                let (down, round) = (STEP * (1 + j % 5) as f64, STEP / 5.0 * (j / 5 % 5) as f64);
+                let (x, y, z) = axes(&from);
+                let sign = facing(&from, &poses[stacked[0]])[0].signum();
+                let plain = Pose { centre: [0, 1, 2].map(|k| from.centre[k] + sign * (down + round) * x[k] - down * y[k] + NEARER * (j + 1) as f64 * z[k]), ..poses[29] };
+                let p = corner_spans(&[plain], &[sizes[29]])[0];
+                assert!(p.1.1 - eye_y() > ceiling, "its plain step would cross the eye-level row");
+                assert!(p.0.0 < -span / 2.0 || p.0.1 > span / 2.0, "and pass the arc: {:?}", p.0);
+                assert!((s[29].1.1 - eye_y() - ceiling).abs() < 1e-9, "so its top is moved to just under it");
+            }
+            for i in 0..sizes.len() {
+                assert!(s[i].0.0 >= -span / 2.0 - 1e-6 && s[i].0.1 <= span / 2.0 + 1e-6, "{i} outside the {span}° arc: {:?}", s[i].0);
+                for j in i + 1..sizes.len() {
+                    let over = !(apart(s[i].0, s[j].0) || apart(s[i].1, s[j].1));
+                    match (row_of(i), row_of(j)) {
+                        (Some(_), Some(_)) => assert!(!over, "{i} and {j} in rows overlap"),
+                        (Some(r), None) | (None, Some(r)) => assert!(!over || r == ROWS - 1, "a stacked one over {} in row {r}", if row_of(i).is_some() { i } else { j }),
+                        (None, None) => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// However many stack, none comes more than NEAREST times NEARER in front of the one it stacks
+    /// on. Back on an earlier one's spot after 25, it's still nearer than that one, up to NEAREST.
+    #[test]
+    fn past_nearest_the_stack_stops_coming_nearer() {
+        let h = head(0.0);
+        let from = layout(&h, &[(1.0, 0.6, 0.0)])[0];
+        let eye: V3 = [0, 1, 2].map(|i| h[i][3] as f64);
+        // small, with room above and beside, so plain steps only
+        let at = |j: usize| facing(&from, &stack_on(&from, j, (0.4, 0.3, 0.0), &eye, 0.0, 10.0, 90.0));
+        for j in 0..NEAREST {
+            assert!((at(j)[2] - NEARER * (j + 1) as f64).abs() < 1e-9, "{j} nearer than the one before: {:?}", at(j));
+        }
+        for j in [NEAREST, NEAREST + 1, 200, 1000] {
+            assert!((at(j)[2] - NEARER * NEAREST as f64).abs() < 1e-9, "{j} no nearer than the {NEAREST}th: {:?}", at(j));
+        }
+        for j in 0..NEAREST - 25 {
+            let (a, b) = (at(j), at(j + 25));
+            assert!((a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9 && b[2] > a[2] + 1e-9, "{} on {j}'s spot, nearer: {a:?} {b:?}", j + 25);
+        }
+    }
+
+    /// A window curved round past the eyes (4.8 m on a 1.5 m radius, so its edges come 1.5 m toward
+    /// you) stacked on one 3° off the gaze at start, where BESIDE's bound is the eyes' own side to
+    /// side line: moving it across hardly brings its edges in (it would take metres), so it stays
+    /// on its plain step.
+    #[test]
+    fn a_window_curved_round_past_the_eyes_stacks_where_its_step_puts_it() {
+        let h = head(0.0);
+        let from = layout(&h, &[(1.0, 0.6, 0.0)])[0];
+        let eye: V3 = [0, 1, 2].map(|i| h[i][3] as f64);
+        let p = stack_on(&from, 0, (4.8, 0.6, 1.5), &eye, 3.0, 10.0, BESIDE);
+        let d = facing(&from, &p);
+        assert!((d[0].abs() - STEP).abs() < 1e-9 && (d[1] + STEP).abs() < 1e-9 && (d[2] - NEARER).abs() < 1e-9, "its plain step: {d:?}");
+    }
+
+    /// Rows of 3 m tall windows put the bottom row's middle 65° below the eyes, and an 8 m tall one
+    /// stacks on it: it's moved down its face, as far as 60° would need and no further, and nothing
+    /// is lost.
+    #[test]
+    fn a_window_on_rows_taller_than_the_view_still_stacks() {
+        let mut sizes = vec![(1.0, 3.0, 0.0); 30];
+        sizes.push((1.0, 8.0, 0.0));
+        let poses = layout(&head(0.0), &sizes);
+        assert!(poses.iter().all(|p| p.centre.iter().all(|v| v.is_finite())), "{poses:?}");
+        let rows = rows_for(&sizes, span_for(&sizes));
+        let from = poses[*rows[ROWS - 1].0.last().unwrap()];
+        assert!(from.pitch < -60.0, "the bottom row tipped past 60°: {}", from.pitch);
+        let j = sizes.len() - 1 - rows[..ROWS].iter().map(|(r, _)| r.len()).sum::<usize>();
+        let d = facing(&from, &poses[30]);
+        let down = STEP * (1 + j % 5) as f64;
+        // how far its plain step's top is over the ceiling, by its real corners
+        let (x, y, z) = axes(&from);
+        let round = STEP / 5.0 * (j / 5 % 5) as f64;
+        let plain = Pose { centre: [0, 1, 2].map(|k| from.centre[k] + (down + round) * x[k] - down * y[k] + NEARER * (j + 1) as f64 * z[k]), ..poses[30] };
+        let ceiling = -rows[0].0.iter().map(|&i| sizes[i].1).fold(0.0, f64::max) / 2.0 - GAP;
+        let over = corner_spans(&[plain], &[sizes[30]])[0].1.1 - eye_y() - ceiling;
+        assert!(over > 0.0, "its plain step's top is over the ceiling: {over}");
+        assert!((d[1] + down + over / 0.5).abs() < 1e-6, "moved down its face by over / 0.5, as 60° would need: {d:?} {over}");
+    }
+
+    #[test]
+    fn a_panel_wider_than_the_arc_gets_a_row_to_itself() {
+        let sizes = [(0.5, 0.3, 0.0), (4.0, 1.0, 0.0), (0.5, 0.3, 0.0)];
+        let poses = layout(&head(0.0), &sizes);
+        let ys: Vec<f64> = poses.iter().map(|p| p.centre[1]).collect();
+        assert!(ys[0] != ys[1] && ys[1] != ys[2], "three rows: {ys:?}");
+        assert!(poses[1].yaw.abs() < 1e-9, "centred on the gaze");
+    }
+
+    #[test]
+    fn nothing_to_gather_is_nothing() {
+        assert!(layout(&head(0.0), &[]).is_empty());
+    }
+
+    #[test]
+    fn looking_straight_up_or_down_still_has_an_ahead() {
+        // half a degree off straight up or down: what's ahead has almost no level part
+        let up = panel_matrix(&P { centre: [0.0, 1.6, 0.0], yaw: 30.0, pitch: 89.5, ..Default::default() });
+        let down = panel_matrix(&P { centre: [0.0, 1.6, 0.0], yaw: 30.0, pitch: -89.5, ..Default::default() });
+        for h in [up, down] {
+            let f = forward(&h);
+            assert!((f[0].hypot(f[2]) - 1.0).abs() < 1e-6 && f[1] == 0.0, "a level unit direction: {f:?}");
+            assert!((angles(&f).0 - 30.0).abs() < 1.0, "the way the face was turned: {f:?}");
+            let p = layout(&h, &[(1.0, 0.6, 0.0)]);
+            assert!(p[0].centre.iter().all(|v| v.is_finite()), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn more_rows_than_three_widen_the_arc_instead() {
+        let sizes = vec![(1.0, 0.6, 0.0); 9]; // five rows of two at 100°: it widens
+        let poses = layout(&head(0.0), &sizes);
+        let mut ys: Vec<f64> = poses.iter().map(|p| p.centre[1]).collect();
+        ys.sort_by(f64::total_cmp);
+        ys.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        assert!(ys.len() <= ROWS, "nine take at most {ROWS} rows on a wider arc: {ys:?}");
+        let s = corner_spans(&poses, &sizes);
+        assert!(s.iter().any(|(a, _)| a.0 < -SPAN / 2.0 || a.1 > SPAN / 2.0), "and the arc's wider than 100°: {s:?}");
+        for i in 0..9 {
+            for j in i + 1..9 {
+                assert!(apart(s[i].0, s[j].0) || apart(s[i].1, s[j].1), "{i} and {j} overlap");
+            }
+        }
+    }
+
+    #[test]
+    fn a_curved_panel_takes_the_angle_of_its_chord() {
+        // curved, its chord is shorter, but its edges come toward you, so it takes more of the view
+        let (half, sag) = (1.4 * 0.5f64.sin(), 1.4 * (1.0 - 0.5f64.cos()));
+        assert!((across(1.4, 1.4) - 2.0 * (half / (crate::limits::NEW_AHEAD - sag)).atan().to_degrees()).abs() < 1e-9);
+        assert!(across(1.4, 1.4) > across(1.4, 0.0));
+        assert!((across(1.0, 0.0) - 2.0 * (0.5f64 / crate::limits::NEW_AHEAD).atan().to_degrees()).abs() < 1e-12);
+        let poses = layout(&head(0.0), &[(1.4, 0.6, 1.4), (1.4, 0.6, 1.4)]);
+        assert_eq!(poses[0].curve, 1.4, "it keeps its curve");
+    }
+
+    /// With the headset untracked a gather changes nothing, summon included, and says why; the
+    /// socket's `gather` answers that as an error, and with nothing gathered `ungather` does too.
+    /// (A tracked gather walks the panel list, which a test has no way to make yet.)
+    #[test]
+    fn gather_needs_the_head_and_ungather_needs_a_gather() {
+        let _vr = crate::trace::fake_vr();
+        let mut windows = Windows::for_test(0);
+        let mut grab = grab::Grab::with_backdrop(0, crate::vr::Handle::NONE);
+        let dir = std::env::temp_dir().join(format!("cc-gather-test-{}", std::process::id()));
+        let mut bar = crate::taskbar::Taskbar::new(dir.to_str().unwrap());
+        crate::HIDDEN.store(true, Relaxed);
+        assert!(gather(&mut grab, &mut windows).unwrap_err().contains("isn't tracked"));
+        assert!(crate::HIDDEN.load(Relaxed), "nothing changed: summon would have shown the panels");
+        assert!(crate::control::command("gather", &mut grab, &mut windows, &mut bar).starts_with("error the headset isn't tracked"));
+        crate::ffi::lock(&BEFORE).clear();
+        assert_eq!(crate::control::command("ungather", &mut grab, &mut windows, &mut bar), "error nothing gathered to put back");
+        crate::HIDDEN.store(false, Relaxed);
+    }
+
+    fn pl0() -> Placement {
+        Placement::from_matrix(&head(0.0), 1.0, 0.5625, 0.0)
+    }
+
+    #[test]
+    fn a_gathered_panel_is_its_own_place_again_once_put_somewhere() {
+        *crate::ffi::lock(&GATHERED) = vec![2, 5];
+        *crate::ffi::lock(&BEFORE) = vec![(Item::Panel(2), pl0()), (Item::Panel(5), pl0())];
+        assert!(gathered(2) && gathered(5) && !gathered(3));
+        placed(5); // carried and let go of, or a spot
+        assert!(gathered(2) && !gathered(5));
+        assert_eq!(crate::ffi::lock(&BEFORE).len(), 1, "and an ungather leaves it where it was put");
+        placed(2);
+        assert!(crate::ffi::lock(&BEFORE).is_empty() && crate::ffi::lock(&GATHERED).is_empty());
+    }
+}

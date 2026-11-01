@@ -24,9 +24,13 @@ When cc-panels starts, it picks one with `conf::choose_workspace`:
 3. A new room while the active workspace is dedicated and bound to no room yet (`cc-home
    workspace new`): that one, and it gets bound to this room.
 4. Anything else (you're travelling, or there's no dedicated workspace yet): **Temporary**. If it
-   doesn't exist, it's made from the active workspace's layout and machines. After that it keeps
-   its own layout from trip to trip, since moving panels saves there. It no longer makes a
-   `workspace-N` for every new room.
+   doesn't exist, it's made with the active workspace's machines, but not its layout: those places
+   belong to that workspace's room. Temporary keeps a layout per room it's used in: the current
+   room's in `spots` (`laid_out_in` says which room), the others under `rooms`, the 8 seen most
+   recently. Back in a room you get that room's layout; a room it hasn't seen starts with a copy of
+   the last room's (`temporary_in`), because on the Frame a new room id is mostly the same room
+   tracked again without its saved map (docs/steamvr-integration.md, "Where things come back after
+   a restart"). It never makes a `workspace-N` for every new room.
 
 A fresh install (no home.json) starts in Temporary, so everything saves there until you make your
 first dedicated workspace.

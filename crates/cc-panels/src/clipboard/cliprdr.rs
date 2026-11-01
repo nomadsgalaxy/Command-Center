@@ -7,15 +7,15 @@
 //! Frame's files that way, pass a machine's requests through to another machine's channel when
 //! the files came from there, and fetch them into a staging folder when a Frame app pastes them.
 use super::formats::{self, Entry};
-use super::{Chan, Data, Fmt, HUB, Want, run};
+use super::{Chan, Data, Fmt, Want, run};
 use crate::{Panel, panel};
 use freerdp_sys::*;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{CString, c_void};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering::*;
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering::*;
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -25,10 +25,10 @@ const MOST: u32 = 8 << 20; // the most we hand back to one request
 struct Info {
     panel: usize,
     machine: String,
-    files: bool,               // the server said CB_STREAM_FILECLIP_ENABLED
-    ids: Vec<(Fmt, u32)>,      // its last format list's ids
-    asked: VecDeque<Fmt>,      // our format data requests, oldest first, so we know what an answer is
-    relay: Option<usize>,      // its last file paste's source channel, or None for the Frame's
+    files: bool,          // the server said CB_STREAM_FILECLIP_ENABLED
+    ids: Vec<(Fmt, u32)>, // its last format list's ids
+    asked: VecDeque<Fmt>, // our format data requests, oldest first, so we know what an answer is
+    relay: Option<usize>, // its last file paste's source channel, or None for the Frame's
 }
 
 static CHANS: Mutex<Vec<Info>> = Mutex::new(Vec::new());
@@ -40,12 +40,18 @@ static STREAM: AtomicU32 = AtomicU32::new(1);
 /// A machine's files fetched for the Frame: the copy (copy) and the top-level paths.
 static STAGED: Mutex<Option<(u64, Vec<PathBuf>)>> = Mutex::new(None);
 
+/// CHANS, locked. After a caught panic poisoned it, the list starts over empty; the channels that
+/// are still up come back as their sessions reconnect.
+fn chans_lock() -> std::sync::MutexGuard<'static, Vec<Info>> {
+    crate::ffi::lock_or_reset(&CHANS, Vec::clear)
+}
+
 pub fn chans() -> Vec<Chan> {
-    crate::ffi::lock(&CHANS).iter().map(|i| Chan { panel: i.panel, machine: i.machine.clone(), files: i.files }).collect()
+    chans_lock().iter().map(|i| Chan { panel: i.panel, machine: i.machine.clone(), files: i.files }).collect()
 }
 
 fn with<R>(panel: usize, f: impl FnOnce(&mut Info) -> R) -> Option<R> {
-    crate::ffi::lock(&CHANS).iter_mut().find(|i| i.panel == panel).map(f)
+    chans_lock().iter_mut().find(|i| i.panel == panel).map(f)
 }
 
 fn index(c: *mut CliprdrClientContext) -> usize {
@@ -71,7 +77,7 @@ pub fn attach(p: &Panel, c: *mut CliprdrClientContext) {
         (*c).ServerFileContentsResponse = Some(on_server_file_contents_response);
     }
     let machine = crate::config::machine_of(&p.v).to_string();
-    let mut all = crate::ffi::lock(&CHANS);
+    let mut all = chans_lock();
     all.retain(|i| i.panel != p.index);
     all.push(Info { panel: p.index, machine, files: false, ids: Vec::new(), asked: VecDeque::new(), relay: None });
     drop(all);
@@ -84,8 +90,8 @@ pub fn detach(p: &Panel, c: *mut CliprdrClientContext) {
     p.cliprdr.store(std::ptr::null_mut(), Release);
     unsafe { (*c).custom = std::ptr::null_mut() };
     let before = chans();
-    crate::ffi::lock(&CHANS).retain(|i| i.panel != p.index);
-    let acts = crate::ffi::lock(&HUB).channel_down(p.index, &before);
+    chans_lock().retain(|i| i.panel != p.index);
+    let acts = crate::clipboard::hub().channel_down(p.index, &before);
     run(acts);
 }
 
@@ -122,7 +128,7 @@ unsafe extern "C" fn on_monitor_ready(c: *mut CliprdrClientContext, _: *const CL
         }
         let me = chans().into_iter().find(|ch| ch.panel == index(c));
         if let Some(me) = me {
-            let acts = crate::ffi::lock(&HUB).channel_up(&me, Instant::now()); // a machine that (re)connects gets what's been copied
+            let acts = crate::clipboard::hub().channel_up(&me, Instant::now()); // a machine that (re)connects gets what's been copied
             run(acts);
         }
         0
@@ -130,9 +136,7 @@ unsafe extern "C" fn on_monitor_ready(c: *mut CliprdrClientContext, _: *const CL
 }
 
 unsafe extern "C" fn on_server_format_list_response(_: *mut CliprdrClientContext, _: *const CLIPRDR_FORMAT_LIST_RESPONSE) -> UINT {
-    crate::ffi::guard("on_server_format_list_response", ERROR_INTERNAL_ERROR, || {
-        0
-    })
+    crate::ffi::guard("on_server_format_list_response", ERROR_INTERNAL_ERROR, || 0)
 }
 
 unsafe extern "C" fn on_server_format_list(c: *mut CliprdrClientContext, list: *const CLIPRDR_FORMAT_LIST) -> UINT {
@@ -145,21 +149,27 @@ unsafe extern "C" fn on_server_format_list(c: *mut CliprdrClientContext, list: *
             return rc;
         }
         let list = unsafe { &*list };
+        // SAFETY: FreeRDP hands us the list for this callback only; formats is checked for null above, and numFormats is how many it holds.
         let raw = if list.formats.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(list.formats, list.numFormats as usize) } };
-        let named: Vec<(u32, Option<String>)> = raw.iter().map(|f| {
-            let name = (!f.formatName.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(f.formatName) }.to_string_lossy().into_owned());
-            (f.formatId, name)
-        }).collect();
+        let named: Vec<(u32, Option<String>)> = raw
+            .iter()
+            .map(|f| {
+                let name = (!f.formatName.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(f.formatName) }.to_string_lossy().into_owned());
+                (f.formatId, name)
+            })
+            .collect();
         let picked = formats::pick(&named);
         let p = index(c);
         let Some(machine) = with(p, |i| {
             i.ids = picked.clone();
             i.machine.clone()
-        }) else { return 0 };
+        }) else {
+            return 0;
+        };
         let fmts: Vec<Fmt> = picked.iter().map(|(f, _)| *f).collect();
         eprintln!("clipboard: {} announces {fmts:?}", panel(p).v.name);
         let all = chans();
-        let acts = crate::ffi::lock(&HUB).remote_announce(p, &machine, fmts, &all, Instant::now());
+        let acts = crate::clipboard::hub().remote_announce(p, &machine, fmts, &all, Instant::now());
         run(acts);
         0
     })
@@ -171,10 +181,11 @@ unsafe extern "C" fn on_server_format_data_response(c: *mut CliprdrClientContext
         let p = index(c);
         let Some(Some(fmt)) = with(p, |i| i.asked.pop_front()) else { return 0 };
         let ok = r.common.msgFlags as u32 & CB_RESPONSE_OK != 0 && !r.requestedFormatData.is_null();
+        // SAFETY: for this callback only; requestedFormatData is checked for null (`ok`), and dataLen is its length in bytes, as FreeRDP parsed it from the PDU.
         let raw = if ok { unsafe { std::slice::from_raw_parts(r.requestedFormatData, r.common.dataLen as usize) } } else { &[][..] };
         let bytes = ok.then(|| from_wire(fmt, raw)).flatten();
         let all = chans();
-        let acts = crate::ffi::lock(&HUB).remote_data(p, bytes, &all, Instant::now());
+        let acts = crate::clipboard::hub().remote_data(p, bytes, &all, Instant::now());
         run(acts);
         0
     })
@@ -189,7 +200,7 @@ unsafe extern "C" fn on_server_format_data_request(c: *mut CliprdrClientContext,
             respond(p, None);
             return 0;
         };
-        let acts = crate::ffi::lock(&HUB).want(Want::Rdp(p), fmt); // answered now, or once it's fetched
+        let acts = crate::clipboard::hub().want(Want::Rdp(p), fmt); // answered now, or once it's fetched
         run(acts);
         0
     })
@@ -211,10 +222,8 @@ fn from_wire(fmt: Fmt, b: &[u8]) -> Option<Vec<u8>> {
 pub fn offer(p: usize, fmts: &[Fmt]) {
     let Some(c) = ctx(p) else { return };
     let names: Vec<Option<CString>> = fmts.iter().map(|f| formats::to_rdp(*f).1.map(|n| CString::new(n).unwrap())).collect();
-    let mut list: Vec<CLIPRDR_FORMAT> = fmts.iter().zip(&names).map(|(f, n)| CLIPRDR_FORMAT {
-        formatId: formats::to_rdp(*f).0,
-        formatName: n.as_ref().map_or(std::ptr::null_mut(), |n| n.as_ptr() as *mut _),
-    }).collect();
+    let mut list: Vec<CLIPRDR_FORMAT> =
+        fmts.iter().zip(&names).map(|(f, n)| CLIPRDR_FORMAT { formatId: formats::to_rdp(*f).0, formatName: n.as_ref().map_or(std::ptr::null_mut(), |n| n.as_ptr() as *mut _) }).collect();
     let mut l = CLIPRDR_FORMAT_LIST::default();
     l.common.msgType = CliprdrMsgType_CB_FORMAT_LIST as u16;
     l.numFormats = list.len() as u32;
@@ -228,7 +237,7 @@ pub fn fetch(p: usize, fmt: Fmt) {
     let id = with(p, |i| i.ids.iter().find(|(f, _)| *f == fmt).map(|(_, id)| *id)).flatten();
     let (Some(c), Some(id)) = (ctx(p), id) else {
         let all = chans();
-        let acts = crate::ffi::lock(&HUB).remote_data(p, None, &all, Instant::now());
+        let acts = crate::clipboard::hub().remote_data(p, None, &all, Instant::now());
         return run(acts);
     };
     with(p, |i| i.asked.push_back(fmt));
@@ -278,14 +287,43 @@ fn respond(p: usize, data: Option<&[u8]>) {
 
 // ------------------------------------------------------------------ file contents
 
+/// The FILECONTENTS answers being worked on, at most FILE_WORKERS at once. Holding one is a slot.
+struct Busy;
+const FILE_WORKERS: usize = 4;
+static BUSY: AtomicU32 = AtomicU32::new(0);
+
+impl Busy {
+    /// Takes a slot if one is free.
+    fn take() -> bool {
+        if BUSY.fetch_add(1, SeqCst) as usize >= FILE_WORKERS {
+            BUSY.fetch_sub(1, SeqCst);
+            return false;
+        }
+        true
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        BUSY.fetch_sub(1, SeqCst);
+    }
+}
+
 unsafe extern "C" fn on_server_file_contents_request(c: *mut CliprdrClientContext, r: *const CLIPRDR_FILE_CONTENTS_REQUEST) -> UINT {
     crate::ffi::guard("on_server_file_contents_request", ERROR_INTERNAL_ERROR, || {
         let r = unsafe { *r };
         let p = index(c);
         let pos = (r.nPositionHigh as u64) << 32 | r.nPositionLow as u64;
         let relay = with(p, |i| i.relay).flatten();
+        // A machine could send requests faster than they're answered, each one a thread with up
+        // to MOST bytes (RESEXHAUST-002), so only a few run at once; one past that is refused.
+        if !Busy::take() {
+            answer(p, r.streamId, None);
+            return 0;
+        }
         // off the RDP thread: a relay waits on another machine, and a range is a disk read
         std::thread::spawn(move || {
+            let _busy = Busy;
             let data = match relay {
                 Some(src) => contents(src, r.listIndex, r.dwFlags, pos, r.cbRequested.min(MOST)),
                 None => local(r.listIndex as usize, r.dwFlags, pos, r.cbRequested.min(MOST)),
@@ -300,6 +338,7 @@ unsafe extern "C" fn on_server_file_contents_response(_: *mut CliprdrClientConte
     crate::ffi::guard("on_server_file_contents_response", ERROR_INTERNAL_ERROR, || {
         let r = unsafe { &*r };
         let ok = r.common.msgFlags as u32 & CB_RESPONSE_OK != 0 && !r.requestedData.is_null();
+        // SAFETY: for this callback only, and copied out at once; requestedData is checked for null (`ok`), and cbRequested is its length, as FreeRDP parsed it.
         let data = ok.then(|| unsafe { std::slice::from_raw_parts(r.requestedData, r.cbRequested as usize) }.to_vec());
         if let Some(tx) = crate::ffi::lock(&PENDING).as_mut().and_then(|m| m.remove(&r.streamId)) {
             let _ = tx.send(data);
@@ -360,6 +399,14 @@ fn contents(p: usize, list: u32, flags: u32, pos: u64, len: u32) -> Option<Vec<u
 
 /// A machine's copied files, fetched into ~/.cache/control-center/clipboard/<copy> for a Frame
 /// paste. Returns the top-level paths, for the uri-list. A second paste of the same copy reuses them.
+/// The files' total size, if it's within max_mb. The sizes come from the machine (its
+/// FileGroupDescriptorW), so they're added with checks: a sum that would wrap is refused, not let
+/// through as a small number (ARITHOFL-001).
+fn within(entries: &[Entry], max_mb: u64) -> Option<u64> {
+    let total = entries.iter().filter(|e| !e.dir).try_fold(0u64, |t, e| t.checked_add(e.size))?;
+    (total <= max_mb.saturating_mul(1 << 20)).then_some(total)
+}
+
 pub fn download(src: usize, descriptor: &[u8], copy: u64) -> Option<Vec<PathBuf>> {
     if let Some((g, tops)) = &*crate::ffi::lock(&STAGED) {
         if *g == copy {
@@ -368,11 +415,10 @@ pub fn download(src: usize, descriptor: &[u8], copy: u64) -> Option<Vec<PathBuf>
     }
     let entries = formats::from_descriptor(descriptor)?;
     let max_mb = crate::config::settings()["clipboard_max_mb"].as_u64().unwrap_or(2048);
-    let total: u64 = entries.iter().filter(|e| !e.dir).map(|e| e.size).sum();
-    if total > max_mb << 20 {
-        eprintln!("clipboard: {} MB of files is over clipboard_max_mb ({max_mb})", total >> 20);
+    let Some(total) = within(&entries, max_mb) else {
+        eprintln!("clipboard: the files are over clipboard_max_mb ({max_mb} MB), or their sizes don't add up");
         return None;
-    }
+    };
     let base = PathBuf::from(format!("{}/.cache/control-center/clipboard", crate::config::home_dir()));
     // ponytail: only the newest copy's files are kept; the one before goes once this starts
     let _ = std::fs::remove_dir_all(&base);
@@ -391,7 +437,9 @@ pub fn download(src: usize, descriptor: &[u8], copy: u64) -> Option<Vec<PathBuf>
         while at < e.size {
             let want = (e.size - at).min(RANGE as u64) as u32;
             let chunk = contents(src, i as u32, FILECONTENTS_RANGE, at, want).filter(|c| !c.is_empty())?;
-            f.write_all(&chunk).ok()?;
+            // never more than asked for, so what's written stays inside the total checked above
+            let chunk = &chunk[..chunk.len().min(want as usize)];
+            f.write_all(chunk).ok()?;
             at += chunk.len() as u64;
         }
     }
@@ -399,4 +447,35 @@ pub fn download(src: usize, descriptor: &[u8], copy: u64) -> Option<Vec<PathBuf>
     let tops = formats::tops(&root, &entries);
     *crate::ffi::lock(&STAGED) = Some((copy, tops.clone()));
     Some(tops)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(size: u64) -> Entry {
+        Entry { name: "f".into(), size, dir: false, local: None }
+    }
+
+    /// A machine's file sizes that would wrap past u64 are refused, and so is anything over the
+    /// limit; folders don't count.
+    #[test]
+    fn sizes_that_wrap_are_refused() {
+        assert_eq!(within(&[file(1 << 63), file(1 << 63)], 2048), None, "2^63 + 2^63 wraps to 0");
+        assert_eq!(within(&[file(u64::MAX), file(1)], u64::MAX), None);
+        assert_eq!(within(&[file(3 << 20)], 2), None, "over clipboard_max_mb");
+        assert_eq!(within(&[file(1 << 20), file(1 << 20)], 2), Some(2 << 20));
+        assert_eq!(within(&[Entry { dir: true, ..file(u64::MAX) }, file(5)], 1), Some(5));
+        assert_eq!(within(&[file(5)], u64::MAX), Some(5), "a huge limit doesn't overflow either");
+    }
+
+    /// Only FILE_WORKERS FILECONTENTS answers run at once; a slot frees when its worker ends.
+    #[test]
+    fn file_answers_are_bounded() {
+        let held: Vec<Busy> = (0..FILE_WORKERS).map(|_| Busy::take().then_some(Busy).unwrap()).collect();
+        assert!(!Busy::take(), "one more is refused");
+        drop(held);
+        assert!(Busy::take(), "free again");
+        drop(Busy);
+    }
 }

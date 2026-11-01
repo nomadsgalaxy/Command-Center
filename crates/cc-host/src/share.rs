@@ -62,14 +62,17 @@ pub fn replaced() -> bool {
 
 /// The installed package's version and the command that removes it, from whichever package manager has it.
 fn package() -> Option<(String, &'static str)> {
-    [(["pacman", "-Q", "command-center-host"].as_slice(), "sudo pacman -R command-center-host"),
-     (&["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", "command-center-host"], "sudo dnf remove command-center-host"),
-     (&["dpkg-query", "-W", "-f", "${Version}", "command-center-host"], "sudo apt remove command-center-host")]
-        .into_iter().find_map(|(q, rm)| {
-            let (ok, out) = run(q[0], &q[1..]);
-            let v = out.trim().trim_start_matches("command-center-host ").to_owned();
-            (ok && !v.is_empty()).then_some((v, rm))
-        })
+    [
+        (["pacman", "-Q", "command-center-host"].as_slice(), "sudo pacman -R command-center-host"),
+        (&["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", "command-center-host"], "sudo dnf remove command-center-host"),
+        (&["dpkg-query", "-W", "-f", "${Version}", "command-center-host"], "sudo apt remove command-center-host"),
+    ]
+    .into_iter()
+    .find_map(|(q, rm)| {
+        let (ok, out) = run(q[0], &q[1..]);
+        let v = out.trim().trim_start_matches("command-center-host ").to_owned();
+        (ok && !v.is_empty()).then_some((v, rm))
+    })
 }
 
 // ---------------------------------------------------------------- the system
@@ -94,10 +97,12 @@ fn sys(args: &[&str]) -> bool {
 }
 
 fn have(cmd: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| {
-        let f = d.join(cmd);
-        std::fs::metadata(&f).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    }))
+    std::env::var_os("PATH").is_some_and(|p| {
+        std::env::split_paths(&p).any(|d| {
+            let f = d.join(cmd);
+            std::fs::metadata(&f).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+    })
 }
 
 pub fn hostname() -> String {
@@ -124,12 +129,22 @@ pub fn sockets() -> Vec<(u16, u8, std::net::IpAddr)> {
             _ => return None,
         })
     };
-    ["/proc/net/tcp", "/proc/net/tcp6"].iter().flat_map(|f| std::fs::read_to_string(f).unwrap_or_default().lines().skip(1).filter_map(|l| {
-        let w: Vec<&str> = l.split_whitespace().collect();
-        let port = u16::from_str_radix(w.get(1)?.rsplit(':').next()?, 16).ok()?;
-        let remote = ip(w.get(2)?.split(':').next()?)?;
-        Some((port, u8::from_str_radix(w.get(3)?, 16).ok()?, remote))
-    }).collect::<Vec<_>>()).collect()
+    ["/proc/net/tcp", "/proc/net/tcp6"]
+        .iter()
+        .flat_map(|f| {
+            std::fs::read_to_string(f)
+                .unwrap_or_default()
+                .lines()
+                .skip(1)
+                .filter_map(|l| {
+                    let w: Vec<&str> = l.split_whitespace().collect();
+                    let port = u16::from_str_radix(w.get(1)?.rsplit(':').next()?, 16).ok()?;
+                    let remote = ip(w.get(2)?.split(':').next()?)?;
+                    Some((port, u8::from_str_radix(w.get(3)?, 16).ok()?, remote))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Counts established connections on any share port: slot 0's (3400+m) and every paired Frame's (3400+10k+m).
@@ -155,10 +170,6 @@ fn output_name(m: usize) -> Option<String> {
 
 fn read(p: &Path) -> Option<String> {
     std::fs::read_to_string(p).ok().map(|s| s.trim_end_matches('\n').to_owned())
-}
-
-fn valid_frame(f: &str) -> bool {
-    cc_proto::server::valid_name(f)
 }
 
 fn notify(text: &str) {
@@ -187,7 +198,6 @@ fn put(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::rename(new, dst)
 }
 
-
 impl Env {
     /// Writes a file in ~/.config/control-center, making the folder (0700) if it isn't there.
     fn set(&self, name: &str, content: &str) {
@@ -201,8 +211,7 @@ impl Env {
     }
 
     fn frames(&self) -> Vec<String> {
-        let mut f: Vec<String> = std::fs::read_dir(self.dir.join("frames")).into_iter().flatten().flatten()
-            .filter_map(|e| e.file_name().to_str()?.strip_suffix(".json").map(str::to_owned)).collect();
+        let mut f: Vec<String> = std::fs::read_dir(self.dir.join("frames")).into_iter().flatten().flatten().filter_map(|e| e.file_name().to_str()?.strip_suffix(".json").map(str::to_owned)).collect();
         f.sort();
         f
     }
@@ -212,8 +221,12 @@ impl Env {
         if let Some(s) = read(&self.dir.join("shared")).filter(|s| !s.is_empty()) {
             return s.lines().map(str::to_owned).collect();
         }
-        let mut v: Vec<String> = std::fs::read_dir(self.units.join("graphical-session.target.wants")).into_iter().flatten().flatten()
-            .filter_map(|e| e.file_name().to_str()?.strip_prefix("control-center-share@")?.strip_suffix(".service").filter(|m| m.bytes().all(|b| b.is_ascii_digit())).map(str::to_owned)).collect();
+        let mut v: Vec<String> = std::fs::read_dir(self.units.join("graphical-session.target.wants"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.strip_prefix("control-center-share@")?.strip_suffix(".service").filter(|m| m.bytes().all(|b| b.is_ascii_digit())).map(str::to_owned))
+            .collect();
         v.sort();
         v
     }
@@ -249,12 +262,18 @@ impl Env {
         let d = self.home.join(".local/share/applications");
         let _ = std::fs::create_dir_all(&d);
         let h = self.home.display();
-        let _ = std::fs::write(d.join("command-center-host.desktop"), format!("[Desktop Entry]\nType=Application\nName=Command Center Host\nComment=Share this machine's monitors with the Steam Frame\nExec={h}/.local/bin/cc-share up\nIcon=video-display\nCategories=Network;RemoteAccess;\nActions=stop;\n\n[Desktop Action stop]\nName=Stop Command Center\nExec={h}/.local/bin/cc-share down\n"));
+        let _ = std::fs::write(
+            d.join("command-center-host.desktop"),
+            format!(
+                "[Desktop Entry]\nType=Application\nName=Command Center Host\nComment=Share this machine's monitors with the Steam Frame\nExec={h}/.local/bin/cc-share up\nIcon=video-display\nCategories=Network;RemoteAccess;\nActions=stop;\n\n[Desktop Action stop]\nName=Stop Command Center\nExec={h}/.local/bin/cc-share down\n"
+            ),
+        );
     }
 
     /// The window server's own executable, not /usr/bin/krdpserver, because its grant is its own (W1).
     fn window_server(&self) -> Option<PathBuf> {
-        [self.share.join("krdp-window/bin/krdpserver"), self.home.join("src/krdp-window/build/bin/krdpserver")].into_iter()
+        [self.share.join("krdp-window/bin/krdpserver"), self.home.join("src/krdp-window/build/bin/krdpserver")]
+            .into_iter()
             .find(|b| std::fs::metadata(b).is_ok_and(|m| m.permissions().mode() & 0o111 != 0))
     }
 
@@ -292,10 +311,8 @@ fn fw_cmds(action: &str) -> (Vec<Vec<String>>, Option<Vec<String>>) {
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     if have("firewall-cmd") && run("systemctl", &["is-active", "-q", "firewalld"]).0 {
         let out = Command::new("firewall-cmd").arg("--get-active-zones").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-        let ours = |z: &str| {
-            Command::new("firewall-cmd").args(["--permanent", &format!("--zone={z}"), "--list-rich-rules"]).output()
-                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("3399-3449"))
-        };
+        let ours =
+            |z: &str| Command::new("firewall-cmd").args(["--permanent", &format!("--zone={z}"), "--list-rich-rules"]).output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("3399-3449"));
         return firewalld_cmds(action, &active_zones(&out), ours);
     }
     let mut cmds = vec![];
@@ -318,8 +335,17 @@ fn fw_cmds(action: &str) -> (Vec<Vec<String>>, Option<Vec<String>>) {
 /// out of every zone that has them.
 fn firewalld_cmds(action: &str, zones: &[(String, Vec<String>)], ours: impl Fn(&str) -> bool) -> (Vec<Vec<String>>, Option<Vec<String>>) {
     let rules = |z: &str, act: &str| -> Vec<Vec<String>> {
-        NETS.iter().map(|n| vec!["sudo".into(), "firewall-cmd".into(), "--permanent".into(), format!("--zone={z}"),
-                                  format!("--{act}-rich-rule=rule family=ipv4 source address={n} port port=3399-3449 protocol=tcp accept")]).collect()
+        NETS.iter()
+            .map(|n| {
+                vec![
+                    "sudo".into(),
+                    "firewall-cmd".into(),
+                    "--permanent".into(),
+                    format!("--zone={z}"),
+                    format!("--{act}-rich-rule=rule family=ipv4 source address={n} port port=3399-3449 protocol=tcp accept"),
+                ]
+            })
+            .collect()
     };
     let mut cmds = vec![];
     let mut closed = vec![];
@@ -338,9 +364,13 @@ fn firewalld_cmds(action: &str, zones: &[(String, Vec<String>)], ours: impl Fn(&
     }
     let note = (action == "add" && zones.iter().all(|(z, _)| UNTRUSTED.contains(&z.as_str()))).then(|| {
         let ifaces = if closed.is_empty() { "<interface>".to_owned() } else { closed.join(" ") };
-        let mut l = vec![format!("firewall: firewalld has this network ({ifaces}) in an untrusted zone ({}), and Command Center doesn't open ports there.",
-                                 zones.iter().map(|z| z.0.as_str()).collect::<Vec<_>>().join(", ")),
-                         "  If it's your home network, move it to the home zone, then run cc-share fix again:".to_owned()];
+        let mut l = vec![
+            format!(
+                "firewall: firewalld has this network ({ifaces}) in an untrusted zone ({}), and Command Center doesn't open ports there.",
+                zones.iter().map(|z| z.0.as_str()).collect::<Vec<_>>().join(", ")
+            ),
+            "  If it's your home network, move it to the home zone, then run cc-share fix again:".to_owned(),
+        ];
         l.extend(closed.iter().map(|i| format!("    sudo firewall-cmd --permanent --zone=home --change-interface={i}")));
         l.push("    sudo firewall-cmd --reload".into());
         l
@@ -368,7 +398,22 @@ fn active_zones(out: &str) -> Vec<(String, Vec<String>)> {
 
 /// Shows a command as the shell line it is, quoting any word that has spaces.
 fn shown(c: &[String]) -> String {
-    c.iter().map(|w| if w.contains(' ') { if let Some((a, b)) = w.split_once('=') && a.starts_with("--") { format!("{a}='{b}'") } else { format!("'{w}'") } } else { w.clone() }).collect::<Vec<_>>().join(" ")
+    c.iter()
+        .map(|w| {
+            if w.contains(' ') {
+                if let Some((a, b)) = w.split_once('=')
+                    && a.starts_with("--")
+                {
+                    format!("{a}='{b}'")
+                } else {
+                    format!("'{w}'")
+                }
+            } else {
+                w.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn firewall_said(e: &Env, action: &str) -> (Vec<String>, bool) {
@@ -462,8 +507,17 @@ fn seen(e: &Env, action: &str, announce: bool) -> Seen {
     if fw.0.first().is_some_and(|c| c[1] == "ufw") && e.dir.join("firewall-open").exists() == (action == "add") {
         fw.0.clear();
     }
-    Seen { fw, avahi_installed: have("avahi-publish"), avahi_running: avahi_running(), conf: read(&avahi_conf()), conf_path: avahi_conf(),
-           backup: read(&avahi_backup()), backup_path: avahi_backup(), tmp: e.dir.join("avahi-daemon.conf.new"), announce }
+    Seen {
+        fw,
+        avahi_installed: have("avahi-publish"),
+        avahi_running: avahi_running(),
+        conf: read(&avahi_conf()),
+        conf_path: avahi_conf(),
+        backup: read(&avahi_backup()),
+        backup_path: avahi_backup(),
+        tmp: e.dir.join("avahi-daemon.conf.new"),
+        announce,
+    }
 }
 
 fn sudo(c: &[&str]) -> Vec<String> {
@@ -475,12 +529,24 @@ fn sudo(c: &[&str]) -> Vec<String> {
 fn fixes(s: &Seen) -> (Vec<Fix>, Vec<String>) {
     let mut v = vec![];
     if !s.fw.0.is_empty() {
-        v.push(Fix { kind: "firewall", what: "to open the pairing and paired-Frame ports (3399-3449) for your private networks, so the Frame can reach this machine".into(),
-                     write: None, cmds: s.fw.0.clone(), changed: "firewall: ports 3399-3449 are open for the private ranges (10/8, 172.16/12, 192.168/16) only, and saved for the next boot".into(), mark: Some(true) });
+        v.push(Fix {
+            kind: "firewall",
+            what: "to open the pairing and paired-Frame ports (3399-3449) for your private networks, so the Frame can reach this machine".into(),
+            write: None,
+            cmds: s.fw.0.clone(),
+            changed: "firewall: ports 3399-3449 are open for the private ranges (10/8, 172.16/12, 192.168/16) only, and saved for the next boot".into(),
+            mark: Some(true),
+        });
     }
     if s.announce && s.avahi_installed && !s.avahi_running {
-        v.push(Fix { kind: "avahi", what: "to start avahi-daemon now and at every boot, because the Frame lists this machine through it".into(), write: None,
-                     cmds: vec![sudo(&["systemctl", "enable", "--now", "avahi-daemon"])], changed: "avahi: avahi-daemon is running and starts at boot".into(), mark: None });
+        v.push(Fix {
+            kind: "avahi",
+            what: "to start avahi-daemon now and at every boot, because the Frame lists this machine through it".into(),
+            write: None,
+            cmds: vec![sudo(&["systemctl", "enable", "--now", "avahi-daemon"])],
+            changed: "avahi: avahi-daemon is running and starts at boot".into(),
+            mark: None,
+        });
     }
     if let Some(conf) = s.conf.as_ref().filter(|c| s.announce && s.avahi_installed && avahi_publishing_off(c)) {
         let (conf_path, backup) = (s.conf_path.display().to_string(), s.backup_path.display().to_string());
@@ -490,9 +556,14 @@ fn fixes(s: &Seen) -> (Vec<Fix>, Vec<String>) {
         }
         cmds.push(sudo(&["install", "-m", "644", &s.tmp.display().to_string(), &conf_path]));
         cmds.push(sudo(&["systemctl", "restart", "avahi-daemon"]));
-        v.push(Fix { kind: "avahi", what: format!("to turn publishing on in {conf_path} (only disable-publishing and disable-user-service-publishing in [publish]; the original is kept as {backup})"),
-                     write: Some((s.tmp.clone(), avahi_publishing_on(conf))), cmds,
-                     changed: format!("avahi: publishing is on, and avahi-daemon restarted. The original is in {backup}; cc-install --remove puts it back"), mark: None });
+        v.push(Fix {
+            kind: "avahi",
+            what: format!("to turn publishing on in {conf_path} (only disable-publishing and disable-user-service-publishing in [publish]; the original is kept as {backup})"),
+            write: Some((s.tmp.clone(), avahi_publishing_on(conf))),
+            cmds,
+            changed: format!("avahi: publishing is on, and avahi-daemon restarted. The original is in {backup}; cc-install --remove puts it back"),
+            mark: None,
+        });
     }
     (v, s.fw.1.clone().unwrap_or_default())
 }
@@ -502,19 +573,34 @@ fn fixes(s: &Seen) -> (Vec<Fix>, Vec<String>) {
 fn undo(s: &Seen) -> (Vec<Fix>, Vec<String>) {
     let mut v = vec![];
     if !s.fw.0.is_empty() {
-        v.push(Fix { kind: "firewall", what: "to close the pairing and paired-Frame ports (3399-3449) again".into(), write: None, cmds: s.fw.0.clone(),
-                     changed: "firewall: Command Center's rules are gone".into(), mark: Some(false) });
+        v.push(Fix {
+            kind: "firewall",
+            what: "to close the pairing and paired-Frame ports (3399-3449) again".into(),
+            write: None,
+            cmds: s.fw.0.clone(),
+            changed: "firewall: Command Center's rules are gone".into(),
+            mark: Some(false),
+        });
     }
     let mut notes = vec![];
-    if let (Some(b), Some(c)) = (&s.backup, &s.conf) && c != b {
+    if let (Some(b), Some(c)) = (&s.backup, &s.conf)
+        && c != b
+    {
         let (conf_path, backup) = (s.conf_path.display().to_string(), s.backup_path.display().to_string());
         if *c == avahi_publishing_on(b) {
             let mut cmds = vec![sudo(&["cp", "-p", &backup, &conf_path]), sudo(&["rm", &backup])];
             if s.avahi_running {
                 cmds.push(sudo(&["systemctl", "restart", "avahi-daemon"]));
             }
-            v.push(Fix { kind: "avahi", what: format!("to put {conf_path} back the way it was before Command Center changed it"), write: None, cmds,
-                         changed: "avahi: the config is back as it was. I left avahi-daemon enabled and running, because other things may use it (to turn it off: sudo systemctl disable --now avahi-daemon)".into(), mark: None });
+            v.push(Fix {
+                kind: "avahi",
+                what: format!("to put {conf_path} back the way it was before Command Center changed it"),
+                write: None,
+                cmds,
+                changed: "avahi: the config is back as it was. I left avahi-daemon enabled and running, because other things may use it (to turn it off: sudo systemctl disable --now avahi-daemon)"
+                    .into(),
+                mark: None,
+            });
         } else {
             notes.push(format!("avahi: {conf_path} has changed since Command Center edited it, so I left it alone. The original is in {backup}."));
         }
@@ -547,14 +633,19 @@ fn offer(e: &Env, (fixes, notes): (Vec<Fix>, Vec<String>), yes: bool, fw_yes: bo
             eprintln!("sudo didn't accept that. If this account has no password yet, run passwd first, then run cc-share fix.");
             return false;
         }
-        if let Some((p, text)) = &f.write && let Err(x) = std::fs::write(p, text) {
+        if let Some((p, text)) = &f.write
+            && let Err(x) = std::fs::write(p, text)
+        {
             eprintln!("{}: {x}", p.display());
             all = false;
             continue;
         }
         let ok = f.cmds.iter().all(|c| {
             println!("+ {}", shown(c));
-            Command::new(&c[0]).args(&c[1..]).status().is_ok_and(|s| s.success()) || { eprintln!("that failed, so I stopped there"); false }
+            Command::new(&c[0]).args(&c[1..]).status().is_ok_and(|s| s.success()) || {
+                eprintln!("that failed, so I stopped there");
+                false
+            }
         });
         if let Some((p, _)) = &f.write {
             let _ = std::fs::remove_file(p);
@@ -619,18 +710,24 @@ fn avahi_backup() -> PathBuf {
 /// the comments, the other sections, the spacing or the line endings.
 fn avahi_publishing_on(conf: &str) -> String {
     let mut publish = false;
-    conf.split_inclusive('\n').map(|raw| {
-        let l = raw.trim();
-        if l.starts_with('[') {
-            publish = l == "[publish]";
-        } else if publish && !l.starts_with('#') && !l.starts_with(';') {
-            if let Some((k, v)) = l.split_once('=') && matches!(k.trim(), "disable-publishing" | "disable-user-service-publishing") && v.trim() == "yes" {
+    conf.split_inclusive('\n')
+        .map(|raw| {
+            let l = raw.trim();
+            if l.starts_with('[') {
+                publish = l == "[publish]";
+            } else if publish
+                && !l.starts_with('#')
+                && !l.starts_with(';')
+                && let Some((k, v)) = l.split_once('=')
+                && matches!(k.trim(), "disable-publishing" | "disable-user-service-publishing")
+                && v.trim() == "yes"
+            {
                 let end = &raw[raw.trim_end().len()..];
                 return format!("{}{}=no{end}", &raw[..raw.len() - raw.trim_start().len()], k.trim());
             }
-        }
-        raw.to_owned()
-    }).collect()
+            raw.to_owned()
+        })
+        .collect()
 }
 
 fn avahi_running() -> bool {
@@ -681,6 +778,14 @@ fn check(e: &Env) -> bool {
     if fw_note.is_some() || !fw.is_empty() {
         println!("  need the firewall to let the Frame in (ports 3399-3449, private ranges only): cc-share fix");
         bad = true;
+    }
+    let bin = krdp(e, false).unwrap_or_else(|| PathBuf::from("/usr/bin/krdpserver"));
+    if takes_password_file(&bin) == Some(false) {
+        println!("  need a krdp that takes --password-file ({} doesn't): until then the password is visible in the process list", bin.display());
+        bad = true;
+    }
+    for w in library_env(e, &run("systemctl", &["--user", "show-environment"]).1) {
+        println!("  note {w}: systemctl --user unset-environment, or remove it, if that's not what you meant");
     }
     for f in foreign_dropins(&dropin_dirs(e)) {
         println!("  need {} changes a Command Center unit and isn't ours: remove it, then systemctl --user daemon-reload", f.display());
@@ -738,8 +843,12 @@ fn check(e: &Env) -> bool {
 
 /// The user units, for cc-host at `host` and the monitor servers' krdp at `krdp`. A user install
 /// writes them to ~/.config/systemd/user; a package build writes them with `cc-host units`.
-pub fn unit_files(host: &str, krdp: &str) -> Vec<(&'static str, String)> {
-    let fill = |t: &str| t.replace("@HOST@", host).replace("@KRDP@", krdp);
+/// `password_file` says the krdp takes --password-file (our patched one does), so the password
+/// isn't in its argv. Without it, the unit falls back to -p.
+pub fn unit_files(host: &str, krdp: &str, password_file: bool) -> Vec<(&'static str, String)> {
+    // Quoted, because %h is the home folder's path and that can have a space in it.
+    let password = if password_file { "--password-file \"%h/.config/control-center/password\"" } else { "-p \"$(cat \"%h/.config/control-center/password\")\"" };
+    let fill = |t: &str| t.replace("@HOST@", host).replace("@KRDP@", krdp).replace("@PASSWORD@", password);
     vec![
         // --plasma talks to KWin directly, so nothing asks for permission on every connect.
         ("control-center-share@.service", fill(include_str!("../../../packaging/systemd/control-center-share@.service"))),
@@ -908,6 +1017,10 @@ fn install(e: &Env, args: &[String]) -> i32 {
         eprintln!("cc-host cert: {x}");
         return 1;
     }
+    // Before any unit is written or reloaded: a leftover drop-in would change them all.
+    if !no_dropins(e) {
+        return 1;
+    }
     if packaged() {
         migrate_user_install(e);
         if !sysq(&["daemon-reload"]) {
@@ -920,7 +1033,8 @@ fn install(e: &Env, args: &[String]) -> i32 {
             eprintln!("{x}");
             return 1;
         }
-        for (name, body) in unit_files("%h/.local/share/control-center/cc-host", "/usr/bin/krdpserver") {
+        let file = takes_password_file(Path::new("/usr/bin/krdpserver")) == Some(true);
+        for (name, body) in unit_files("%h/.local/share/control-center/cc-host", "/usr/bin/krdpserver", file) {
             let f = e.units.join(name);
             if let Err(x) = std::fs::write(&f, body) {
                 return failed(&f, x);
@@ -951,16 +1065,21 @@ fn install(e: &Env, args: &[String]) -> i32 {
         }
     }
     e.launcher();
-    if !no_dropins(e) {
+    if !e.units_cmd(&["start"], false) {
+        // It's running now either way, or install says it isn't.
+        eprintln!("couldn't start Command Center's units: systemctl --user status 'control-center-*'");
         return 1;
     }
-    e.units_cmd(&["start"], false); // It's running now either way.
-    if e.autostart() {
-        e.units_cmd(&["enable"], true);
-    } else {
-        e.units_cmd(&["disable"], true);
+    let (verb, at) = if e.autostart() { ("enable", "at login") } else { ("disable", "from the app menu only") };
+    if !e.units_cmd(&[verb], true) {
+        eprintln!("couldn't {verb} Command Center's units, so it may not start {at}: systemctl --user {verb} the units by hand");
+        return 1;
     }
-    sys(&["restart", "control-center-agent.service"]); // Start the new agent.
+    if !sys(&["restart", "control-center-agent.service"]) {
+        // Start the new agent.
+        eprintln!("couldn't restart the agent: systemctl --user status control-center-agent");
+        return 1;
+    }
     for _ in 0..10 {
         if listening(3399) {
             break; // It's listening before the checklist asks it.
@@ -970,7 +1089,10 @@ fn install(e: &Env, args: &[String]) -> i32 {
     // The guard runs the new code too. With viewers connected, it only restarts when it hasn't lowered anything.
     let lowered = std::fs::read_dir(&e.dir).into_iter().flatten().flatten().any(|f| f.file_name().to_string_lossy().starts_with("guard-"));
     if viewers() == 0 || !lowered {
-        sys(&["restart", "control-center-guard.service"]);
+        if !sys(&["restart", "control-center-guard.service"]) {
+            eprintln!("couldn't restart the guard: systemctl --user status control-center-guard");
+            return 1;
+        }
     } else {
         println!("the guard keeps running as it was: it has lowered a monitor for a connected viewer (restart it later: systemctl --user restart control-center-guard)");
     }
@@ -1049,8 +1171,13 @@ fn pick(answer: &str, n: usize) -> Result<Vec<String>, String> {
 }
 
 fn frame_wants(e: &Env) -> Vec<String> {
-    let mut v: Vec<String> = std::fs::read_dir(e.units.join("graphical-session.target.wants")).into_iter().flatten().flatten()
-        .map(|x| x.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("control-center-frame@")).collect();
+    let mut v: Vec<String> = std::fs::read_dir(e.units.join("graphical-session.target.wants"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|x| x.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("control-center-frame@"))
+        .collect();
     v.sort();
     v
 }
@@ -1088,7 +1215,13 @@ pub fn mode_for(o: &Value, max: u64) -> Option<(String, String)> {
         let (x, y) = size(m);
         ((x / y - ar).abs(), -(x * y), -m["refreshRate"].as_f64().unwrap_or(0.0))
     };
-    let best = modes.iter().filter(|m| { let (a, b) = size(m); a * b <= max as f64 }).min_by(|a, b| key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal));
+    let best = modes
+        .iter()
+        .filter(|m| {
+            let (a, b) = size(m);
+            a * b <= max as f64
+        })
+        .min_by(|a, b| key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal));
     Some((cur.clone(), best.and_then(|m| m["id"].as_str()).map_or(cur, str::to_owned)))
 }
 
@@ -1099,7 +1232,8 @@ fn guard(e: &Env) -> i32 {
     };
     let restore = || -> bool {
         let mut changed = false;
-        let mut files: Vec<PathBuf> = std::fs::read_dir(&e.dir).into_iter().flatten().flatten().map(|f| f.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("guard-"))).collect();
+        let mut files: Vec<PathBuf> =
+            std::fs::read_dir(&e.dir).into_iter().flatten().flatten().map(|f| f.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("guard-"))).collect();
         files.sort();
         for f in files {
             let name = f.file_name().unwrap().to_string_lossy().trim_start_matches("guard-").to_owned();
@@ -1269,12 +1403,17 @@ fn announce_run(e: &Env) -> i32 {
             if up >= Duration::from_secs(30) {
                 wait = 2;
             }
-            eprintln!("announce: avahi-publish stopped ({why}) after {} s, so the Frame can't see this machine. Is avahi-daemon running with publishing on? cc-share check says. Starting it again in {wait} s.", up.as_secs());
+            eprintln!(
+                "announce: avahi-publish stopped ({why}) after {} s, so the Frame can't see this machine. Is avahi-daemon running with publishing on? cc-share check says. Starting it again in {wait} s.",
+                up.as_secs()
+            );
             retry_at = Some(Instant::now() + Duration::from_secs(wait));
             wait = (wait * 2).min(60);
         }
         let now = txt(e);
-        if now != last && let Some(mut c) = child.take() {
+        if now != last
+            && let Some(mut c) = child.take()
+        {
             let _ = c.kill(); // The txt changed (a pairing screen, a monitor), so it starts again with the new one at once.
             let _ = c.wait();
             retry_at = None;
@@ -1315,12 +1454,109 @@ fn frame_json(e: &Env, f: &str) -> Result<Value, String> {
 }
 
 /// Runs one paired Frame's server for one monitor. The instance is <frame>-<monitor>, and the slot and login come from frames/<frame>.json.
+/// Whether bin takes --password-file (our krdp patch, krdp/password-file.patch), from its --help.
+/// None when it can't be run, or doesn't answer in 5 s. The answer is kept for this process, so
+/// frame-run and window-run ask once per start.
+fn takes_password_file(bin: &Path) -> Option<bool> {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Vec<(PathBuf, Option<bool>)>> = Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, v)) = seen.iter().find(|(b, _)| b == bin) {
+        return *v;
+    }
+    let v = ask_help(bin, std::time::Duration::from_secs(5));
+    seen.push((bin.to_owned(), v));
+    v
+}
+
+fn ask_help(bin: &Path, wait: std::time::Duration) -> Option<bool> {
+    let mut child = Command::new(bin).arg("--help").env("QT_QPA_PLATFORM", "offscreen").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut out = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = std::io::Read::read_to_string(&mut out, &mut s);
+        s
+    });
+    let until = std::time::Instant::now() + wait;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < until => std::thread::sleep(std::time::Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    Some(reader.join().ok()?.contains("--password-file"))
+}
+
+/// A user or password krdp can take: not empty, and no line break or NUL, which would cut it short
+/// in --password-file's first line (and in argv).
+fn fits_login(s: &str) -> bool {
+    !s.is_empty() && !s.contains(['\n', '\r', '\0'])
+}
+
+/// A paired Frame's login from frames/<frame>.json. Without a usable user and password it's an
+/// error, instead of starting krdp with an empty one.
+fn frame_login(j: &serde_json::Value) -> Result<(&str, &str), String> {
+    let field = |k: &str| j[k].as_str().filter(|v| fits_login(v)).ok_or_else(|| format!("its {k} in frames/<frame>.json is missing, empty or has a line break or NUL in it; pair the Frame again"));
+    Ok((field("user")?, field("password")?))
+}
+
+/// Gives krdp its password. With a krdp that takes --password-file, it goes through a pipe that
+/// krdp inherits and opens as /dev/fd/<n>, so it's in no argv and no file. With one that doesn't,
+/// it's -p, which any local user can read in /proc/<pid>/cmdline. Either way the log says which.
+/// When it can't tell (krdp's --help didn't answer), it doesn't start krdp at all.
+fn password(c: &mut Command, bin: &Path, pw: &str) -> std::io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    if !fits_login(pw) {
+        return Err(std::io::Error::other("the password is empty or has a line break or NUL in it"));
+    }
+    match takes_password_file(bin) {
+        Some(true) => {}
+        Some(false) => {
+            eprintln!("{}: krdp doesn't take --password-file: the password is visible in the process list (-p)", bin.display());
+            c.args(["-p", pw]);
+            return Ok(());
+        }
+        None => return Err(std::io::Error::other(format!("couldn't tell whether {} takes --password-file: its --help didn't answer in 5 s", bin.display()))),
+    }
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    // Non-blocking, so a password longer than the pipe holds fails instead of hanging.
+    unsafe { libc::fcntl(w.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+    let line = format!("{pw}\n");
+    let wrote = std::io::Write::write(&mut std::fs::File::from(w), line.as_bytes())?;
+    if wrote != line.len() {
+        return Err(std::io::Error::other("couldn't write the whole password into its pipe"));
+    }
+    let n = r.as_raw_fd();
+    // SAFETY: fcntl is async-signal-safe. Only the read end loses O_CLOEXEC, in the child only, so
+    // krdp gets that one fd and no others. r stays open in the closure until the exec.
+    unsafe {
+        c.pre_exec(move || {
+            if libc::fcntl(r.as_raw_fd(), libc::F_SETFD, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    eprintln!("{}: the password goes over a pipe (--password-file /dev/fd/{n})", bin.display());
+    c.arg("--password-file").arg(format!("/dev/fd/{n}"));
+    Ok(())
+}
+
 fn frame_run(e: &Env, inst: &str) -> i32 {
     let Some((f, m)) = inst.rsplit_once('-') else {
         eprintln!("bad instance: {inst}");
         return 2;
     };
-    if !valid_frame(f) || m.len() != 1 || !m.bytes().all(|b| b.is_ascii_digit()) {
+    if !cc_proto::server::valid_name(f) || m.len() != 1 || !m.bytes().all(|b| b.is_ascii_digit()) {
         eprintln!("bad instance: {inst}");
         return 2;
     }
@@ -1332,8 +1568,21 @@ fn frame_run(e: &Env, inst: &str) -> i32 {
         }
     };
     let (slot, mon) = (j["slot"].as_i64().unwrap_or(0), m.parse::<i64>().unwrap_or(0));
-    let err = Command::new(krdp(e, false).unwrap_or_else(|| PathBuf::from("/usr/bin/krdpserver"))).args(["--plasma", "--monitor", m, "--port", &(3400 + 10 * slot + mon).to_string(), "-u", j["user"].as_str().unwrap_or(""), "-p", j["password"].as_str().unwrap_or("")])
-        .arg("--certificate").arg(e.dir.join("cert.pem")).arg("--certificate-key").arg(e.dir.join("key.pem")).exec();
+    let bin = krdp(e, false).unwrap_or_else(|| PathBuf::from("/usr/bin/krdpserver"));
+    let mut c = Command::new(&bin);
+    let (user, pw) = match frame_login(&j) {
+        Ok(l) => l,
+        Err(x) => {
+            eprintln!("{inst}: {x}");
+            return 1;
+        }
+    };
+    c.args(["--plasma", "--monitor", m, "--port", &(3400 + 10 * slot + mon).to_string(), "-u", user]);
+    if let Err(x) = password(&mut c, &bin, pw) {
+        eprintln!("krdpserver's password: {x}");
+        return 1;
+    }
+    let err = c.arg("--certificate").arg(e.dir.join("cert.pem")).arg("--certificate-key").arg(e.dir.join("key.pem")).exec();
     eprintln!("krdpserver: {err}");
     1
 }
@@ -1350,7 +1599,7 @@ fn window_run(e: &Env, inst: &str) -> i32 {
     let (rest, uuid) = inst.split_at(inst.len() - 36);
     let Some(rest) = rest.strip_suffix('-') else { return bad() };
     let Some((f, k)) = rest.rsplit_once('-') else { return bad() };
-    if !valid_frame(f) || !matches!(k, "0" | "1" | "2" | "3" | "4") || !crate::work::valid_uuid(&format!("{{{uuid}}}")) || uuid.chars().any(|c| c.is_ascii_uppercase()) {
+    if !cc_proto::server::valid_name(f) || !matches!(k, "0" | "1" | "2" | "3" | "4") || !crate::work::valid_uuid(&format!("{{{uuid}}}")) || uuid.chars().any(|c| c.is_ascii_uppercase()) {
         return bad();
     }
     if !e.dir.join("windows-on").exists() {
@@ -1369,8 +1618,20 @@ fn window_run(e: &Env, inst: &str) -> i32 {
         }
     };
     let slot = j["slot"].as_i64().unwrap_or(0);
-    let err = Command::new(bin).args(["--plasma", "--window", &format!("{{{uuid}}}"), "--port", &(3405 + 10 * slot + k.parse::<i64>().unwrap_or(0)).to_string(), "-u", j["user"].as_str().unwrap_or(""), "-p", j["password"].as_str().unwrap_or("")])
-        .arg("--certificate").arg(e.dir.join("cert.pem")).arg("--certificate-key").arg(e.dir.join("key.pem")).exec();
+    let mut c = Command::new(&bin);
+    let (user, pw) = match frame_login(&j) {
+        Ok(l) => l,
+        Err(x) => {
+            eprintln!("{inst}: {x}");
+            return 1;
+        }
+    };
+    c.args(["--plasma", "--window", &format!("{{{uuid}}}"), "--port", &(3405 + 10 * slot + k.parse::<i64>().unwrap_or(0)).to_string(), "-u", user]);
+    if let Err(x) = password(&mut c, &bin, pw) {
+        eprintln!("window server's password: {x}");
+        return 1;
+    }
+    let err = c.arg("--certificate").arg(e.dir.join("cert.pem")).arg("--certificate-key").arg(e.dir.join("key.pem")).exec();
     eprintln!("window server: {err}");
     1
 }
@@ -1386,7 +1647,13 @@ fn windows_cmd(e: &Env, what: &str) -> i32 {
             if !packaged() {
                 let d = e.home.join(".local/share/applications");
                 let _ = std::fs::create_dir_all(&d);
-                let _ = std::fs::write(d.join("command-center-krdp-window.desktop"), format!("[Desktop Entry]\nType=Application\nName=Command Center window server\nExec={}\nNoDisplay=true\nX-KDE-Wayland-Interfaces=org_kde_kwin_fake_input,zkde_screencast_unstable_v1,org_kde_plasma_window_management\n", bin.display()));
+                let _ = std::fs::write(
+                    d.join("command-center-krdp-window.desktop"),
+                    format!(
+                        "[Desktop Entry]\nType=Application\nName=Command Center window server\nExec={}\nNoDisplay=true\nX-KDE-Wayland-Interfaces=org_kde_kwin_fake_input,zkde_screencast_unstable_v1,org_kde_plasma_window_management\n",
+                        bin.display()
+                    ),
+                );
                 let _ = run("kbuildsycoca6", &[]);
             }
             e.set("windows-on", "");
@@ -1408,7 +1675,7 @@ fn windows_cmd(e: &Env, what: &str) -> i32 {
 }
 
 fn unpair(e: &Env, f: &str, flag: &str) -> i32 {
-    if !valid_frame(f) {
+    if !cc_proto::server::valid_name(f) {
         eprintln!("usage: cc-share unpair <frame>  (cc-share frames lists them)");
         return 2;
     }
@@ -1417,13 +1684,12 @@ fn unpair(e: &Env, f: &str, flag: &str) -> i32 {
         return 1;
     }
     // Its servers, whether enabled or only started, for both monitors and windows.
-    for u in frame_wants(e).into_iter().filter(|u| u.starts_with(&format!("control-center-frame@{f}-"))) {
+    for u in frame_wants(e).into_iter().filter(|u| crate::agent::is_frame_unit(u, f)) {
         sysq(&["disable", &u]); // Older installs enabled them.
     }
-    sysq(&["stop", &format!("control-center-frame@{f}-*"), &format!("control-center-window@{f}-*")]);
-    for p in [format!("frames/{f}.json"), format!("trusted-frames/{f}.pub"), format!("frames/{f}.last")] {
-        let _ = std::fs::remove_file(e.dir.join(p));
-    }
+    let [mons, wins] = crate::agent::frame_units(f);
+    sysq(&["stop", &mons, &wins]);
+    crate::agent::forget_frame_files(&e.dir, f);
     sysq(&["kill", "-s", "HUP", "control-center-agent"]); // Its live connections end now.
     println!("unpaired {f}: its login no longer works");
     if e.frames().is_empty() {
@@ -1435,6 +1701,7 @@ fn unpair(e: &Env, f: &str, flag: &str) -> i32 {
 /// A file's modification time as local "YYYY-mm-dd HH:MM", like date -r.
 fn local_time(p: &Path) -> Option<String> {
     let t = std::fs::metadata(p).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64; // time_t is 64-bit on the 64-bit hosts this runs on.
+    // SAFETY: libc::tm is plain integers (and a nullable zone pointer): all zeros is a valid value, which localtime_r then fills.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     unsafe { libc::localtime_r(&t as *const i64 as *const _, &mut tm) };
     Some(format!("{:04}-{:02}-{:02} {:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min))
@@ -1443,12 +1710,15 @@ fn local_time(p: &Path) -> Option<String> {
 fn frames_cmd(e: &Env) -> i32 {
     for f in e.frames() {
         let last = local_time(&e.dir.join("frames").join(format!("{f}.last"))).unwrap_or_else(|| "never".into());
-        let out = run("systemctl", &["--user", "list-units", "--no-legend", "--state=running", &format!("control-center-frame@{f}-*")]).1;
-        let running: Vec<String> = out.lines().filter_map(|l| {
-            let unit = l.split_whitespace().find(|w| w.starts_with("control-center-frame@"))?;
-            let m = unit.strip_prefix(&format!("control-center-frame@{f}-"))?.chars().next()?;
-            m.is_ascii_digit().then(|| format!("monitor {m}"))
-        }).collect();
+        let [mons, _] = crate::agent::frame_units(&f);
+        let out = run("systemctl", &["--user", "list-units", "--no-legend", "--state=running", &mons]).1;
+        let running: Vec<String> = out
+            .lines()
+            .filter_map(|l| {
+                let unit = l.split_whitespace().find(|w| crate::agent::is_frame_unit(w, &f))?;
+                Some(format!("monitor {}", &unit[unit.len() - ".service".len() - 1..][..1]))
+            })
+            .collect();
         let slot = frame_json(e, &f).ok().map_or("null".into(), |j| j["slot"].to_string());
         println!("{f} slot={slot} last-used={last} sessions={}", if running.is_empty() { "none".into() } else { running.join(",") });
     }
@@ -1461,11 +1731,16 @@ fn frames_cmd(e: &Env) -> i32 {
 /// Finds processes whose command line (argv) matches and returns their pids, never this one's.
 fn procs(matches: impl Fn(&[String]) -> bool) -> Vec<i32> {
     let me = std::process::id() as i32;
-    std::fs::read_dir("/proc").into_iter().flatten().flatten().filter_map(|d| {
-        let pid: i32 = d.file_name().to_str()?.parse().ok()?;
-        let argv: Vec<String> = std::fs::read(d.path().join("cmdline")).ok()?.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-        (pid != me && matches(&argv)).then_some(pid)
-    }).collect()
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|d| {
+            let pid: i32 = d.file_name().to_str()?.parse().ok()?;
+            let argv: Vec<String> = std::fs::read(d.path().join("cmdline")).ok()?.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+            (pid != me && matches(&argv)).then_some(pid)
+        })
+        .collect()
 }
 
 /// The last resort: it closes any tag screen or pairing key still on screen. The Frame counts a closed
@@ -1506,10 +1781,23 @@ fn uninstall(e: &Env, args: &[String]) -> i32 {
             let _ = std::fs::remove_file(f.path());
         }
     }
-    for u in ["control-center-share@.service", "control-center-frame@.service", "control-center-guard.service", "control-center-agent.service", "control-center-window@.service", "control-center-alert@.service"] {
+    for u in [
+        "control-center-share@.service",
+        "control-center-frame@.service",
+        "control-center-guard.service",
+        "control-center-agent.service",
+        "control-center-window@.service",
+        "control-center-alert@.service",
+    ] {
         let _ = std::fs::remove_file(e.units.join(u));
     }
-    for p in [e.home.join(".local/bin/cc-share"), e.home.join(".local/share/applications/command-center-krdp-window.desktop"), e.home.join(".local/share/applications/command-center-host.desktop"), e.dir.join("shared"), e.dir.join("autostart")] {
+    for p in [
+        e.home.join(".local/bin/cc-share"),
+        e.home.join(".local/share/applications/command-center-krdp-window.desktop"),
+        e.home.join(".local/share/applications/command-center-host.desktop"),
+        e.dir.join("shared"),
+        e.dir.join("autostart"),
+    ] {
         let _ = std::fs::remove_file(p);
     }
     for f in ["pair.py", "agent.py", "tagshow.py", "cc-host"] {
@@ -1551,7 +1839,6 @@ pub fn pair_precheck(e: &Env, flag: &str) -> Result<(), i32> {
     Ok(())
 }
 
-/// Runs cc-share's commands. Returns None if it isn't one of them.
 // ---------------------------------------------------------------- the units' health
 
 /// The units' ExecStartPre: runs the krdp that frame-run (or window-run, with `window`) would run,
@@ -1586,16 +1873,85 @@ pub fn alerts(e: &Env) -> PathBuf {
     e.home.join(".cache/control-center/host-alerts")
 }
 
-/// control-center-alert@<unit>: a unit gave up (OnFailure=). It says so once, as a desktop
-/// notification and a line in the alerts file, instead of failing quietly.
+/// The alert state next to the alerts file: one "<unit> <when it last went inactive>" line per unit
+/// alerted, so one failure is said once (docs/packaging.md).
+fn alert_state(e: &Env) -> PathBuf {
+    e.home.join(".cache/control-center/host-alerts.state")
+}
+
+/// What `systemctl show` says about a unit, as alert needs it.
+#[derive(Debug, Default, PartialEq)]
+struct UnitNow {
+    active: String,
+    sub: String,
+    result: String,
+    restart: String,
+    since: String, // InactiveEnterTimestampMonotonic: when it last went inactive or failed
+}
+
+const UNIT_PROPS: &[&str] = &["-p", "ActiveState", "-p", "SubState", "-p", "Result", "-p", "Restart", "-p", "InactiveEnterTimestampMonotonic"];
+
+fn unit_now(show: &str) -> UnitNow {
+    let v = |k: &str| show.lines().find_map(|l| l.strip_prefix(k).and_then(|r| r.strip_prefix('='))).unwrap_or("").to_owned();
+    UnitNow { active: v("ActiveState"), sub: v("SubState"), result: v("Result"), restart: v("Restart"), since: v("InactiveEnterTimestampMonotonic") }
+}
+
+/// Whether the unit gave up: Some(true) when it's failed with no restart coming, Some(false) when a
+/// restart is coming or it's not failed at all, and None when it can't tell yet.
+///
+/// systemd 254 and later (RestartMode=normal, the default) send a unit through "failed" before
+/// each auto-restart, and OnFailure= fires every time (Crab saw five alerts for one broken krdp).
+/// While a restart is pending the SubState says so: failed-before-auto-restart, then auto-restart
+/// (or auto-restart-queued) with ActiveState activating. A unit that gave up is ActiveState and
+/// SubState failed: Result=start-limit-hit once the start limit trips, or any Result with
+/// Restart=no. A plain "failed" with a Restart= policy and another Result could still be one
+/// whose restart isn't queued yet on an older systemd, so that's None and alert looks again.
+fn gave_up(u: &UnitNow) -> Option<bool> {
+    if u.active != "failed" || u.sub.contains("auto-restart") {
+        return Some(false);
+    }
+    if u.result == "start-limit-hit" || u.restart == "no" {
+        return Some(true);
+    }
+    None
+}
+
+/// control-center-alert@<unit> (OnFailure=): says once, as a desktop notification and a line in the
+/// alerts file, that a unit stopped for good. A failure with a restart coming, or one already
+/// alerted (the same time it went failed), is left quiet.
 fn alert(e: &Env, unit: &str) -> i32 {
-    notify(&format!("{unit} stopped after failing again and again: systemctl --user status {unit}"));
+    let mut show = || run("systemctl", &[&["--user", "show"][..], UNIT_PROPS, &[unit]].concat()).1;
+    alert_with(e, unit, &mut show, &|| std::thread::sleep(std::time::Duration::from_millis(1500)), &mut |t| notify(t))
+}
+
+fn alert_with(e: &Env, unit: &str, show: &mut dyn FnMut() -> String, pause: &dyn Fn(), say: &mut dyn FnMut(&str)) -> i32 {
+    let mut now = unit_now(&show());
+    let given_up = match gave_up(&now) {
+        Some(g) => g,
+        None => {
+            pause(); // a restart that's coming is queued by now
+            now = unit_now(&show());
+            gave_up(&now).unwrap_or(true) // still failed, with nothing coming: a terminal failure
+        }
+    };
+    if !given_up {
+        return 0;
+    }
+    let state = alert_state(e);
+    let key = format!("{unit} {}", now.since);
+    let seen = std::fs::read_to_string(&state).unwrap_or_default();
+    if seen.lines().any(|l| l == key) {
+        return 0; // this failure was already said
+    }
+    say(&format!("{unit} stopped after failing ({}): systemctl --user status {unit}", now.result));
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let f = alerts(e);
-    let line = format!("{secs} {unit}\n");
+    let mut kept: Vec<&str> = seen.lines().filter(|l| l.split(' ').next() != Some(unit)).collect();
+    kept.push(&key);
     let written = f.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| {
         use std::io::Write;
-        std::fs::OpenOptions::new().create(true).append(true).open(&f)?.write_all(line.as_bytes())
+        std::fs::OpenOptions::new().create(true).append(true).open(&f)?.write_all(format!("{secs} {unit}\n").as_bytes())?;
+        std::fs::write(&state, kept.join("\n") + "\n")
     });
     if let Err(x) = written {
         eprintln!("{}: {x}", f.display());
@@ -1620,13 +1976,33 @@ pub fn foreign_dropins(dirs: &[PathBuf]) -> Vec<PathBuf> {
     for d in dirs {
         for entry in std::fs::read_dir(d).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with("control-center-") && name.ends_with(".d") {
+            // service.d changes every user service, ours too. The distro's own in /usr/lib (Fedora
+            // ships 10-timeout-abort.conf there) is how the system is meant to be, so not those.
+            let all = name == "service.d" && !d.starts_with("/usr/lib");
+            if (name.starts_with("control-center-") && name.ends_with(".d")) || all {
                 found.extend(std::fs::read_dir(entry.path()).into_iter().flatten().flatten().map(|f| f.path()).filter(|f| f.extension().is_some_and(|x| x == "conf")));
             }
         }
     }
     found.sort();
     found
+}
+
+/// What in the user's environment would change which libraries krdp loads: LD_LIBRARY_PATH or
+/// LD_PRELOAD set in ~/.config/environment.d, or in the user manager's environment now. Each is a
+/// line for check, as a warning, since they're the user's own settings.
+fn library_env(e: &Env, manager: &str) -> Vec<String> {
+    let risky = |l: &str| ["LD_LIBRARY_PATH=", "LD_PRELOAD="].iter().any(|k| l.trim_start().starts_with(k));
+    let mut out = vec![];
+    for f in std::fs::read_dir(e.home.join(".config/environment.d")).into_iter().flatten().flatten().map(|f| f.path()).filter(|f| f.extension().is_some_and(|x| x == "conf")) {
+        if std::fs::read_to_string(&f).unwrap_or_default().lines().any(risky) {
+            out.push(format!("{} sets LD_LIBRARY_PATH or LD_PRELOAD, which krdp would load libraries by", f.display()));
+        }
+    }
+    for l in manager.lines().filter(|l| risky(l)) {
+        out.push(format!("the user manager's environment has {}, which krdp would load libraries by", l.split('=').next().unwrap_or(l)));
+    }
+    out
 }
 
 /// Refuses to start with an unknown drop-in in place, and says which files and how to clear them.
@@ -1643,6 +2019,7 @@ fn no_dropins(e: &Env) -> bool {
     false
 }
 
+/// Runs cc-share's commands. Returns None if it isn't one of them.
 pub fn main(cmd: &str, args: &[String]) -> Option<i32> {
     let e = env();
     let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or("");
@@ -1728,6 +2105,187 @@ pub fn main(cmd: &str, args: &[String]) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    /// A fake systemd for alert: what `systemctl show` says, one answer per call.
+    fn show(states: &[(&str, &str, &str, &str, &str)]) -> Vec<String> {
+        states.iter().map(|(a, s, r, re, t)| format!("ActiveState={a}\nSubState={s}\nResult={r}\nRestart={re}\nInactiveEnterTimestampMonotonic={t}\n")).collect()
+    }
+
+    fn alerts_for(e: &super::Env, answers: Vec<String>) -> usize {
+        let mut it = answers.into_iter();
+        let mut said = 0;
+        super::alert_with(e, "control-center-share@1.service", &mut || it.next().unwrap_or_default(), &|| {}, &mut |_| said += 1);
+        said
+    }
+
+    /// Crab's run on home_desktop: a broken krdp fails four times with a restart coming each time,
+    /// then the start limit trips. Only that last one alerts, once, and not again while it stays
+    /// failed. After it recovers, a new failure alerts again. A failure nothing will retry
+    /// (Restart=no, or a Result other than start-limit-hit with no restart pending) alerts too.
+    #[test]
+    fn alerts_once_when_a_unit_gives_up() {
+        let d = std::env::temp_dir().join(format!("cc-host-alert-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let e = super::Env { home: d.clone(), dir: d.join(".config/control-center"), units: d.join("units"), share: d.join("share"), max: 0 };
+        let mut said = 0;
+        for t in ["10", "20", "30", "40"] {
+            // the moment OnFailure runs: failed-before-auto-restart, or already auto-restart
+            said += alerts_for(&e, show(&[("failed", "failed-before-auto-restart", "exit-code", "on-failure", t)]));
+            said += alerts_for(&e, show(&[("activating", "auto-restart", "exit-code", "on-failure", t)]));
+        }
+        assert_eq!(said, 0, "restarts pending: no alert");
+        let limit = ("failed", "failed", "start-limit-hit", "on-failure", "50");
+        assert_eq!(alerts_for(&e, show(&[limit])), 1, "the start limit tripped");
+        assert_eq!(alerts_for(&e, show(&[limit])), 0, "(a) not again while it stays failed");
+        // (b) reset-failed, active again, then a new failure
+        assert_eq!(alerts_for(&e, show(&[("active", "running", "success", "on-failure", "50")])), 0);
+        assert_eq!(alerts_for(&e, show(&[("failed", "failed", "start-limit-hit", "on-failure", "90")])), 1, "a fresh failure alerts");
+        // (c) a terminal failure that isn't start-limit-hit
+        assert_eq!(alerts_for(&e, show(&[("failed", "failed", "exit-code", "no", "120")])), 1, "Restart=no");
+        let terminal = ("failed", "failed", "exit-code", "on-failure", "150");
+        assert_eq!(alerts_for(&e, show(&[terminal, terminal])), 1, "still failed after the second look: nothing will retry it");
+        assert_eq!(
+            alerts_for(&e, show(&[("failed", "failed", "exit-code", "on-failure", "160"), ("activating", "auto-restart", "exit-code", "on-failure", "160")])),
+            0,
+            "a restart queued by the second look"
+        );
+        let lines = std::fs::read_to_string(super::alerts(&e)).unwrap().lines().count();
+        let state = std::fs::read_to_string(super::alert_state(&e)).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(lines, 4, "one line per alert");
+        assert_eq!(state.trim(), "control-center-share@1.service 150", "one state line per unit");
+    }
+
+    /// The share unit's ExecStart, run the way systemd would (%h and %i filled in, then sh -c), with
+    /// a home folder that has a space in it: every path still reaches krdp whole.
+    #[test]
+    fn share_unit_survives_a_home_with_a_space() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("cc-host-space {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let home = d.join("my home");
+        std::fs::create_dir_all(home.join(".config/control-center")).unwrap();
+        std::fs::write(home.join(".config/control-center/password"), "pw\n").unwrap();
+        let krdp = d.join("krdp");
+        std::fs::write(&krdp, format!("#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done > \"{}/args\"\n", d.display())).unwrap();
+        std::fs::set_permissions(&krdp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for file in [true, false] {
+            let unit = super::unit_files("/usr/bin/cc-host", &krdp.to_string_lossy(), file).into_iter().find(|(n, _)| *n == "control-center-share@.service").unwrap().1;
+            let line = unit.lines().find_map(|l| l.strip_prefix("ExecStart=/bin/sh -c '")).unwrap().strip_suffix('\'').unwrap();
+            let script = line.replace("%h", &home.to_string_lossy()).replace("%i", "0");
+            assert!(Command::new("/bin/sh").args(["-c", &script]).env("USER", "me").status().unwrap().success());
+            let args = std::fs::read_to_string(d.join("args")).unwrap();
+            let conf = home.join(".config/control-center");
+            assert!(args.lines().any(|a| a == conf.join("cert.pem").to_string_lossy()), "{args}");
+            assert!(args.lines().any(|a| a == conf.join("key.pem").to_string_lossy()), "{args}");
+            if file {
+                assert!(args.lines().any(|a| a == conf.join("password").to_string_lossy()), "{args}");
+            } else {
+                assert!(args.lines().any(|a| a == "pw"), "-p read the file through the space: {args}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// What in the environment would change krdp's libraries is found, and nothing else.
+    #[test]
+    fn library_env_finds_ld_settings() {
+        let d = std::env::temp_dir().join(format!("cc-host-envd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join(".config/environment.d")).unwrap();
+        std::fs::write(d.join(".config/environment.d/old-krdp.conf"), "LD_LIBRARY_PATH=/opt/old-krdp/lib\n").unwrap();
+        std::fs::write(d.join(".config/environment.d/fine.conf"), "EDITOR=vim\n").unwrap();
+        let e = super::Env { home: d.clone(), dir: d.join("c"), units: d.join("u"), share: d.join("s"), max: 0 };
+        let w = super::library_env(&e, "PATH=/usr/bin\nLD_PRELOAD=/x.so\n");
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[0].contains("old-krdp.conf") && w[1].contains("LD_PRELOAD"), "{w:?}");
+    }
+
+    /// frame-run and window-run refuse a login krdp can't take, and password() too.
+    #[test]
+    fn refuses_empty_or_broken_logins() {
+        use serde_json::json;
+        assert_eq!(super::frame_login(&json!({"user": "cc-f1", "password": "pw"})), Ok(("cc-f1", "pw")));
+        for bad in [
+            json!({"user": "cc-f1"}),
+            json!({"user": "", "password": "pw"}),
+            json!({"user": "cc-f1", "password": ""}),
+            json!({"user": "cc-f1", "password": "a\nb"}),
+            json!({"user": "cc-f1", "password": "a\rb"}),
+            json!({"user": "cc-f1", "password": "a\u{0}b"}),
+            json!({"user": 5, "password": "pw"}),
+        ] {
+            assert!(super::frame_login(&bad).is_err(), "{bad}");
+        }
+        for pw in ["", "a\nb", "a\0b"] {
+            let mut c = Command::new("/bin/true");
+            assert!(super::password(&mut c, std::path::Path::new("/bin/true"), pw).is_err(), "{pw:?}");
+            assert_eq!(c.get_args().count(), 0, "nothing added");
+        }
+    }
+
+    /// A krdp whose --help hangs is "can't tell" after the wait, not a quiet fall back to -p.
+    #[test]
+    fn a_hung_help_is_unknown() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = std::env::temp_dir().join(format!("cc-host-hung-{}", std::process::id()));
+        std::fs::write(&f, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let t = std::time::Instant::now();
+        let v = super::ask_help(&f, std::time::Duration::from_millis(300));
+        let _ = std::fs::remove_file(&f);
+        assert_eq!(v, None);
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "it gave up at the wait");
+    }
+
+    /// The share unit hands krdp the password file with our krdp, and -p only without it.
+    #[test]
+    fn share_unit_keeps_the_password_off_argv() {
+        let unit = |file| super::unit_files("/usr/bin/cc-host", "/usr/lib/command-center/krdpserver", file).into_iter().find(|(n, _)| *n == "control-center-share@.service").unwrap().1;
+        let (ours, stock) = (unit(true), unit(false));
+        assert!(ours.contains(r#"-u "$USER" --password-file "%h/.config/control-center/password" --certificate"#) && !ours.contains(" -p "), "{ours}");
+        assert!(stock.contains(r#"-p "$(cat "%h/.config/control-center/password")""#), "{stock}");
+        assert!(!ours.contains("@PASSWORD@") && !stock.contains("@PASSWORD@"));
+    }
+
+    /// frame-run and window-run: with a krdp that takes --password-file the password goes through
+    /// fd 3 and never into argv; with one that doesn't, it's -p.
+    #[test]
+    fn frame_run_passes_the_password_by_pipe() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("cc-host-pwpipe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let shim = |name: &str, help: &str| {
+            let p = d.join(name);
+            // krdp opens the path it's given, so the shim does too, instead of reading an inherited fd.
+            let body = format!(
+                "#!/bin/sh\n[ \"$1\" = --help ] && {{ echo '{help}'; exit 0; }}\necho \"$@\" > {dir}/{name}.argv\nf=\nwhile [ $# -gt 0 ]; do [ \"$1\" = --password-file ] && f=$2; shift; done\n[ -n \"$f\" ] && cat \"$f\" > {dir}/{name}.pw\nexit 0\n",
+                dir = d.display()
+            );
+            std::fs::write(&p, body).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let (patched, stock) = (shim("patched", "  --password-file <path>  Read the password"), shim("stock", "  -p, --password <password>"));
+        let run = |bin: &std::path::Path| {
+            let mut c = Command::new(bin);
+            c.args(["--plasma", "--monitor", "0", "-u", "cc-f1"]);
+            super::password(&mut c, bin, "s3cret-pw").unwrap();
+            let argv: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+            assert!(c.status().unwrap().success());
+            argv
+        };
+        let (a, b) = (run(&patched), run(&stock));
+        let read = |f: &str| std::fs::read_to_string(d.join(f)).unwrap_or_default();
+        let (pa, pw, sa) = (read("patched.argv"), read("patched.pw"), read("stock.argv"));
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(!a.iter().any(|x| x.contains("s3cret")) && !pa.contains("s3cret"), "patched argv {a:?} / {pa}");
+        assert!(a[a.len() - 2] == "--password-file" && a[a.len() - 1].starts_with("/dev/fd/"), "{a:?}");
+        assert_eq!(pw, "s3cret-pw\n", "it read the password by opening /dev/fd/<n>");
+        assert!(b.ends_with(&["-p".to_string(), "s3cret-pw".to_string()]) && sa.contains("-p s3cret-pw"), "stock falls back to -p: {b:?}");
+    }
+
     /// The drop-in check finds a leftover for any of our units (template or instance) in any of the
     /// dirs, and nothing else.
     #[test]
@@ -1735,13 +2293,19 @@ mod tests {
         let d = std::env::temp_dir().join(format!("cc-host-dropins-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let (user, etc) = (d.join("user"), d.join("etc"));
-        for (dir, unit, file) in [(&user, "control-center-share@.service.d", "old-krdp.conf"), (&etc, "control-center-agent.service.d", "x.conf"), (&user, "control-center-share@0.service.d", "notes.txt"), (&user, "someone-else.service.d", "y.conf")] {
+        for (dir, unit, file) in [
+            (&user, "control-center-share@.service.d", "old-krdp.conf"),
+            (&etc, "control-center-agent.service.d", "x.conf"),
+            (&user, "control-center-share@0.service.d", "notes.txt"),
+            (&user, "someone-else.service.d", "y.conf"),
+            (&etc, "service.d", "all.conf"),
+        ] {
             std::fs::create_dir_all(dir.join(unit)).unwrap();
             std::fs::write(dir.join(unit).join(file), "[Service]\n").unwrap();
         }
         let found = super::foreign_dropins(&[user.clone(), etc.clone(), d.join("missing")]);
         let _ = std::fs::remove_dir_all(&d);
-        assert_eq!(found, [etc.join("control-center-agent.service.d/x.conf"), user.join("control-center-share@.service.d/old-krdp.conf")]);
+        assert_eq!(found, [etc.join("control-center-agent.service.d/x.conf"), etc.join("service.d/all.conf"), user.join("control-center-share@.service.d/old-krdp.conf")]);
     }
 
     /// The units' ExecStartPre: a krdp that can't load its libraries fails, with the loader's words.
@@ -1777,7 +2341,10 @@ mod tests {
     #[test]
     fn avahi_edit_changes_only_the_two_publish_keys() {
         let on = avahi_publishing_on(STEAMOS);
-        assert_eq!(on, "# avahi\n[server]\nuse-ipv4=yes\ndisable-publishing=yes\n\n[publish]\n#disable-publishing=yes\ndisable-publishing=no\n disable-user-service-publishing=no\r\npublish-addresses=no\n\n[reflector]\ndisable-publishing=yes\n");
+        assert_eq!(
+            on,
+            "# avahi\n[server]\nuse-ipv4=yes\ndisable-publishing=yes\n\n[publish]\n#disable-publishing=yes\ndisable-publishing=no\n disable-user-service-publishing=no\r\npublish-addresses=no\n\n[reflector]\ndisable-publishing=yes\n"
+        );
         assert!(!avahi_publishing_off(&on));
         assert_eq!(avahi_publishing_on(&on), on, "doing it twice changes nothing");
         assert_eq!(avahi_publishing_on("[publish]\ndisable-publishing=no"), "[publish]\ndisable-publishing=no", "no newline at the end stays so");
@@ -1785,8 +2352,17 @@ mod tests {
     }
 
     fn seen_with(announce: bool, running: bool, conf: Option<&str>) -> Seen {
-        Seen { fw: (vec![], None), avahi_installed: true, avahi_running: running, conf: conf.map(str::to_owned), conf_path: "/etc/avahi/avahi-daemon.conf".into(),
-               backup: None, backup_path: "/etc/avahi/avahi-daemon.conf.before-command-center".into(), tmp: "/h/avahi-daemon.conf.new".into(), announce }
+        Seen {
+            fw: (vec![], None),
+            avahi_installed: true,
+            avahi_running: running,
+            conf: conf.map(str::to_owned),
+            conf_path: "/etc/avahi/avahi-daemon.conf".into(),
+            backup: None,
+            backup_path: "/etc/avahi/avahi-daemon.conf.before-command-center".into(),
+            tmp: "/h/avahi-daemon.conf.new".into(),
+            announce,
+        }
     }
 
     fn lines(f: &Fix) -> Vec<String> {
@@ -1801,8 +2377,14 @@ mod tests {
         assert!(notes.is_empty());
         assert_eq!(f.iter().map(|f| f.kind).collect::<Vec<_>>(), ["firewall", "avahi", "avahi"]);
         assert_eq!(lines(&f[1]), ["sudo systemctl enable --now avahi-daemon"]);
-        assert_eq!(lines(&f[2]), ["sudo cp -p /etc/avahi/avahi-daemon.conf /etc/avahi/avahi-daemon.conf.before-command-center",
-                                  "sudo install -m 644 /h/avahi-daemon.conf.new /etc/avahi/avahi-daemon.conf", "sudo systemctl restart avahi-daemon"]);
+        assert_eq!(
+            lines(&f[2]),
+            [
+                "sudo cp -p /etc/avahi/avahi-daemon.conf /etc/avahi/avahi-daemon.conf.before-command-center",
+                "sudo install -m 644 /h/avahi-daemon.conf.new /etc/avahi/avahi-daemon.conf",
+                "sudo systemctl restart avahi-daemon"
+            ]
+        );
         assert_eq!(f[2].write.as_ref().unwrap().1, avahi_publishing_on(STEAMOS));
         // the backup already there is kept, not copied over
         s.backup = Some("older".into());
@@ -1830,7 +2412,14 @@ mod tests {
         s.backup = Some(STEAMOS.into());
         let (f, notes) = undo(&s);
         assert!(notes.is_empty());
-        assert_eq!(lines(&f[0]), ["sudo cp -p /etc/avahi/avahi-daemon.conf.before-command-center /etc/avahi/avahi-daemon.conf", "sudo rm /etc/avahi/avahi-daemon.conf.before-command-center", "sudo systemctl restart avahi-daemon"]);
+        assert_eq!(
+            lines(&f[0]),
+            [
+                "sudo cp -p /etc/avahi/avahi-daemon.conf.before-command-center /etc/avahi/avahi-daemon.conf",
+                "sudo rm /etc/avahi/avahi-daemon.conf.before-command-center",
+                "sudo systemctl restart avahi-daemon"
+            ]
+        );
         assert!(f[0].changed.contains("left avahi-daemon enabled"));
         s.conf = Some(format!("{}# mine\n", avahi_publishing_on(STEAMOS)));
         let (f, notes) = undo(&s);

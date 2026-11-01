@@ -4,18 +4,23 @@
 //! mouse's SteamVR laser) and pull the trigger. Not the grip, because on the Frame SteamVR
 //! keeps the grip for switching a controller between gamepad and hands. What the trigger does depends on where:
 //!   - the bar or an edge of the card: the panel rides rigidly on that device until you let
-//!     go, and the joystick (or the wheel) pushes it away or pulls it closer;
-//!   - the curve button beside the bar: while held, the point you took rides on the device.
-//!     Pull it toward you to bend the panel, push it back to flatten it. The joystick or
-//!     wheel bends it too, 3 cm a notch;
+//!     go, and the joystick (or the wheel) pushes it away or pulls it closer, faster the longer
+//!     you keep at it, between 0.25 and 5 m. With settings.json "docking" on, hold that hand at
+//!     your other controller (or your face) until it buzzes and let go, and the panel docks there,
+//!     pulled within reach. Docked, it rides along until you grab it again;
+//!   - the curve button beside the bar: a tap flips the panel between flat and curved round you
+//!     (SteamVR's "Toggle Curvature"). Held, the point you took rides on the device: pull it
+//!     toward you to bend the panel, push it back to flatten it. The joystick or wheel bends it
+//!     too, 3 cm a notch;
 //!   - the button left of the bar, on an aligned monitor that got moved off its aligned place
 //!     (say you pulled it closer to read it): puts it back. After a relocalization those places
 //!     moved with the room, so it aligns that monitor again instead;
 //!   - a corner of the card: the corner follows the laser along the panel's diagonal and
 //!     resizes it about its centre, so it shrinks and grows from any corner and keeps its shape;
-//!   - the bottom-right corner: works like a desktop window's, the top-left stays put. A window
-//!     panel takes any width and height (its window follows, windows.rs), and a remote screen
-//!     keeps the remote monitor's shape. In theater mode it's just a corner like the others.
+//!   - the bottom-right corner is the resize handle, as on SteamVR's own windows: it scales the
+//!     panel about its centre, but a window panel takes any width and height there (its window
+//!     follows, windows.rs), while a remote screen keeps the remote monitor's shape. In theater
+//!     mode it's just a corner like the others.
 //! The Machines and Preferences windows (control/) get a card too, in a slot after the
 //! panels' (`Extra`), taken in turn.
 //! Letting go saves the panel into the "home" spot. The card and bar stay shown but fully
@@ -30,13 +35,15 @@
 //! in front and keeps every laser inside it; where on the card a laser lands says whether it's
 //! the bar, an edge or a corner.
 use crate::geometry::{Mat, Placement, Pose, V3, angles, curve_for_width, dot, inv_rigid, mul, norm, panel_matrix, radius_for, sagitta, surface_point};
-use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, ZOOM, ZOOM_NOTCH};
-use crate::overlay::{At, Live, Overlays, Place, apply};
-use crate::stage::Stage;
+use crate::ids::Dev;
 use crate::kvm::Kvm;
-use crate::theme::{self, Accent, MAGENTA, Rgb, Theme, Tokens};
-use crate::{HIDDEN, Source, call, panels, vr};
-use openvr_sys as sys;
+use crate::limits::{CURVE_NOTCH, LASER_PUSH_RANGE, LASER_PUSH_STEP, MAX_WIDTH, MIN_WIDTH, PUSH_ACCEL, PUSH_RATE, PUSH_STREAK, ZOOM, ZOOM_NOTCH};
+use crate::overlay::{At, Flag, InputMode, Live, Overlays, Place, Surfaces, apply};
+use crate::poll::Pointing;
+use crate::stage::Stage;
+use crate::texture::Textures;
+use crate::theme::{self, Accent, Rgb, Theme, Tokens};
+use crate::{HIDDEN, Source, panels, vr};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
@@ -104,6 +111,7 @@ enum Part {
     Zoom,          // a window panel's zoom button, next to that: hold it and pull to make the text bigger
     Snap,          // left of the bar: back to the aligned place (or align again after a relocalization)
     Face,          // left of that: turns the panel in place to face the eye
+    Keys,          // right of the zoom button's place: SteamVR's keyboard, typing to this panel (osk.rs)
     Ctl(usize),    // a window control in the right-hand tab (CTL)
     Corner(usize), // indexed like CORNER_SIGN
 }
@@ -150,7 +158,7 @@ pub(crate) struct Paint {
 
 impl Paint {
     pub(crate) fn new(th: &Theme, accent: Rgb) -> Paint {
-        Paint { t: th.win, acc: th.win.accent(accent), mag: th.win.accent(MAGENTA), radius: th.radius }
+        Paint { t: th.win, acc: th.win.accent(accent), mag: th.win.accent(th.alert), radius: th.radius }
     }
 }
 
@@ -221,6 +229,19 @@ fn part_at(u: f64, v: f64, w: f64, h: f64) -> Option<Part> {
     }
 }
 
+/// A card's hover after a laser event of `kind` on it, `part` being what's under the event's x
+/// and y, and `was` the hover before. A move hovers what's under it and a leave hovers nothing.
+/// An Enter's x and y aren't a position (events.rs: on OpenVR they're whatever SteamVR left
+/// there), so it keeps what was there, and the first move after it says what's under the laser.
+fn hovered(kind: crate::events::PointerKind, part: Option<Part>, was: Option<Part>) -> Option<Part> {
+    use crate::events::PointerKind as P;
+    match kind {
+        P::Move => part,
+        P::Leave => None,
+        _ => was,
+    }
+}
+
 /// The part of a card (for a w × h picture) at (u, v) from the picture's middle, held the same
 /// way as prefs.rs held(). A button, the bar or a corner counts where it actually is. On the
 /// plain frame (or the picture) within HOLD_SLOP frames of the part it was on, it stays on that
@@ -242,6 +263,8 @@ fn held_part(spec: &CardSpec, w: f64, h: f64, extra: bool, was: Option<Part>, u:
             Some(Part::Snap)
         } else if spec.on_face(u, v) {
             Some(Part::Face)
+        } else if spec.on_keys(u, v) {
+            Some(Part::Keys)
         } else if spec.on_bar(u, v) {
             Some(Part::Bar)
         } else if dead(u, v) {
@@ -267,13 +290,14 @@ struct CardSpec {
     w: f64,
     h: f64,
     g: f64,
-    tab: Option<(f64, f64, f64)>, // the folder tab's inner span u0..u1 and top (legend())
+    tab: Option<(f64, f64, f64)>,              // the folder tab's inner span u0..u1 and top (legend())
     tag: Option<(Arc<TagImg>, f64, f64, f64)>, // its image, and where: width, centre u, v
     bar: (f64, Look),                          // the grab bar's width, and its look
     knob: Look,                                // the curve button's look
     zoom: Option<Look>,                        // a window panel's zoom button, and its look
     snap: Option<(Look, Glyph)>,               // the snap-back (or align) button left of the bar, and its look
     face: Option<Look>,                        // the face-me button left of that (none when it faces you), and its look
+    keys: Option<Look>,                        // a live panel's keyboard button, right of where zoom goes, and its look
     ctl: Option<[Look; CTLS]>,                 // a window panel's controls, and their looks
     ctls: usize,                               // how many of them, from the right (close alone: 1)
     size: (usize, usize),
@@ -340,7 +364,13 @@ impl CardSpec {
     /// whether the button's there or not, so one repaint can put it in or take it out.
     fn bar_rect(&self) -> (usize, usize, usize, usize) {
         let (bv, bh) = self.bar_box();
-        let (ku, _, r) = if self.zoom.is_some() { self.zoom_at() } else { self.knob_at() };
+        let (ku, _, r) = if self.keys.is_some() {
+            self.keys_at()
+        } else if self.zoom.is_some() {
+            self.zoom_at()
+        } else {
+            self.knob_at()
+        };
         self.rect(self.snap_at().0 - 4.6 * r, ku + 2.0 * r, bv - bh / 2.0, bv + bh / 2.0) // and the face-me button's
     }
 
@@ -395,6 +425,18 @@ impl CardSpec {
     fn on_zoom(&self, u: f64, v: f64) -> bool {
         let (zu, zv, r) = self.zoom_at();
         self.zoom.is_some() && (u - zu).hypot(v - zv) <= r * 1.3
+    }
+
+    /// The keyboard button: right of where the zoom button goes, whether it's there or not, so it
+    /// sits in the same place on every panel.
+    fn keys_at(&self) -> (f64, f64, f64) {
+        let (zu, zv, r) = self.zoom_at();
+        (zu + 2.6 * r, zv, r)
+    }
+
+    fn on_keys(&self, u: f64, v: f64) -> bool {
+        let (ku, kv, r) = self.keys_at();
+        self.keys.is_some() && (u - ku).hypot(v - kv) <= r * 1.3
     }
 
     fn pixel(&self, x: f64, y: f64) -> ([f64; 3], f64) {
@@ -453,6 +495,10 @@ impl CardSpec {
         let (zu, zv, r) = self.zoom_at();
         if let Some(look) = self.zoom.filter(|_| (u - zu).abs() < 2.0 * r && (v - zv).abs() < 2.0 * r) {
             out = over(out, knob_pixel(&p.t, &p.acc, look, (u - zu) * sx, (v - zv) * sx, r * sx, Glyph::Zoom, bp));
+        }
+        let (yu, yv, r) = self.keys_at();
+        if let Some(look) = self.keys.filter(|_| (u - yu).abs() < 2.0 * r && (v - yv).abs() < 2.0 * r) {
+            out = over(out, knob_pixel(&p.t, &p.acc, look, (u - yu) * sx, (v - yv) * sx, r * sx, Glyph::Keys, bp));
         }
         // The window controls, in their own units.
         if let Some((looks, (us, cv, _))) = ctl {
@@ -557,6 +603,7 @@ impl Painter {
                     // comes, so end the process, same as when cards were drawn on the main
                     // thread. The panic hook has already logged it and systemd starts it again.
                     let Ok(buf) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(draw)) else {
+                        crate::trace::flush();
                         std::process::exit(101);
                     };
                     if tx.send((i, seq, buf)).is_err() {
@@ -596,8 +643,8 @@ pub(crate) fn ctl_pixel(ctl: Ctl, look: Look, p: &Paint, x: f64, y: f64, px: f64
     let s = 5.0 * BP;
     let ink_a = match ctl {
         Ctl::Minimize => seg(-s, s * 0.5, 0.0, -s * 0.5).max(seg(0.0, -s * 0.5, s, s * 0.5)), // v
-        Ctl::Theater => seg(-s, -s * 0.5, 0.0, s * 0.5).max(seg(0.0, s * 0.5, s, -s * 0.5)), // ^
-        Ctl::Close => seg(-s, -s, s, s).max(seg(-s, s, s, -s)),                              // x
+        Ctl::Theater => seg(-s, -s * 0.5, 0.0, s * 0.5).max(seg(0.0, s * 0.5, s, -s * 0.5)),  // ^
+        Ctl::Close => seg(-s, -s, s, s).max(seg(-s, s, s, -s)),                               // x
     };
     let close = ctl == Ctl::Close;
     let a = if close { &p.mag } else { &p.acc };
@@ -693,6 +740,7 @@ pub enum Glyph {
     Snap,  // back to the aligned place: an arrow curling back
     Align, // align again: a target
     Face,  // face me: an eye
+    Keys,  // the keyboard: a key outline with a row of keys and a space bar
 }
 
 /// A round button at (x, y) pixels from its centre, r pixels in radius, bp pixels to a Breeze
@@ -740,6 +788,12 @@ pub fn knob_pixel(t: &Tokens, acc: &Accent, look: Look, x: f64, y: f64, r: f64, 
             let lens = (x.hypot(y - c) - rr).max(x.hypot(y + c) - rr);
             line(lens, stroke).max(((0.12 * r - x.hypot(y)) + 0.5).clamp(0.0, 1.0))
         }
+        Glyph::Keys => {
+            let outline = line((x.abs() - 0.5 * r).max(y.abs() - 0.32 * r), stroke);
+            let space = if x.abs() < 0.24 * r { line(y + 0.13 * r, stroke) } else { 0.0 };
+            let key = [-0.3, -0.1, 0.1, 0.3].iter().map(|k| ((0.06 * r - (x - k * r).hypot(y - 0.1 * r)) + 0.5).clamp(0.0, 1.0)).fold(0.0, f64::max);
+            outline.max(space).max(key)
+        }
     };
     let ink = if look == Look::Carry { acc.ink } else { t.text };
     over(button(t, acc, look, d, r, bp), (ink, glyph_a))
@@ -750,10 +804,10 @@ pub fn set_raw(h: vr::Handle, px: &[u8], w: usize, ht: usize) -> bool {
     if crate::gpu::show_raw(h, px, w, ht) {
         return true;
     }
-    match vr::timed(|| format!("SetOverlayRaw {w}x{ht}"), || call!(ov, SetOverlayRaw, h, px.as_ptr() as *mut _, w as u32, ht as u32, 4)) {
-        0 => true,
-        e => {
-            eprintln!("controls: SteamVR refused a {w}x{ht} texture: {}", vr::error_name(e));
+    match vr::timed(|| format!("SetOverlayRaw {w}x{ht}"), || crate::texture::Live.present_pixels(h, px, w, ht)) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("controls: SteamVR refused a {w}x{ht} texture: {e}");
             false
         }
     }
@@ -761,13 +815,13 @@ pub fn set_raw(h: vr::Handle, px: &[u8], w: usize, ht: usize) -> bool {
 
 /// Creates a panel's card overlay. It gets drawn on its first update.
 pub fn create(name: &str, slot: Option<usize>) -> vr::Handle {
-    let h = crate::surface::create(crate::surface::Kind::Card, slot, &format!("controlcenter.card.{name}"), &format!("Command Center card {name}")).unwrap_or(0);
+    let h = crate::surface::create(crate::surface::Kind::Card, slot, &format!("controlcenter.card.{name}"), &format!("Command Center card {name}")).unwrap_or(crate::vr::Handle::NONE);
     // Sort order puts it under its picture. That's set along with the panels' paint order (paint_order).
-    call!(ov, SetOverlayInputMethod, h, sys::VROverlayInputMethod_Mouse);
-    call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-    call!(ov, SetOverlayFlag, h, sys::VROverlayFlags_SendVRDiscreteScrollEvents, true);
-    call!(ov, SetOverlayAlpha, h, 0.0);
-    call!(ov, ShowOverlay, h);
+    crate::overlay::Live.input(h, InputMode::Pointer);
+    crate::overlay::Live.flag(h, Flag::Interactive, true);
+    crate::overlay::Live.flag(h, Flag::DiscreteScroll, true);
+    crate::overlay::Live.alpha(h, 0.0);
+    crate::overlay::Live.show(h);
     h
 }
 
@@ -775,11 +829,18 @@ pub fn create(name: &str, slot: Option<usize>) -> vr::Handle {
 /// they stay easy to hit on a small or far panel. Returns the bar's width and the card's frame, which is 1.4 grips
 /// so the corners are easy to hit.
 fn chrome(pl: &Placement) -> (f64, f64) {
-    let head = vr::head_position();
+    let head = crate::stage::Live.head();
     let dist = norm(&[pl.c[0] - head[0], pl.c[1] - head[1], pl.c[2] - head[2]]).max(0.2);
     let least = dist * 0.03;
     let bar = (0.012 * dist * pl.width).sqrt().clamp(least, least.max(pl.width * 0.5));
     (bar, 1.4 * (bar * 0.13).max(dist * 0.018))
+}
+
+/// How far under panel pl's picture its card reaches (its frame, or its grab bar where that's
+/// lower), so osk.rs's key strip goes just under it.
+pub fn card_below(pl: &Placement) -> f64 {
+    let (bw, g) = chrome(pl);
+    (0.6 * g + bw * (12.0 + BAR_H as f64 / 2.0) / BAR_W as f64).max(g)
 }
 
 // ------------------------------------------------------------------ carrying and resizing
@@ -789,24 +850,116 @@ enum Mode {
     Move { rel: Mat },                             // device -> panel
     Resize { sx: f64, sy: f64, gx: f64, gy: f64 }, // the corner, and where on it it was grabbed
     Stretch { gx: f64, gy: f64, free: bool },      // the bottom-right corner with the top-left fixed; free means any shape (a window's)
-    Curve { local: [f64; 3], z0: f64, s0: f64 },  // the curve button: the point grabbed rides on the device
+    Curve { local: [f64; 3], z0: f64, s0: f64 },   // the curve button: the point grabbed rides on the device
     Zoom { local: [f64; 3], z0: f64, zoom0: f64 }, // the zoom button: same idea
 }
 
 struct Drag {
-    dev: u32,
+    dev: Dev,
     mode: Mode,
     lost: Option<Instant>,
+    streak: Option<Streak>,             // the push or pull going on, for its speed-up
+    since: Instant,                     // when it started, to tell a tap on the curve button from a pull
+    bent0: f64,                         // ...and how bent the panel was then (its sagitta, metres)
+    others: Vec<crate::ids::Ctl>,       // a carry's dock targets: the other controllers (none with docking off)
+    arm: Option<(Dock, Instant, bool)>, // the target the hand's in, since when, and whether it's armed (DOCK_DWELL)
+}
+
+/// What a docked panel rides on (the spec's rule 7). World is not docked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Dock {
+    Hand(crate::ids::Ctl), // a controller
+    Head,
+}
+
+/// A carry let go with the carrying hand this near another controller docks the panel on that
+/// controller, and this near the head (a hand at your face) docks it on the head (metres).
+const DOCK_HAND: f64 = 0.15;
+const DOCK_HEAD: f64 = 0.15; // calibration knob: not so far out that pulling a panel close to read it docks it
+/// Calibration knob: the hand has to stay in a target this long before letting go docks there,
+/// and a buzz says when it's armed, so a carry that only passes by doesn't dock.
+const DOCK_DWELL: Duration = Duration::from_millis(400);
+/// A hand dock pulls the panel's centre in to at most this far from the hand, keeping how it's
+/// turned, so a panel docked from across the room doesn't swing about with every turn of the wrist.
+const DOCK_REACH: f64 = 0.6;
+/// A head dock keeps the panel's distance from the head, within these (metres).
+const HEAD_REACH: (f64, f64) = (0.4, 2.0);
+/// A dock's controller has to be reported switched off this long in a row before its panel is
+/// left in the room, so one bad frame from SteamVR (every device "disconnected" for a moment)
+/// doesn't drop every hand dock.
+const OFF_DEBOUNCE: Duration = Duration::from_millis(100);
+
+/// rel (a panel's pose relative to what it docks on) with its offset brought within reach.
+fn within_reach(dock: Dock, mut rel: Mat) -> Mat {
+    let t = [rel[0][3] as f64, rel[1][3] as f64, rel[2][3] as f64];
+    let d = norm(&t);
+    let (lo, hi) = if dock == Dock::Head { HEAD_REACH } else { (0.0, DOCK_REACH) };
+    let want = d.clamp(lo, hi);
+    if d > 1e-9 && (want - d).abs() > 1e-9 {
+        for (r, row) in rel.iter_mut().enumerate() {
+            row[3] = (t[r] * want / d) as f32;
+        }
+    }
+    rel
+}
+
+/// Where a panel let go by a hand at `hand` goes: onto one of the other `controllers` (their
+/// positions), onto the head, or the world (None).
+fn dock_for(hand: V3, head: V3, controllers: &[(crate::ids::Ctl, V3)]) -> Option<Dock> {
+    let d = |a: V3, b: V3| norm(&[a[0] - b[0], a[1] - b[1], a[2] - b[2]]);
+    let near = controllers.iter().map(|&(c, p)| (c, d(hand, p))).filter(|&(_, x)| x < DOCK_HAND).min_by(|a, b| a.1.total_cmp(&b.1));
+    match near {
+        Some((c, _)) => Some(Dock::Hand(c)),
+        None => (d(hand, head) < DOCK_HEAD).then_some(Dock::Head),
+    }
+}
+
+/// A press on the curve button let go this soon, having bent it this little (metres of sagitta),
+/// is a tap: it flips the panel between flat and curved (`toggled`) instead.
+const TAP: Duration = Duration::from_millis(350);
+const TAP_BEND: f64 = 0.005;
+
+/// The curve a tap on the curve button gives a panel `width` wide, `dist` from the eye (SteamVR's
+/// "Toggle Curvature"): a flat one curves round you at that distance, never tighter than a half
+/// circle, and a curved one goes flat again.
+fn toggled(width: f64, curve: f64, dist: f64) -> f64 {
+    if curve > 0.0 { 0.0 } else { dist.max(crate::geometry::least_radius(width)) }
+}
+
+/// Notches that keep coming the same way: since when, the last one, and which way (out is away).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Streak {
+    since: Instant,
+    last: Instant,
+    out: bool,
+    notches: f64, // how many it's had (fractions add up), for its rate
+}
+
+/// The streak after `n` notches at `now`, the way `out`: it goes on, or starts over after a pause
+/// or a turn back. Returns it, how long it's been going (seconds), and its rate (notches a second).
+fn streak(was: Option<Streak>, now: Instant, out: bool, n: f64) -> (Streak, f64, f64) {
+    let s = match was {
+        Some(s) if s.out == out && now.duration_since(s.last).as_secs_f64() <= PUSH_STREAK => Streak { last: now, notches: s.notches + n.abs(), ..s },
+        _ => Streak { since: now, last: now, out, notches: n.abs() },
+    };
+    let held = now.duration_since(s.since).as_secs_f64();
+    (s, held, if held > 0.0 { s.notches / held } else { 0.0 })
+}
+
+/// How many times the first step a push or pull takes, after going on `held` seconds at `rate`
+/// notches a second.
+fn accel(held: f64, rate: f64) -> f64 {
+    1.0 + (PUSH_ACCEL.1 - 1.0) * (held / PUSH_ACCEL.0).clamp(0.0, 1.0) * (rate / PUSH_RATE).clamp(0.0, 1.0)
 }
 
 /// What a panel's card looks like right now, as uploaded and placed.
 struct Drawn {
-    spec: CardSpec,  // as drawn (patched in place for a grip or the bar's look)
-    dims: [i64; 3],  // the (w, h, g) in mm it was drawn for
+    spec: CardSpec, // as drawn (patched in place for a grip or the bar's look)
+    dims: [i64; 3], // the (w, h, g) in mm it was drawn for
     card_at: Instant,
     placed: Option<(Mat, i64, i64, i64)>, // the panel's matrix, width, height and curve (mm) it was placed for
-    tag: u32,                        // the panel's tag version (its change count) it was drawn with
-    theme: u32,                      // the theme it was drawn with (theme::generation)
+    tag: u32,                             // the panel's tag version (its change count) it was drawn with
+    theme: u32,                           // the theme it was drawn with (theme::generation)
 }
 
 pub struct Grab {
@@ -816,37 +969,43 @@ pub struct Grab {
     fade: Vec<f32>,
     hover: Vec<Option<Part>>, // the part a laser is on
     drawn: Vec<Option<Drawn>>,
-    hidden: bool, // every panel's hidden, so their controls are too
-    shown: Vec<bool>, // each panel's controls are shown (not while hidden, and not for an empty window slot)
-    cards: Vec<Vec<u8>>, // each card's texture as uploaded (patched in place for a grip)
-    turned: Vec<bool>,   // each card's texture went up rotated a quarter turn (its panel curves top to bottom)
-    painter: Painter,    // full card draws, on their own thread
+    hidden: bool,                       // every panel's hidden, so their controls are too
+    shown: Vec<bool>,                   // each panel's controls are shown (not while hidden, and not for an empty window slot)
+    cards: Vec<Vec<u8>>,                // each card's texture as uploaded (patched in place for a grip)
+    turned: Vec<bool>,                  // each card's texture went up rotated a quarter turn (its panel curves top to bottom)
+    painter: Painter,                   // full card draws, on their own thread
     pending: Vec<Option<(u64, Drawn)>>, // the full draw each card is waiting for: its request's number, and what it'll be
     done: Vec<Option<(u64, Vec<u8>)>>,  // each card's latest texture back from the painter, and its request's number
-    order: Vec<usize>, // the panels from farthest to nearest, as last painted
-    pressed: Vec<(usize, Ctl)>, // window controls pressed, for windows.rs to act on
-    dim: vr::Handle,             // theater mode's backdrop: dark, in front of your eyes, painted just under the panel
+    order: Vec<usize>,                  // the panels from farthest to nearest, as last painted
+    pressed: Vec<(usize, Ctl)>,         // window controls pressed, for windows.rs to act on
+    dim: vr::Handle,                    // theater mode's backdrop: dark, in front of your eyes, painted just under the panel
     dim_alpha: f32,
-    dimmed: Vec<bool>,           // faded out because another panel is in theater mode
-    theater: usize,              // the panel in theater mode as last painted (MAX means none)
-    dim_gen: u32,                // the theme the backdrop was painted for
-    painted: Option<Instant>,    // when paint_order last ran (None: run it now)
-    moving: bool,                // something moved or faded this frame, so main.rs keeps the display's rate
-    pub released: Vec<u32>, // devices whose button came up on a panel or card this frame (a hold that started on the taskbar)
-    extra: Option<Extra>,   // the window in the slot after the panels', while it's open
+    dimmed: Vec<bool>,          // faded out because another panel is in theater mode
+    theater: usize,             // the panel in theater mode as last painted (MAX means none)
+    dim_gen: u32,               // the theme the backdrop was painted for
+    painted: Option<Instant>,   // when paint_order last ran (None: run it now)
+    moving: bool,               // something moved or faded this frame, so main.rs keeps the display's rate
+    pub released: Vec<Dev>,     // devices whose button came up on a panel or card this frame (a hold that started on the taskbar)
+    extra: Option<Extra>,       // the window in the slot after the panels', while it's open
     scanned: Vec<Option<Pose>>, // each panel's aligned place (home.json "scanned"), reread every second
     scanned_read: Option<Instant>,
-    stale: Vec<Option<Pose>>, // those places as of the last relocalization; if they're still the same, they moved with the room
-    aligns: Vec<usize>,       // align buttons pressed after a relocalization, for machines.rs
-    backs: crate::back::Backs, // panels turned away from you show their backs (back.rs)
-    pub game: bool,            // a VR game is running (the taskbar knows), so no backs
+    stale: Vec<Option<Pose>>,                          // those places as of the last relocalization; if they're still the same, they moved with the room
+    aligns: Vec<usize>,                                // align buttons pressed after a relocalization, for machines.rs
+    taps: Vec<usize>,                                  // the curve button tapped (not pulled), for settle
+    drops: Vec<(usize, Option<Dock>)>,                 // carries a controller let go, and the target it had armed, for settle
+    docked: Vec<Option<(Dock, Mat, Option<Instant>)>>, // what each slot rides on, its pose relative to that, and since when that's untracked
+    pub docking: bool,                                 // settings.json "docking", read at start (main.rs): off, nothing docks
+    off_since: Vec<Option<Instant>>,                   // since when a docked slot's controller has been reported off (OFF_DEBOUNCE)
+    keyboards: Vec<usize>,                             // keyboard buttons pressed, for osk.rs
+    backs: crate::back::Backs,                         // panels turned away from you show their backs (back.rs)
+    pub game: bool,                                    // a VR game is running (the taskbar knows), so no backs
 }
 
 /// A window that isn't a panel (Machines, Preferences) but gets a card like theirs. It takes
 /// the last slot of Grab's lists. It's not in Kvm, since its place lives here, and not in
 /// paint_order either, since its sort orders are fixed.
 struct Extra {
-    name: &'static str, // its spot: spots.home.<name>
+    name: &'static str,        // its spot: spots.home.<name>
     open: &'static AtomicBool, // its window's open flag; the card's close clears it
     win: vr::Handle,
     card: vr::Handle,
@@ -875,15 +1034,16 @@ struct Owner {
     window: bool, // a window panel, so any shape and it can zoom
     ctls: usize,  // how many controls it has, counted from the right
     bare: bool,   // an app's popup (a menu): no card at all, since it rides on its window's panel
+    keys: bool,   // a live panel, so the keyboard button can type to it
 }
 
 /// Theater mode's backdrop: an opaque dark square 8 m wide, 2 m in front of the headset. It
 /// moves with your head so it always fills your view (about ±63°), and it stays hidden until
 /// theater mode needs it. Its colour gets repainted for each theme (`paint_backdrop`).
 fn backdrop() -> vr::Handle {
-    let h = crate::surface::create(crate::surface::Kind::Backdrop, None, "controlcenter.theater", "Command Center theater").unwrap_or(0);
-    apply(&mut Live, h, &Place::new(At::Device(sys::k_unTrackedDeviceIndex_Hmd as u32, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, -2.0]]), 8.0));
-    call!(ov, SetOverlayAlpha, h, 0.0);
+    let h = crate::surface::create(crate::surface::Kind::Backdrop, None, "controlcenter.theater", "Command Center theater").unwrap_or(crate::vr::Handle::NONE);
+    apply(&mut Live, h, &Place::new(At::Device(Dev::Head, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, -2.0]]), 8.0));
+    crate::overlay::Live.alpha(h, 0.0);
     h
 }
 
@@ -895,39 +1055,25 @@ fn backdrop_colour(t: &Tokens) -> [u8; 4] {
 }
 
 fn paint_backdrop(h: vr::Handle) {
-    let mut px = backdrop_colour(&theme::get().win).repeat(16);
-    call!(ov, SetOverlayRaw, h, px.as_mut_ptr() as *mut _, 4, 4, 4);
+    let _ = crate::texture::Live.present_pixels(h, &backdrop_colour(&theme::get().win).repeat(16), 4, 4);
 }
 
-/// Every tracked device's pose in standing space.
-fn poses() -> Vec<sys::TrackedDevicePose_t> {
-    let n = sys::k_unMaxTrackedDeviceCount as usize;
-    let mut all: Vec<sys::TrackedDevicePose_t> = vec![unsafe { std::mem::zeroed() }; n];
-    call!(sys, GetDeviceToAbsoluteTrackingPose, sys::ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0, all.as_mut_ptr(), n as u32);
-    all
-}
-
-/// The mouse, as a device number just past SteamVR's (kvm.rs card_mouse). Its pose and laser
-/// are kvm's ray as of the last poll.
-pub const MOUSE: u32 = sys::k_unMaxTrackedDeviceCount as u32;
+// The mouse (Dev::Mouse; kvm.rs card_mouse): its pose and laser are kvm's ray as of the last poll.
 static MOUSE_RAY: Mutex<Option<Mat>> = Mutex::new(None);
 
-pub fn pose_of(dev: u32) -> Option<Mat> {
-    if dev == MOUSE {
-        return *MOUSE_RAY.lock().unwrap();
-    }
-    let p = *poses().get(dev as usize)?;
-    p.bPoseIsValid.then_some(p.mDeviceToAbsoluteTracking.m)
+/// The mouse's ray as of the last poll, its pose and its laser (stage::Live asks).
+pub fn mouse_ray() -> Option<Mat> {
+    *MOUSE_RAY.lock().unwrap()
 }
 
 /// Where a device's laser meets the panel, in the device's own frame so it rides along like a
 /// carried panel, and how far in front of the panel's middle that point is.
-pub fn taken(pl: &Placement, dev: u32) -> Option<([f64; 3], f64)> {
+pub fn taken(pl: &Placement, dev: Dev) -> Option<([f64; 3], f64)> {
     taken_by(&Live, pl, dev)
 }
 
 /// `taken` through a stage (SteamVR, or a test's stand-in).
-pub fn taken_by(s: &impl Stage, pl: &Placement, dev: u32) -> Option<([f64; 3], f64)> {
+pub fn taken_by(s: &impl Stage, pl: &Placement, dev: Dev) -> Option<([f64; 3], f64)> {
     let (l, d) = (s.laser(dev)?, s.device(dev)?);
     let o = [l[0][3] as f64, l[1][3] as f64, l[2][3] as f64];
     let dir = [-l[0][2] as f64, -l[1][2] as f64, -l[2][2] as f64];
@@ -942,11 +1088,6 @@ pub fn depth_of(pl: &Placement, m: &Mat, local: &[f64; 3]) -> f64 {
     dot(&[at[0] - pl.c[0], at[1] - pl.c[1], at[2] - pl.c[2]], &pl.z)
 }
 
-/// A device's laser (vr::laser_pose). For the mouse, the laser is just its pose.
-pub(crate) fn laser_of(dev: u32) -> Option<Mat> {
-    if dev == MOUSE { pose_of(dev) } else { vr::laser_pose(dev) }
-}
-
 /// A world point in a device's own frame. This works because its pose is rigid.
 fn to_device(d: &Mat, p: &[f64; 3]) -> [f64; 3] {
     let q = [0, 1, 2].map(|r| p[r] - d[r][3] as f64);
@@ -954,12 +1095,12 @@ fn to_device(d: &Mat, p: &[f64; 3]) -> [f64; 3] {
 }
 
 /// Where a device's laser meets the panel's surface, extended past its edges, as (u, v).
-pub fn laser_on(pl: &Placement, dev: u32) -> Option<(f64, f64)> {
+pub fn laser_on(pl: &Placement, dev: Dev) -> Option<(f64, f64)> {
     laser_on_by(&Live, pl, dev)
 }
 
 /// `laser_on` through a stage.
-pub fn laser_on_by(s: &impl Stage, pl: &Placement, dev: u32) -> Option<(f64, f64)> {
+pub fn laser_on_by(s: &impl Stage, pl: &Placement, dev: Dev) -> Option<(f64, f64)> {
     let l = s.laser(dev)?;
     let o = [l[0][3] as f64, l[1][3] as f64, l[2][3] as f64];
     let d = [-l[0][2] as f64, -l[1][2] as f64, -l[2][2] as f64];
@@ -972,24 +1113,23 @@ pub fn width_for(sx: f64, sy: f64, cu: f64, cv: f64, aspect: f64) -> f64 {
     2.0 * (sx * cu + aspect * sy * cv) / (1.0 + aspect * aspect)
 }
 
-/// Puts the bottom-right corner at (cu, cv) (from the centre, along the surface) while the
-/// top-left stays where it is, and returns the panel's new matrix, width, height and curve.
-/// With `aspect` (height per width) it keeps its shape and the corner moves along the diagonal
-/// from the top-left. With None it takes any shape up to `max` (w, h), which is how a window
-/// works, as big as the output. The new panel sits on the cylinder through the top-left, or a
-/// new cylinder when the curve grows with the width.
+/// Puts the bottom-right corner at (cu, cv) (from the centre, along the surface) while the centre
+/// stays where it is, as SteamVR's resize handle does ("keep floating frames centered when
+/// resizing"), and returns the panel's new matrix, width, height and curve. With `aspect` (height
+/// per width) it keeps its shape and the corner moves along the diagonal. With None it takes any
+/// shape up to `max` (w, h), which is how a window works, as big as the output. The curve grows
+/// with the width only past a half circle. (cu, cv) is the corner itself, not the laser: the caller
+/// takes off the grab's offset from the corner that start() kept (gx, gy), so w = 2·cu holds and
+/// a grab a little inside the handle doesn't jump.
 fn stretched(pl: &Placement, cu: f64, cv: f64, aspect: Option<f64>, max: (f64, f64)) -> (Mat, f64, f64, f64) {
-    let (du, dv) = (cu + pl.width / 2.0, pl.height / 2.0 - cv); // from the top-left
     let (w, h) = match aspect {
         Some(a) => {
-            let w = ((du + a * dv) / (1.0 + a * a)).clamp(MIN_WIDTH, MAX_WIDTH);
+            let w = width_for(1.0, -1.0, cu, cv, a).clamp(MIN_WIDTH, MAX_WIDTH);
             (w, a * w)
         }
-        None => (du.clamp(MIN_WIDTH, max.0.clamp(MIN_WIDTH, MAX_WIDTH)), dv.clamp(MIN_WIDTH, max.1.clamp(MIN_WIDTH, MAX_WIDTH))),
+        None => ((2.0 * cu).clamp(MIN_WIDTH, max.0.clamp(MIN_WIDTH, MAX_WIDTH)), (-2.0 * cv).clamp(MIN_WIDTH, max.1.clamp(MIN_WIDTH, MAX_WIDTH))),
     };
-    let curve = curve_for_width(pl.curve, w);
-    let top_left = pl.on_surface(-pl.width / 2.0, pl.height / 2.0, 0.0);
-    (Placement::from_matrix(&top_left, w, h / w, curve).on_surface(w / 2.0, -h / 2.0, 0.0), w, h, curve)
+    (pl.matrix(), w, h, curve_for_width(pl.curve, w))
 }
 
 impl Grab {
@@ -998,9 +1138,46 @@ impl Grab {
     }
 
     /// `new` with the theater backdrop's overlay given, so a test can make one without SteamVR.
-    fn with_backdrop(n: usize, dim: vr::Handle) -> Grab {
+    pub(crate) fn with_backdrop(n: usize, dim: vr::Handle) -> Grab {
         let n = n + 1; // plus the Extra's slot
-        Grab { drags: (0..n).map(|_| None).collect(), near: vec![None; n], focus: vec![0; n], fade: vec![0.0; n], hover: vec![None; n], drawn: (0..n).map(|_| None).collect(), hidden: false, shown: vec![true; n], cards: vec![Vec::new(); n], turned: vec![false; n], painter: Painter::new(), pending: (0..n).map(|_| None).collect(), done: vec![None; n], order: Vec::new(), pressed: Vec::new(), dim, dim_alpha: 0.0, dimmed: vec![false; n], theater: usize::MAX, dim_gen: u32::MAX, painted: None, moving: false, released: Vec::new(), extra: None, scanned: Vec::new(), scanned_read: None, stale: Vec::new(), aligns: Vec::new(), backs: Default::default(), game: false }
+        Grab {
+            drags: (0..n).map(|_| None).collect(),
+            near: vec![None; n],
+            focus: vec![0; n],
+            fade: vec![0.0; n],
+            hover: vec![None; n],
+            drawn: (0..n).map(|_| None).collect(),
+            hidden: false,
+            shown: vec![true; n],
+            cards: vec![Vec::new(); n],
+            turned: vec![false; n],
+            painter: Painter::new(),
+            pending: (0..n).map(|_| None).collect(),
+            done: vec![None; n],
+            order: Vec::new(),
+            pressed: Vec::new(),
+            dim,
+            dim_alpha: 0.0,
+            dimmed: vec![false; n],
+            theater: usize::MAX,
+            dim_gen: u32::MAX,
+            painted: None,
+            moving: false,
+            released: Vec::new(),
+            extra: None,
+            scanned: Vec::new(),
+            scanned_read: None,
+            stale: Vec::new(),
+            aligns: Vec::new(),
+            taps: Vec::new(),
+            drops: Vec::new(),
+            docked: vec![None; n],
+            docking: false,
+            off_since: vec![None; n],
+            keyboards: Vec::new(),
+            backs: Default::default(),
+            game: false,
+        }
     }
 
     /// The Extra's slot, right after the panels'.
@@ -1012,12 +1189,18 @@ impl Grab {
     fn owner(&self, i: usize) -> Option<Owner> {
         if let Some(p) = panels().get(i) {
             let window = matches!(p.src, Source::Window(_));
-            let ctls = if window { CTLS } else if p.v.pop.is_some() { 1 } else { 0 }; // a pop-out gets just close (popout.rs)
+            let ctls = if window {
+                CTLS
+            } else if p.v.pop.is_some() {
+                1
+            } else {
+                0
+            }; // a pop-out gets just close (popout.rs)
             let bare = window && crate::windows::is_popup(i);
-            return Some(Owner { name: &p.v.name, card: p.card, overlay: p.overlay, accent: p.accent, tag: p.tag(), live: p.live(), away: p.away(), window, ctls, bare });
+            return Some(Owner { name: &p.v.name, card: p.card, overlay: p.overlay, accent: p.accent, tag: p.tag(), live: p.live(), away: p.away(), window, ctls, bare, keys: p.live() });
         }
         let x = self.extra.as_ref().filter(|_| i == self.slot())?;
-        Some(Owner { name: x.name, card: x.card, overlay: x.win, accent: x.accent, tag: (0, None), live: true, away: !x.shown, window: false, ctls: 1, bare: false })
+        Some(Owner { name: x.name, card: x.card, overlay: x.win, accent: x.accent, tag: (0, None), live: true, away: !x.shown, window: false, ctls: 1, bare: false, keys: false })
     }
 
     /// Where slot i's owner is.
@@ -1052,7 +1235,7 @@ impl Grab {
     /// has to be free first (extra_taken).
     pub fn open_extra(&mut self, name: &'static str, win: vr::Handle, sort: u32, accent: Rgb, pl: Placement, open: &'static AtomicBool) {
         let card = create(name, None);
-        call!(ov, SetOverlaySortOrder, card, sort);
+        crate::overlay::Live.order(card, sort);
         let mut x = Extra { name, open, win, card, accent, pl, shown: false }; // its owner's first tick shows it (set_extra_shown)
         x.place(&mut Live, &pl.matrix(), pl.width, pl.curve);
         self.extra = Some(x);
@@ -1064,6 +1247,7 @@ impl Grab {
         crate::gpu::forget(x.card);
         crate::surface::destroy(x.card);
         let i = self.slot();
+        self.docked[i] = None;
         (self.drags[i], self.drawn[i], self.near[i], self.hover[i], self.fade[i], self.focus[i]) = (None, None, None, None, 0.0, 0);
         (self.pending[i], self.done[i], self.shown[i], self.dimmed[i]) = (None, None, true, false);
         self.painter.jobs.cancel(i);
@@ -1077,6 +1261,11 @@ impl Grab {
         x.place(&mut Live, m, w, curve);
         let i = self.slot();
         self.drags[i] = None;
+    }
+
+    /// The Extra's window and where it is, while it's showing (gather.rs).
+    pub fn extra_shown(&self) -> Option<(&'static str, Placement)> {
+        self.extra.as_ref().filter(|x| x.shown).map(|x| (x.name, x.pl))
     }
 
     /// Gives the Extra's window a new shape (height over width, from machines.rs's rows or its
@@ -1097,17 +1286,19 @@ impl Grab {
     /// An event on panel i's own picture. A laser there brings its controls in. A button
     /// release ends that device's drags, since it may be over another panel by then, and
     /// returns true if it ended any.
-    pub fn panel_event(&mut self, i: usize, e: &vr::VREvent_t, k: &mut Kvm) -> bool {
-        match e.eventType {
-            sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_FocusEnter => {
+    pub fn panel_event(&mut self, i: usize, e: &crate::events::SurfaceEvent, k: &mut Kvm) -> bool {
+        use crate::events::{PointerKind as P, SurfaceEvent as S};
+        let S::Pointer(pe) = e else { return false };
+        match pe.kind {
+            P::Move | P::Enter => {
                 self.touch(i, 1, true);
                 false
             }
-            sys::EVREventType_VREvent_FocusLeave => {
+            P::Leave => {
                 self.touch(i, 1, false);
                 false
             }
-            sys::EVREventType_VREvent_MouseButtonUp => self.end_by(e.trackedDeviceIndex, k),
+            P::Up(_) => self.end_by(pe.from, k),
             _ => false,
         }
     }
@@ -1117,21 +1308,25 @@ impl Grab {
     /// mouse or a steady hand sends no moves (HOLD at most). After it's off both, it stays near
     /// for LINGER.
     fn touch(&mut self, i: usize, bit: u8, on: bool) {
-        if on { self.focus[i] |= bit } else { self.focus[i] &= !bit }
+        if on {
+            self.focus[i] |= bit
+        } else {
+            self.focus[i] &= !bit
+        }
         let until = Instant::now() + if self.focus[i] != 0 { HOLD } else { LINGER };
         self.near[i] = Some(if on { until } else { self.near[i].map_or(until, |t| t.min(until)) });
     }
 
-    /// The part of panel i's card under an overlay mouse event. The card's mouse scale is its
-    /// size in metres, measured from the bottom left.
-    fn card_part(&self, i: usize, e: &vr::VREvent_t, k: &Kvm) -> Option<Part> {
+    /// The part of panel i's card under a laser at (x, y). The card's mouse scale is its size in
+    /// metres, measured from the bottom left.
+    fn card_part(&self, i: usize, (x, y): (f32, f32), k: &Kvm) -> Option<Part> {
         let pl = &self.at(i, k);
         let spec = &self.drawn[i].as_ref()?.spec;
         let g = spec.g;
         let fw = pl.width + 2.0 * g;
-        let m = unsafe { e.data.mouse }; // metres from the card's bottom left
-        // on a turned card (its panel curves top to bottom), the event's bottom left is the card's bottom right
-        let (mx, my) = surface_point(pl.vert, fw, m.x as f64, m.y as f64);
+        // metres from the card's bottom left; on a turned card (its panel curves top to bottom), the
+        // event's bottom left is the card's bottom right
+        let (mx, my) = surface_point(pl.vert, fw, x as f64, y as f64);
         let (u, v) = (mx - fw / 2.0, my - (pl.height / 2.0 + g + spec.bottom()));
         held_part(spec, pl.width, pl.height, i == self.slot(), self.hover[i], u, v)
     }
@@ -1140,7 +1335,11 @@ impl Grab {
     pub fn poll(&mut self, k: &mut Kvm) {
         let s = &mut Live;
         for (i, dev, down) in self.backs.events() {
-            if down { self.start(i, Part::Bar, dev, k, s) } else { self.end_by(dev, k); }
+            if down {
+                self.start(i, Part::Bar, dev, k, s)
+            } else {
+                self.end_by(dev, k);
+            }
         }
         self.poll_mouse(k, s);
         self.poll_cards(k, s);
@@ -1152,51 +1351,48 @@ impl Grab {
         // The mouse's presses on a card with no laser (kvm.rs card_mouse) land where its ray meets the card.
         for (i, down) in std::mem::take(&mut k.card_mouse) {
             if !down {
-                self.end_by(MOUSE, k);
+                self.end_by(Dev::Mouse, k);
                 continue;
             }
             let i = if i == usize::MAX { self.slot() } else { i };
             let pl = self.at(i, k);
-            let part = self.drawn[i].as_ref().zip(laser_on_by(s, &pl, MOUSE)).and_then(|(d, (u, v))| held_part(&d.spec, pl.width, pl.height, i == self.slot(), self.hover[i], u, v));
+            let part = self.drawn[i].as_ref().zip(laser_on_by(s, &pl, Dev::Mouse)).and_then(|(d, (u, v))| held_part(&d.spec, pl.width, pl.height, i == self.slot(), self.hover[i], u, v));
             eprintln!("{}: card pressed by the mouse on {part:?}", self.owner(i).map_or("", |o| o.name));
             crate::windows::shell_outside();
-            self.press(i, part, MOUSE, k, s);
+            self.press(i, part, Dev::Mouse, k, s);
         }
         let notches = std::mem::take(&mut k.card_wheel);
-        if let Some(i) = (notches != 0.0).then(|| self.drags.iter().position(|d| d.as_ref().is_some_and(|d| d.dev == MOUSE))).flatten() {
+        if let Some(i) = (notches != 0.0).then(|| self.drags.iter().position(|d| d.as_ref().is_some_and(|d| d.dev == Dev::Mouse))).flatten() {
             self.scroll(i, notches, k, s);
         }
     }
 
     /// The lasers' part of `poll`: SteamVR's events on each card.
     fn poll_cards(&mut self, k: &mut Kvm, s: &mut impl Stage) {
-        let mut e: vr::VREvent_t = unsafe { std::mem::zeroed() };
         for i in 0..self.drags.len() {
             let Some(p) = self.owner(i) else { continue };
             {
-                while call!(ov, PollNextOverlayEvent, p.card, &mut e, size_of::<vr::VREvent_t>() as u32) {
-                    let part = self.card_part(i, &e, k);
-                    match e.eventType {
-                        sys::EVREventType_VREvent_MouseMove | sys::EVREventType_VREvent_FocusEnter => {
-                            self.touch(i, 2, true);
-                            self.hover[i] = part;
+                while let Some(ev) = crate::poll::Live.next(p.card) {
+                    use crate::events::{Button, PointerKind as P, SurfaceEvent as S};
+                    let S::Pointer(pe) = ev else { continue };
+                    let part = self.card_part(i, (pe.x, pe.y), k);
+                    match pe.kind {
+                        P::Move | P::Enter | P::Leave => {
+                            self.touch(i, 2, pe.kind != P::Leave);
+                            self.hover[i] = hovered(pe.kind, part, self.hover[i]);
                         }
-                        sys::EVREventType_VREvent_FocusLeave => {
-                            self.touch(i, 2, false);
-                            self.hover[i] = None;
-                        }
-                        sys::EVREventType_VREvent_MouseButtonDown if unsafe { e.data.mouse.button } == sys::EVRMouseButton_VRMouseButton_Left => {
-                            eprintln!("{}: card pressed by device {} on {part:?}", p.name, e.trackedDeviceIndex);
+                        P::Down(Button::Left) => {
+                            eprintln!("{}: card pressed by device {} on {part:?}", p.name, crate::stage::Live.label(pe.from));
                             crate::windows::shell_outside(); // a click outside Plasma's open popup
-                            if vr::is_real_controller(e.trackedDeviceIndex) && k.awake {
+                            if crate::stage::Live.is_controller(pe.from) && k.awake {
                                 k.set_awake(false); // whichever device was pressed last is primary (R-2)
                             }
-                            self.press(i, part, e.trackedDeviceIndex, k, s);
+                            self.press(i, part, pe.from, k, s);
                         }
-                        sys::EVREventType_VREvent_MouseButtonUp => {
-                            self.end_by(e.trackedDeviceIndex, k);
+                        P::Up(_) => {
+                            self.end_by(pe.from, k);
                         }
-                        sys::EVREventType_VREvent_ScrollDiscrete => self.scroll(i, unsafe { e.data.scroll.ydelta } as f64, k, s),
+                        P::Scroll { dy, smooth: false, .. } => self.scroll(i, dy as f64, k, s),
                         _ => {}
                     }
                 }
@@ -1208,7 +1404,13 @@ impl Grab {
     /// closer, a bend gets 3 cm more (or less) curve a notch, and a zoom changes 10% a notch.
     fn scroll(&mut self, i: usize, notches: f64, k: &mut Kvm, s: &mut impl Stage) {
         match self.drags[i].as_mut().map(|d| &mut d.mode) {
-            Some(Mode::Move { .. }) => self.push(i, notches, k, s),
+            Some(Mode::Move { .. }) if notches == 0.0 => {} // no notch: the streak goes on
+            Some(Mode::Move { .. }) => {
+                let d = self.drags[i].as_mut().unwrap();
+                let (st, held, rate) = streak(d.streak, Instant::now(), notches > 0.0, notches);
+                d.streak = Some(st);
+                self.push(i, notches * accel(held, rate), k, s)
+            }
             Some(Mode::Curve { s0, .. }) => *s0 = (*s0 + CURVE_NOTCH * notches).max(0.0),
             Some(Mode::Zoom { zoom0, .. }) => *zoom0 = (*zoom0 * ZOOM_NOTCH.powf(notches)).clamp(ZOOM.0, ZOOM.1),
             _ => {}
@@ -1216,7 +1418,7 @@ impl Grab {
     }
 
     /// A press on a part of slot i's card: either a button, or the start of a drag on dev.
-    fn press(&mut self, i: usize, part: Option<Part>, dev: u32, k: &mut Kvm, s: &mut impl Stage) {
+    fn press(&mut self, i: usize, part: Option<Part>, dev: Dev, k: &mut Kvm, s: &mut impl Stage) {
         match part {
             // the Extra's close; its window does the closing on its own tick
             Some(Part::Ctl(_)) if i == self.slot() => {
@@ -1227,12 +1429,13 @@ impl Grab {
             Some(Part::Ctl(c)) => self.pressed.push((i, CTL[c])),
             Some(Part::Snap) => self.snap(i, k, s),
             Some(Part::Face) => self.face(i, k, s),
+            Some(Part::Keys) => self.keyboards.push(i),
             Some(part) => self.start(i, part, dev, k, s),
             None => {}
         }
     }
 
-    fn start(&mut self, i: usize, part: Part, dev: u32, k: &Kvm, s: &impl Stage) {
+    fn start(&mut self, i: usize, part: Part, dev: Dev, k: &Kvm, s: &impl Stage) {
         let pl = &self.at(i, k);
         let mode = match part {
             // theater mode has its own size, so there this corner works like the others
@@ -1251,13 +1454,14 @@ impl Grab {
                 let s0 = sagitta(pl.width, pl.curve);
                 Mode::Curve { local, z0, s0 }
             }
-            Part::Ctl(_) | Part::Snap | Part::Face => return, // buttons, not drags (poll handles them)
+            Part::Ctl(_) | Part::Snap | Part::Face | Part::Keys => return, // buttons, not drags (poll handles them)
             Part::Zoom => {
                 let Some((local, z0)) = taken_by(s, pl, dev) else { return };
                 Mode::Zoom { local, z0, zoom0: panels()[i].zoom() }
             }
             Part::Bar | Part::Edge => {
                 let Some(d) = s.device(dev) else { return };
+                self.docked[i] = None; // grabbed again: torn off, and the drop decides anew
                 Mode::Move { rel: mul(&inv_rigid(&d), &pl.matrix()) }
             }
         };
@@ -1267,19 +1471,92 @@ impl Grab {
             Mode::Zoom { .. } => "zoomed",
             Mode::Move { .. } => "carried",
         };
-        self.drags[i] = Some(Drag { dev, mode, lost: None });
-        eprintln!("{}: {what} by device {dev}", self.owner(i).map_or("", |o| o.name));
+        // a controller's carry can dock: its targets are the other controllers, looked up once here
+        let others = if self.docking && matches!(mode, Mode::Move { .. }) && dev != Dev::Mouse { s.controllers().into_iter().filter(|&c| Dev::Controller(c) != dev).collect() } else { Vec::new() };
+        self.drags[i] = Some(Drag { dev, mode, lost: None, streak: None, since: Instant::now(), bent0: sagitta(pl.width, pl.curve), others, arm: None });
+        eprintln!("{}: {what} by device {}", self.owner(i).map_or("", |o| o.name), crate::stage::Live.label(dev));
     }
 
     /// Letting go: the panel stays where it is and its new place is saved into "home".
     fn end(&mut self, i: usize, k: &Kvm) {
-        if self.drags[i].take().is_some() {
+        let Some(d) = self.drags[i].take() else { return };
+        if matches!(d.mode, Mode::Move { .. }) && d.dev != Dev::Mouse && crate::THEATER.load(Relaxed) != i {
+            let armed = d.arm.filter(|a| a.2).map(|a| a.0);
+            return self.drops.push((i, armed)); // settle docks it, or puts it in the world and saves it
+        }
+        if let Mode::Curve { .. } = d.mode {
+            let pl = self.at(i, k);
+            if d.since.elapsed() < TAP && (sagitta(pl.width, pl.curve) - d.bent0).abs() < TAP_BEND {
+                return self.taps.push(i); // update() flips it, and saves it then
+            }
+        }
+        self.save(i, k);
+    }
+
+    /// A carry's hand at `hand`: which dock target it's in, for how long, and whether that's armed
+    /// yet (DOCK_DWELL, with a buzz). Only with docking on.
+    fn arm(&mut self, i: usize, hand: &Mat, s: &mut impl Stage, now: Instant) {
+        if !self.docking || self.drags[i].as_ref().is_none_or(|d| d.dev == Dev::Mouse) || crate::THEATER.load(Relaxed) == i {
+            return;
+        }
+        let pos = |m: Mat| [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64];
+        let others: Vec<(crate::ids::Ctl, V3)> = self.drags[i].as_ref().unwrap().others.iter().filter_map(|&c| Some((c, pos(s.device(Dev::Controller(c))?)))).collect();
+        let want = dock_for(pos(*hand), s.head(), &others);
+        let card = self.owner(i).map_or_else(|| s.panel(i).overlay, |o| o.card); // a slot with no owner is only a test's
+        let d = self.drags[i].as_mut().unwrap();
+        d.arm = match (want, d.arm) {
+            (None, _) => None,
+            (Some(w), Some((a, since, armed))) if a == w => {
+                let now_armed = armed || now.duration_since(since) >= DOCK_DWELL;
+                if now_armed && !armed {
+                    s.pulse(card);
+                }
+                Some((a, since, now_armed))
+            }
+            (Some(w), _) => Some((w, now, false)),
+        };
+    }
+
+    /// What was let go since the last frame. A carry let go in a dock target it had armed docks
+    /// there, pulled within reach (`within_reach`); anywhere else it's in the world and saved. A tap on the curve button flips
+    /// its panel flat or curved.
+    fn settle(&mut self, k: &mut Kvm, s: &mut impl Stage) {
+        for (i, dock) in std::mem::take(&mut self.drops) {
+            let on = match dock {
+                Some(Dock::Hand(c)) => s.device(Dev::Controller(c)),
+                Some(Dock::Head) => s.head_pose(),
+                None => None,
+            };
+            match (dock, on) {
+                (Some(dock), Some(m)) => {
+                    let rel = within_reach(dock, mul(&inv_rigid(&m), &self.at(i, k).matrix()));
+                    let pl = self.at(i, k);
+                    self.put(i, k, s, &mul(&m, &rel), pl.width, None, pl.curve);
+                    self.docked[i] = Some((dock, rel, None));
+                    eprintln!("{}: docked on {dock:?} (home keeps its last place in the room)", self.owner(i).map_or("", |o| o.name));
+                }
+                _ => {
+                    self.docked[i] = None;
+                    self.save(i, k);
+                }
+            }
+        }
+        for i in std::mem::take(&mut self.taps) {
+            let pl = self.at(i, k);
+            let curve = toggled(pl.width, pl.curve, norm(&[0, 1, 2].map(|r| pl.c[r] - s.head()[r])));
+            self.put(i, k, s, &pl.matrix(), pl.width, None, curve);
             self.save(i, k);
         }
     }
 
     /// Saves slot i's place into "home", same as releasing a carry does.
     fn save(&self, i: usize, k: &Kvm) {
+        if self.docked.get(i).is_some_and(Option::is_some) {
+            return; // docked: home keeps its last place in the room
+        }
+        #[cfg(test)]
+        tests::SAVES.with(|n| n.set(n.get() + 1));
+        crate::gather::placed(i); // let go of on purpose: its own place again, not a gather's
         let pl = self.at(i, k);
         if crate::THEATER.load(Relaxed) == i {
             return; // theater mode's place is just for now, not its spot
@@ -1299,7 +1576,7 @@ impl Grab {
 
     /// A device's button came up somewhere (the taskbar's frame counts too), so whatever it was
     /// carrying or resizing gets put down.
-    pub fn end_by(&mut self, dev: u32, k: &Kvm) -> bool {
+    pub fn end_by(&mut self, dev: Dev, k: &Kvm) -> bool {
         self.released.push(dev);
         let mut any = false;
         for i in 0..self.drags.len() {
@@ -1319,7 +1596,7 @@ impl Grab {
             Some(Glyph::Align) => self.aligns.push(i),
             Some(_) => {
                 let (Some(pose), p) = (self.scanned[i], &panels()[i]) else { return };
-                self.drags[i] = None;
+                (self.drags[i], self.docked[i]) = (None, None);
                 p.set_vert(pose.vert); // curved top to bottom means turned (kvm.rs set_place)
                 k.set_pose_with(s, i, &panel_matrix(&pose), pose.width, pose.curve);
                 match p.save_spot(&k.place[i]) {
@@ -1335,7 +1612,7 @@ impl Grab {
     /// It's instant, since no move here eases.
     fn face(&mut self, i: usize, k: &mut Kvm, s: &mut impl Stage) {
         let pl = self.at(i, k);
-        self.drags[i] = None;
+        (self.drags[i], self.docked[i]) = (None, None);
         let eye = s.head();
         self.put(i, k, s, &panel_matrix(&facing(&pl, &eye)), pl.width, Some(pl.height), pl.curve);
         self.save(i, k);
@@ -1361,9 +1638,24 @@ impl Grab {
         self.stale = self.scanned.clone();
     }
 
+    /// The aligned places as last read, and as of the last relocalization, for a test: `relocalized`
+    /// copies the one to the other.
+    #[cfg(test)]
+    pub(crate) fn scanned_for_test(&mut self, n: usize) -> (usize, usize) {
+        if n > 0 {
+            self.scanned = vec![None; n];
+        }
+        (self.scanned.len(), self.stale.len())
+    }
+
     /// Align buttons pressed since the last call (panel numbers).
     pub fn take_aligns(&mut self) -> Vec<usize> {
         std::mem::take(&mut self.aligns)
+    }
+
+    /// Keyboard buttons pressed since the last call (panel numbers).
+    pub fn take_keyboards(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.keyboards)
     }
 
     /// The window controls pressed since the last call.
@@ -1374,6 +1666,7 @@ impl Grab {
     /// A spot recall or `place` takes the panel away from whoever's carrying it.
     pub fn cancel(&mut self, i: usize) {
         self.drags[i] = None;
+        self.docked[i] = None; // a recall puts it in the world
     }
 
     /// Whether anything was carried, a laser or the cursor was near a panel, or a card or the
@@ -1407,7 +1700,7 @@ impl Grab {
         let mut p = mul(&d, rel);
         let to = [0, 1, 2].map(|r| p[r][3] as f64 - head[r]);
         let len = norm(&to);
-        let next = (len * (1.0 + LASER_PUSH_STEP * notches)).clamp(LASER_PUSH_RANGE.0, LASER_PUSH_RANGE.1);
+        let next = (len * (1.0 + LASER_PUSH_STEP * notches).max(0.0)).clamp(LASER_PUSH_RANGE.0, LASER_PUSH_RANGE.1); // a fast pull stops at the near end, not past the head
         for r in 0..3 {
             p[r][3] = (head[r] + to[r] / (len + 1e-9) * next) as f32;
         }
@@ -1420,6 +1713,7 @@ impl Grab {
     /// laser, then the bar and card follow their panel, fade, and take their look.
     pub fn update(&mut self, k: &mut Kvm) {
         let now = Instant::now();
+        self.settle(k, &mut Live);
         self.carry(k, &mut Live, now);
         self.refresh(k, now);
     }
@@ -1428,6 +1722,40 @@ impl Grab {
     /// device that's gone untracked for LOST puts it down.
     fn carry(&mut self, k: &mut Kvm, s: &mut impl Stage, now: Instant) {
         self.moving = self.drags.iter().any(Option::is_some);
+        for i in 0..self.drags.len() {
+            if self.drags[i].is_some() {
+                continue;
+            }
+            let Some((dock, rel, lost)) = self.docked[i] else { continue };
+            let on = match dock {
+                Dock::Hand(c) => s.device(Dev::Controller(c)),
+                Dock::Head => s.head_pose(),
+            };
+            let off = matches!(dock, Dock::Hand(c) if !s.connected(Dev::Controller(c)));
+            if !off {
+                self.off_since[i] = None;
+            }
+            match on {
+                Some(m) => {
+                    self.docked[i] = Some((dock, rel, None));
+                    let pl = self.at(i, k);
+                    self.put(i, k, s, &mul(&m, &rel), pl.width, None, pl.curve); // it rides along, like a carry that never ends
+                }
+                // the headset untracked: it keeps its place on the head, since world poses are off then too
+                None if dock == Dock::Head => {}
+                // its controller switched off, for OFF_DEBOUNCE in a row: it stays in the room where it last was (not saved)
+                None if off && now.duration_since(*self.off_since[i].get_or_insert(now)) >= OFF_DEBOUNCE => {
+                    (self.docked[i], self.off_since[i]) = (None, None);
+                    eprintln!("{}: the controller it was docked on is off, so it's left in the room", self.owner(i).map_or("", |o| o.name));
+                }
+                // ...or only out of tracking for LOST
+                None if lost.is_some_and(|t| now - t > LOST) => {
+                    self.docked[i] = None;
+                    eprintln!("{}: what it was docked on is gone, so it's left in the room", self.owner(i).map_or("", |o| o.name));
+                }
+                None => self.docked[i] = Some((dock, rel, lost.or(Some(now)))),
+            }
+        }
         for i in 0..self.drags.len() {
             let Some(drag) = self.drags[i].as_mut() else { continue };
             let tracked = s.device(drag.dev);
@@ -1446,6 +1774,7 @@ impl Grab {
                 Mode::Move { rel } => {
                     let m = mul(&tracked.unwrap(), &rel);
                     self.put(i, k, s, &m, pl.width, None, pl.curve);
+                    self.arm(i, &tracked.unwrap(), s, now);
                 }
                 Mode::Resize { sx, sy, gx, gy } => {
                     let Some((u, v)) = laser_on_by(s, &pl, dev) else { continue };
@@ -1529,7 +1858,11 @@ impl Grab {
             let show = !hidden && p.live && !p.away && !p.bare;
             if show != self.shown[i] {
                 self.shown[i] = show;
-                if show { call!(ov, ShowOverlay, p.card) } else { call!(ov, HideOverlay, p.card) };
+                if show {
+                    crate::overlay::Live.show(p.card)
+                } else {
+                    crate::overlay::Live.hide(p.card)
+                };
                 if !p.live {
                     (self.drags[i], self.drawn[i], self.near[i], self.hover[i], self.fade[i], self.focus[i]) = (None, None, None, None, 0.0, 0);
                     (self.pending[i], self.done[i]) = (None, None);
@@ -1564,18 +1897,18 @@ impl Grab {
                 // the card too, because an invisible card still catches lasers (in front of the theater panel)
                 if dim {
                     self.end(i, k); // put it down where it is, there's nothing left to release on
-                    call!(ov, HideOverlay, p.overlay);
-                    call!(ov, HideOverlay, p.card);
+                    crate::overlay::Live.hide(p.overlay);
+                    crate::overlay::Live.hide(p.card);
                 } else if !hidden {
-                    call!(ov, ShowOverlay, p.overlay);
+                    crate::overlay::Live.show(p.overlay);
                     if !p.bare {
-                        call!(ov, ShowOverlay, p.card);
+                        crate::overlay::Live.show(p.card);
                     }
                 }
             }
             self.moving |= want || self.fade[i] != before;
             if self.fade[i] != before || want || first || dim {
-                call!(ov, SetOverlayAlpha, p.card, if dim { 0.0 } else { self.fade[i] });
+                crate::overlay::Live.alpha(p.card, if dim { 0.0 } else { self.fade[i] });
             }
         }
         // Theater mode: the room and every other panel go dark behind it, like Steam's does,
@@ -1589,8 +1922,12 @@ impl Grab {
         if self.dim_alpha != target {
             self.moving = true;
             self.dim_alpha = if target > self.dim_alpha { (self.dim_alpha + 0.04).min(target) } else { (self.dim_alpha - 0.06).max(target) };
-            call!(ov, SetOverlayAlpha, self.dim, self.dim_alpha);
-            if self.dim_alpha > 0.0 { call!(ov, ShowOverlay, self.dim) } else { call!(ov, HideOverlay, self.dim) };
+            crate::overlay::Live.alpha(self.dim, self.dim_alpha);
+            if self.dim_alpha > 0.0 {
+                crate::overlay::Live.show(self.dim)
+            } else {
+                crate::overlay::Live.hide(self.dim)
+            };
         }
         if theater != self.theater {
             self.theater = theater;
@@ -1608,7 +1945,7 @@ impl Grab {
                 Some(crate::back::Front { i, overlay, pl: self.at(i, k), ok: ok && !hidden && !self.game, held: self.drags[i].is_some() })
             })
             .collect();
-        self.backs.tick(&fronts, &vr::head_position());
+        self.backs.tick(&fronts, &crate::stage::Live.head());
     }
 
     /// SteamVR doesn't depth-test overlays against each other, it just paints them in sort
@@ -1624,14 +1961,13 @@ impl Grab {
             return;
         }
         self.painted = Some(Instant::now());
-        let eye = vr::head_position();
+        let eye = crate::stage::Live.head();
         let n = panels().len();
         // once per panel, not per pair, since chrome() asks SteamVR where the head is
         let margin: Vec<f64> = (0..n).map(|i| chrome(&k.place[i]).1).collect();
         let live = |i: usize| panels()[i].live();
         // front[a][b]: a covers b where they overlap
-        let front: Vec<Vec<bool>> =
-            (0..n).map(|a| (0..n).map(|b| a != b && live(a) && live(b) && in_front(&k.place[a], margin[a], &k.place[b], margin[b], &eye)).collect()).collect();
+        let front: Vec<Vec<bool>> = (0..n).map(|a| (0..n).map(|b| a != b && live(a) && live(b) && in_front(&k.place[a], margin[a], &k.place[b], margin[b], &eye)).collect()).collect();
         // Back to front: keep taking a panel that covers none of the rest. Ties and cycles
         // are broken by distance.
         let dist = |i: usize| {
@@ -1655,12 +1991,12 @@ impl Grab {
             return;
         }
         if theater != usize::MAX {
-            call!(ov, SetOverlaySortOrder, self.dim, 10 + under as u32 * 4 - 1);
+            crate::overlay::Live.order(self.dim, 10 + under as u32 * 4 - 1);
         }
         for (rank, &i) in order.iter().enumerate() {
             let (p, base) = (&panels()[i], 10 + rank as u32 * 4);
-            call!(ov, SetOverlaySortOrder, p.card, base);
-            call!(ov, SetOverlaySortOrder, p.overlay, base + 1);
+            crate::overlay::Live.order(p.card, base);
+            crate::overlay::Live.order(p.overlay, base + 1);
         }
         self.backs.resort();
         self.order = order;
@@ -1673,7 +2009,13 @@ impl Grab {
         let (bar_w, g) = chrome(pl);
         let drag = self.drags[i].as_ref().map(|d| &d.mode);
         // It stays Lit until it's faded out (the glow fades with it), and goes to Rest only once it's invisible.
-        let look = if drag.is_some() { Look::Carry } else if visible { Look::Lit } else { Look::Rest };
+        let look = if drag.is_some() {
+            Look::Carry
+        } else if visible {
+            Look::Lit
+        } else {
+            Look::Rest
+        };
         let held = match drag {
             Some(Mode::Resize { sx, sy, .. }) => CORNER_SIGN.iter().position(|&c| c == (*sx, *sy)),
             Some(Mode::Stretch { .. }) => Some(BOTTOM_RIGHT),
@@ -1704,7 +2046,12 @@ impl Grab {
         let snap = self.snap_glyph(i, pl).map(|g| (if self.hover[i] == Some(Part::Snap) { Look::Lit } else { Look::Rest }, g));
         // shown past FACE_TURN and hidden again only under 2/3 of it, so head sway doesn't make it blink
         let shown = self.drawn[i].as_ref().is_some_and(|d| d.spec.face.is_some());
-        let face = (turn(&pl.pose(), &facing(pl, &vr::head_position())) > if shown { FACE_TURN * 2.0 / 3.0 } else { FACE_TURN }).then_some(if self.hover[i] == Some(Part::Face) { Look::Lit } else { Look::Rest });
+        let face = (turn(&pl.pose(), &facing(pl, &crate::stage::Live.head())) > if shown { FACE_TURN * 2.0 / 3.0 } else { FACE_TURN }).then_some(if self.hover[i] == Some(Part::Face) {
+            Look::Lit
+        } else {
+            Look::Rest
+        });
+        let keys = p.keys.then_some(if self.hover[i] == Some(Part::Keys) { Look::Lit } else { Look::Rest });
         let mm = |x: f64| (x * 1000.0).round() as i64;
         let dims = [mm(pl.width), mm(pl.height), mm(g)];
         let (tag_n, tag) = p.tag.clone();
@@ -1759,7 +2106,25 @@ impl Grab {
                 None => (None, None),
             };
             let paint = Paint::new(&theme::get(), p.accent);
-            let mut spec = CardSpec { w: pl.width, h: pl.height, g, tab, tag, bar: (bar_w, bar_look), knob: knob_look, zoom: zoom_look, snap, face, ctl: ctl_look, ctls: p.ctls, size: (0, 0), paint, look, grip };
+            let mut spec = CardSpec {
+                w: pl.width,
+                h: pl.height,
+                g,
+                tab,
+                tag,
+                bar: (bar_w, bar_look),
+                knob: knob_look,
+                zoom: zoom_look,
+                snap,
+                face,
+                keys,
+                ctl: ctl_look,
+                ctls: p.ctls,
+                size: (0, 0),
+                paint,
+                look,
+                grip,
+            };
             spec.size = card_size(pl.width, pl.height + spec.top() + spec.bottom(), g);
             let card = |spec| Drawn { spec, dims, card_at: now, placed: None, tag: tag_n, theme: drawn_in };
             if self.drawn[i].is_none() || !seen {
@@ -1785,7 +2150,7 @@ impl Grab {
             if grip != d.spec.grip {
                 rects.extend([d.spec.grip, grip].into_iter().flatten().map(|c| d.spec.corner_rect(c)));
             }
-            if bar_look != d.spec.bar.1 || knob_look != d.spec.knob || zoom_look != d.spec.zoom || snap != d.spec.snap || face != d.spec.face {
+            if bar_look != d.spec.bar.1 || knob_look != d.spec.knob || zoom_look != d.spec.zoom || snap != d.spec.snap || face != d.spec.face || keys != d.spec.keys {
                 rects.push(d.spec.bar_rect());
             }
             if ctl_look != d.spec.ctl {
@@ -1793,7 +2158,7 @@ impl Grab {
                 rects.push(d.spec.ctl_rect());
             }
             if !rects.is_empty() {
-                (d.spec.grip, d.spec.bar.1, d.spec.knob, d.spec.zoom, d.spec.snap, d.spec.face) = (grip, bar_look, knob_look, zoom_look, snap, face);
+                (d.spec.grip, d.spec.bar.1, d.spec.knob, d.spec.zoom, d.spec.snap, d.spec.face, d.spec.keys) = (grip, bar_look, knob_look, zoom_look, snap, face, keys);
                 for r in rects {
                     d.spec.repaint(&mut self.cards[i], r);
                 }
@@ -1839,7 +2204,6 @@ impl Grab {
             apply(&mut Live, p.card, &card_place(&pl, &d.spec));
         }
     }
-
 }
 
 /// Where a panel's card goes and how it's shaped, for panel `pl` and the card drawn for it:
@@ -1876,8 +2240,7 @@ fn facing(pl: &Placement, eye: &V3) -> Pose {
 fn moved(now: &Pose, at: &Pose) -> bool {
     let turn = turn(now, at);
     let shift = (0..3).map(|r| (now.centre[r] - at.centre[r]).powi(2)).sum::<f64>().sqrt();
-    shift > SNAP_MOVE || turn > SNAP_TURN || (now.width - at.width).abs() > SNAP_MOVE || now.vert != at.vert
-        || (now.curve - at.curve).abs() > SNAP_MOVE
+    shift > SNAP_MOVE || turn > SNAP_TURN || (now.width - at.width).abs() > SNAP_MOVE || now.vert != at.vert || (now.curve - at.curve).abs() > SNAP_MOVE
 }
 
 /// Does panel `a` (with its card's margin) cover panel `b` as seen from the eye? Sight lines
@@ -1924,49 +2287,39 @@ mod tests {
     }
 
     #[test]
-    fn the_bottom_right_corner_stretches_from_the_top_left() {
+    fn the_bottom_right_corner_scales_about_the_centre() {
         use crate::geometry::{Pose, panel_matrix};
         let at = |m: Mat| [m[0][3] as f64, m[1][3] as f64, m[2][3] as f64];
         let near = |a: [f64; 3], b: [f64; 3]| norm(&[a[0] - b[0], a[1] - b[1], a[2] - b[2]]) < 1e-5;
         let pose = Pose { centre: [0.3, 1.5, -1.4], yaw: 25.0, pitch: 6.0, roll: 2.0, width: 1.2, curve: 0.0, vert: false };
         for curve in [0.0, 1.8] {
             let pl = Placement::from_matrix(&panel_matrix(&pose), 1.2, 0.5625, curve);
-            let top_left = at(pl.on_surface(-0.6, 0.3375, 0.0));
-            // A window takes any shape: the corner lands where the laser put it and the top-left stays.
-            let (cu, cv) = (0.9, -0.1); // 1.5 wide, 0.4375 high
             let big = (MAX_WIDTH, MAX_WIDTH);
+            // A window takes any shape: the corner lands where the laser put it, and the centre stays.
+            let (cu, cv) = (0.9, -0.1); // 1.8 wide, 0.2 high
             let (m, w, h, c) = stretched(&pl, cu, cv, None, big);
-            assert!((w - 1.5).abs() < 1e-9 && (h - 0.4375).abs() < 1e-9, "curve {curve}: {w} x {h}");
+            assert!((w - 1.8).abs() < 1e-9 && (h - 0.2).abs() < 1e-9, "curve {curve}: {w} x {h}");
+            assert!(near(at(m), pl.c), "curve {curve}: the centre moved");
             let np = Placement::from_matrix(&m, w, h / w, c);
-            assert!(near(at(np.on_surface(-w / 2.0, h / 2.0, 0.0)), top_left), "curve {curve}: the top-left moved");
             assert!(near(at(np.on_surface(w / 2.0, -h / 2.0, 0.0)), at(pl.on_surface(cu, cv, 0.0))), "curve {curve}: the corner isn't at the laser");
-            // A remote screen keeps its shape, with the top-left still fixed.
-            let (m, w, h, c) = stretched(&pl, cu, cv, Some(0.5625), big);
-            assert!((h / w - 0.5625).abs() < 1e-9 && w > 1.2, "curve {curve}: {w} x {h}");
-            let np = Placement::from_matrix(&m, w, h / w, c);
-            assert!(near(at(np.on_surface(-w / 2.0, h / 2.0, 0.0)), top_left), "curve {curve}: the top-left moved");
+            // A remote screen keeps its shape, about the same centre.
+            let (m, w, h, _) = stretched(&pl, cu, cv, Some(0.5625), big);
+            assert!((h / w - 0.5625).abs() < 1e-9 && w > 1.2 && near(at(m), pl.c), "curve {curve}: {w} x {h}");
             // Left where it is, nothing changes.
             let (m, w, h, _) = stretched(&pl, 0.6, -0.3375, Some(0.5625), big);
             assert!((w - 1.2).abs() < 1e-9 && (h - 0.675).abs() < 1e-9 && near(at(m), pl.c));
-            // Dragged past the top-left, it's the smallest panel, still hanging from the top-left.
-            let (m, w, h, c) = stretched(&pl, -1.0, 1.0, None, big);
+            // Dragged past the centre, it's the smallest panel, still where it was.
+            let (m, w, h, _) = stretched(&pl, -1.0, 1.0, None, big);
             assert_eq!((w, h), (MIN_WIDTH, MIN_WIDTH));
-            let np = Placement::from_matrix(&m, w, h / w, c);
-            assert!(near(at(np.on_surface(-w / 2.0, h / 2.0, 0.0)), top_left));
+            assert!(near(at(m), pl.c));
             // A window can't get bigger than the output, so the corner stops there.
-            let (m, w, h, c) = stretched(&pl, 3.0, -2.0, None, (1.83, 1.03));
+            let (_, w, h, _) = stretched(&pl, 3.0, -2.0, None, (1.83, 1.03));
             assert_eq!((w, h), (1.83, 1.03));
-            let np = Placement::from_matrix(&m, w, h / w, c);
-            assert!(near(at(np.on_surface(-w / 2.0, h / 2.0, 0.0)), top_left), "curve {curve}: the top-left moved");
         }
-        // Widened past a half circle, the curve grows (a new cylinder), and it still hangs from
-        // the top-left.
+        // Widened past a half circle, the curve grows (a new cylinder).
         let pl = Placement::from_matrix(&panel_matrix(&Pose { width: 5.6, curve: 1.8, ..pose }), 5.6, 0.5625, 1.8);
-        let top_left = at(pl.on_surface(-2.8, 1.575, 0.0));
-        let (m, w, h, c) = stretched(&pl, 3.2, -1.575, None, (MAX_WIDTH, MAX_WIDTH));
+        let (_, w, _, c) = stretched(&pl, 3.2, -1.575, None, (MAX_WIDTH, MAX_WIDTH));
         assert!((w - 6.0).abs() < 1e-9 && c > 1.8, "{w} m, curve {c}");
-        let np = Placement::from_matrix(&m, w, h / w, c);
-        assert!(near(at(np.on_surface(-w / 2.0, h / 2.0, 0.0)), top_left), "the top-left moved");
     }
 
     #[test]
@@ -2022,6 +2375,18 @@ mod tests {
         assert_eq!(held_part(&spec, w, h, false, None, dead.0, dead.1), Some(Part::Edge), "a panel's: its frame");
     }
 
+    /// Only a move says what a card's laser is over: an Enter keeps the hover as it was, since
+    /// its x and y aren't a position, and a leave clears it.
+    #[test]
+    fn a_cards_hover_comes_from_a_move_not_an_enter() {
+        use crate::events::PointerKind as P;
+        assert_eq!(hovered(P::Enter, Some(Part::Edge), None), None, "an Enter's x and y aren't where the laser is");
+        assert_eq!(hovered(P::Enter, Some(Part::Edge), Some(Part::Bar)), Some(Part::Bar));
+        assert_eq!(hovered(P::Move, Some(Part::Edge), None), Some(Part::Edge));
+        assert_eq!(hovered(P::Move, None, Some(Part::Bar)), None, "a move off every part");
+        assert_eq!(hovered(P::Leave, Some(Part::Edge), Some(Part::Bar)), None);
+    }
+
     #[test]
     fn card_parts() {
         let (w, h) = (1.6, 0.9);
@@ -2038,7 +2403,25 @@ mod tests {
     /// A card for a w × h panel with frame g and bar bw, with a tag image `img`, in a theme.
     fn spec_for(w: f64, h: f64, g: f64, bw: f64, look: Look, img: &Arc<TagImg>, th: &Theme, accent: Rgb) -> CardSpec {
         let (iw, u, v, tab) = legend(w, h, g, img.0 as f64 / img.1 as f64, CTLS);
-        let mut s = CardSpec { w, h, g, tab: Some(tab), tag: Some((img.clone(), iw, u, v)), bar: (bw, Look::Rest), knob: Look::Rest, zoom: Some(Look::Rest), snap: None, face: None, ctl: Some([Look::Rest; CTLS]), ctls: CTLS, size: (0, 0), paint: Paint::new(th, accent), look, grip: None };
+        let mut s = CardSpec {
+            w,
+            h,
+            g,
+            tab: Some(tab),
+            tag: Some((img.clone(), iw, u, v)),
+            bar: (bw, Look::Rest),
+            knob: Look::Rest,
+            zoom: Some(Look::Rest),
+            snap: None,
+            face: None,
+            keys: None,
+            ctl: Some([Look::Rest; CTLS]),
+            ctls: CTLS,
+            size: (0, 0),
+            paint: Paint::new(th, accent),
+            look,
+            grip: None,
+        };
         s.size = card_size(w, h + s.top() + s.bottom(), g);
         s
     }
@@ -2059,6 +2442,61 @@ mod tests {
             assert_eq!((f.width, f.curve, f.vert), (at.width, at.curve, at.vert));
             assert!(turn(&m.pose(), &facing(&m, &eye)) < FACE_TURN, "facing: no button");
         }
+    }
+
+    thread_local! {
+        /// How many times save() got past its docked check on this test's thread.
+        pub static SAVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[test]
+    fn a_push_speeds_up_while_it_goes_on_and_starts_over_after_a_pause_or_a_turn() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let (mut s, held, rate) = streak(None, t0, true, 1.0);
+        assert_eq!((held, rate), (0.0, 0.0), "the first notch has no time behind it");
+        assert_eq!(accel(held, rate), 1.0, "the first notch: the plain step");
+        assert_eq!(accel(0.0, PUSH_RATE * 10.0), 1.0, "however quick, no time held is no speed-up");
+        assert!(accel(0.016, PUSH_RATE * 10.0) < 1.05, "one frame held, however quick: about the plain step");
+        let (mut held, mut rate) = (0.0, 0.0);
+        for n in 1..=8 {
+            (s, held, rate) = streak(Some(s), ms(n * 200), true, 1.0); // five notches a second
+        }
+        assert!(held >= PUSH_ACCEL.0 && accel(held, rate) == PUSH_ACCEL.1, "1.6 s of quick notches: full speed ({rate}/s)");
+        assert!(accel(0.5, PUSH_RATE) > 1.0 && accel(0.5, PUSH_RATE) < accel(1.0, PUSH_RATE), "it ramps");
+        assert_eq!(streak(Some(s), ms(1600 + 400), true, 1.0).1, 0.0, "a pause starts over");
+        assert_eq!(streak(Some(s), ms(1700), false, 1.0).1, 0.0, "so does a pull after a push");
+    }
+
+    #[test]
+    fn a_light_steady_push_stays_slow_and_a_quick_fractional_one_ramps() {
+        let t0 = Instant::now();
+        let run = |step: f64| {
+            let (mut s, mut held, mut rate) = streak(None, t0, true, step);
+            for n in 1..=125u64 {
+                (s, held, rate) = streak(Some(s), t0 + Duration::from_millis(n * 16), true, step); // every frame for 2 s
+            }
+            accel(held, rate)
+        };
+        assert!(run(0.02) < 2.0, "a light push, 1.25 notches a second: {}", run(0.02));
+        assert_eq!(run(0.1), PUSH_ACCEL.1, "0.1 a frame is 6 notches a second, a quick push: full speed");
+    }
+
+    #[test]
+    fn keyboard_button_is_hit_right_of_zoom_and_repainted_with_the_bar() {
+        let img = Arc::new((80, 12, [200u8, 220, 255, 255].repeat(80 * 12)));
+        let mut spec = spec_for(1.19, 0.34, 0.03, 0.1, Look::Lit, &img, &Theme::default(), REMOTE);
+        let (ku, kv, r) = spec.keys_at();
+        assert!(ku > spec.zoom_at().0 && !spec.on_keys(ku, kv), "right of zoom; none drawn, none hit");
+        spec.keys = Some(Look::Rest);
+        assert_eq!(held_part(&spec, spec.w, spec.h, false, None, ku, kv), Some(Part::Keys));
+        let (zu, zv, _) = spec.zoom_at();
+        assert_eq!(held_part(&spec, spec.w, spec.h, false, None, zu, zv), Some(Part::Zoom), "zoom keeps its own");
+        let (_, x1, _, _) = spec.bar_rect();
+        let (sx, _) = spec.scale();
+        assert!(x1 as f64 >= (ku + 1.3 * r + spec.w / 2.0 + spec.g) * sx, "its repaint covers it");
+        spec.zoom = None; // a remote screen: same place, so the button doesn't move between panels
+        assert_eq!(spec.keys_at().0, ku);
     }
 
     #[test]
@@ -2087,15 +2525,27 @@ mod tests {
 
     /// Breeze Light's tokens (BreezeLight.colors), for a light card.
     fn light() -> Theme {
-        let t = Tokens { frame: [222.0, 224.0, 226.0], surface: [239.0, 240.0, 241.0], raised: [252.0; 3], text: [35.0, 38.0, 41.0], dim: [112.0, 125.0, 138.0], wtext: [35.0, 38.0, 41.0], wdim: [112.0, 125.0, 138.0], border: mix([222.0, 224.0, 226.0], [35.0, 38.0, 41.0], 0.25), dark: false };
-        Theme { win: t, shell: t, radius: 5.0 }
+        let t = Tokens {
+            frame: [222.0, 224.0, 226.0],
+            surface: [239.0, 240.0, 241.0],
+            raised: [252.0; 3],
+            text: [35.0, 38.0, 41.0],
+            dim: [112.0, 125.0, 138.0],
+            wtext: [35.0, 38.0, 41.0],
+            wdim: [112.0, 125.0, 138.0],
+            border: mix([222.0, 224.0, 226.0], [35.0, 38.0, 41.0], 0.25),
+            dark: false,
+        };
+        Theme { win: t, shell: t, radius: 5.0, alert: theme::MAGENTA, accent: theme::VIOLET }
     }
 
     #[test]
     fn card_textures_fit_and_stay_crisp() {
         let img = Arc::new((80, 12, [200u8, 220, 255, 255].repeat(80 * 12)));
         // desk-wide, desk-portrait, the laptop and a small one; the last one's bar is wider than its frame holds
-        for ((w, h, g, bw), scheme) in [(3.2, 0.9, 0.05, 0.25), (0.9, 1.6, 0.035, 0.15), (1.2, 0.675, 0.04, 0.17), (0.2, 0.11, 0.02, 0.1)].into_iter().zip([Theme::default(), light(), light(), Theme::default()]) {
+        for ((w, h, g, bw), scheme) in
+            [(3.2, 0.9, 0.05, 0.25), (0.9, 1.6, 0.035, 0.15), (1.2, 0.675, 0.04, 0.17), (0.2, 0.11, 0.02, 0.1)].into_iter().zip([Theme::default(), light(), light(), Theme::default()])
+        {
             let (tw, th) = card_size(w, h, g);
             assert!(tw * th <= 1_500_000, "{tw}x{th}");
             assert!(g * tw as f64 / (w + 2.0 * g) >= 14.0, "frame only {} px", g * tw as f64 / (w + 2.0 * g));
@@ -2247,10 +2697,11 @@ mod tests {
     mod carrying {
         use super::*;
         use crate::geometry::bend;
-        use crate::stage::fake::{Fake, aimed, apart};
+        use crate::stage::fake::{Fake, OverFake, aimed, apart, put};
         use std::time::Duration;
 
-        const HAND: u32 = 1;
+        const HAND: Dev = Dev::Controller(crate::ids::Ctl::new(1));
+        const TWO: Dev = Dev::Controller(crate::ids::Ctl::new(2)); // another controller
         const EYE: V3 = [0.0, 1.6, 0.0]; // where Fake::with_panels puts the head
 
         fn flat() -> Placement {
@@ -2260,11 +2711,11 @@ mod tests {
         fn world(pl: Placement) -> (Grab, Kvm, Fake) {
             let mut k = Kvm::idle();
             k.place = vec![pl];
-            (Grab::with_backdrop(1, 0), k, Fake::with_panels(1))
+            (Grab::with_backdrop(1, crate::vr::Handle::NONE), k, Fake::with_panels(1))
         }
 
         /// The hand at `from`, its laser pointing at `at`.
-        fn point(f: &mut Fake, dev: u32, from: V3, at: V3) {
+        fn point(f: &mut Fake, dev: Dev, from: V3, at: V3) {
             f.devices.insert(dev, aimed(from, at));
         }
 
@@ -2377,7 +2828,7 @@ mod tests {
         }
 
         #[test]
-        fn the_bottom_right_corner_stretches_with_the_top_left_held() {
+        fn the_bottom_right_corner_scales_about_the_centre_like_steamvrs_handle() {
             let p = flat();
             let (mut g, mut k, mut f) = world(p);
             point(&mut f, HAND, EYE, surface_point(&p, 0.8, -0.45));
@@ -2387,8 +2838,261 @@ mod tests {
             g.carry(&mut k, &mut f, Instant::now());
             let n = k.place[0];
             assert!(n.width > 2.0 && (n.height / n.width - 0.5625).abs() < 1e-6, "{} x {}", n.width, n.height);
-            let (was, now) = (surface_point(&p, -0.8, 0.45), surface_point(&n, -n.width / 2.0, n.height / 2.0));
-            assert!(far(&was, &now) < 1e-4, "the top-left corner didn't move");
+            assert!(far(&p.c, &n.c) < 1e-4, "the centre didn't move");
+        }
+
+        #[test]
+        fn let_go_by_the_other_hand_it_docks_there_and_rides_along_until_torn_off() {
+            const OTHER: Dev = Dev::Controller(crate::ids::Ctl::new(2));
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+            point(&mut f, OTHER, [0.38, 1.2, -0.4], p.c); // 8 cm away: in reach
+            g.docking = true;
+            g.start(0, Part::Bar, HAND, &k, &f);
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL / 2);
+            assert!(f.pulses.is_empty(), "not armed yet");
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
+            assert_eq!(f.pulses.len(), 1, "a buzz when it arms");
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL * 2);
+            assert_eq!(f.pulses.len(), 1, "only once");
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert!(matches!(g.docked[0], Some((Dock::Hand(c), _, None)) if Dev::Controller(c) == OTHER), "{:?}", g.docked[0].map(|d| d.0));
+            // the other hand moves 30 cm left: the panel goes with it, the same way round
+            let was = k.place[0];
+            let mut m = f.devices[&OTHER];
+            m[0][3] -= 0.3;
+            f.devices.insert(OTHER, m);
+            g.carry(&mut k, &mut f, Instant::now());
+            assert!((k.place[0].c[0] - (was.c[0] - 0.3)).abs() < 1e-5 && far(&[k.place[0].c[1], k.place[0].c[2], 0.0], &[was.c[1], was.c[2], 0.0]) < 1e-5);
+            // grabbed again and let go out of reach: torn off, in the world
+            point(&mut f, HAND, [-0.5, 1.2, -0.4], k.place[0].c);
+            g.start(0, Part::Bar, HAND, &k, &f);
+            assert!(g.docked[0].is_none(), "torn off while it's carried");
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert!(g.docked[0].is_none());
+        }
+
+        #[test]
+        fn a_hand_out_of_sight_when_the_carry_starts_can_still_take_the_dock() {
+            const OTHER: Dev = Dev::Controller(crate::ids::Ctl::new(2));
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+            f.hidden.push(OTHER); // on, but out of the cameras' sight
+            g.docking = true;
+            g.start(0, Part::Bar, HAND, &k, &f);
+            point(&mut f, OTHER, [0.38, 1.2, -0.4], p.c); // back in sight, at the carrying hand
+            f.hidden.clear();
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert!(matches!(g.docked[0], Some((Dock::Hand(c), _, None)) if Dev::Controller(c) == OTHER));
+        }
+
+        #[test]
+        fn a_carry_that_only_passes_a_target_or_has_docking_off_stays_in_the_world() {
+            const OTHER: Dev = Dev::Controller(crate::ids::Ctl::new(2));
+            for (docking, dwell) in [(true, DOCK_DWELL / 2), (false, DOCK_DWELL * 2)] {
+                let p = flat();
+                let (mut g, mut k, mut f) = world(p);
+                point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+                point(&mut f, OTHER, [0.38, 1.2, -0.4], p.c);
+                g.docking = docking;
+                g.start(0, Part::Bar, HAND, &k, &f);
+                let t0 = Instant::now();
+                g.carry(&mut k, &mut f, t0);
+                g.carry(&mut k, &mut f, t0 + dwell);
+                g.end_by(HAND, &k);
+                g.settle(&mut k, &mut f);
+                assert!(g.docked[0].is_none() && f.pulses.is_empty(), "docking {docking}, {dwell:?} in the target");
+            }
+        }
+
+        /// Docks slot 0 on controller 2 from a hand at `hand`, the panel where world() puts it.
+        fn docked_on_other(p: Placement, hand: V3) -> (Grab, Kvm, Fake) {
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, hand, p.c);
+            point(&mut f, TWO, [hand[0] + 0.05, hand[1], hand[2]], p.c);
+            g.docking = true;
+            g.start(0, Part::Bar, HAND, &k, &f);
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert!(matches!(g.docked[0], Some((Dock::Hand(c), _, None)) if c == crate::ids::Ctl::new(2)));
+            (g, k, f)
+        }
+
+        #[test]
+        fn a_hand_dock_pulls_a_far_panel_in_to_its_reach() {
+            let p = Placement { c: [0.0, 1.5, -3.0], ..flat() };
+            let (_, k, f) = docked_on_other(p, [0.3, 1.2, -0.4]);
+            let hand = f.devices[&TWO];
+            let d = far(&k.place[0].c, &[hand[0][3] as f64, hand[1][3] as f64, hand[2][3] as f64]);
+            assert!((d - DOCK_REACH).abs() < 1e-5, "{d} m from the hand");
+            assert!(far(&k.place[0].x, &p.x) < 1e-6 && far(&k.place[0].z, &p.z) < 1e-6, "turned the same way");
+            let rel = within_reach(Dock::Head, crate::stage::fake::aimed([0.0, 0.0, 0.0], [0.0, 0.0, -0.1]));
+            assert!(norm(&[rel[0][3] as f64, rel[1][3] as f64, rel[2][3] as f64]) < 1e-9, "at the head itself: left alone");
+            let mut near = crate::stage::fake::aimed([0.0, 0.0, -0.1], [0.0, 0.0, -1.0]);
+            near = within_reach(Dock::Head, near);
+            assert!((near[2][3] + HEAD_REACH.0 as f32).abs() < 1e-6, "a head dock at 10 cm goes out to 40");
+        }
+
+        #[test]
+        fn a_docked_panel_whose_controller_goes_away_stays_in_the_room() {
+            let p = flat();
+            let (mut g, mut k, mut f) = docked_on_other(p, [0.3, 1.2, -0.4]);
+            let at = k.place[0].c;
+            f.devices.remove(&TWO); // out of tracking, still on
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            assert!(g.docked[0].is_some(), "a blink of lost tracking isn't gone");
+            g.carry(&mut k, &mut f, t0 + LOST + Duration::from_millis(10));
+            assert!(g.docked[0].is_none() && k.place[0].c == at, "left where it was");
+            // switched off: after OFF_DEBOUNCE, not LOST
+            let (mut g, mut k, mut f) = docked_on_other(p, [0.3, 1.2, -0.4]);
+            let back = f.devices[&TWO];
+            f.devices.remove(&TWO);
+            f.off.push(TWO);
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            assert!(g.docked[0].is_some(), "one frame reported off is a hiccup");
+            f.off.clear();
+            f.devices.insert(TWO, back);
+            g.carry(&mut k, &mut f, t0 + Duration::from_millis(16));
+            assert!(g.docked[0].is_some(), "back the next frame: still docked");
+            f.devices.remove(&TWO);
+            f.off.push(TWO);
+            g.carry(&mut k, &mut f, t0 + Duration::from_millis(32));
+            g.carry(&mut k, &mut f, t0 + Duration::from_millis(32) + OFF_DEBOUNCE);
+            assert!(g.docked[0].is_none(), "off for 100 ms: it's really off, and LOST isn't waited for");
+        }
+
+        #[test]
+        fn a_head_dock_waits_out_an_untracked_headset() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            f.head_pose = Some(crate::stage::fake::aimed(EYE, [0.0, 1.6, -1.0]));
+            point(&mut f, HAND, [0.05, 1.57, -0.05], p.c);
+            g.docking = true;
+            g.start(0, Part::Bar, HAND, &k, &f);
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            f.head_pose = None; // the headset lost its tracking
+            g.carry(&mut k, &mut f, t0);
+            g.carry(&mut k, &mut f, t0 + LOST * 4);
+            assert!(matches!(g.docked[0], Some((Dock::Head, _, None))), "still on the head");
+        }
+
+        #[test]
+        fn bending_a_docked_panel_doesnt_save_its_docked_place_as_home() {
+            let p = flat();
+            let (mut g, mut k, mut f) = docked_on_other(p, [0.3, 1.2, -0.4]);
+            let saved = SAVES.with(|n| n.get());
+            point(&mut f, HAND, EYE, k.place[0].c);
+            g.start(0, Part::Knob, HAND, &k, &f); // a tap
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            g.start(0, Part::Knob, HAND, &k, &f); // and a hold
+            g.scroll(0, 1.0, &mut k, &mut f);
+            g.carry(&mut k, &mut f, Instant::now());
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert_eq!(SAVES.with(|n| n.get()), saved, "home keeps its last place in the room");
+            assert!(g.docked[0].is_some(), "and it's still docked");
+        }
+
+        #[test]
+        fn taking_the_resize_handle_without_moving_changes_nothing() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, EYE, surface_point(&p, 0.8 - 0.02, -0.45 + 0.02)); // a little inside the corner
+            g.start(0, Part::Corner(BOTTOM_RIGHT), HAND, &k, &f);
+            g.carry(&mut k, &mut f, Instant::now());
+            g.carry(&mut k, &mut f, Instant::now());
+            assert_eq!((k.place[0].width, k.place[0].height, k.place[0].c), (p.width, p.height, p.c), "no jump");
+        }
+
+        #[test]
+        fn a_zero_notch_doesnt_break_a_push_streak() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &f);
+            g.scroll(0, 1.0, &mut k, &mut f);
+            let st = g.drags[0].as_ref().unwrap().streak;
+            g.scroll(0, 0.0, &mut k, &mut f);
+            assert_eq!(g.drags[0].as_ref().unwrap().streak, st);
+        }
+
+        #[test]
+        fn let_go_by_a_hand_at_your_face_it_docks_on_the_head() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            let head = crate::stage::fake::aimed(EYE, [0.0, 1.6, -1.0]);
+            f.head_pose = Some(head);
+            point(&mut f, HAND, [0.05, 1.57, -0.05], p.c); // 8 cm from the eye
+            g.docking = true;
+            g.start(0, Part::Bar, HAND, &k, &f);
+            let t0 = Instant::now();
+            g.carry(&mut k, &mut f, t0);
+            g.carry(&mut k, &mut f, t0 + DOCK_DWELL);
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert!(matches!(g.docked[0], Some((Dock::Head, _, None))));
+            let mut turned = head;
+            turned[1][3] += 0.2; // stood up 20 cm
+            f.head_pose = Some(turned);
+            let was = k.place[0].c;
+            g.carry(&mut k, &mut f, Instant::now());
+            assert!((k.place[0].c[1] - was[1] - 0.2).abs() < 1e-5, "it rose with the head");
+            // and moved nothing else: docked by the head's pose and kept by it, not by head_now's,
+            // which the fake puts 5 cm to the side
+            assert!((k.place[0].c[0] - was[0]).abs() < 1e-5 && (k.place[0].c[2] - was[2]).abs() < 1e-5, "only up: {:?} from {was:?}", k.place[0].c);
+            g.cancel(0);
+            assert!(g.docked[0].is_none(), "a recall puts it in the world");
+            assert_eq!(
+                dock_for([0.0, 1.0, 0.0], EYE, &[(crate::ids::Ctl::new(3), [0.0, 1.1, 0.0]), (crate::ids::Ctl::new(4), [0.0, 1.05, 0.0])]),
+                Some(Dock::Hand(crate::ids::Ctl::new(4))),
+                "the nearer controller"
+            );
+            assert_eq!(dock_for([0.0, 1.0, 0.0], EYE, &[]), None, "nowhere near: the world");
+        }
+
+        #[test]
+        fn a_tap_on_the_curve_button_flips_it_curved_round_you_and_flat_again() {
+            let p = flat();
+            let (mut g, mut k, mut f) = world(p);
+            point(&mut f, HAND, EYE, p.c);
+            g.start(0, Part::Knob, HAND, &k, &f);
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            let dist = far(&p.c, &f.head);
+            assert!((k.place[0].curve - dist).abs() < 1e-9, "curved round the eye: {} for {dist}", k.place[0].curve);
+            assert_eq!(f.writes.curvature_of(f.overlay(0)), Some(bend(k.place[0].width, dist)));
+            g.start(0, Part::Knob, HAND, &k, &f);
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert_eq!(k.place[0].curve, 0.0, "and flat again");
+            // a held press that bent it isn't a tap
+            g.start(0, Part::Knob, HAND, &k, &f);
+            g.scroll(0, 2.0, &mut k, &mut f); // 6 cm of bend on the wheel
+            g.carry(&mut k, &mut f, Instant::now());
+            g.end_by(HAND, &k);
+            g.settle(&mut k, &mut f);
+            assert!(k.place[0].curve > 0.0 && (k.place[0].curve - dist).abs() > 1e-3, "the pull's own curve: {}", k.place[0].curve);
+            assert_eq!(toggled(4.0, 0.0, 1.0), 4.0 / std::f64::consts::PI, "never past a half circle");
         }
 
         #[test]
@@ -2449,6 +3153,260 @@ mod tests {
             assert!(g.drags[0].is_none(), "past LOST: put down where it is");
         }
 
+        /// The golden tests' world (golden.rs): today's SteamVR stage (`overlay::Live`, `stage::Live`)
+        /// over the fake SteamVR, so the code phase 0 moves is what's pinned, with the head at EYE
+        /// looking ahead. Hold the guard for the whole test.
+        fn golden_world(p: Placement) -> (Grab, Kvm, OverFake, crate::vr::fake::Guard) {
+            let vr = crate::trace::fake_vr();
+            put(Dev::Head, Some(aimed(EYE, [0.0, 1.6, -1.0])), false);
+            let mut k = Kvm::idle();
+            k.place = vec![p];
+            let g = Grab::with_backdrop(1, crate::vr::Handle::NONE);
+            crate::vr::fake::take_calls(); // the set-up isn't what's pinned
+            (g, k, OverFake::with_panels(1), vr)
+        }
+
+        /// A device at `from`, its laser pointing at `at`, in the fake SteamVR.
+        fn aim(dev: Dev, from: V3, at: V3) {
+            put(dev, Some(aimed(from, at)), false);
+        }
+
+        /// What SteamVR was told since the last step, the pointer moves sent, and what's held.
+        fn golden_observe(log: &mut crate::golden::Log, g: &Grab, k: &Kvm, s: &mut OverFake) {
+            use crate::golden::{mat, num};
+            log.vr_calls();
+            for (i, x, y) in s.moves.drain(..) {
+                log.line(format!("pointer move on panel {i} to {} {}", num(x), num(y)));
+            }
+            let drag = match &g.drags[0] {
+                Some(d) => {
+                    let mode = match d.mode {
+                        Mode::Move { .. } => "carrying",
+                        Mode::Resize { .. } => "resizing",
+                        Mode::Stretch { .. } => "stretching",
+                        Mode::Curve { .. } => "curving",
+                        Mode::Zoom { .. } => "zooming",
+                    };
+                    format!("by {}, {mode}, lost {}", vr::index(d.dev), d.lost.is_some())
+                }
+                None => "none".into(),
+            };
+            log.line(format!("drag {drag}"));
+            // the controller by OpenVR's index, as the fixtures have always written it
+            let docked = g.docked[0].as_ref().map(|d| match d.0 {
+                Dock::Hand(c) => format!("Hand({})", c.raw()),
+                Dock::Head => "Head".into(),
+            });
+            log.line(format!("docked {}", docked.map_or("None".into(), |d| format!("Some({d})"))));
+            let pl = &k.place[0];
+            log.line(format!("panel {} wide, curve {}, {}", num(pl.width), num(pl.curve), mat(&pl.matrix())));
+        }
+
+        /// Golden (golden.rs): the bar carried through three poses, pushed away a notch and pulled
+        /// back two, then let go.
+        #[test]
+        fn golden_carry() {
+            let p = flat();
+            let (mut g, mut k, mut s, _vr) = golden_world(p);
+            let mut log = crate::golden::Log::default();
+            log.step("the right hand takes the bar");
+            aim(HAND, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            for (n, from) in [[0.35, 1.25, -0.4], [0.2, 1.3, -0.35], [0.1, 1.2, -0.5]].iter().enumerate() {
+                log.step(&format!("carried, pose {}", n + 1));
+                aim(HAND, *from, [0.0, 1.4, -1.5]);
+                g.carry(&mut k, &mut s, Instant::now());
+                golden_observe(&mut log, &g, &k, &mut s);
+            }
+            log.step("pushed away a notch");
+            g.scroll(0, 1.0, &mut k, &mut s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("pulled back two");
+            g.scroll(0, -2.0, &mut k, &mut s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("let go");
+            log.line(format!("ended any: {}", g.end_by(HAND, &k)));
+            g.settle(&mut k, &mut s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            crate::golden::check("grab-carry", &log.0);
+        }
+
+        /// Golden: the bottom-right corner dragged out, back in past where it started, and let go.
+        #[test]
+        fn golden_resize() {
+            let p = flat();
+            let (mut g, mut k, mut s, _vr) = golden_world(p);
+            let mut log = crate::golden::Log::default();
+            log.step("the bottom-right corner taken");
+            aim(HAND, EYE, surface_point(&p, 0.8, -0.45));
+            g.start(0, Part::Corner(BOTTOM_RIGHT), HAND, &k, &s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("dragged out");
+            aim(HAND, EYE, surface_point(&p, 1.3, -0.75));
+            g.carry(&mut k, &mut s, Instant::now());
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("dragged back in, smaller than it started");
+            aim(HAND, EYE, surface_point(&p, 0.5, -0.3));
+            g.carry(&mut k, &mut s, Instant::now());
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("let go");
+            log.line(format!("ended any: {}", g.end_by(HAND, &k)));
+            g.settle(&mut k, &mut s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            crate::golden::check("grab-resize", &log.0);
+        }
+
+        /// Golden: a carry held at the other hand until it arms (the buzz), let go there so it
+        /// docks, then that hand moves and the panel rides along.
+        #[test]
+        fn golden_dock() {
+            const OTHER: Dev = Dev::Controller(crate::ids::Ctl::new(2));
+            let p = flat();
+            let (mut g, mut k, mut s, _vr) = golden_world(p);
+            let mut log = crate::golden::Log::default();
+            g.docking = true;
+            log.step("the right hand takes the bar, the other hand 8 cm away");
+            aim(HAND, [0.3, 1.2, -0.4], p.c);
+            aim(OTHER, [0.38, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            let t0 = Instant::now();
+            for (what, at) in [("held there, not armed yet", t0), ("half the dwell", t0 + DOCK_DWELL / 2), ("the whole dwell: it arms", t0 + DOCK_DWELL), ("twice the dwell", t0 + DOCK_DWELL * 2)] {
+                log.step(what);
+                g.carry(&mut k, &mut s, at);
+                golden_observe(&mut log, &g, &k, &mut s);
+            }
+            log.step("let go: it docks on the other hand");
+            log.line(format!("ended any: {}", g.end_by(HAND, &k)));
+            g.settle(&mut k, &mut s);
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("the other hand moves 30 cm left");
+            aim(OTHER, [0.08, 1.2, -0.4], [-0.3, 1.4, -1.5]);
+            g.carry(&mut k, &mut s, Instant::now());
+            golden_observe(&mut log, &g, &k, &mut s);
+            crate::golden::check("grab-dock", &log.0);
+        }
+
+        /// Golden: a carry with SteamVR's vsync running, so this frame's picture is 18 ms from the
+        /// eyes (4 ms since vsync at 90 Hz, plus 11 ms to photons). The poses the carry reads are
+        /// asked for at that time (vr::to_photons), which is Frame::predicted in the boundary.
+        #[test]
+        fn golden_carry_reads_poses_at_the_predicted_time() {
+            let p = flat();
+            let (mut g, mut k, mut s, _vr) = golden_world(p);
+            crate::vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).vsync = Some((0.004, 90.0, 0.011));
+            let mut log = crate::golden::Log::default();
+            let times = |log: &mut crate::golden::Log| {
+                let t = std::mem::take(&mut crate::vr::fake::SCRIPT.lock().unwrap().get_or_insert_with(Default::default).pose_times);
+                let mut t: Vec<String> = t.iter().map(|&x| crate::golden::num(x as f64)).collect();
+                t.sort();
+                t.dedup();
+                log.line(format!("poses asked for at {}", t.join(", ")));
+            };
+            log.step("the right hand takes the bar");
+            aim(HAND, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &s);
+            times(&mut log);
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("carried");
+            aim(HAND, [0.35, 1.25, -0.4], p.c);
+            g.carry(&mut k, &mut s, Instant::now());
+            times(&mut log);
+            golden_observe(&mut log, &g, &k, &mut s);
+            crate::golden::check("grab-carry-predicted", &log.0);
+        }
+
+        /// Golden: a carry whose controller goes untracked, blinks back, then goes for good,
+        /// after which a controller with another index picks the panel up and the old one's
+        /// late Up arrives. What happens today is what's pinned.
+        #[test]
+        fn golden_device_lost_mid_drag() {
+            const NEW: Dev = Dev::Controller(crate::ids::Ctl::new(5)); // the controller back on, under another index
+            let p = flat();
+            let (mut g, mut k, mut s, _vr) = golden_world(p);
+            let mut log = crate::golden::Log::default();
+            let t = Instant::now();
+            let ms = |n: u64| t + Duration::from_millis(n);
+            log.step("the bar picked up and carried");
+            aim(HAND, [0.3, 1.2, -0.4], p.c);
+            g.start(0, Part::Bar, HAND, &k, &s);
+            aim(HAND, [0.35, 1.25, -0.4], p.c);
+            g.carry(&mut k, &mut s, t);
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("the controller goes untracked (still on), 400 ms");
+            put(HAND, None, false);
+            g.carry(&mut k, &mut s, ms(1));
+            g.carry(&mut k, &mut s, ms(400));
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("it blinks back, moved");
+            aim(HAND, [0.4, 1.25, -0.4], p.c);
+            g.carry(&mut k, &mut s, ms(450));
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("it goes again, for longer than LOST");
+            put(HAND, None, false);
+            g.carry(&mut k, &mut s, ms(900));
+            g.carry(&mut k, &mut s, ms(1500));
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("switched off; back under another index, it picks the bar up again");
+            put(HAND, None, true);
+            aim(NEW, [0.4, 1.25, -0.4], p.c);
+            g.start(0, Part::Bar, NEW, &k, &s);
+            aim(NEW, [0.45, 1.25, -0.4], p.c);
+            g.carry(&mut k, &mut s, ms(1600));
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("the old index's Up arrives late");
+            log.line(format!("ended any: {}", g.end_by(HAND, &k)));
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("the new one lets go");
+            log.line(format!("ended any: {}", g.end_by(NEW, &k)));
+            golden_observe(&mut log, &g, &k, &mut s);
+            crate::golden::check("grab-device-lost-mid-drag", &log.0);
+        }
+
+        /// Golden: the left and right controllers swap roles mid-carry. The wrist taskbar asks
+        /// for the off hand's controller each frame, so it moves to the other one, while the
+        /// drag keeps the index it started with.
+        #[test]
+        fn golden_roles_swap_mid_drag() {
+            use openvr_sys as sys;
+            const LEFT: Dev = Dev::Controller(crate::ids::Ctl::new(1));
+            const RIGHT: Dev = Dev::Controller(crate::ids::Ctl::new(2));
+            let roles = |l: Dev, r: Dev| {
+                let mut s = crate::vr::fake::SCRIPT.lock().unwrap();
+                s.get_or_insert_with(Default::default).roles =
+                    vec![(sys::ETrackedControllerRole_TrackedControllerRole_LeftHand, vr::index(l)), (sys::ETrackedControllerRole_TrackedControllerRole_RightHand, vr::index(r))];
+            };
+            let p = flat();
+            let (mut g, mut k, mut s, _vr) = golden_world(p);
+            let dir = std::env::temp_dir().join(format!("cc-golden-roles-{}", std::process::id()));
+            let mut bar = crate::taskbar::Taskbar::new(dir.to_str().unwrap());
+            aim(LEFT, [-0.2, 1.1, -0.3], EYE);
+            aim(RIGHT, [0.3, 1.2, -0.4], p.c);
+            crate::vr::fake::take_calls(); // the taskbar's set-up isn't what this pins
+            let mut log = crate::golden::Log::default();
+            log.step("roles left 1, right 2; the right hand picks the bar up");
+            roles(LEFT, RIGHT);
+            g.start(0, Part::Bar, RIGHT, &k, &s);
+            g.carry(&mut k, &mut s, Instant::now());
+            log.line(format!("wrist on {:?}", bar.wrist_frame()));
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("the roles swap: left 2, right 1");
+            roles(RIGHT, LEFT);
+            g.carry(&mut k, &mut s, Instant::now());
+            log.line(format!("wrist on {:?}", bar.wrist_frame()));
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("device 1, the right-hand role now, lets go");
+            log.line(format!("ended any: {}", g.end_by(LEFT, &k)));
+            log.line(format!("wrist on {:?}", bar.wrist_frame()));
+            golden_observe(&mut log, &g, &k, &mut s);
+            log.step("device 2 lets go");
+            log.line(format!("ended any: {}", g.end_by(RIGHT, &k)));
+            log.line(format!("wrist on {:?}", bar.wrist_frame()));
+            golden_observe(&mut log, &g, &k, &mut s);
+            crate::golden::check("grab-roles-swap-mid-drag", &log.0);
+        }
+
         #[test]
         fn the_mouse_picks_up_a_card_when_there_is_no_laser_and_the_wheel_pushes_it() {
             let p = flat();
@@ -2458,10 +3416,10 @@ mod tests {
             let bar_v = spec.bar_box().0;
             g.drawn[0] = Some(Drawn { spec, dims: [0; 3], card_at: Instant::now(), placed: None, tag: 0, theme: 0 });
             // the mouse's ray points at the grab bar
-            point(&mut f, MOUSE, EYE, surface_point(&p, 0.0, bar_v));
+            point(&mut f, Dev::Mouse, EYE, surface_point(&p, 0.0, bar_v));
             k.card_mouse = vec![(0, true)];
             g.poll_mouse(&mut k, &mut f);
-            assert!(matches!(g.drags[0], Some(Drag { dev: MOUSE, mode: Mode::Move { .. }, .. })), "the bar, held by the mouse");
+            assert!(matches!(g.drags[0], Some(Drag { dev: Dev::Mouse, mode: Mode::Move { .. }, .. })), "the bar, held by the mouse");
             let d0 = far(&k.place[0].c, &f.head);
             k.card_wheel = 1.0;
             g.poll_mouse(&mut k, &mut f);
@@ -2493,17 +3451,17 @@ mod tests {
             let (top, bottom) = (spec.top(), spec.bottom());
             let (fw, fh) = (pl.width + 2.0 * spec.g, pl.height + 2.0 * spec.g + top + bottom);
             let mut w = Writes::default();
-            apply(&mut w, 7, &card_place(&pl, &spec));
+            apply(&mut w, crate::vr::Handle(7), &card_place(&pl, &spec));
             let at = pl.on_surface(0.0, (top - bottom) / 2.0, -0.002);
             let (tw, th) = (spec.size.0 as f64, spec.size.1 as f64);
             assert_eq!(
                 w.0,
                 vec![
-                    Call::Width(7, fw as f32),
-                    Call::Texel(7, (fw * th / (fh * tw)) as f32),
-                    Call::Curvature(7, 0.0),
-                    Call::MouseScale(7, [fw as f32, fh as f32]),
-                    Call::Room(7, at),
+                    Call::Width(crate::vr::Handle(7), fw as f32),
+                    Call::Texel(crate::vr::Handle(7), (fw * th / (fh * tw)) as f32),
+                    Call::Curvature(crate::vr::Handle(7), 0.0),
+                    Call::MouseScale(crate::vr::Handle(7), [fw as f32, fh as f32]),
+                    Call::Room(crate::vr::Handle(7), at),
                 ]
             );
         }
@@ -2512,10 +3470,10 @@ mod tests {
         fn a_card_bends_with_its_panel_over_its_own_width() {
             let (pl, spec) = card(false, 1.5);
             let mut w = Writes::default();
-            apply(&mut w, 7, &card_place(&pl, &spec));
+            apply(&mut w, crate::vr::Handle(7), &card_place(&pl, &spec));
             let fw = pl.width + 2.0 * spec.g;
-            assert_eq!(w.curvature_of(7), Some(bend(fw, 1.5)), "the card is wider than the picture, so it bends over more of the circle");
-            assert!(w.curvature_of(7).unwrap() > bend(pl.width, 1.5));
+            assert_eq!(w.curvature_of(crate::vr::Handle(7)), Some(bend(fw, 1.5)), "the card is wider than the picture, so it bends over more of the circle");
+            assert!(w.curvature_of(crate::vr::Handle(7)).unwrap() > bend(pl.width, 1.5));
         }
 
         #[test]

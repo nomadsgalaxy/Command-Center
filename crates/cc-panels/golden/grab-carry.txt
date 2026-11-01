@@ -1,0 +1,49 @@
+== the right hand takes the bar
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [1.00000 0.00000 0.00000 0.00000; 0.00000 1.00000 0.00000 1.40000; 0.00000 0.00000 1.00000 -1.50000]
+== carried, pose 1
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [0.99905 -0.01347 0.04150 0.00194; 0.01169 0.99901 0.04285 1.39917; -0.04204 -0.04232 0.99822 -1.49389]
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.99905 -0.01347 0.04150 0.00194; 0.01169 0.99901 0.04285 1.39917; -0.04204 -0.04232 0.99822 -1.49389]
+== carried, pose 2
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [0.99540 -0.01509 -0.09456 0.00238; 0.02317 0.99611 0.08497 1.39881; 0.09292 -0.08677 0.99189 -1.48630]
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.99540 -0.01509 -0.09456 0.00238; 0.02317 0.99611 0.08497 1.39881; 0.09292 -0.08677 0.99189 -1.48630]
+== carried, pose 3
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [0.98615 0.00227 -0.16584 -0.01297; -0.00600 0.99974 -0.02199 1.42594; 0.16575 0.02268 0.98591 -1.62969]
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.98615 0.00227 -0.16584 -0.01297; -0.00600 0.99974 -0.02199 1.42594; 0.16575 0.02268 0.98591 -1.62969]
+== pushed away a notch
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [0.98615 0.00227 -0.16584 -0.01401; -0.00600 0.99974 -0.02199 1.41201; 0.16575 0.02268 0.98591 -1.76006]
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.98615 0.00227 -0.16584 -0.01401; -0.00600 0.99974 -0.02199 1.41201; 0.16575 0.02268 0.98591 -1.76006]
+== pulled back two
+  vr SetOverlayWidthInMeters 100 1.60000
+  vr SetOverlayTexelAspect 100 1.00000
+  vr SetOverlayCurvature 100 0.00000
+  vr SetOverlayTransformAbsolute 100 1 [0.98615 0.00227 -0.16584 -0.01177; -0.00600 0.99974 -0.02199 1.44209; 0.16575 0.02268 0.98591 -1.47845]
+  drag by 1, carrying, lost false
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.98615 0.00227 -0.16584 -0.01177; -0.00600 0.99974 -0.02199 1.44209; 0.16575 0.02268 0.98591 -1.47845]
+== let go
+  ended any: true
+  drag none
+  docked None
+  panel 1.60000 wide, curve 0.00000, [0.98615 0.00227 -0.16584 -0.01177; -0.00600 0.99974 -0.02199 1.44209; 0.16575 0.02268 0.98591 -1.47845]
