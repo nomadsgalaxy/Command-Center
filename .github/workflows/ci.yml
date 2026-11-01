@@ -49,7 +49,7 @@ jobs:
       TARGET: ${{ matrix.arch }}-unknown-linux-musl
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: sudo apt-get update -q && sudo apt-get install -yq musl-tools libclang-dev
+      - run: sudo apt-get update -q && sudo apt-get install -yq musl-tools libclang-dev clang llvm
       - run: rustup toolchain install stable --profile minimal -t $TARGET && rustup default stable
       # cc-hello links OpenVR's API library: Valve's own build, at the header's version, checked.
       - name: OpenVR's API library
