@@ -632,7 +632,8 @@ cc-panels.
    creation, the lease thread, the hide at exit and on a panic) with SteamVR's; and, as an interim
    exception that isn't start and stop, `Beam::tick`, which aims the laser at the cursor every
    frame and says how its dot looks (`laser::Dot`). It goes behind the backend with the cursor.
-7. (1 d) Tests and a pass in the headset.
+7. (1 d) Tests and a pass in the headset. The pass is a checklist of its own,
+   [phase0-headset-pass.md](phase0-headset-pass.md).
 
 Each step is its own small branch, and has to pass the same checks before and after:
 
