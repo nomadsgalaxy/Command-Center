@@ -50,6 +50,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: sudo apt-get update -q && sudo apt-get install -yq musl-tools libclang-dev clang llvm
+      # cc-home's conf_cross runs in a network namespace of its own (unshare -rnu), which Ubuntu
+      # 24.04's AppArmor blocks for unprivileged users unless this is off.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: rustup toolchain install stable --profile minimal -t $TARGET && rustup default stable
       # cc-hello links OpenVR's API library: Valve's own build, at the header's version, checked.
       - name: OpenVR's API library
